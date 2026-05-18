@@ -108,6 +108,20 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 .filter-bar{display:flex;gap:5px;flex-wrap:wrap}
 .filter-btn{padding:5px 12px;border-radius:20px;border:1.5px solid var(--border);background:var(--surface);color:var(--muted);font-family:"Noto Sans JP",sans-serif;font-size:12px;cursor:pointer;transition:all .15s}
 .filter-btn.active{background:var(--orange);border-color:var(--orange);color:white;font-weight:700}
+
+.month-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.month-nav-btn{background:none;border:1.5px solid var(--border);border-radius:8px;width:32px;height:32px;font-size:16px;cursor:pointer;color:var(--muted);display:flex;align-items:center;justify-content:center}
+.month-nav-btn:hover{border-color:var(--orange);color:var(--orange)}
+.month-nav-title{font-size:14px;font-weight:700;color:var(--text)}
+.month-stats{display:flex;gap:8px;margin-bottom:10px}
+.month-stat-chip{flex:1;background:var(--orange-l);border-radius:var(--radius-sm);padding:8px;text-align:center}
+.month-stat-chip .s-num{font-family:"DM Mono",monospace;font-size:18px;font-weight:500;color:var(--orange-d)}
+.month-stat-chip .s-label{font-size:10px;color:var(--muted);margin-top:1px}
+.all-history-list{display:flex;flex-direction:column;gap:5px;max-height:380px;overflow-y:auto}
+.all-history-item{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--orange-l);border-left:3px solid var(--orange);border-radius:var(--radius-sm)}
+.all-history-item .ah-date{font-size:12px;color:var(--text)}
+.all-history-item .ah-pts{font-family:"DM Mono",monospace;font-size:12px;color:var(--orange-d);font-weight:500}
+.all-history-empty{text-align:center;color:var(--muted);font-size:13px;padding:20px}
 </style>
 </head>
 <body>
@@ -184,8 +198,8 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div class="card-box">
         <div class="tab-bar" style="margin-bottom:12px">
           <button class="tab-btn active" onclick="switchTab('week',this)">1週間</button>
-          <button class="tab-btn" onclick="switchTab('month',this)">1ヶ月</button>
-          <button class="tab-btn" onclick="switchTab('year',this)">1年</button>
+          <button class="tab-btn" onclick="switchTab('monthly',this)">月別</button>
+          <button class="tab-btn" onclick="switchTab('all',this)">全履歴</button>
         </div>
         <div id="history-summary" class="history-summary"></div>
         <div id="history-list" class="history-list"></div>
@@ -264,8 +278,8 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div class="card-box">
         <div class="tab-bar" style="margin-bottom:12px">
           <button class="tab-btn active" onclick="switchDetailTab('week',this)">1週間</button>
-          <button class="tab-btn" onclick="switchDetailTab('month',this)">1ヶ月</button>
-          <button class="tab-btn" onclick="switchDetailTab('year',this)">1年</button>
+          <button class="tab-btn" onclick="switchDetailTab('monthly',this)">月別</button>
+          <button class="tab-btn" onclick="switchDetailTab('all',this)">全履歴</button>
         </div>
         <div id="detail-summary" class="history-summary"></div>
         <div id="detail-list" class="history-list"></div>
@@ -487,8 +501,12 @@ async function doCheckin() {
   }
 }
 
-function switchTab(tab, el) { currentTab = tab; document.querySelectorAll('#screen-student .tab-btn').forEach(b => b.classList.remove('active')); el.classList.add('active'); renderHistory(tab); }
+function switchTab(tab, el) { currentTab = tab; if (tab !== 'monthly') monthOffset = 0; document.querySelectorAll('#screen-student .tab-btn').forEach(b => b.classList.remove('active')); el.classList.add('active'); renderHistory(tab); }
 function renderHistory(tab) { renderHistoryBase(tab, allCheckins, 'history-summary', 'history-list'); }
+
+// 月別カレンダー用の現在月オフセット
+let monthOffset = 0;
+let detailMonthOffset = 0;
 
 function renderHistoryBase(tab, checkins, summaryId, listId) {
   const set = new Set(checkins), sEl = document.getElementById(summaryId), lEl = document.getElementById(listId), today = new Date();
@@ -511,6 +529,46 @@ function renderHistoryBase(tab, checkins, summaryId, listId) {
     const total = months.reduce((a,b) => a+b.count, 0);
     sEl.innerHTML = '<div class="summary-chip"><div class="s-num">' + total + '<span style="font-size:13px">日</span></div><div class="s-label">年間来塾日数</div></div><div class="summary-chip"><div class="s-num">' + (total*10).toLocaleString() + '<span style="font-size:11px">pt</span></div><div class="s-label">年間獲得ポイント</div></div>';
     lEl.innerHTML = months.map(m => { const bw = maxDays > 0 ? Math.round(m.count/maxDays*100) : 0; return '<div class="month-row"><div class="m-name">' + m.label + '</div><div class="month-bar-wrap"><div class="month-bar" style="width:' + bw + '%"></div></div><div class="m-days">' + m.count + '日</div><div class="m-pts">' + (m.count*10) + 'pt</div></div>'; }).join('');
+  }
+  if (tab === 'monthly') {
+    const isDetail = (listId === 'detail-list');
+    const offset = isDetail ? detailMonthOffset : monthOffset;
+    const base = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+    const year = base.getFullYear(), month = base.getMonth();
+    const firstDay = new Date(year, month, 1).getDay();
+    const lastDate = new Date(year, month+1, 0).getDate();
+    const monthLabel = year + '年' + (month+1) + '月';
+    const monthCount = Array.from({length: lastDate}, (_, i) => new Date(year, month, i+1)).filter(d => set.has(d.toDateString())).length;
+    const prevFn = isDetail ? 'detailMonthOffset--; switchDetailTab("monthly", document.querySelector("#screen-staff-detail .tab-btn:nth-child(2)"))' : 'monthOffset--; switchTab("monthly", document.querySelector("#screen-student .tab-btn:nth-child(2)"))';
+    const nextFn = isDetail ? 'detailMonthOffset++; switchDetailTab("monthly", document.querySelector("#screen-staff-detail .tab-btn:nth-child(2)"))' : 'monthOffset++; switchTab("monthly", document.querySelector("#screen-student .tab-btn:nth-child(2)"))';
+    const nextDisabled = offset >= 0 ? 'disabled style="opacity:.4;cursor:not-allowed"' : '';
+    const days = ['日','月','火','水','木','金','土'];
+    let calHtml = '<div class="month-nav"><button class="month-nav-btn" onclick="' + prevFn + '">‹</button><div class="month-nav-title">' + monthLabel + '</div><button class="month-nav-btn" ' + nextDisabled + ' onclick="' + nextFn + '">›</button></div>';
+    calHtml += '<div class="month-stats"><div class="month-stat-chip"><div class="s-num">' + monthCount + '<span style="font-size:12px">日</span></div><div class="s-label">来塾日数</div></div><div class="month-stat-chip"><div class="s-num">' + (monthCount*10) + '<span style="font-size:12px">pt</span></div><div class="s-label">獲得ポイント</div></div></div>';
+    calHtml += '<div class="calendar-grid">';
+    calHtml += days.map(d => '<div class="cal-day-label">' + d + '</div>').join('');
+    for (let i = 0; i < firstDay; i++) calHtml += '<div class="cal-day empty"></div>';
+    for (let d = 1; d <= lastDate; d++) {
+      const date = new Date(year, month, d);
+      const isToday = date.toDateString() === getTodayJSTString();
+      const isChecked = set.has(date.toDateString());
+      let cls = 'cal-day'; if (isChecked) cls += ' checked'; if (isToday) cls += ' today';
+      calHtml += '<div class="' + cls + '">' + d + '</div>';
+    }
+    calHtml += '</div>';
+    sEl.innerHTML = '';
+    lEl.innerHTML = calHtml;
+  }
+  if (tab === 'all') {
+    const sorted = Array.from(set).sort((a,b) => new Date(b) - new Date(a));
+    sEl.innerHTML = '<div class="summary-chip"><div class="s-num">' + sorted.length + '<span style="font-size:13px">日</span></div><div class="s-label">累計来塾日数</div></div><div class="summary-chip"><div class="s-num">' + (sorted.length*10).toLocaleString() + '<span style="font-size:11px">pt</span></div><div class="s-label">累計獲得ポイント</div></div>';
+    if (sorted.length === 0) { lEl.innerHTML = '<div class="all-history-empty">まだ来塾記録がありません</div>'; return; }
+    lEl.innerHTML = '<div class="all-history-list">' + sorted.map(d => {
+      const dt = new Date(d);
+      const m = dt.getMonth()+1, dd = dt.getDate(), y = dt.getFullYear();
+      const wd = ['日','月','火','水','木','金','土'][dt.getDay()];
+      return '<div class="all-history-item"><div class="ah-date">' + y + '/' + String(m).padStart(2,'0') + '/' + String(dd).padStart(2,'0') + '（' + wd + '）</div><div class="ah-pts">+10 pt</div></div>';
+    }).join('') + '</div>';
   }
 }
 
@@ -575,7 +633,7 @@ async function openStudentDetail(idx) {
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
-function switchDetailTab(tab, el) { document.querySelectorAll('#screen-staff-detail .tab-btn').forEach(b => b.classList.remove('active')); el.classList.add('active'); renderDetailHistory(tab); }
+function switchDetailTab(tab, el) { if (tab !== 'monthly') detailMonthOffset = 0; document.querySelectorAll('#screen-staff-detail .tab-btn').forEach(b => b.classList.remove('active')); el.classList.add('active'); renderDetailHistory(tab); }
 function renderDetailHistory(tab) { renderHistoryBase(tab, detailCheckins, 'detail-summary', 'detail-list'); }
 </script>
 </body>
