@@ -104,6 +104,10 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 .toast.success{color:var(--green-d);border-color:#A8D891}
 .toast.error{color:var(--red);border-color:#F5BABA}
 .toast.info{color:var(--orange-d);border-color:#F5D56A}
+
+.filter-bar{display:flex;gap:5px;flex-wrap:wrap}
+.filter-btn{padding:5px 12px;border-radius:20px;border:1.5px solid var(--border);background:var(--surface);color:var(--muted);font-family:"Noto Sans JP",sans-serif;font-size:12px;cursor:pointer;transition:all .15s}
+.filter-btn.active{background:var(--orange);border-color:var(--orange);color:white;font-weight:700}
 </style>
 </head>
 <body>
@@ -203,6 +207,21 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     </div>
     <div>
       <div class="section-title">生徒一覧（タップで詳細）</div>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+        <div class="filter-bar" id="filter-school">
+          <button class="filter-btn active" onclick="setFilter('school','全員',this)">全員</button>
+          <button class="filter-btn" onclick="setFilter('school','松山東',this)">松山東</button>
+          <button class="filter-btn" onclick="setFilter('school','松山南',this)">松山南</button>
+          <button class="filter-btn" onclick="setFilter('school','松山北',this)">松山北</button>
+        </div>
+        <div class="filter-bar" id="filter-grade">
+          <button class="filter-btn active" onclick="setFilter('grade','全学年',this)">全学年</button>
+          <button class="filter-btn" onclick="setFilter('grade','1年',this)">1年</button>
+          <button class="filter-btn" onclick="setFilter('grade','2年',this)">2年</button>
+          <button class="filter-btn" onclick="setFilter('grade','3年',this)">3年</button>
+        </div>
+      </div>
+      <div id="student-count" style="font-size:11px;color:var(--muted);margin-bottom:6px"></div>
       <div class="student-list" id="student-list"></div>
     </div>
     <div>
@@ -307,6 +326,50 @@ function showLoading(t) { document.getElementById('loading-text').textContent = 
 function hideLoading() { document.getElementById('loading').classList.add('hidden'); }
 function showScreen(id) { document.querySelectorAll('.screen').forEach(s => s.classList.remove('active')); document.getElementById(id).classList.add('active'); }
 function showToast(msg, type) { const t = document.getElementById('toast'); t.textContent = msg; t.className = 'toast show ' + (type || 'info'); setTimeout(() => t.classList.remove('show'), 2800); }
+
+
+let filterSchool = '全員', filterGrade = '全学年';
+
+function setFilter(type, value, el) {
+  if (type === 'school') {
+    filterSchool = value;
+    document.querySelectorAll('#filter-school .filter-btn').forEach(b => b.classList.remove('active'));
+  } else {
+    filterGrade = value;
+    document.querySelectorAll('#filter-grade .filter-btn').forEach(b => b.classList.remove('active'));
+  }
+  el.classList.add('active');
+  renderStudentList();
+}
+
+function renderStudentList() {
+  const todayISO = getTodayJST();
+  sbGet('checkins', 'checkin_date=eq.' + todayISO + '&select=student_id').then(todayCheckins => {
+    const todayIds = new Set((todayCheckins || []).map(c => c.student_id));
+    const filtered = staffStudents.filter(s => {
+      const schoolOK = filterSchool === '全員' || s.school === filterSchool;
+      const gradeOK  = filterGrade === '全学年' || s.grade === filterGrade;
+      return schoolOK && gradeOK;
+    });
+    document.getElementById('student-count').textContent = filtered.length + '人';
+    document.getElementById('student-list').innerHTML = filtered.map((s, i) => {
+      const idx = staffStudents.indexOf(s);
+      const school = s.school ? s.school + ' ' : '';
+      const grade  = s.grade  ? s.grade + ' '  : '';
+      return '<div class="student-row" onclick="openStudentDetail(' + idx + ')">' +
+        '<div class="student-avatar">' + s.name[0] + '</div>' +
+        '<div class="student-info">' +
+          '<div class="student-name">' + s.name + '</div>' +
+          '<div class="student-email">' + school + grade + s.email + '</div>' +
+        '</div>' +
+        (todayIds.has(s.id) ? '<div class="today-badge">来塾</div>' : '') +
+        '<div style="display:flex;align-items:center;gap:6px">' +
+          '<div class="student-pts">' + s.points.toLocaleString() + 'pt</div>' +
+          '<div style="color:var(--muted)">›</div>' +
+        '</div></div>';
+    }).join('');
+  });
+}
 
 async function doLogin() {
   const email = document.getElementById('login-email').value.trim().toLowerCase();
@@ -455,19 +518,13 @@ async function initStaff() {
   showLoading('データを読み込み中...');
   try {
     const todayISO = getTodayJST();
-    const students = await sbGet('students', 'select=*&order=name');
+    const students = await sbGet('students', 'select=*&order=school,grade,name');
     const todayCheckins = await sbGet('checkins', 'checkin_date=eq.' + todayISO + '&select=student_id');
     const todayIds = new Set((todayCheckins || []).map(c => c.student_id));
     staffStudents = students || [];
     document.getElementById('today-count').textContent = todayIds.size;
     document.getElementById('total-students').textContent = staffStudents.length;
-    document.getElementById('student-list').innerHTML = staffStudents.map((s, i) =>
-      '<div class="student-row" onclick="openStudentDetail(' + i + ')">' +
-      '<div class="student-avatar">' + s.name[0] + '</div>' +
-      '<div class="student-info"><div class="student-name">' + s.name + '</div><div class="student-email">' + s.email + '</div></div>' +
-      (todayIds.has(s.id) ? '<div class="today-badge">来塾</div>' : '') +
-      '<div style="display:flex;align-items:center;gap:6px"><div class="student-pts">' + s.points.toLocaleString() + 'pt</div><div style="color:var(--muted)">›</div></div></div>'
-    ).join('');
+    renderStudentList();
     const sel = document.getElementById('staff-select-student');
     sel.innerHTML = '<option value="">-- 選択してください --</option>' + staffStudents.map((s, i) => '<option value="' + i + '">' + s.name + '</option>').join('');
     hideLoading();
