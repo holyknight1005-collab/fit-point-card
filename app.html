@@ -234,18 +234,6 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div class="stat-card"><div class="stat-num" id="total-students">—</div><div class="stat-label">登録生徒数</div></div>
     </div>
     <div>
-      <div class="section-title">日別来塾者確認</div>
-      <div class="card-box" style="margin-bottom:0">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-          <input type="date" id="date-picker" class="form-select" style="flex:1"
-            onchange="loadDailyAttendance()">
-          <div style="font-size:12px;color:var(--muted);white-space:nowrap" id="daily-count-label"></div>
-        </div>
-        <div id="daily-attendance-list" style="display:flex;flex-direction:column;gap:6px"></div>
-      </div>
-    </div>
-
-    <div>
       <div class="section-title">生徒一覧（タップで詳細）</div>
       <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
         <div class="filter-bar" id="filter-school">
@@ -273,6 +261,18 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <button class="form-btn" onclick="staffAddPoints()">ポイントを付与する</button>
       </div>
     </div>
+
+    <div>
+      <div class="section-title">日別来塾者確認</div>
+      <div class="card-box">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <input type="date" id="date-picker" class="form-select" style="flex:1" onchange="loadDailyAttendance()">
+          <div style="font-size:13px;font-weight:700;color:var(--orange-d);white-space:nowrap" id="daily-count-label"></div>
+        </div>
+        <div id="daily-attendance-list" style="display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -771,7 +771,6 @@ function renderHistoryBase(tab, checkins, summaryId, listId) {
 }
 
 async function initStaff() {
-  initDatePicker();
   showLoading('データを読み込み中...');
   try {
     const todayISO = getTodayJST();
@@ -785,6 +784,7 @@ async function initStaff() {
     const sel = document.getElementById('staff-select-student');
     sel.innerHTML = '<option value="">-- 選択してください --</option>' + staffStudents.map((s, i) => '<option value="' + i + '">' + s.name + '</option>').join('');
     hideLoading();
+    initDatePicker();
   } catch(e) { hideLoading(); showToast('データ取得エラー: ' + e.message, 'error'); }
 }
 
@@ -830,6 +830,57 @@ async function openStudentDetail(idx) {
     renderDetailHistory('week');
     hideLoading(); showScreen('screen-staff-detail');
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+
+// ===== 日別来塾者確認 =====
+function initDatePicker() {
+  const picker = document.getElementById('date-picker');
+  if (!picker) return;
+  picker.value = getTodayJST();
+  loadDailyAttendance();
+}
+
+async function loadDailyAttendance() {
+  const picker = document.getElementById('date-picker');
+  if (!picker) return;
+  const date = picker.value;
+  if (!date) return;
+
+  const listEl = document.getElementById('daily-attendance-list');
+  const labelEl = document.getElementById('daily-count-label');
+  if (!listEl || !labelEl) return;
+
+  listEl.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px">読み込み中...</div>';
+
+  try {
+    const checkins = await sbGet('checkins', 'checkin_date=eq.' + date + '&select=student_id');
+    const ids = (checkins || []).map(c => c.student_id);
+
+    if (ids.length === 0) {
+      labelEl.textContent = '0人';
+      listEl.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:12px">この日の来塾者はいません</div>';
+      return;
+    }
+
+    const students = await sbGet('students', 'id=in.(' + ids.join(',') + ')&select=*&order=school,grade,name');
+    labelEl.textContent = (students || []).length + '人';
+
+    listEl.innerHTML = (students || []).map(s => {
+      const school = s.school || '';
+      const grade  = s.grade  || '';
+      const tag = (school || grade)
+        ? '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + school + ' ' + grade + '</span>'
+        : '';
+      return '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--orange-l);border-left:3px solid var(--orange);border-radius:var(--radius-sm)">' +
+        '<div style="width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--orange),var(--orange-d));display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:white;flex-shrink:0">' + s.name[0] + '</div>' +
+        '<div style="flex:1"><div style="font-size:13px;font-weight:500;color:var(--text)">' + s.name + tag + '</div></div>' +
+        '<div style="font-family:DM Mono,monospace;font-size:12px;color:var(--orange-d)">' + s.points.toLocaleString() + 'pt</div>' +
+        '</div>';
+    }).join('');
+  } catch(e) {
+    listEl.innerHTML = '<div style="text-align:center;color:var(--red);font-size:12px;padding:8px">取得エラー: ' + e.message + '</div>';
+  }
 }
 
 function switchDetailTab(tab, el) { if (tab !== 'monthly') detailMonthOffset = 0; document.querySelectorAll('#screen-staff-detail .tab-btn').forEach(b => b.classList.remove('active')); el.classList.add('active'); renderDetailHistory(tab); }
