@@ -192,9 +192,17 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div class="point-streak" id="student-streak">🔥 連続 0 日来塾中</div>
     </div>
     <div id="gps-status-box" class="gps-status checking">📍 GPS位置を確認中...</div>
-    <button class="checkin-btn" id="checkin-btn" onclick="doCheckin()" disabled>
+    <button class="checkin-btn" id="checkin-btn" onclick="startCheckin()" disabled>
       ✅ チェックイン<span class="btn-sub">自習室で押してポイントゲット！</span>
     </button>
+    <div id="countdown-box" style="display:none;background:var(--orange-l);border:1.5px solid var(--orange);border-radius:var(--radius);padding:16px;text-align:center">
+      <div style="font-size:12px;color:var(--orange-d);font-weight:500;margin-bottom:6px">⏱ 自習中... 30分後にポイントが確定します</div>
+      <div style="font-family:'DM Mono',monospace;font-size:36px;font-weight:500;color:var(--orange-d)" id="countdown-timer">30:00</div>
+      <div style="margin-top:8px;background:var(--border);border-radius:4px;height:6px;overflow:hidden">
+        <div id="countdown-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width 1s linear"></div>
+      </div>
+      <button onclick="cancelCheckin()" style="margin-top:12px;padding:6px 16px;border-radius:20px;border:1.5px solid var(--orange);background:transparent;color:var(--orange-d);font-family:'Noto Sans JP',sans-serif;font-size:12px;cursor:pointer">キャンセル</button>
+    </div>
     <div>
       <div class="section-title">今月の来塾カレンダー</div>
       <div class="card-box"><div class="calendar-grid" id="calendar-grid"></div></div>
@@ -566,12 +574,86 @@ function getDistance(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-async function doCheckin() {
+
+// ===== 30分チェックインタイマー =====
+const CHECKIN_MINUTES = 30; // 分（テスト時は1に変更可）
+let checkinTimer = null;
+let checkinInterval = null;
+let checkinStartTime = null;
+let gpsWatchId = null;
+
+function startCheckin() {
+  if (!currentStudent) return;
+  const today = getTodayJSTString();
+  if (allCheckins.includes(today)) {
+    showToast('本日はすでにチェックイン済みです！', 'info');
+    return;
+  }
+
+  // タイマー開始
+  checkinStartTime = Date.now();
+  const totalMs = CHECKIN_MINUTES * 60 * 1000;
+
+  // ボタンを隠してカウントダウン表示
+  document.getElementById('checkin-btn').style.display = 'none';
+  document.getElementById('countdown-box').style.display = 'block';
+
+  showToast('⏱ 30分のカウントダウン開始！', 'info');
+
+  // GPS監視開始（範囲外に出たらキャンセル）
+  if (navigator.geolocation) {
+    gpsWatchId = navigator.geolocation.watchPosition(
+      function(pos) {
+        const dist = getDistance(pos.coords.latitude, pos.coords.longitude, FIT_LAT, FIT_LNG);
+        if (dist > FIT_RADIUS * 2) {
+          // 範囲外に出た
+          cancelCheckin();
+          showToast('⚠️ 自習室の範囲外に出たためキャンセルされました', 'error');
+        }
+      },
+      function() {},
+      { enableHighAccuracy: true, maximumAge: 30000 }
+    );
+  }
+
+  // 毎秒カウントダウン更新
+  checkinInterval = setInterval(function() {
+    const elapsed = Date.now() - checkinStartTime;
+    const remaining = Math.max(0, totalMs - elapsed);
+    const mins = Math.floor(remaining / 60000);
+    const secs = Math.floor((remaining % 60000) / 1000);
+    const progress = (elapsed / totalMs) * 100;
+
+    document.getElementById('countdown-timer').textContent =
+      String(mins).padStart(2, '0') + ':' + String(secs).padStart(2, '0');
+    document.getElementById('countdown-bar').style.width = Math.min(progress, 100) + '%';
+
+    if (remaining <= 0) {
+      clearInterval(checkinInterval);
+      checkinInterval = null;
+      confirmCheckin();
+    }
+  }, 1000);
+}
+
+function cancelCheckin() {
+  if (checkinInterval) { clearInterval(checkinInterval); checkinInterval = null; }
+  if (gpsWatchId !== null) { navigator.geolocation.clearWatch(gpsWatchId); gpsWatchId = null; }
+  checkinStartTime = null;
+  document.getElementById('countdown-box').style.display = 'none';
+  document.getElementById('checkin-btn').style.display = 'block';
+  showToast('チェックインをキャンセルしました', 'info');
+}
+
+async function confirmCheckin() {
+  if (gpsWatchId !== null) { navigator.geolocation.clearWatch(gpsWatchId); gpsWatchId = null; }
   if (!currentStudent) return;
   const today = getTodayJSTString();
   const todayISO = getTodayJST();
-  if (allCheckins.includes(today)) { showToast('本日はすでにチェックイン済みです', 'info'); return; }
-  showLoading('チェックイン中...');
+
+  document.getElementById('countdown-box').style.display = 'none';
+
+  showLoading('ポイントを記録中...');
   try {
     await sbPost('checkins', { student_id: currentStudent.id, checkin_date: todayISO });
     const newPts = currentStudent.points + 10, newStreak = currentStudent.streak + 1;
@@ -581,22 +663,29 @@ async function doCheckin() {
     allCheckins.unshift(today);
     document.getElementById('student-points').textContent = newPts.toLocaleString();
     document.getElementById('student-streak').textContent = '🔥 連続 ' + newStreak + ' 日来塾中';
-    const btn = document.getElementById('checkin-btn'); btn.disabled = true;
+    const btn = document.getElementById('checkin-btn');
+    btn.style.display = 'block';
+    btn.disabled = true;
     btn.innerHTML = '✅ チェックイン完了！<span class="btn-sub">+10ポイントゲット！</span>';
-    renderCalendar('calendar-grid', allCheckins); renderHistory(currentTab);
-    hideLoading(); showToast('🎉 +10ポイント獲得！', 'success');
+    renderCalendar('calendar-grid', allCheckins);
+    renderHistory(currentTab);
+    hideLoading();
+    showToast('🎉 30分達成！+10ポイント獲得！', 'success');
   } catch(e) {
     hideLoading();
     if (e.message.includes('duplicate key')) {
       showToast('本日はすでにチェックイン済みです！', 'info');
       const btn = document.getElementById('checkin-btn');
+      btn.style.display = 'block';
       btn.disabled = true;
       btn.innerHTML = '✅ 本日はチェックイン済み<span class="btn-sub">また明日も来てね！</span>';
     } else {
       showToast('エラー: ' + e.message, 'error');
+      document.getElementById('checkin-btn').style.display = 'block';
     }
   }
 }
+
 
 function switchTab(tab, el) { currentTab = tab; if (tab !== 'monthly') monthOffset = 0; document.querySelectorAll('#screen-student .tab-btn').forEach(b => b.classList.remove('active')); el.classList.add('active'); renderHistory(tab); }
 function renderHistory(tab) { renderHistoryBase(tab, allCheckins, 'history-summary', 'history-list'); }
