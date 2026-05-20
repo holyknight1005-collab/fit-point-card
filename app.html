@@ -234,6 +234,15 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <button class="back-btn" onclick="logout()">← 戻る</button>
   </div>
   <div class="staff-content">
+    <!-- 0. 承認待ち申請 -->
+    <div id="pending-section">
+      <div class="section-title" style="display:flex;align-items:center;gap:6px">
+        承認待ち申請
+        <span id="pending-badge" style="background:var(--red);color:white;font-size:10px;padding:2px 7px;border-radius:20px;font-weight:700;display:none"></span>
+      </div>
+      <div id="pending-list" style="display:flex;flex-direction:column;gap:8px"></div>
+    </div>
+
     <!-- 1. 日別来塾者確認 -->
     <div>
       <div class="section-title">日別来塾者確認</div>
@@ -833,6 +842,7 @@ function renderHistoryBase(tab, checkins, summaryId, listId) {
 }
 
 async function initStaff() {
+  loadPendingApplications();
   showLoading('データを読み込み中...');
   try {
     const todayISO = getTodayJST();
@@ -894,6 +904,101 @@ async function openStudentDetail(idx) {
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
+
+
+// ===== 承認待ち申請 =====
+async function loadPendingApplications() {
+  try {
+    const apps = await sbGet('student_applications', 'status=eq.pending&order=created_at.asc&select=*');
+    const listEl = document.getElementById('pending-list');
+    const badge = document.getElementById('pending-badge');
+
+    if (!apps || apps.length === 0) {
+      badge.style.display = 'none';
+      listEl.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">承認待ちの申請はありません</div>';
+      return;
+    }
+
+    badge.style.display = 'inline';
+    badge.textContent = apps.length + '件';
+
+    listEl.innerHTML = apps.map(app => {
+      const date = new Date(app.created_at);
+      const dateStr = (date.getMonth()+1) + '/' + date.getDate() + ' ' + date.getHours() + ':' + String(date.getMinutes()).padStart(2,'0');
+      return '<div style="background:var(--surface);border:1.5px solid var(--orange);border-radius:var(--radius-sm);padding:12px 14px">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">' +
+          '<div style="font-size:14px;font-weight:700;color:var(--text)">' + app.name + '</div>' +
+          '<div style="font-size:10px;color:var(--muted)">' + dateStr + '</div>' +
+        '</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">' + app.school + ' ' + app.grade + '　' + app.email + '</div>' +
+        '<div style="display:flex;gap:8px">' +
+          '<button onclick="approveApplication('' + app.id + '','' + app.name + '','' + app.email + '','' + app.school + '','' + app.grade + '')" ' +
+            'style="flex:1;padding:8px;background:linear-gradient(135deg,var(--green),var(--green-d));border:none;border-radius:var(--radius-sm);color:white;font-family:'Noto Sans JP',sans-serif;font-size:13px;font-weight:700;cursor:pointer">✅ 承認</button>' +
+          '<button onclick="rejectApplication('' + app.id + '','' + app.name + '')" ' +
+            'style="flex:1;padding:8px;background:var(--surface);border:1.5px solid var(--red);border-radius:var(--radius-sm);color:var(--red);font-family:'Noto Sans JP',sans-serif;font-size:13px;font-weight:700;cursor:pointer">❌ 却下</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  } catch(e) {
+    console.error('申請取得エラー:', e);
+  }
+}
+
+async function approveApplication(id, name, email, school, grade) {
+  // 5桁パスワードを自動生成
+  const pin = String(Math.floor(10000 + Math.random() * 90000));
+
+  showLoading('承認中...');
+  try {
+    // studentsテーブルに追加
+    await sbPost('students', {
+      name, email, pin,
+      student_no: pin,
+      school, grade,
+      points: 0,
+      streak: 0
+    });
+
+    // 申請ステータスを承認済みに
+    await sbPatch('student_applications', 'id=eq.' + id, { status: 'approved' });
+
+    hideLoading();
+    showToast('✅ ' + name + 'さんを承認しました！パスワード：' + pin, 'success');
+
+    // パスワードをアラートで表示（スタッフが控える）
+    alert('【' + name + 'さんのパスワード】
+
+' + pin + '
+
+このパスワードを生徒に伝えてください！');
+
+    loadPendingApplications();
+    initStaff();
+  } catch(e) {
+    hideLoading();
+    if (e.message.includes('duplicate')) {
+      showToast('このメールアドレスはすでに登録されています', 'error');
+      await sbPatch('student_applications', 'id=eq.' + id, { status: 'rejected' });
+      loadPendingApplications();
+    } else {
+      showToast('エラー: ' + e.message, 'error');
+    }
+  }
+}
+
+async function rejectApplication(id, name) {
+  if (!confirm(name + 'さんの申請を却下しますか？')) return;
+  showLoading('却下中...');
+  try {
+    await sbPatch('student_applications', 'id=eq.' + id, { status: 'rejected' });
+    hideLoading();
+    showToast(name + 'さんの申請を却下しました', 'info');
+    loadPendingApplications();
+  } catch(e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
+}
 
 // ===== 日別来塾者確認 =====
 function initDatePicker() {
