@@ -5,83 +5,97 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>三角関数・単位円方程式マスター</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+    <script>
+      window.MathJax = { tex: { inlineMath: [['\\(','\\)']], displayMath: [['$$','$$']] }, startup: { typeset: false } };
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     <style>
+        * { box-sizing: border-box; }
         body {
             margin: 0; padding: 8px; font-family: Arial, sans-serif;
             background-color: #f1f5f9; display: flex; flex-direction: column; align-items: center;
-            box-sizing: border-box;
         }
         h1 { font-size: 16px; margin: 5px 0 10px 0; color: #1e293b; text-align: center; }
         
         .wrapper { 
-            display: flex; 
-            flex-direction: column; 
-            gap: 12px; 
-            width: 100%; 
-            max-width: 360px; 
-            justify-content: center; 
-            align-items: center;
-            box-sizing: border-box;
+            display: flex; flex-direction: column; 
+            gap: 12px; width: 100%;
+            justify-content: center; align-items: center;
+        }
+        @media (min-width: 800px) {
+            .wrapper { flex-direction: row; align-items: flex-start; }
         }
         
-        @media (min-width: 850px) {
-            .wrapper { flex-direction: row; align-items: flex-start; max-width: 850px; }
-        }
-        
+        /* ── FIX②: canvas-area をビューポートに合わせる ── */
         .canvas-area {
             position: relative;
-            width: 350px;
-            height: 350px;
+            /* 350px か 画面幅-16px の小さい方 */
+            width: min(350px, calc(100vw - 16px));
+            height: min(350px, calc(100vw - 16px));
             background: #ffffff;
             border-radius: 12px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.05);
             border: 1px solid #cbd5e1;
-            box-sizing: border-box;
         }
         
+        /* p5 canvas wrapper: 左上の 310x310 エリア */
         #canvas-container { 
             position: absolute;
             top: 0; left: 0;
-            width: 310px; height: 310px; 
+            /* スケールもcanvas-areaに合わせる */
+            width: 310px; height: 310px;
+            transform-origin: top left;
         }
         
         .math-label {
             position: absolute;
             transform: translate(-50%, -50%);
-            font-size: 11px;
-            font-weight: bold;
-            color: #1e293b;
-            text-align: center;
-            white-space: nowrap;
-            pointer-events: none;
-            line-height: 1.1;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
+            font-size: 16px; font-weight: bold; color: #1e293b;
+            text-align: center; white-space: nowrap;
+            pointer-events: none; line-height: 1.2;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
             z-index: 10;
         }
-        
         .deg-text {
-            font-family: Arial, sans-serif;
-            font-size: 9px;
-            color: #475569;
-            margin-top: 1px;
-            font-weight: bold;
+            font-family: Arial, sans-serif; font-size: 10px;
+            color: #475569; margin-top: 2px; font-weight: bold;
         }
 
+        /* ── FIX③: 縦スライダー（タッチ対応） ── */
         .sin-slider-wrapper { 
             position: absolute;
             top: 0; right: 0;
             width: 40px; height: 310px;
             display: flex; justify-content: center; align-items: center;
+            overflow: hidden;
         }
+        /* writing-mode を使う方法（iOS Safari 含む全ブラウザ対応） */
         .sin-slider { 
-            transform: rotate(-90deg); 
-            width: 280px; 
+            writing-mode: vertical-lr;
+            direction: rtl;
+            width: 36px;
+            height: 290px;
             cursor: pointer; 
-            accent-color: #a855f7; 
+            accent-color: #a855f7;
+            /* fallback for browsers that don't support writing-mode on range */
+            -webkit-appearance: slider-vertical;
+        }
+        /* writing-modeが効かないブラウザ向けフォールバック */
+        @supports not (writing-mode: vertical-lr) {
+            .sin-slider {
+                writing-mode: unset;
+                direction: unset;
+                transform: rotate(-90deg);
+                width: 260px;
+                height: 36px;
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                margin-left: -130px;
+                margin-top: -18px;
+                touch-action: none; /* タッチ座標ズレ防止 */
+            }
         }
         
         .cos-slider-wrapper { 
@@ -91,19 +105,20 @@
             display: flex; justify-content: center; align-items: center;
         }
         .cos-slider { 
-            width: 280px; 
-            cursor: pointer; 
-            accent-color: #0ea5e9; 
+            width: 280px; cursor: pointer; accent-color: #0ea5e9;
+            touch-action: none;
         }
 
+        /* ── サイドバー ── */
         .sidebar {
             background-color: #ffffff; padding: 12px; border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.05); width: 350px; 
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            width: min(350px, calc(100vw - 16px));
             border: 1px solid #cbd5e1; display: flex; flex-direction: column; gap: 8px;
-            box-sizing: border-box;
         }
         .box-title { font-size: 11px; font-weight: bold; color: #475569; border-bottom: 2px solid #f1f5f9; padding-bottom: 2px; }
         .math-box { font-size: 15px; min-height: 38px; display: flex; align-items: center; justify-content: center; background: #f8fafc; border-radius: 6px; padding: 4px; flex-direction: column; gap: 2px; }
+        #angleDisplay { font-size: 24px; min-height: 64px; padding: 8px 4px; line-height: 2.2; }
         .btn-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; }
         
         .toggle-container { display: flex; gap: 6px; }
@@ -125,7 +140,7 @@
     <h1>📐 三角方程式・単位円数値マスター</h1>
 
     <div class="wrapper">
-        <div class="canvas-area">
+        <div class="canvas-area" id="canvasArea">
             <div id="canvas-container"></div>
             <div class="sin-slider-wrapper">
                 <input type="range" id="vSinSlider" class="sin-slider" min="-1" max="1" value="0.5" step="0.001" oninput="onSinSliderMove(this.value)">
@@ -145,18 +160,18 @@
             <div class="box-title">状態</div>
             <div id="modeStatus" class="mode-indicator sin-mode">現在：🔒 sin（高さ）基準</div>
 
-            <div class="box-title">🔑 対応する2つの弧度 ($\theta_1, \theta_2$)</div>
-            <div id="angleDisplay" class="math-box">$$\dots$$</div>
+            <div class="box-title">🔑 対応する2つの弧度 (θ₁, θ₂)</div>
+            <div id="angleDisplay" class="math-box">…</div>
 
             <div class="box-title">💜 sin の値（低い順）</div>
             <div class="btn-grid">
                 <button class="sin-btn" onclick="setTrigValue('sin', -1)">-1</button>
                 <button class="sin-btn" onclick="setTrigValue('sin', -0.866)">-√3/2</button>
-                <button class="sin-btn" onclick="setTrigValue('sin', -0.707)">-1/💻</button>
+                <button class="sin-btn" onclick="setTrigValue('sin', -0.707)">-1/√2</button>
                 <button class="sin-btn" onclick="setTrigValue('sin', -0.5)">-1/2</button>
                 <button class="sin-btn" onclick="setTrigValue('sin', 0)">0</button>
                 <button class="sin-btn" onclick="setTrigValue('sin', 0.5)">1/2</button>
-                <button class="sin-btn" onclick="setTrigValue('sin', 0.707)">1/💻</button>
+                <button class="sin-btn" onclick="setTrigValue('sin', 0.707)">1/√2</button>
                 <button class="sin-btn" onclick="setTrigValue('sin', 0.866)">√3/2</button>
                 <button class="sin-btn" onclick="setTrigValue('sin', 1)">1</button>
             </div>
@@ -165,17 +180,17 @@
             <div class="btn-grid">
                 <button class="cos-btn" onclick="setTrigValue('cos', 1)">1</button>
                 <button class="cos-btn" onclick="setTrigValue('cos', 0.866)">√3/2</button>
-                <button class="cos-btn" onclick="setTrigValue('cos', 0.707)">1/💻</button>
+                <button class="cos-btn" onclick="setTrigValue('cos', 0.707)">1/√2</button>
                 <button class="cos-btn" onclick="setTrigValue('cos', 0.5)">1/2</button>
                 <button class="cos-btn" onclick="setTrigValue('cos', 0)">0</button>
                 <button class="cos-btn" onclick="setTrigValue('cos', -0.5)">-1/2</button>
-                <button class="cos-btn" onclick="setTrigValue('cos', -0.707)">-1/💻</button>
+                <button class="cos-btn" onclick="setTrigValue('cos', -0.707)">-1/√2</button>
                 <button class="cos-btn" onclick="setTrigValue('cos', -0.866)">-√3/2</button>
                 <button class="cos-btn" onclick="setTrigValue('cos', -1)">-1</button>
             </div>
 
             <div class="box-title">📊 現在の値</div>
-            <div id="valuesDisplay" class="math-box" style="font-size: 14px;">$$\dots$$</div>
+            <div id="valuesDisplay" class="math-box" style="font-size: 14px;">…</div>
         </div>
     </div>
 
@@ -192,11 +207,241 @@
         let mathTimeout = null;
         let showRad = true;
         let showDeg = true;
+        // p5インスタンスを外から参照するための変数
+        let p5ref = null;
 
+        // ld: 円からのラベル距離。密集する15deg間隔ゾーンは近・遠・近と交互にしてずらす
         const famousAngles = [
-            { deg: 0, tex: "0", dStr: "0°" }, { deg: 30, tex: "\\frac{\\pi}{6}", dStr: "30°" }, 
-            { deg: 45, tex: "\\frac{\\pi}{4}", dStr: "45°" }, { deg: 60, tex: "\\frac{\\pi}{3}", dStr: "60°" }, 
-            { deg: 90, tex: "\\frac{\\pi}{2}", dStr: "90°" }, { deg: 120, tex: "\\frac{2\\pi}{3}", dStr: "120°" }, 
-            { deg: 135, tex: "\\frac{3\\pi}{4}", dStr: "135°" }, { deg: 150, tex: "\\frac{5\\pi}{6}", dStr: "150°" }, 
-            { deg: 180, tex: "\\pi", dStr: "180°" }, { deg: 210, tex: "\\frac{7\\pi}{6}", dStr: "210°" }, 
-            { deg: 225, tex: "\\frac{5\\pi}{4}", dStr: "22
+            { deg:   0, tex: "0",                 dStr: "0°",   ld: 34 },
+            { deg:  30, tex: "\\frac{\\pi}{6}",   dStr: "30°",  ld: 26 },
+            { deg:  45, tex: "\\frac{\\pi}{4}",   dStr: "45°",  ld: 50 },
+            { deg:  60, tex: "\\frac{\\pi}{3}",   dStr: "60°",  ld: 26 },
+            { deg:  90, tex: "\\frac{\\pi}{2}",   dStr: "90°",  ld: 34 },
+            { deg: 120, tex: "\\frac{2\\pi}{3}",  dStr: "120°", ld: 26 },
+            { deg: 135, tex: "\\frac{3\\pi}{4}",  dStr: "135°", ld: 50 },
+            { deg: 150, tex: "\\frac{5\\pi}{6}",  dStr: "150°", ld: 26 },
+            { deg: 180, tex: "\\pi",              dStr: "180°", ld: 34 },
+            { deg: 210, tex: "\\frac{7\\pi}{6}",  dStr: "210°", ld: 26 },
+            { deg: 225, tex: "\\frac{5\\pi}{4}",  dStr: "225°", ld: 50 },
+            { deg: 240, tex: "\\frac{4\\pi}{3}",  dStr: "240°", ld: 26 },
+            { deg: 270, tex: "\\frac{3\\pi}{2}",  dStr: "270°", ld: 34 },
+            { deg: 300, tex: "\\frac{5\\pi}{3}",  dStr: "300°", ld: 26 },
+            { deg: 315, tex: "\\frac{7\\pi}{4}",  dStr: "315°", ld: 50 },
+            { deg: 330, tex: "\\frac{11\\pi}{6}", dStr: "330°", ld: 26 },
+        ];
+
+        function initApp() {
+            if (typeof p5 === 'undefined') { setTimeout(initApp, 100); return; }
+
+            // ── FIX②: canvas-area のサイズに合わせてcanvasをスケール ──
+            scaleCanvasArea();
+            window.addEventListener('resize', scaleCanvasArea);
+
+            new p5(function(p) {
+                p5ref = p;
+                p.setup = function() {
+                    let canvas = p.createCanvas(size, size);
+                    canvas.parent('canvas-container');
+                    p.angleMode(p.DEGREES);
+                    
+                    // ── FIX①: innerHTML=""でcanvasを消さない ──
+                    createHtmlLabels();
+                    calculateAngles();
+                    syncSliders();
+                    triggerMathUpdate();
+                };
+
+                p.draw = function() {
+                    p.background(255);
+                    p.stroke('#cbd5e1'); p.strokeWeight(1);
+                    p.line(0, cy, p.width, cy); p.line(cx, 0, cx, p.height);
+
+                    p.noFill(); p.stroke('#334155'); p.strokeWeight(3);
+                    p.ellipse(cx, cy, r*2, r*2);
+
+                    for (let fa of famousAngles) {
+                        let deg = fa.deg;
+                        p.stroke('#cbd5e1'); p.strokeWeight(1);
+                        p.drawingContext.setLineDash([3, 3]);
+                        p.line(cx, cy, cx + r * p.cos(-deg), cy + r * p.sin(-deg));
+                        p.drawingContext.setLineDash([]);
+                    }
+
+                    if (currentMode === 'sin') {
+                        let gy = cy - r * targetValue;
+                        p.stroke('#c084fc'); p.strokeWeight(2); p.line(cx - r, gy, cx + r, gy);
+                    } else {
+                        let gx = cx + r * targetValue;
+                        p.stroke('#7dd3fc'); p.strokeWeight(2); p.line(gx, cy - r, gx, cy + r);
+                    }
+
+                    drawRadiusLine(p, angle1, '#10b981'); 
+                    drawRadiusLine(p, angle2, '#ef4444'); 
+                };
+            });
+        }
+
+        // ── FIX②: canvas-area の実サイズに合わせてcanvas-containerをスケール ──
+        function scaleCanvasArea() {
+            var area = document.getElementById('canvasArea');
+            var container = document.getElementById('canvas-container');
+            var areaW = area.offsetWidth;
+            // canvas-container は 310x310 固定、canvas-area は可変
+            // canvas-area の中の描画領域（スライダー込みで350px想定）はそのままで
+            // CSS transform で縮小スケールする
+            var scale = areaW / 350;
+            container.style.transform = 'scale(' + scale + ')';
+            // sin-slider-wrapper と cos-slider-wrapper も同様にスケール
+            var sinWrap = document.querySelector('.sin-slider-wrapper');
+            var cosWrap = document.querySelector('.cos-slider-wrapper');
+            if (sinWrap) {
+                sinWrap.style.transform = 'scale(' + scale + ')';
+                sinWrap.style.transformOrigin = 'top right';
+            }
+            if (cosWrap) {
+                cosWrap.style.transform = 'scale(' + scale + ')';
+                cosWrap.style.transformOrigin = 'bottom left';
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', initApp);
+
+        function drawRadiusLine(p, deg, col) {
+            let px = cx + r * p.cos(-deg);
+            let py = cy + r * p.sin(-deg);
+            p.stroke(col); p.strokeWeight(2.5); p.line(cx, cy, px, py);
+            p.stroke(255); p.strokeWeight(1.5); p.fill(col); p.ellipse(px, py, 11, 11);
+        }
+
+        // ── FIX①: innerHTML="" の代わりに既存ラベルだけ削除 ──
+        function createHtmlLabels() {
+            var container = document.getElementById('canvas-container');
+            // canvasは消さず、.math-label だけ削除
+            var existing = container.querySelectorAll('.math-label');
+            existing.forEach(function(el) { el.remove(); });
+
+            famousAngles.forEach(function(fa, index) {
+                var el = document.createElement('div');
+                el.id = 'label-' + index;
+                el.className = 'math-label';
+                var textDist = r + fa.ld;
+                el.style.left = (cx + textDist * Math.cos(-fa.deg * Math.PI / 180)) + 'px';
+                el.style.top  = (cy + textDist * Math.sin(-fa.deg * Math.PI / 180)) + 'px';
+                container.appendChild(el);
+            });
+        }
+
+        function toggleRadDisplay() {
+            showRad = !showRad;
+            var btn = document.getElementById('radToggleBtn');
+            btn.innerText = showRad ? "🔮 弧度法：ON" : "🔮 弧度法：OFF";
+            btn.className = showRad ? "toggle-btn" : "toggle-btn off";
+            triggerMathUpdate();
+        }
+
+        function toggleDegDisplay() {
+            showDeg = !showDeg;
+            var btn = document.getElementById('degToggleBtn');
+            btn.innerText = showDeg ? "📐 度数法：ON" : "📐 度数法：OFF";
+            btn.className = showDeg ? "toggle-btn" : "toggle-btn off";
+            triggerMathUpdate();
+        }
+
+        function calculateAngles() {
+            if (currentMode === 'sin') {
+                var base = Math.asin(targetValue) * 180 / Math.PI;
+                if (base < 0) { angle1 = 180 - base; angle2 = 360 + base; }
+                else { angle1 = base; angle2 = 180 - base; }
+            } else {
+                var base2 = Math.acos(targetValue) * 180 / Math.PI;
+                angle1 = base2; angle2 = 360 - base2;
+            }
+            angle1 = (Math.round(angle1 * 10) / 10) % 360;
+            angle2 = (Math.round(angle2 * 10) / 10) % 360;
+            if (angle1 > angle2 && targetValue !== -1) { var t = angle1; angle1 = angle2; angle2 = t; }
+        }
+
+        function onSinSliderMove(val) {
+            currentMode = 'sin';
+            targetValue = Math.min(Math.max(parseFloat(val), -1), 1);
+            document.getElementById('modeStatus').innerText = "現在：🔒 sin（高さ）基準";
+            document.getElementById('modeStatus').className = "mode-indicator sin-mode";
+            calculateAngles(); syncSliders(); triggerMathUpdate();
+        }
+
+        function onCosSliderMove(val) {
+            currentMode = 'cos';
+            targetValue = Math.min(Math.max(parseFloat(val), -1), 1);
+            document.getElementById('modeStatus').innerText = "現在：🔒 cos（横幅）基準";
+            document.getElementById('modeStatus').className = "mode-indicator cos-mode";
+            calculateAngles(); syncSliders(); triggerMathUpdate();
+        }
+
+        function setTrigValue(type, val) {
+            if (type === 'sin') onSinSliderMove(val);
+            else onCosSliderMove(val);
+        }
+
+        function syncSliders() {
+            if (currentMode === 'sin') document.getElementById('vSinSlider').value = targetValue;
+            else document.getElementById('vCosSlider').value = targetValue;
+        }
+
+        function triggerMathUpdate() {
+            if (mathTimeout) clearTimeout(mathTimeout);
+            mathTimeout = setTimeout(updateMath, 30);
+        }
+
+        function convertToTexRad(deg) {
+            var d = Math.round(deg) % 360;
+            if (d === 0) return "0";
+            function gcd(a, b) { return b ? gcd(b, a % b) : a; }
+            var g = gcd(d, 180);
+            var num = d / g, den = 180 / g;
+            if (den === 1) return num === 1 ? "\\pi" : (num + "\\pi");
+            return "\\frac{" + (num === 1 ? "" : num) + "\\pi}{" + den + "}";
+        }
+
+        function updateMath() {
+            famousAngles.forEach(function(fa, index) {
+                var el = document.getElementById('label-' + index);
+                if (!el) return;
+                if (!showRad && !showDeg) { el.innerHTML = ""; return; }
+                var html = "";
+                if (showRad) html += '<div>\\(' + fa.tex + '\\)</div>';
+                if (showDeg) html += '<div class="deg-text">(' + fa.dStr + ')</div>';
+                el.innerHTML = html;
+            });
+
+            var t1 = convertToTexRad(angle1);
+            var t2 = convertToTexRad(angle2);
+            if (Math.abs(angle1 - angle2) < 0.5) {
+                document.getElementById('angleDisplay').innerHTML =
+                    '\\( \\theta = ' + t1 + ' \\, (' + Math.round(angle1) + '^\\circ) \\)';
+            } else {
+                document.getElementById('angleDisplay').innerHTML =
+                    '\\( \\theta_1 = ' + t1 + ' \\, (' + Math.round(angle1) + '^\\circ) \\)<br>' +
+                    '\\( \\theta_2 = ' + t2 + ' \\, (' + Math.round(angle2) + '^\\circ) \\)';
+            }
+
+            var absV = Math.abs(targetValue);
+            var valStr = targetValue.toFixed(3);
+            if (absV > 0.49 && absV < 0.51) valStr = targetValue > 0 ? "\\frac{1}{2}" : "-\\frac{1}{2}";
+            else if (absV > 0.70 && absV < 0.72) valStr = targetValue > 0 ? "\\frac{\\sqrt{2}}{2}" : "-\\frac{\\sqrt{2}}{2}";
+            else if (absV > 0.86 && absV < 0.87) valStr = targetValue > 0 ? "\\frac{\\sqrt{3}}{2}" : "-\\frac{\\sqrt{3}}{2}";
+            else if (absV >= 0.9999) valStr = targetValue > 0 ? "1" : "-1";
+            else if (absV < 0.001) valStr = "0";
+
+            var fnStr = currentMode === 'sin' ? '\\sin\\theta' : '\\cos\\theta';
+            document.getElementById('valuesDisplay').innerHTML = '\\(' + fnStr + ' = ' + valStr + '\\)';
+
+            // MathJax v3 の正しい呼び出し方
+            if (window.MathJax && MathJax.typesetPromise) {
+                MathJax.typesetPromise().catch(function(e) { console.warn(e); });
+            } else if (window.MathJax && MathJax.typeset) {
+                MathJax.typeset();
+            }
+        }
+    </script>
+</body>
+</html>
