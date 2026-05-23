@@ -1275,6 +1275,209 @@ function renderDetailHistory(tab) {
     loadPointLogs(detailStudent.id, 'detail-point-logs');
   }
 }
+
+// ===== 画面復帰時の自動チェックイン完了 =====
+async function checkResumeCheckin() {
+  if (!currentStudent) return;
+  const savedStart = localStorage.getItem('fit_checkin_start');
+  const savedId = localStorage.getItem('fit_checkin_student_id');
+  if (!savedStart || !savedId) return;
+  if (savedId !== currentStudent.id) return;
+  const today = getTodayJSTString();
+  if (allCheckins.includes(today)) {
+    localStorage.removeItem('fit_checkin_start');
+    localStorage.removeItem('fit_checkin_student_id');
+    return;
+  }
+  const elapsed = Date.now() - parseInt(savedStart);
+  const totalMs = CHECKIN_MINUTES * 60 * 1000;
+  if (elapsed >= totalMs) {
+    checkinStartTime = parseInt(savedStart);
+    const box = document.getElementById('countdown-box');
+    if (box) box.style.display = 'none';
+    showToast('⏱ 30分経過！ポイントを付与します', 'info');
+    await confirmCheckin();
+  } else {
+    checkinStartTime = parseInt(savedStart);
+    const remaining = totalMs - elapsed;
+    const mins = Math.floor(remaining / 60000);
+    const secs = Math.floor((remaining % 60000) / 1000);
+    const btn = document.getElementById('checkin-btn');
+    if (btn) btn.style.display = 'none';
+    const box = document.getElementById('countdown-box');
+    if (box) {
+      box.style.display = 'block';
+      const timer = document.getElementById('countdown-timer');
+      if (timer) timer.textContent = String(mins).padStart(2,'0') + ':' + String(secs).padStart(2,'0');
+    }
+    showToast('⏱ カウントダウン再開（残り' + mins + '分）', 'info');
+    if (!checkinInterval) {
+      checkinInterval = setInterval(function() {
+        const s = localStorage.getItem('fit_checkin_start');
+        if (s) checkinStartTime = parseInt(s);
+        const el2 = Date.now() - checkinStartTime;
+        const rem = Math.max(0, totalMs - el2);
+        const m = Math.floor(rem / 60000);
+        const sc = Math.floor((rem % 60000) / 1000);
+        const prog = (el2 / totalMs) * 100;
+        const timerEl = document.getElementById('countdown-timer');
+        const barEl = document.getElementById('countdown-bar');
+        if (timerEl) timerEl.textContent = String(m).padStart(2,'0') + ':' + String(sc).padStart(2,'0');
+        if (barEl) barEl.style.width = Math.min(prog, 100) + '%';
+        if (rem <= 0) { clearInterval(checkinInterval); checkinInterval = null; confirmCheckin(); }
+      }, 1000);
+    }
+  }
+}
+
+// ===== 松山東専用メニュー =====
+function checkSchoolMenu() {
+  if (!currentStudent) return;
+  const menu = document.getElementById('higashi-menu');
+  if (!menu) return;
+  menu.style.display = currentStudent.school === '松山東' ? 'block' : 'none';
+}
+
+// ===== 単語テスト =====
+const VOCAB_SETS = [
+  { name:'セット1：基本単語', words:[
+    {en:'ability',reading:'[əbíləti]',ja:'能力・才能',ex:'She has the ability to learn quickly.'},
+    {en:'accept',reading:'[əksépt]',ja:'受け入れる',ex:'Please accept my apology.'},
+    {en:'achieve',reading:'[ətʃíːv]',ja:'達成する',ex:'You can achieve anything with effort.'},
+    {en:'affect',reading:'[əfékt]',ja:'影響を与える',ex:'The weather affects our mood.'},
+    {en:'allow',reading:'[əláu]',ja:'許可する',ex:'Please allow me to explain.'},
+    {en:'appear',reading:'[əpíər]',ja:'現れる',ex:'The sun appeared from behind the clouds.'},
+    {en:'apply',reading:'[əplái]',ja:'申し込む',ex:'I will apply for the job.'},
+    {en:'avoid',reading:'[əvɔ́id]',ja:'避ける',ex:'Try to avoid making mistakes.'},
+    {en:'benefit',reading:'[bénəfit]',ja:'利益・恩恵',ex:'Exercise has many health benefits.'},
+    {en:'cause',reading:'[kɔːz]',ja:'原因・引き起こす',ex:'What caused the accident?'},
+    {en:'consider',reading:'[kənsídər]',ja:'考慮する',ex:'Please consider my proposal.'},
+    {en:'culture',reading:'[kʌ́ltʃər]',ja:'文化',ex:'Japan has a unique culture.'},
+    {en:'demand',reading:'[dimǽnd]',ja:'要求・需要',ex:'The demand for smartphones is growing.'},
+    {en:'develop',reading:'[divéləp]',ja:'発展する',ex:'Scientists developed a new vaccine.'},
+    {en:'effect',reading:'[ifékt]',ja:'影響・効果',ex:'The medicine had a positive effect.'},
+    {en:'effort',reading:'[éfərt]',ja:'努力',ex:'Success requires great effort.'},
+    {en:'environment',reading:'[invάiərənmənt]',ja:'環境',ex:'We must protect the environment.'},
+    {en:'especially',reading:'[ispéʃəli]',ja:'特に',ex:'I love sports, especially soccer.'},
+    {en:'experience',reading:'[ikspíəriəns]',ja:'経験',ex:'Travel is a great experience.'},
+    {en:'explain',reading:'[ikspléin]',ja:'説明する',ex:'Can you explain this problem?'},
+  ]},
+  { name:'セット2：標準単語', words:[
+    {en:'significant',reading:'[signífikənt]',ja:'重要な',ex:'This is a significant discovery.'},
+    {en:'previous',reading:'[príːviəs]',ja:'前の',ex:'I learned from my previous mistakes.'},
+    {en:'attitude',reading:'[ǽtitjuːd]',ja:'態度・考え方',ex:'Your attitude determines your future.'},
+    {en:'available',reading:'[əvéiləbl]',ja:'利用できる',ex:'The service is available 24 hours.'},
+    {en:'challenge',reading:'[tʃǽlindʒ]',ja:'挑戦・困難',ex:'Life is full of challenges.'},
+    {en:'concern',reading:'[kənsə́ːrn]',ja:'心配・懸念',ex:'I have concerns about the plan.'},
+    {en:'contribute',reading:'[kəntrɪbjuːt]',ja:'貢献する',ex:'Everyone can contribute to society.'},
+    {en:'despite',reading:'[dispáit]',ja:'〜にもかかわらず',ex:'Despite the rain, we went out.'},
+    {en:'evidence',reading:'[évidəns]',ja:'証拠',ex:'There is no evidence for that claim.'},
+    {en:'global',reading:'[glóubl]',ja:'世界的な',ex:'Global warming is a serious issue.'},
+    {en:'identify',reading:'[aidéntifai]',ja:'特定する',ex:'Can you identify the problem?'},
+    {en:'ignore',reading:'[ignɔ́ːr]',ja:'無視する',ex:'Do not ignore the warning signs.'},
+    {en:'improve',reading:'[imprúːv]',ja:'改善する',ex:'Practice will improve your skills.'},
+    {en:'include',reading:'[inklúːd]',ja:'含む',ex:'The price includes tax.'},
+    {en:'increase',reading:'[inkríːs]',ja:'増加する',ex:'Sales have increased this year.'},
+    {en:'individual',reading:'[ìndivídʒuəl]',ja:'個人',ex:'Each individual is unique.'},
+    {en:'influence',reading:'[ínfluəns]',ja:'影響を与える',ex:'Music influences our emotions.'},
+    {en:'necessary',reading:'[nésəsèri]',ja:'必要な',ex:'Sleep is necessary for health.'},
+    {en:'opportunity',reading:'[ɑ̀pərtjúːnəti]',ja:'機会',ex:"Don't miss this opportunity."},
+    {en:'pollution',reading:'[pəlúːʃən]',ja:'汚染',ex:'Air pollution is a serious problem.'},
+  ]},
+  { name:'セット3：応用単語', words:[
+    {en:'adolescent',reading:'[ǽdəlèsnt]',ja:'青年・思春期の',ex:'Adolescent years are challenging.'},
+    {en:'ambiguous',reading:'[æmbígjuəs]',ja:'曖昧な',ex:'The instructions were ambiguous.'},
+    {en:'appropriate',reading:'[əpróupriət]',ja:'適切な',ex:'Choose appropriate language.'},
+    {en:'approximately',reading:'[əprɑ́ksimətli]',ja:'おおよそ',ex:'It costs approximately 1000 yen.'},
+    {en:'circumstances',reading:'[sə́ːrkəmstænsiz]',ja:'状況・事情',ex:'Under these circumstances, we must act.'},
+    {en:'consequence',reading:'[kɑ́nsikwèns]',ja:'結果・影響',ex:'Think about the consequences.'},
+    {en:'contemporary',reading:'[kəntémpərèri]',ja:'現代の',ex:'Contemporary art is fascinating.'},
+    {en:'controversy',reading:'[kɑ́ntrəvə̀ːrsi]',ja:'論争',ex:'The issue caused controversy.'},
+    {en:'elaborate',reading:'[ilǽbərət]',ja:'詳細な',ex:'She gave an elaborate explanation.'},
+    {en:'enormous',reading:'[inɔ́ːrməs]',ja:'巨大な',ex:'The company made an enormous profit.'},
+    {en:'fundamental',reading:'[fʌ̀ndəméntl]',ja:'基本的な',ex:'Freedom is a fundamental right.'},
+    {en:'inevitable',reading:'[inévitəbl]',ja:'避けられない',ex:'Change is inevitable.'},
+    {en:'phenomenon',reading:'[finɑ́mənɑ̀n]',ja:'現象',ex:'Lightning is a natural phenomenon.'},
+    {en:'perceive',reading:'[pərsíːv]',ja:'知覚する',ex:'How do you perceive this situation?'},
+    {en:'prevalent',reading:'[prévələnt]',ja:'普及している',ex:'Smartphones are prevalent nowadays.'},
+    {en:'profound',reading:'[prəfáund]',ja:'深い',ex:'She has a profound understanding.'},
+    {en:'sufficient',reading:'[səfíʃənt]',ja:'十分な',ex:'Is this sufficient for you?'},
+    {en:'sustainable',reading:'[səstéinəbl]',ja:'持続可能な',ex:'We need sustainable development.'},
+    {en:'tremendous',reading:'[triméndəs]',ja:'莫大な',ex:'She made tremendous progress.'},
+    {en:'underlying',reading:'[ʌ̀ndərláiiŋ]',ja:'根底にある',ex:'What is the underlying cause?'},
+  ]}
+];
+
+let vCurrentSet=0,vCurrentIndex=0,vCorrect=0,vWrong=0,vWrongWords=[],vShuffled=[],vFlipped=false;
+
+function openVocabTest(){
+  const el=document.getElementById('screen-vocab');
+  el.style.display='flex';
+  document.getElementById('vocab-menu').style.display='flex';
+  document.getElementById('vocab-flashcard').style.display='none';
+  document.getElementById('vocab-result').style.display='none';
+}
+function closeVocabTest(){ document.getElementById('screen-vocab').style.display='none'; }
+function startVocabTest(setIdx){
+  vCurrentSet=setIdx; vCurrentIndex=0; vCorrect=0; vWrong=0; vWrongWords=[];
+  vShuffled=[...VOCAB_SETS[setIdx].words].sort(()=>Math.random()-0.5);
+  document.getElementById('vocab-menu').style.display='none';
+  document.getElementById('vocab-result').style.display='none';
+  document.getElementById('vocab-flashcard').style.display='flex';
+  vShowCard();
+}
+function vShowCard(){
+  const w=vShuffled[vCurrentIndex],total=vShuffled.length;
+  document.getElementById('v-flashcard').style.transform='rotateY(0deg)'; vFlipped=false;
+  document.getElementById('v-action-btns').style.display='none';
+  document.getElementById('v-flip-hint').style.display='block';
+  document.getElementById('v-word').textContent=w.en;
+  document.getElementById('v-reading').textContent=w.reading;
+  document.getElementById('v-meaning').textContent=w.ja;
+  document.getElementById('v-example').textContent=w.ex;
+  document.getElementById('v-progress-bar').style.width=(vCurrentIndex/total*100)+'%';
+  document.getElementById('v-progress-text').textContent=(vCurrentIndex+1)+' / '+total;
+  document.getElementById('v-score-text').textContent='✅ '+vCorrect+'　❌ '+vWrong;
+}
+function vFlipCard(){
+  if(vFlipped)return; vFlipped=true;
+  document.getElementById('v-flashcard').style.transform='rotateY(180deg)';
+  document.getElementById('v-flip-hint').style.display='none';
+  document.getElementById('v-action-btns').style.display='grid';
+}
+function vAnswer(correct){
+  const w=vShuffled[vCurrentIndex];
+  if(correct)vCorrect++; else{vWrong++;vWrongWords.push(w);}
+  vCurrentIndex++;
+  if(vCurrentIndex>=vShuffled.length)vShowResult(); else vShowCard();
+}
+function vShowResult(){
+  const total=vShuffled.length,score=Math.round(vCorrect/total*100);
+  const pts=Math.round(vCorrect*(10/total)*10)/10;
+  const icons=['📚','📚','😊','🎉','🏆'];
+  const icon=score>=90?'🏆':score>=70?'🎉':score>=50?'😊':'📚';
+  const title=score>=90?'完璧です！':score>=70?'よくできました！':score>=50?'もう少し！':'復習しよう！';
+  document.getElementById('v-result-icon').textContent=icon;
+  document.getElementById('v-result-title').textContent=title;
+  document.getElementById('v-result-score').textContent=score;
+  document.getElementById('v-result-sub').textContent='点（'+vCorrect+'/'+total+'問正解）';
+  document.getElementById('v-correct-num').textContent=vCorrect;
+  document.getElementById('v-wrong-num').textContent=vWrong;
+  document.getElementById('v-pts').textContent='+'+pts.toFixed(1)+' pt';
+  if(vWrongWords.length===0){document.getElementById('v-wrong-section').style.display='none';}
+  else{
+    document.getElementById('v-wrong-section').style.display='block';
+    document.getElementById('v-wrong-list').innerHTML=vWrongWords.map(w=>
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--red-l);border-left:3px solid var(--red);border-radius:var(--radius-sm)">'+
+      '<div style="font-weight:500;font-size:13px">'+w.en+'</div>'+
+      '<div style="color:var(--red);font-size:13px">'+w.ja+'</div></div>'
+    ).join('');
+  }
+  document.getElementById('vocab-flashcard').style.display='none';
+  document.getElementById('vocab-result').style.display='flex';
+}
+
+
 </script>
 </body>
 </html>
