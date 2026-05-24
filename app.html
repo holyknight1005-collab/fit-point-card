@@ -581,7 +581,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <!-- 問題 -->
     <div style="background:#fff;border:2px solid #C8A0D8;border-radius:16px;padding:20px;text-align:center">
       <div style="font-size:12px;color:#7A7770;margin-bottom:10px">次の式を平方完成してください</div>
-      <div id="m-question" style="font-size:22px;font-weight:700;color:#2C2C2A;line-height:1.4"></div>
+      <div id="m-question" style="font-size:24px;font-weight:700;color:#2C2C2A;line-height:1.5;font-family:STIX Two Math,Cambria Math,Georgia,Times New Roman,serif"></div>
       <div style="font-size:12px;color:#7A7770;margin-top:10px">y = a(x - p)² + q の形に変形</div>
     </div>
 
@@ -1739,99 +1739,123 @@ function closeMathTest(){
 
 // 分数を約分して文字列に
 function gcd(a,b){ return b===0?Math.abs(a):gcd(b,a%b); }
-function frac(n,d){
-  if(d===0)return '?';
+
+// 縦並び分数HTML
+function fracHTML(n,d){
   if(n===0)return '0';
   const g=gcd(Math.abs(n),Math.abs(d));
-  const nn=n/g, dd=d/g;
-  if(dd<0){return frac(-nn,-dd);}
+  let nn=n/g, dd=d/g;
+  if(dd<0){nn=-nn;dd=-dd;}
   if(dd===1)return String(nn);
-  return nn+'/'+dd;
+  return '<span style="display:inline-flex;flex-direction:column;align-items:center;vertical-align:middle;font-size:0.82em;line-height:1.2;margin:0 1px">'+
+    '<span style="border-bottom:1.5px solid currentColor;padding:0 3px;text-align:center">'+nn+'</span>'+
+    '<span style="padding:0 3px;text-align:center">'+dd+'</span>'+
+  '</span>';
 }
-function fracVal(n,d){ return n/d; }
 
-// 平方完成を計算
-// y = ax² + bx + c → y = a(x + b/2a)² + c - b²/4a
+// 平方完成：y=ax²+bx+c → y=a(𝑥+p)²+q
 function completeSquare(a,b,c){
-  // p = -b/(2a), q = c - b²/(4a)
-  const pNum = b, pDen = 2*a;       // y = a(x + b/2a)² + q
-  const g1 = gcd(Math.abs(pNum),Math.abs(pDen));
-  const pN = pNum/g1, pD = pDen/g1;
-  const pVal = pN/pD;               // x - p の p
-
-  // q = c - b²/(4a) = (4ac - b²)/(4a)
-  const qNum = 4*a*c - b*b, qDen = 4*a;
-  const g2 = gcd(Math.abs(qNum),Math.abs(qDen));
-  const qN = qNum/g2, qD = qDen/g2;
-  const qVal = qN/qD;
-
-  return {a, pN, pD, pVal, qN, qD, qVal};
+  const pNum=b, pDen=2*a;
+  const g1=gcd(Math.abs(pNum),Math.abs(pDen));
+  let pN=pNum/g1, pD=pDen/g1;
+  if(pD<0){pN=-pN;pD=-pD;}
+  const qNum=4*a*c-b*b, qDen=4*a;
+  const g2=gcd(Math.abs(qNum),Math.abs(qDen));
+  let qN=qNum/g2, qD=qDen/g2;
+  if(qD<0){qN=-qN;qD=-qD;}
+  return {a,pN,pD,qN,qD};
 }
 
-// 答えの文字列表現
-function ansStr(res){
-  const {a, pN, pD, pVal, qN, qD, qVal} = res;
-  let aStr = a===1?'':a===-1?'-':String(a);
+// 答えのHTML
+function ansHTML(res){
+  const {a,pN,pD,qN,qD}=res;
+  let aStr=a===1?'':a===-1?'-':String(a);
   let xStr;
-  if(pN===0){ xStr='<i>x</i>'; }
-  else if(pD===1){
-    xStr = pN>0 ? '(<i>x</i>+'+pN+')' : '(<i>x</i>'+pN+')';
+  if(pN===0){
+    xStr='𝑥';
   } else {
-    const ps = pN>0?'+'+pN+'/'+pD:pN+'/'+pD;
-    xStr='(<i>x</i>'+ps+')';
+    const pF=fracHTML(Math.abs(pN),pD);
+    const sign=pN>0?'+':'-';
+    xStr='(𝑥'+sign+pF+')';
   }
-  let qStr;
-  if(qD===1){ qStr = qN>=0?'+'+qN:String(qN); }
-  else { qStr = qN>=0?'+'+qN+'/'+qD:qN+'/'+qD; }
-  if(qN===0) qStr='';
-  return 'y='+aStr+xStr+'²'+qStr;
+  let qStr='';
+  if(qN!==0){
+    const qF=fracHTML(Math.abs(qN),qD);
+    qStr=(qN>0?'+':'-')+qF;
+  }
+  return '𝑦='+aStr+xStr+'²'+qStr;
+}
+
+// 答えの一意キー（比較用）
+function ansKey(res){
+  return res.a+'|'+res.pN+'|'+res.pD+'|'+res.qN+'|'+res.qD;
 }
 
 // 問題生成
 function makeQuestion(level){
   let a,b,c;
   if(level===1){
-    // 基本：a=1, b偶数, c小さめ → 答えが整数になる
+    // Q1,Q2：a=1, b偶数 → 整数答え
     a=1;
-    b=[-4,-2,2,4,6,-6][Math.floor(Math.random()*6)];
-    c=Math.floor(Math.random()*10)-3;
+    const bL1=[-6,-4,-2,2,4,6];
+    b=bL1[Math.floor(Math.random()*bL1.length)];
+    c=Math.floor(Math.random()*9)-4;
+  } else if(level===2){
+    // Q3：a=1, b奇数 → 分数答え
+    a=1;
+    const bL2=[-5,-3,-1,1,3,5,7,-7];
+    b=bL2[Math.floor(Math.random()*bL2.length)];
+    c=Math.floor(Math.random()*11)-4;
   } else {
-    // 標準：a=1 or 2, b奇数OK, 答えが分数になることも
-    a=[1,1,1,2,-1][Math.floor(Math.random()*5)];
-    if(a===0)a=1;
-    b=Math.floor(Math.random()*10)-5;
-    if(b===0)b=2;
-    c=Math.floor(Math.random()*14)-5;
+    // Q4,Q5：a=2 or 3、bを2aの倍数にして整数答え
+    a=[2,2,3,2,3][Math.floor(Math.random()*5)];
+    const mult=(Math.floor(Math.random()*3)+1)*(Math.random()<0.5?1:-1);
+    b=mult*2*a;
+    c=Math.floor(Math.random()*13)-5;
   }
-  const res=completeSquare(a,b,c);
-  const correct=ansStr(res);
 
-  // ダミー選択肢（pかqをずらす）
-  const dummies=new Set();
-  dummies.add(correct);
-  const offsets=[-2,-1,1,2,3,-3];
-  while(dummies.size<4){
-    const o1=offsets[Math.floor(Math.random()*offsets.length)];
-    const o2=offsets[Math.floor(Math.random()*offsets.length)];
-    const fake=completeSquare(a,b+o1,c+o2);
-    const fs=ansStr(fake);
-    if(fs!==correct) dummies.add(fs);
+  const correctRes=completeSquare(a,b,c);
+  const correctKey=ansKey(correctRes);
+  const correctH=ansHTML(correctRes);
+
+  // ダミー生成
+  const usedKeys=new Set([correctKey]);
+  const choiceHTMLs=[correctH];
+  const offs=[-3,-2,-1,1,2,3];
+  let tries=0;
+  while(choiceHTMLs.length<4 && tries<60){
+    tries++;
+    const o1=offs[Math.floor(Math.random()*offs.length)];
+    const o2=offs[Math.floor(Math.random()*offs.length)];
+    const fb=level<3?b+o1*2:b+o1*2*a;
+    const fc=c+o2;
+    const fRes=completeSquare(a,fb,fc);
+    const fKey=ansKey(fRes);
+    if(!usedKeys.has(fKey)){
+      usedKeys.add(fKey);
+      choiceHTMLs.push(ansHTML(fRes));
+    }
   }
-  const choices=[...dummies].sort(()=>Math.random()-0.5);
+  const choices=choiceHTMLs.sort(()=>Math.random()-0.5);
 
-  // 問題文
-  let qStr='y=';
+  // 問題文HTML
+  let qStr='𝑦=';
   if(a!==1&&a!==-1)qStr+=a;
   if(a===-1)qStr+='-';
-  qStr+='<i>x</i>²';
-  if(b>0)qStr+='+'+b+'<i>x</i>';
-  else if(b<0)qStr+=b+'<i>x</i>';
+  qStr+='𝑥²';
+  if(b>0)qStr+='+'+b+'𝑥';
+  else if(b<0)qStr+=b+'𝑥';
   if(c>0)qStr+='+'+c;
   else if(c<0)qStr+=c;
 
-  return {question:qStr, choices, correct, res, level,
-    timeLimit: level===1?20:60,
-    explanation: qStr + '  →  ' + correct};
+  return {
+    question:qStr,
+    choices,
+    correct:correctH,
+    level,
+    timeLimit:level===1?20:60,
+    explanation:qStr+'　＝　'+correctH
+  };
 }
 
 function startMathTest(){
@@ -1839,7 +1863,10 @@ function startMathTest(){
   mIdx=0; mOK=0; mNG=0; mHistory=[];
   mQuestions=[];
   // Q1,Q2: level1, Q3-5: level2
-  for(let i=0;i<5;i++) mQuestions.push(makeQuestion(i<2?1:2));
+  for(let i=0;i<5;i++){
+    const lv = i<2?1:i===2?2:3;
+    mQuestions.push(makeQuestion(lv));
+  }
   document.getElementById('math-start').style.display='none';
   document.getElementById('math-result').style.display='none';
   document.getElementById('math-quiz').style.display='flex';
@@ -1861,7 +1888,7 @@ function mShowQ(){
   q.choices.forEach(c=>{
     const btn=document.createElement('button');
     btn.innerHTML=c;
-    btn.style.cssText='width:100%;padding:13px;background:#fff;border:1.5px solid #C8A0D8;border-radius:10px;font-size:13px;font-weight:500;color:#2C2C2A;cursor:pointer;text-align:left;display:block;font-family:DM Mono,monospace';
+    btn.style.cssText='width:100%;padding:13px;background:#fff;border:1.5px solid #C8A0D8;border-radius:10px;font-size:15px;font-weight:500;color:#2C2C2A;cursor:pointer;text-align:left;display:block;font-family:STIX Two Math,Cambria Math,Georgia,Times New Roman,serif';
     btn.onclick=()=>mAnswer(c===q.correct,btn,q.correct);
     cont.appendChild(btn);
   });
@@ -1961,7 +1988,7 @@ async function mShowResult(){
     const icon=h.ok?'✅':'❌';
     return '<div style="background:'+color+';border-left:3px solid '+border+';border-radius:8px;padding:10px 12px">'+
       '<div style="font-size:11px;color:#7A7770;margin-bottom:4px">問題'+(i+1)+'　'+icon+(h.timeout?' 時間切れ':'')+'</div>'+
-      '<div style="font-family:DM Mono,monospace;font-size:12px;color:#2C2C2A">'+h.q.explanation+'</div>'+
+      '<div style="font-size:13px;color:#2C2C2A;font-family:STIX Two Math,Georgia,Times New Roman,serif">'+h.q.explanation+'</div>'+
     '</div>';
   }).join('');
 
