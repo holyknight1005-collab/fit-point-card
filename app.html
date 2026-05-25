@@ -1001,6 +1001,8 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
           <select class="form-select" id="mg-quiz-class"><option value="">授業を選択してください</option></select></div>
         <div><div class="form-label">テスト名</div>
           <input class="form-input-sm" id="mg-quiz-title" type="text" placeholder="例：二次関数の復習テスト"></div>
+        <div><div class="form-label">単元・内容のメモ（AI生成に使用）</div>
+          <textarea id="mg-quiz-topic" placeholder="例：二次関数の平方完成、頂点の求め方、グラフの特徴" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;height:60px;resize:none;font-family:Noto Sans JP,sans-serif"></textarea></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
           <div><div class="form-label">合格ライン(%)</div>
             <input class="form-input-sm" id="mg-quiz-pass" type="number" value="80"></div>
@@ -1008,6 +1010,36 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
             <input class="form-input-sm" id="mg-quiz-pts" type="number" value="5"></div>
         </div>
         <button class="form-btn" onclick="createQuiz()">テストを作成する</button>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:-4px">
+          <div style="flex:1;height:1px;background:var(--border)"></div>
+          <span style="font-size:11px;color:var(--muted)">または</span>
+          <div style="flex:1;height:1px;background:var(--border)"></div>
+        </div>
+        <!-- 画像アップロード -->
+        <div style="border:2px dashed #C4B5FD;border-radius:var(--radius-sm);padding:14px;text-align:center;cursor:pointer;background:#FAFAFF" onclick="document.getElementById('mg-quiz-image').click()">
+          <div style="font-size:24px;margin-bottom:4px">📷</div>
+          <div style="font-size:13px;font-weight:700;color:#5436DA">プリント写真をアップロード</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">タップして写真を選択（任意）</div>
+          <input type="file" id="mg-quiz-image" accept="image/*" capture="environment" style="display:none" onchange="previewQuizImage(event)">
+        </div>
+        <!-- 画像プレビュー -->
+        <div id="mg-image-preview-wrap" style="display:none;position:relative">
+          <img id="mg-image-preview" style="width:100%;border-radius:var(--radius-sm);border:1px solid var(--border)">
+          <button onclick="clearQuizImage()" style="position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.5);border:none;color:white;border-radius:50%;width:28px;height:28px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">×</button>
+        </div>
+        <button onclick="createQuizWithAI()" style="width:100%;padding:13px;background:linear-gradient(135deg,#5436DA,#3B1FA8);border:none;border-radius:var(--radius-sm);color:white;font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;font-family:Noto Sans JP,sans-serif">
+          <span style="font-size:18px">✨</span> AIで問題を自動生成
+        </button>
+        <!-- AI生成プレビュー -->
+        <div id="ai-preview" style="display:none;flex-direction:column;gap:8px">
+          <div style="font-size:12px;font-weight:700;color:#5436DA;display:flex;align-items:center;gap:6px">
+            <span>✨ AI生成プレビュー</span>
+            <span style="font-size:10px;background:#EDE9FE;padding:2px 8px;border-radius:20px">確認して保存してください</span>
+          </div>
+          <div id="ai-questions-preview" style="display:flex;flex-direction:column;gap:8px"></div>
+          <button onclick="saveAIQuestions()" style="width:100%;padding:12px;background:linear-gradient(135deg,#5436DA,#3B1FA8);border:none;border-radius:var(--radius-sm);color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:Noto Sans JP,sans-serif">✅ この問題を保存する</button>
+          <button onclick="createQuizWithAI()" style="width:100%;padding:10px;background:transparent;border:1.5px solid #5436DA;border-radius:var(--radius-sm);color:#5436DA;font-size:13px;cursor:pointer;font-family:Noto Sans JP,sans-serif">🔄 再生成する</button>
+        </div>
       </div>
 
       <div id="mg-question-section" style="display:none;flex-direction:column;gap:10px">
@@ -3866,6 +3898,194 @@ async function selectExistingQuiz(id) {
 
 </script>
 
+
+
+// ===== AI問題自動生成 =====
+let aiGeneratedQuestions = [];
+
+let quizImageBase64 = null;
+let quizImageType = 'image/jpeg';
+
+function previewQuizImage(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  quizImageType = file.type || 'image/jpeg';
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const dataUrl = e.target.result;
+    quizImageBase64 = dataUrl.split(',')[1];
+    document.getElementById('mg-image-preview').src = dataUrl;
+    document.getElementById('mg-image-preview-wrap').style.display = 'block';
+    showToast('📷 画像を読み込みました', 'success');
+  };
+  reader.readAsDataURL(file);
+}
+
+function clearQuizImage() {
+  quizImageBase64 = null;
+  document.getElementById('mg-image-preview-wrap').style.display = 'none';
+  document.getElementById('mg-quiz-image').value = '';
+  showToast('画像を削除しました', 'info');
+}
+
+async function createQuizWithAI() {
+  const classId = document.getElementById('mg-quiz-class').value;
+  const title = document.getElementById('mg-quiz-title').value.trim();
+  const topic = document.getElementById('mg-quiz-topic').value.trim();
+  const sel = document.getElementById('mg-quiz-class');
+  const className = sel.options[sel.selectedIndex]?.text || '';
+
+  if (!classId) { showToast('授業を選択してください', 'error'); return; }
+  if (!title) { showToast('テスト名を入力してください', 'error'); return; }
+  if (!topic && !quizImageBase64) { showToast('単元メモかプリント画像を入力してください', 'error'); return; }
+
+  showLoading('AIが問題を生成中...✨');
+
+  const jsonFormat = `必ず以下のJSON形式のみで返してください（他のテキストは一切不要）：
+{
+  "questions": [
+    {
+      "question": "問題文",
+      "choice_a": "選択肢A",
+      "choice_b": "選択肢B",
+      "choice_c": "選択肢C",
+      "choice_d": "選択肢D",
+      "correct": "a",
+      "explanation": "解説文"
+    }
+  ]
+}`;
+
+  // メッセージ構築（画像あり・なし両方対応）
+  let userContent;
+  if (quizImageBase64) {
+    const textPart = {
+      type: 'text',
+      text: `あなたは塾の先生です。添付の授業プリントを読み取り、復習テストを作成してください。
+
+授業名：${className}
+テスト名：${title}
+${topic ? '補足メモ：' + topic : ''}
+
+プリントの内容を元に、5問の4択問題を作成してください：
+- 高校生レベルの適切な難易度
+- プリントに書かれた内容・例題・解説から出題
+- 選択肢はA〜Dの4つ、正解は1つ
+- 簡潔な解説を付ける
+
+${jsonFormat}`
+    };
+    const imagePart = {
+      type: 'image',
+      source: { type: 'base64', media_type: quizImageType, data: quizImageBase64 }
+    };
+    userContent = [imagePart, textPart];
+  } else {
+    userContent = `あなたは塾の先生です。以下の授業の復習テストを5問作成してください。
+
+授業名：${className}
+テスト名：${title}
+単元・内容：${topic}
+
+条件：
+- 高校生レベルの適切な難易度
+- 選択肢A〜Dの4択、正解は1つ
+- 簡潔な解説付き
+
+${jsonFormat}`;
+  }
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 2000,
+        messages: [{ role: 'user', content: userContent }]
+      })
+    });
+
+    const data = await res.json();
+    const text = data.content?.[0]?.text || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('生成に失敗しました。もう一度試してください');
+    const parsed = JSON.parse(jsonMatch[0]);
+    aiGeneratedQuestions = parsed.questions || [];
+    hideLoading();
+    if (aiGeneratedQuestions.length === 0) { showToast('問題の生成に失敗しました', 'error'); return; }
+    renderAIPreview();
+    document.getElementById('ai-preview').style.display = 'flex';
+    document.getElementById('ai-preview').style.flexDirection = 'column';
+    document.getElementById('ai-preview').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    showToast('✨ ' + aiGeneratedQuestions.length + '問生成しました！', 'success');
+  } catch(e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
+}
+
+function renderAIPreview() {
+  const choiceLabels = { a: 'A', b: 'B', c: 'C', d: 'D' };
+  document.getElementById('ai-questions-preview').innerHTML = aiGeneratedQuestions.map((q, i) =>
+    '<div style="background:var(--surface);border:1.5px solid #C4B5FD;border-radius:var(--radius-sm);padding:12px">' +
+      '<div style="font-size:12px;font-weight:700;color:#5436DA;margin-bottom:6px">Q' + (i+1) + '</div>' +
+      '<div style="font-size:13px;font-weight:500;color:var(--text);margin-bottom:8px">' + q.question + '</div>' +
+      ['a','b','c','d'].map(k => {
+        const isCorrect = q.correct === k;
+        return '<div style="font-size:12px;padding:5px 8px;border-radius:6px;margin-bottom:3px;' +
+          (isCorrect ? 'background:#EAF5E1;color:#3B6D11;font-weight:700' : 'color:var(--muted)') + '">' +
+          (isCorrect ? '✅ ' : '') + choiceLabels[k] + '．' + (q['choice_' + k] || '') + '</div>';
+      }).join('') +
+      (q.explanation ? '<div style="font-size:11px;color:var(--muted);margin-top:6px;padding:6px 8px;background:var(--surface2);border-radius:6px">💡 ' + q.explanation + '</div>' : '') +
+    '</div>'
+  ).join('');
+}
+
+async function saveAIQuestions() {
+  const classId = document.getElementById('mg-quiz-class').value;
+  const title = document.getElementById('mg-quiz-title').value.trim();
+  const pass = parseInt(document.getElementById('mg-quiz-pass').value) || 80;
+  const pts = parseInt(document.getElementById('mg-quiz-pts').value) || 5;
+  if (!classId || !title) { showToast('授業とテスト名を確認してください', 'error'); return; }
+  showLoading('保存中...');
+  try {
+    // テスト作成
+    const result = await sbPost('class_quizzes', { class_id: classId, title, pass_score: pass, points: pts, is_active: true });
+    const quizId = result?.[0]?.id;
+    if (!quizId) throw new Error('テストIDが取得できませんでした');
+    mgCurrentQuizId = quizId;
+
+    // 問題を一括保存
+    for (let i = 0; i < aiGeneratedQuestions.length; i++) {
+      const q = aiGeneratedQuestions[i];
+      await sbPost('quiz_questions', {
+        quiz_id: quizId,
+        question: q.question,
+        q_type: 'choice',
+        choice_a: q.choice_a || '',
+        choice_b: q.choice_b || '',
+        choice_c: q.choice_c || '',
+        choice_d: q.choice_d || '',
+        correct: q.correct,
+        explanation: q.explanation || '',
+        order_num: i + 1
+      });
+    }
+
+    hideLoading();
+    showToast('✅ ' + aiGeneratedQuestions.length + '問を保存しました！', 'success');
+    document.getElementById('ai-preview').style.display = 'none';
+    document.getElementById('mg-question-section').style.display = 'flex';
+    document.getElementById('mg-question-section').style.flexDirection = 'column';
+    aiGeneratedQuestions = [];
+    loadMgQuizzes();
+    loadMgQuestionList();
+  } catch(e) {
+    hideLoading();
+    showToast('保存エラー: ' + e.message, 'error');
+  }
+}
 
 </body>
 </html>
