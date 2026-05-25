@@ -453,10 +453,28 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       </div>
     </div>
 
+    <!-- 勉強時間 週別・月別 -->
+    <div>
+      <div class="section-title">📊 勉強時間集計</div>
+      <div class="card-box" style="padding:12px">
+        <div class="tab-bar" style="margin-bottom:10px">
+          <button class="tab-btn active" onclick="switchStudySummaryTab('week',this)">週別</button>
+          <button class="tab-btn" onclick="switchStudySummaryTab('month',this)">月別</button>
+        </div>
+        <div id="detail-study-summary-list" style="display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+    </div>
+
     <!-- テスト結果 -->
     <div>
       <div class="section-title">📝 復習テスト結果</div>
       <div id="detail-quiz-logs" style="display:flex;flex-direction:column;gap:6px"></div>
+    </div>
+
+    <!-- 数学テスト（松山北） -->
+    <div id="detail-math-section" style="display:none">
+      <div class="section-title">📐 数学テスト記録（平方完成）</div>
+      <div id="detail-math-logs" style="display:flex;flex-direction:column;gap:6px"></div>
     </div>
 
     <!-- ミッション達成 -->
@@ -1896,6 +1914,13 @@ function renderDetailHistory(tab) {
     loadDetailQuizLogs();
     loadDetailMissionLogs();
     loadDetailVocabLogs();
+    loadDetailStudySummary('week');
+    if (detailStudent.school === '松山北') {
+      document.getElementById('detail-math-section').style.display = 'block';
+      loadDetailMathLogs();
+    } else {
+      document.getElementById('detail-math-section').style.display = 'none';
+    }
   }
 }
 
@@ -2510,14 +2535,22 @@ async function mShowResult(){
   document.getElementById('math-result').style.display='flex';
   document.getElementById('math-header').textContent='テスト結果';
 
-  // ポイント付与
-  if(perfect && currentStudent){
+  // ポイント付与 & ログ保存
+  if(currentStudent){
     try{
-      const newPts=currentStudent.points+1;
-      await sbPatch('students','id=eq.'+currentStudent.id,{points:newPts});
-      currentStudent.points=newPts;
-      document.getElementById('student-points').textContent=newPts.toLocaleString();
-      showToast('🏆 全問正解！+1pt獲得！','success');
+      // 数学テストログを保存
+      await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/math_logs', {
+        method:'POST',
+        headers:{'apikey':'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU','Authorization':'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU','Content-Type':'application/json','Prefer':'return=minimal'},
+        body:JSON.stringify({student_id:currentStudent.id,correct_count:mOK,total_count:5,perfect:perfect,points_earned:pts,log_date:getTodayJST()})
+      });
+      if(perfect){
+        const newPts=currentStudent.points+1;
+        await sbPatch('students','id=eq.'+currentStudent.id,{points:newPts});
+        currentStudent.points=newPts;
+        document.getElementById('student-points').textContent=newPts.toLocaleString();
+        showToast('🏆 全問正解！+1pt獲得！','success');
+      }
     }catch(e){console.error(e);}
   }
 }
@@ -4543,6 +4576,144 @@ async function loadDetailVocabLogs() {
       '<span style="font-family:DM Mono,monospace;font-size:12px;color:var(--orange-d);font-weight:700;flex-shrink:0">+' + (l.points_earned||0) + 'pt</span>' +
     '</div>';
   }).join('');
+}
+
+
+// ===== 週別・月別勉強時間集計 =====
+let studySummaryTab = 'week';
+
+function switchStudySummaryTab(tab, el) {
+  studySummaryTab = tab;
+  document.querySelectorAll('#detail-math-section ~ div .tab-btn, .card-box .tab-btn').forEach(b => {});
+  document.querySelectorAll('[onclick*="switchStudySummaryTab"] ').forEach(b => b.classList.remove('active'));
+  if (el) el.classList.add('active');
+  loadDetailStudySummary(tab);
+}
+
+async function loadDetailStudySummary(tab) {
+  if (!detailStudent) return;
+  const el = document.getElementById('detail-study-summary-list');
+  el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center">読み込み中...</div>';
+
+  // 過去3ヶ月分取得
+  const since = new Date();
+  since.setMonth(since.getMonth() - 3);
+  const sinceStr = since.toISOString().split('T')[0];
+
+  const logs = await sbGet('study_logs', 
+    'student_id=eq.' + detailStudent.id + '&log_date=gte.' + sinceStr + '&order=log_date&select=log_date,duration_min,subject');
+
+  if (!logs || !logs.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">記録がありません</div>';
+    return;
+  }
+
+  const SUBJ_COLORS = {'英語':'#2D5FA6','国語':'#8B2020','数学':'#7B2D8B','理科':'#1A7340','社会':'#8B6020','その他':'#5A5A5A'};
+
+  if (tab === 'week') {
+    // 週ごとに集計
+    const weekMap = {};
+    logs.forEach(l => {
+      const d = new Date(l.log_date + 'T00:00:00+09:00');
+      const day = d.getDay();
+      const mondayDiff = day === 0 ? -6 : 1 - day;
+      const monday = new Date(d);
+      monday.setDate(d.getDate() + mondayDiff);
+      const key = monday.toISOString().split('T')[0];
+      if (!weekMap[key]) weekMap[key] = { total: 0, subjects: {} };
+      weekMap[key].total += l.duration_min || 0;
+      if (!weekMap[key].subjects[l.subject]) weekMap[key].subjects[l.subject] = 0;
+      weekMap[key].subjects[l.subject] += l.duration_min || 0;
+    });
+
+    const maxMin = Math.max(...Object.values(weekMap).map(w => w.total), 1);
+    el.innerHTML = Object.entries(weekMap).sort((a,b) => b[0].localeCompare(a[0])).map(([monday, data]) => {
+      const dt = new Date(monday + 'T00:00:00+09:00');
+      const sun = new Date(dt); sun.setDate(dt.getDate() + 6);
+      const label = (dt.getMonth()+1) + '/' + dt.getDate() + '〜' + (sun.getMonth()+1) + '/' + sun.getDate();
+      const pct = Math.round(data.total / maxMin * 100);
+      const h = Math.floor(data.total/60), m = data.total%60;
+      const subjStr = Object.entries(data.subjects).sort((a,b)=>b[1]-a[1])
+        .map(([s,min]) => '<span style="font-size:9px;background:' + (SUBJ_COLORS[s]||'#5A5A5A') + ';color:white;padding:1px 5px;border-radius:3px;margin-right:2px">' + s + ' ' + min + 'm</span>')
+        .join('');
+      return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px">' +
+        '<div style="display:flex;justify-content:space-between;margin-bottom:4px">' +
+          '<span style="font-size:11px;font-weight:700;color:var(--text)">' + label + '</span>' +
+          '<span style="font-family:DM Mono,monospace;font-size:11px;color:var(--green-d);font-weight:500">' + h + 'h' + m + 'm</span>' +
+        '</div>' +
+        '<div style="background:var(--surface2);border-radius:3px;height:6px;overflow:hidden;margin-bottom:5px">' +
+          '<div style="height:100%;background:var(--green-d);border-radius:3px;width:' + pct + '%"></div>' +
+        '</div>' +
+        '<div>' + subjStr + '</div>' +
+      '</div>';
+    }).join('');
+
+  } else {
+    // 月ごとに集計
+    const monthMap = {};
+    logs.forEach(l => {
+      const d = new Date(l.log_date + 'T00:00:00+09:00');
+      const key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+      if (!monthMap[key]) monthMap[key] = { total: 0, subjects: {}, days: new Set() };
+      monthMap[key].total += l.duration_min || 0;
+      monthMap[key].days.add(l.log_date);
+      if (!monthMap[key].subjects[l.subject]) monthMap[key].subjects[l.subject] = 0;
+      monthMap[key].subjects[l.subject] += l.duration_min || 0;
+    });
+
+    const maxMin = Math.max(...Object.values(monthMap).map(w => w.total), 1);
+    el.innerHTML = Object.entries(monthMap).sort((a,b) => b[0].localeCompare(a[0])).map(([key, data]) => {
+      const [y, m] = key.split('-');
+      const label = y + '年' + parseInt(m) + '月';
+      const pct = Math.round(data.total / maxMin * 100);
+      const h = Math.floor(data.total/60), min = data.total%60;
+      const subjStr = Object.entries(data.subjects).sort((a,b)=>b[1]-a[1])
+        .map(([s,min]) => '<span style="font-size:9px;background:' + (SUBJ_COLORS[s]||'#5A5A5A') + ';color:white;padding:1px 5px;border-radius:3px;margin-right:2px">' + s + ' ' + Math.floor(min/60) + 'h' + (min%60) + 'm</span>')
+        .join('');
+      return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px">' +
+        '<div style="display:flex;justify-content:space-between;margin-bottom:4px">' +
+          '<span style="font-size:12px;font-weight:700;color:var(--text)">' + label + '</span>' +
+          '<div style="text-align:right">' +
+            '<div style="font-family:DM Mono,monospace;font-size:13px;color:var(--green-d);font-weight:500">' + h + 'h' + min + 'm</div>' +
+            '<div style="font-size:9px;color:var(--muted)">' + data.days.size + '日間</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="background:var(--surface2);border-radius:3px;height:8px;overflow:hidden;margin-bottom:5px">' +
+          '<div style="height:100%;background:var(--green-d);border-radius:3px;width:' + pct + '%"></div>' +
+        '</div>' +
+        '<div>' + subjStr + '</div>' +
+      '</div>';
+    }).join('');
+  }
+}
+
+// ===== 数学テスト記録（松山北） =====
+async function loadDetailMathLogs() {
+  if (!detailStudent) return;
+  const el = document.getElementById('detail-math-logs');
+  try {
+    const logs = await sbGet('math_logs', 
+      'student_id=eq.' + detailStudent.id + '&order=created_at.desc&select=*&limit=20');
+    if (!logs || !logs.length) {
+      el.innerHTML = '<div class="card-box" style="font-size:12px;color:var(--muted);text-align:center;padding:10px">受験記録なし</div>';
+      return;
+    }
+    el.innerHTML = logs.map(l => {
+      const dt = new Date(l.log_date + 'T00:00:00+09:00');
+      const dateStr = (dt.getMonth()+1) + '/' + dt.getDate();
+      const perfect = l.perfect;
+      return '<div style="background:var(--surface);border:1px solid ' + (perfect?'#A8D891':'var(--border)') + ';border-radius:8px;padding:8px 12px;display:flex;align-items:center;gap:8px">' +
+        '<div style="width:36px;height:36px;border-radius:8px;background:' + (perfect?'#F3E8FB':'var(--surface2)') + ';display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:' + (perfect?'#7B2D8B':'var(--muted)') + ';flex-shrink:0">' + l.correct_count + '/5</div>' +
+        '<div style="flex:1">' +
+          '<div style="font-size:12px;font-weight:500;color:var(--text)">平方完成テスト</div>' +
+          '<div style="font-size:10px;color:var(--muted)">' + dateStr + (perfect?'　🏆 全問正解':'') + '</div>' +
+        '</div>' +
+        (perfect ? '<span style="font-family:DM Mono,monospace;font-size:12px;color:#7B2D8B;font-weight:700;flex-shrink:0">+1pt</span>' : '') +
+      '</div>';
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<div class="card-box" style="font-size:12px;color:var(--muted);text-align:center;padding:10px">データ取得エラー</div>';
+  }
 }
 
 </script>
