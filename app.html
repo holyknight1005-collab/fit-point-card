@@ -916,16 +916,28 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
           <div><div class="form-label">終了</div><input class="form-input-sm" id="mg-class-end" type="time"></div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-          <div><div class="form-label">対象学校</div>
-            <select class="form-select" id="mg-class-school">
+          <div><div class="form-label">学校で絞り込み</div>
+            <select class="form-select" id="mg-class-school" onchange="filterClassStudents()">
               <option value="">全員</option><option value="松山東">松山東</option>
               <option value="松山南">松山南</option><option value="松山北">松山北</option>
             </select></div>
-          <div><div class="form-label">対象学年</div>
-            <select class="form-select" id="mg-class-grade">
+          <div><div class="form-label">学年で絞り込み</div>
+            <select class="form-select" id="mg-class-grade" onchange="filterClassStudents()">
               <option value="">全学年</option><option value="1年">1年</option>
               <option value="2年">2年</option><option value="3年">3年</option>
             </select></div>
+        </div>
+        <div>
+          <div class="form-label">対象生徒を追加</div>
+          <div style="display:flex;gap:6px;margin-bottom:6px">
+            <select class="form-select" id="mg-class-student-sel" style="flex:1">
+              <option value="">生徒を選択...</option>
+            </select>
+            <button onclick="addClassStudent()" style="padding:8px 12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">追加</button>
+          </div>
+          <div id="mg-class-student-list" style="display:flex;flex-direction:column;gap:5px;min-height:30px">
+            <div style="font-size:11px;color:var(--muted)">※ 生徒を追加しない場合は学校・学年で絞り込み、または全員が対象になります</div>
+          </div>
         </div>
         <button class="form-btn" onclick="registerClass()">授業を登録する</button>
       </div>
@@ -3523,6 +3535,56 @@ async function checkMissionAchieved(missionId, type, subject, targetValue, pts) 
 // ミッションはinitStudentScreen内で読み込む
 
 // ===== スタッフ管理機能 =====
+
+// 授業登録：対象生徒管理
+let mgClassStudents = []; // 選択済み生徒リスト
+
+async function filterClassStudents() {
+  const school = document.getElementById('mg-class-school').value;
+  const grade = document.getElementById('mg-class-grade').value;
+  let query = 'select=id,name,school,grade&order=school,grade,name';
+  if (school) query += '&school=eq.' + encodeURIComponent(school);
+  if (grade) query += '&grade=eq.' + encodeURIComponent(grade);
+  const students = await sbGet('students', query);
+  const sel = document.getElementById('mg-class-student-sel');
+  sel.innerHTML = '<option value="">生徒を選択...</option>' +
+    (students||[]).map(s =>
+      '<option value="' + s.id + '" data-name="' + s.name + '">' +
+      s.name + '（' + (s.school||'') + ' ' + (s.grade||'') + '）</option>'
+    ).join('');
+}
+
+function addClassStudent() {
+  const sel = document.getElementById('mg-class-student-sel');
+  const id = sel.value;
+  const name = sel.options[sel.selectedIndex]?.text || '';
+  if (!id) return;
+  if (mgClassStudents.find(s => s.id === id)) {
+    showToast('すでに追加されています', 'info'); return;
+  }
+  mgClassStudents.push({ id, name });
+  renderClassStudentList();
+}
+
+function removeClassStudent(id) {
+  mgClassStudents = mgClassStudents.filter(s => s.id !== id);
+  renderClassStudentList();
+}
+
+function renderClassStudentList() {
+  const el = document.getElementById('mg-class-student-list');
+  if (mgClassStudents.length === 0) {
+    el.innerHTML = '<div style="font-size:11px;color:var(--muted)">※ 生徒を追加しない場合は学校・学年で絞り込み、または全員が対象になります</div>';
+    return;
+  }
+  el.innerHTML = mgClassStudents.map(s =>
+    '<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:var(--orange-l);border:1px solid var(--orange);border-radius:var(--radius-sm)">' +
+      '<span style="font-size:13px;color:var(--text)">' + s.name + '</span>' +
+      '<button onclick="removeClassStudent(\'' + s.id + '\')" style="background:none;border:none;color:var(--red);font-size:16px;cursor:pointer;padding:0 4px">×</button>' +
+    '</div>'
+  ).join('');
+}
+
 let mgCurrentQuizId = null;
 
 function openStaffManage(tab) {
@@ -3533,7 +3595,7 @@ function openStaffManage(tab) {
   });
   const titles = {class:'授業登録', mission:'ミッション作成', quiz:'テスト作成'};
   document.getElementById('manage-header-title').textContent = titles[tab] || '管理';
-  if (tab === 'class') loadMgClasses();
+  if (tab === 'class') { mgClassStudents = []; renderClassStudentList(); filterClassStudents(); loadMgClasses(); }
   if (tab === 'mission') { loadMgMissions(); loadMgStudentSelect(); }
   if (tab === 'quiz') { loadMgQuizzes(); loadMgClassSelect(); }
 }
@@ -3555,10 +3617,30 @@ async function registerClass() {
   if (!name || !date) { showToast('授業名と日付は必須です', 'error'); return; }
   showLoading('登録中...');
   try {
-    await sbPost('classes', { subject, name, teacher, class_date: date, start_time: start, end_time: end, target_school: school, target_grade: grade });
+    if (mgClassStudents.length > 0) {
+      // 生徒ごとに個別登録
+      for (const s of mgClassStudents) {
+        await sbPost('classes', {
+          subject, name, teacher, class_date: date,
+          start_time: start, end_time: end,
+          target_school: '', target_grade: '',
+          target_student_id: s.id
+        });
+      }
+      showToast('✅ ' + mgClassStudents.length + '人分の授業を登録しました', 'success');
+    } else {
+      // 学校・学年で一括登録
+      await sbPost('classes', {
+        subject, name, teacher, class_date: date,
+        start_time: start, end_time: end,
+        target_school: school, target_grade: grade
+      });
+      showToast('✅ 授業を登録しました', 'success');
+    }
     hideLoading();
-    showToast('✅ 授業を登録しました', 'success');
     document.getElementById('mg-class-name').value = '';
+    mgClassStudents = [];
+    renderClassStudentList();
     loadMgClasses();
     loadMgClassSelect();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
