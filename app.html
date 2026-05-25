@@ -2713,6 +2713,8 @@ async function saveStudyLog() {
     document.getElementById('st-page-to').value = '';
     resetStudyForm();
     switchStudyTab('history');
+    // ミッション自動チェック
+    setTimeout(autoCheckMissions, 500);
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
@@ -2760,6 +2762,7 @@ async function attendClass(classId) {
     hideLoading();
     showToast('🏫 出席記録！+3pt獲得！', 'success');
     loadTodayClasses();
+    setTimeout(autoCheckMissions, 500);
   } catch(e) {
     hideLoading();
     if (e.message && e.message.includes('duplicate')) {
@@ -3069,6 +3072,91 @@ async function stopReview() {
     showToast('✅ 復習記録完了！' + min + '分' + (pts>0?' +'+pts+'pt':''), 'success');
     loadReviewList();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+
+// ===== ミッション自動達成チェック =====
+async function autoCheckMissions() {
+  if (!currentStudent) return;
+  const today = getTodayJST();
+  const weekAgo = new Date(new Date(today).getTime() - 6*86400000).toISOString().split('T')[0];
+
+  // 未達成のミッションを取得
+  const missions = await sbR('GET', 'missions', 'is_active=eq.true&select=*');
+  const achieved = await sbR('GET', 'mission_logs',
+    'student_id=eq.' + currentStudent.id + '&select=mission_id');
+  const achievedIds = new Set((achieved||[]).map(a => a.mission_id));
+
+  const myMissions = (missions||[]).filter(m => {
+    if (achievedIds.has(m.id)) return false; // すでに達成済みはスキップ
+    if (m.due_date && m.due_date < today) return false;
+    if (m.target_student_id && m.target_student_id !== currentStudent.id) return false;
+    if (m.target_school && m.target_school !== currentStudent.school) return false;
+    if (m.target_grade && m.target_grade !== currentStudent.grade) return false;
+    return true;
+  });
+
+  if (myMissions.length === 0) return;
+
+  // 各ミッションをチェック
+  const [studyLogs, vocabLogs, attendance, reviewLogs] = await Promise.all([
+    sbR('GET', 'study_logs', 'student_id=eq.' + currentStudent.id + '&log_date=gte.' + weekAgo + '&select=subject,duration_min'),
+    sbR('GET', 'vocab_logs', 'student_id=eq.' + currentStudent.id + '&log_date=gte.' + weekAgo + '&select=id'),
+    sbR('GET', 'class_attendance', 'student_id=eq.' + currentStudent.id + '&select=id'),
+    sbR('GET', 'review_logs', 'student_id=eq.' + currentStudent.id + '&select=id'),
+  ]);
+
+  let newAchievements = [];
+
+  for (const m of myMissions) {
+    let achieved = false;
+    let current = 0;
+
+    if (m.mission_type === 'study') {
+      const logs = (studyLogs||[]).filter(l => !m.subject || l.subject === m.subject);
+      current = logs.reduce((a,b) => a + (b.duration_min||0), 0);
+      achieved = current >= m.target_value;
+    } else if (m.mission_type === 'vocab') {
+      current = (vocabLogs||[]).length;
+      achieved = current >= m.target_value;
+    } else if (m.mission_type === 'class') {
+      current = (attendance||[]).length;
+      achieved = current >= m.target_value;
+    } else if (m.mission_type === 'review') {
+      current = (reviewLogs||[]).length;
+      achieved = current >= m.target_value;
+    }
+
+    if (achieved) {
+      try {
+        await sbR('POST', 'mission_logs', null, {
+          mission_id: m.id,
+          student_id: currentStudent.id,
+          points_earned: m.points
+        });
+        const newPts = currentStudent.points + m.points;
+        await sbPatch('students', 'id=eq.' + currentStudent.id, { points: newPts });
+        currentStudent.points = newPts;
+        document.getElementById('student-points').textContent = newPts.toLocaleString();
+        newAchievements.push({ title: m.title, pts: m.points });
+      } catch(e) {
+        // duplicate = すでに達成済み、無視
+      }
+    }
+  }
+
+  // 達成通知
+  if (newAchievements.length > 0) {
+    loadHomeMissions();
+    // 少し遅らせて通知（トーストが重ならないよう）
+    setTimeout(() => {
+      newAchievements.forEach((a, i) => {
+        setTimeout(() => {
+          showToast('🎯 ミッション達成！「' + a.title + '」+' + a.pts + 'pt', 'success');
+        }, i * 1500);
+      });
+    }, 800);
+  }
 }
 
 // ===== ミッション =====
@@ -3422,7 +3510,93 @@ async function saveReviewLog() {
     document.getElementById('rv-end-form').style.display = 'none';
     document.getElementById('rv-quiz-result').style.display = 'none';
     loadReviewClasses();
+    setTimeout(autoCheckMissions, 500);
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+
+// ===== ミッション自動達成チェック =====
+async function autoCheckMissions() {
+  if (!currentStudent) return;
+  const today = getTodayJST();
+  const weekAgo = new Date(new Date(today).getTime() - 6*86400000).toISOString().split('T')[0];
+
+  // 未達成のミッションを取得
+  const missions = await sbR('GET', 'missions', 'is_active=eq.true&select=*');
+  const achieved = await sbR('GET', 'mission_logs',
+    'student_id=eq.' + currentStudent.id + '&select=mission_id');
+  const achievedIds = new Set((achieved||[]).map(a => a.mission_id));
+
+  const myMissions = (missions||[]).filter(m => {
+    if (achievedIds.has(m.id)) return false; // すでに達成済みはスキップ
+    if (m.due_date && m.due_date < today) return false;
+    if (m.target_student_id && m.target_student_id !== currentStudent.id) return false;
+    if (m.target_school && m.target_school !== currentStudent.school) return false;
+    if (m.target_grade && m.target_grade !== currentStudent.grade) return false;
+    return true;
+  });
+
+  if (myMissions.length === 0) return;
+
+  // 各ミッションをチェック
+  const [studyLogs, vocabLogs, attendance, reviewLogs] = await Promise.all([
+    sbR('GET', 'study_logs', 'student_id=eq.' + currentStudent.id + '&log_date=gte.' + weekAgo + '&select=subject,duration_min'),
+    sbR('GET', 'vocab_logs', 'student_id=eq.' + currentStudent.id + '&log_date=gte.' + weekAgo + '&select=id'),
+    sbR('GET', 'class_attendance', 'student_id=eq.' + currentStudent.id + '&select=id'),
+    sbR('GET', 'review_logs', 'student_id=eq.' + currentStudent.id + '&select=id'),
+  ]);
+
+  let newAchievements = [];
+
+  for (const m of myMissions) {
+    let achieved = false;
+    let current = 0;
+
+    if (m.mission_type === 'study') {
+      const logs = (studyLogs||[]).filter(l => !m.subject || l.subject === m.subject);
+      current = logs.reduce((a,b) => a + (b.duration_min||0), 0);
+      achieved = current >= m.target_value;
+    } else if (m.mission_type === 'vocab') {
+      current = (vocabLogs||[]).length;
+      achieved = current >= m.target_value;
+    } else if (m.mission_type === 'class') {
+      current = (attendance||[]).length;
+      achieved = current >= m.target_value;
+    } else if (m.mission_type === 'review') {
+      current = (reviewLogs||[]).length;
+      achieved = current >= m.target_value;
+    }
+
+    if (achieved) {
+      try {
+        await sbR('POST', 'mission_logs', null, {
+          mission_id: m.id,
+          student_id: currentStudent.id,
+          points_earned: m.points
+        });
+        const newPts = currentStudent.points + m.points;
+        await sbPatch('students', 'id=eq.' + currentStudent.id, { points: newPts });
+        currentStudent.points = newPts;
+        document.getElementById('student-points').textContent = newPts.toLocaleString();
+        newAchievements.push({ title: m.title, pts: m.points });
+      } catch(e) {
+        // duplicate = すでに達成済み、無視
+      }
+    }
+  }
+
+  // 達成通知
+  if (newAchievements.length > 0) {
+    loadHomeMissions();
+    // 少し遅らせて通知（トーストが重ならないよう）
+    setTimeout(() => {
+      newAchievements.forEach((a, i) => {
+        setTimeout(() => {
+          showToast('🎯 ミッション達成！「' + a.title + '」+' + a.pts + 'pt', 'success');
+        }, i * 1500);
+      });
+    }, 800);
+  }
 }
 
 // ===== ミッション =====
