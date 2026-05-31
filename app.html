@@ -211,16 +211,40 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div class="point-streak" id="student-streak">🔥 連続 0 日来塾中</div>
     </div>
     <div id="gps-status-box" class="gps-status checking">📍 GPS位置を確認中...</div>
+    <!-- ① チェックインボタン（未チェックイン時） -->
     <button class="checkin-btn" id="checkin-btn" onclick="startCheckin()" disabled>
-      ✅ チェックイン<span class="btn-sub">自習室で押してポイントゲット！</span>
+      ✅ チェックイン<span class="btn-sub">自習室で押してください</span>
     </button>
-    <div id="countdown-box" style="display:none;background:var(--orange-l);border:1.5px solid var(--orange);border-radius:var(--radius);padding:16px;text-align:center">
-      <div style="font-size:12px;color:var(--orange-d);font-weight:500;margin-bottom:6px">⏱ 自習中... 30分後にポイントが確定します</div>
-      <div style="font-family:'DM Mono',monospace;font-size:36px;font-weight:500;color:var(--orange-d)" id="countdown-timer">30:00</div>
-      <div style="margin-top:8px;background:var(--border);border-radius:4px;height:6px;overflow:hidden">
-        <div id="countdown-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width 1s linear"></div>
+
+    <!-- ② チェックイン中（在室中） -->
+    <div id="checkin-active-box" style="display:none;background:var(--orange-l);border:1.5px solid var(--orange);border-radius:var(--radius);padding:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div>
+          <div style="font-size:13px;font-weight:700;color:var(--orange-d)">✅ チェックイン中</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px" id="checkin-start-label">開始: —</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-family:'DM Mono',monospace;font-size:28px;font-weight:500;color:var(--orange-d)" id="checkin-elapsed">00:00:00</div>
+          <div style="font-size:10px;color:var(--muted)">滞在時間</div>
+        </div>
       </div>
-      <button onclick="cancelCheckin()" style="margin-top:12px;padding:6px 16px;border-radius:20px;border:1.5px solid var(--orange);background:transparent;color:var(--orange-d);font-family:'Noto Sans JP',sans-serif;font-size:12px;cursor:pointer">キャンセル</button>
+      <!-- 30分ごとのポイント進捗バー -->
+      <div style="font-size:11px;color:var(--orange-d);margin-bottom:4px" id="checkin-pts-label">+0pt（あと30分で+1pt）</div>
+      <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden;margin-bottom:12px">
+        <div id="checkin-progress-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width 1s linear"></div>
+      </div>
+      <!-- チェックアウトボタン -->
+      <button onclick="doCheckout()" style="width:100%;padding:14px;background:linear-gradient(135deg,#2D5FA6,#1A3D7A);border:none;border-radius:var(--radius-sm);color:white;font-family:'Noto Sans JP',sans-serif;font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">
+        <span style="font-size:18px">🚪</span> チェックアウト（ポイント確定）
+      </button>
+      <div style="font-size:10px;color:var(--muted);text-align:center;margin-top:6px">チェックアウトしないとポイントは入りません</div>
+    </div>
+
+    <!-- ③ チェックアウト完了 -->
+    <div id="checkout-done-box" style="display:none;background:#E8F5E8;border:1.5px solid var(--green-d);border-radius:var(--radius);padding:16px;text-align:center">
+      <div style="font-size:22px;margin-bottom:6px">🎉</div>
+      <div style="font-size:14px;font-weight:700;color:var(--green-d)">チェックアウト完了！</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px" id="checkout-summary"></div>
     </div>
     <!-- 勉強記録・復習ボタン -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -1505,74 +1529,136 @@ let checkinInterval = null;
 let checkinStartTime = null;
 let gpsWatchId = null;
 
+// ===== チェックイン / チェックアウト =====
+let checkinElapsedInterval = null;
+let checkinStartTime = null; // チェックイン開始時刻
+
 function startCheckin() {
   if (!currentStudent) return;
   const today = getTodayJSTString();
   if (allCheckins.includes(today)) {
-    showToast('本日はすでにチェックイン済みです！', 'info');
-    return;
+    showToast('本日はすでにチェックイン済みです！', 'info'); return;
   }
-
-  // タイマー開始
-  checkinStartTime = Date.now();
-  const totalMs = CHECKIN_MINUTES * 60 * 1000;
-
-  // localStorageに開始時刻を保存（スリープ復帰対策）
-  localStorage.setItem('fit_checkin_start', checkinStartTime);
-  localStorage.setItem('fit_checkin_student_id', currentStudent.id);
-
-  // ボタンを隠してカウントダウン表示
-  document.getElementById('checkin-btn').style.display = 'none';
-  document.getElementById('countdown-box').style.display = 'block';
-
-  showToast('⏱ 30分のカウントダウン開始！', 'info');
-
-  // GPS監視開始（範囲外に出たらキャンセル）
-  if (navigator.geolocation) {
-    gpsWatchId = navigator.geolocation.watchPosition(
-      function(pos) {
-        const dist = getDistance(pos.coords.latitude, pos.coords.longitude, FIT_LAT, FIT_LNG);
-        if (dist > FIT_RADIUS * 2) {
-          // 範囲外に出た
-          cancelCheckin();
-          showToast('⚠️ 自習室の範囲外に出たためキャンセルされました', 'error');
-        }
-      },
-      function() {},
-      { enableHighAccuracy: true, maximumAge: 30000 }
-    );
-  }
-
-  // 毎秒カウントダウン更新
-  checkinInterval = setInterval(function() {
-    const elapsed = Date.now() - checkinStartTime;
-    const remaining = Math.max(0, totalMs - elapsed);
-    const mins = Math.floor(remaining / 60000);
-    const secs = Math.floor((remaining % 60000) / 1000);
-    const progress = (elapsed / totalMs) * 100;
-
-    document.getElementById('countdown-timer').textContent =
-      String(mins).padStart(2, '0') + ':' + String(secs).padStart(2, '0');
-    document.getElementById('countdown-bar').style.width = Math.min(progress, 100) + '%';
-
-    if (remaining <= 0) {
-      clearInterval(checkinInterval);
-      checkinInterval = null;
+  showLoading('GPS確認中...');
+  if (gpsWatchId !== null) { navigator.geolocation.clearWatch(gpsWatchId); gpsWatchId = null; }
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      hideLoading();
+      const dist = getDistance(pos.coords.latitude, pos.coords.longitude, FIT_LAT, FIT_LNG);
+      if (dist > FIT_RADIUS) {
+        showToast('⚠️ 自習室の範囲外です（' + Math.round(dist) + 'm）', 'error'); return;
+      }
       confirmCheckin();
+    },
+    err => { hideLoading(); showToast('GPS取得エラー', 'error'); },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+  );
+}
+
+async function confirmCheckin() {
+  if (!currentStudent) return;
+  const today = getTodayJSTString();
+  const now = new Date();
+  showLoading('チェックイン中...');
+  try {
+    await sbPost('checkins', { student_id: currentStudent.id, checkin_date: getTodayJST() });
+    allCheckins.push(today);
+    // localStorage にチェックイン時刻を保存
+    checkinStartTime = now;
+    localStorage.setItem('fit_checkin_start', now.toISOString());
+    localStorage.setItem('fit_checkin_student_id', currentStudent.id);
+    hideLoading();
+    showCheckinActive(now);
+    showToast('✅ チェックイン！頑張ろう！', 'success');
+    renderCalendar();
+  } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+function showCheckinActive(startTime) {
+  // UIの切り替え
+  document.getElementById('checkin-btn').style.display = 'none';
+  document.getElementById('checkin-active-box').style.display = 'block';
+  document.getElementById('checkout-done-box').style.display = 'none';
+  // 開始時刻ラベル
+  const h = startTime.getHours().toString().padStart(2,'0');
+  const m = startTime.getMinutes().toString().padStart(2,'0');
+  document.getElementById('checkin-start-label').textContent = '開始: ' + h + ':' + m;
+  // タイマー開始
+  checkinStartTime = startTime;
+  if (checkinElapsedInterval) clearInterval(checkinElapsedInterval);
+  checkinElapsedInterval = setInterval(() => updateCheckinDisplay(), 1000);
+  updateCheckinDisplay();
+}
+
+function updateCheckinDisplay() {
+  if (!checkinStartTime) return;
+  const elapsed = Math.floor((Date.now() - checkinStartTime.getTime()) / 1000);
+  const h = Math.floor(elapsed / 3600);
+  const m = Math.floor((elapsed % 3600) / 60);
+  const s = elapsed % 60;
+  document.getElementById('checkin-elapsed').textContent =
+    String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  // 30分ごとのポイント進捗
+  const INTERVAL_SEC = 30 * 60;
+  const earnedPts = Math.floor(elapsed / INTERVAL_SEC);
+  const remaining = INTERVAL_SEC - (elapsed % INTERVAL_SEC);
+  const rm = Math.floor(remaining / 60);
+  const rs = remaining % 60;
+  document.getElementById('checkin-pts-label').textContent =
+    '+' + earnedPts + 'pt（あと' + rm + '分' + rs + '秒で+1pt）';
+  const pct = ((elapsed % INTERVAL_SEC) / INTERVAL_SEC) * 100;
+  document.getElementById('checkin-progress-bar').style.width = pct + '%';
+}
+
+async function doCheckout() {
+  if (!checkinStartTime || !currentStudent) return;
+  if (!confirm('チェックアウトしてポイントを確定しますか？')) return;
+  showLoading('チェックアウト中...');
+  try {
+    const elapsed = Math.floor((Date.now() - checkinStartTime.getTime()) / 1000);
+    const pts = Math.floor(elapsed / (30 * 60)); // 30分ごとに1pt
+    // ポイント付与
+    if (pts > 0) {
+      const newPts = currentStudent.points + pts;
+      await sbPatch('students', 'id=eq.' + currentStudent.id, { points: newPts, streak: currentStudent.streak + 1, last_checkin: getTodayJST() });
+      await sbPost('point_logs', { student_id: currentStudent.id, points: pts, reason: 'チェックアウト（' + Math.floor(elapsed/60) + '分在室）', type: 'checkin' });
+      currentStudent.points = newPts;
+      currentStudent.streak = currentStudent.streak + 1;
+      document.getElementById('student-points').textContent = newPts.toLocaleString();
+      document.getElementById('student-streak').textContent = '🔥 連続 ' + currentStudent.streak + ' 日来塾中';
+    } else {
+      await sbPatch('students', 'id=eq.' + currentStudent.id, { streak: currentStudent.streak + 1, last_checkin: getTodayJST() });
+      currentStudent.streak = currentStudent.streak + 1;
     }
-  }, 1000);
+    // localStorage クリア
+    localStorage.removeItem('fit_checkin_start');
+    localStorage.removeItem('fit_checkin_student_id');
+    if (checkinElapsedInterval) { clearInterval(checkinElapsedInterval); checkinElapsedInterval = null; }
+    // UI完了表示
+    document.getElementById('checkin-btn').style.display = 'none';
+    document.getElementById('checkin-active-box').style.display = 'none';
+    document.getElementById('checkout-done-box').style.display = 'block';
+    const h = Math.floor(elapsed / 3600), m = Math.floor((elapsed % 3600) / 60);
+    document.getElementById('checkout-summary').textContent =
+      '在室時間: ' + h + '時間' + m + '分　獲得ポイント: +' + pts + 'pt';
+    hideLoading();
+    showToast('🎉 お疲れ様！+' + pts + 'pt獲得！', 'success');
+    checkinStartTime = null;
+    renderCalendar();
+    loadHistory();
+  } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
 function cancelCheckin() {
-  if (checkinInterval) { clearInterval(checkinInterval); checkinInterval = null; }
-  if (gpsWatchId !== null) { navigator.geolocation.clearWatch(gpsWatchId); gpsWatchId = null; }
-  checkinStartTime = null;
+  if (checkinElapsedInterval) { clearInterval(checkinElapsedInterval); checkinElapsedInterval = null; }
   localStorage.removeItem('fit_checkin_start');
   localStorage.removeItem('fit_checkin_student_id');
-  document.getElementById('countdown-box').style.display = 'none';
+  checkinStartTime = null;
+  document.getElementById('checkin-active-box').style.display = 'none';
   document.getElementById('checkin-btn').style.display = 'block';
   showToast('チェックインをキャンセルしました', 'info');
 }
+
 
 async function confirmCheckin() {
   if (gpsWatchId !== null) { navigator.geolocation.clearWatch(gpsWatchId); gpsWatchId = null; }
@@ -1982,167 +2068,16 @@ function renderDetailHistory(tab) {
 
 // ===== 画面復帰時の自動チェックイン完了 =====
 async function checkResumeCheckin() {
-  if (!currentStudent) return;
+  // 起動時：localStorageにチェックイン記録があれば在室中として復元
   const savedStart = localStorage.getItem('fit_checkin_start');
   const savedId = localStorage.getItem('fit_checkin_student_id');
-  if (!savedStart || !savedId) return;
+  if (!savedStart || !savedId || !currentStudent) return;
   if (savedId !== currentStudent.id) return;
-  const today = getTodayJSTString();
-  if (allCheckins.includes(today)) {
-    localStorage.removeItem('fit_checkin_start');
-    localStorage.removeItem('fit_checkin_student_id');
-    return;
-  }
-  const elapsed = Date.now() - parseInt(savedStart);
-  const totalMs = CHECKIN_MINUTES * 60 * 1000;
-  if (elapsed >= totalMs) {
-    checkinStartTime = parseInt(savedStart);
-    const box = document.getElementById('countdown-box');
-    if (box) box.style.display = 'none';
-    showToast('⏱ 30分経過！ポイントを付与します', 'info');
-    await confirmCheckin();
-  } else {
-    checkinStartTime = parseInt(savedStart);
-    const remaining = totalMs - elapsed;
-    const mins = Math.floor(remaining / 60000);
-    const secs = Math.floor((remaining % 60000) / 1000);
-    const btn = document.getElementById('checkin-btn');
-    if (btn) btn.style.display = 'none';
-    const box = document.getElementById('countdown-box');
-    if (box) {
-      box.style.display = 'block';
-      const timer = document.getElementById('countdown-timer');
-      if (timer) timer.textContent = String(mins).padStart(2,'0') + ':' + String(secs).padStart(2,'0');
-    }
-    showToast('⏱ カウントダウン再開（残り' + mins + '分）', 'info');
-    if (!checkinInterval) {
-      checkinInterval = setInterval(function() {
-        const s = localStorage.getItem('fit_checkin_start');
-        if (s) checkinStartTime = parseInt(s);
-        const el2 = Date.now() - checkinStartTime;
-        const rem = Math.max(0, totalMs - el2);
-        const m = Math.floor(rem / 60000);
-        const sc = Math.floor((rem % 60000) / 1000);
-        const prog = (el2 / totalMs) * 100;
-        const timerEl = document.getElementById('countdown-timer');
-        const barEl = document.getElementById('countdown-bar');
-        if (timerEl) timerEl.textContent = String(m).padStart(2,'0') + ':' + String(sc).padStart(2,'0');
-        if (barEl) barEl.style.width = Math.min(prog, 100) + '%';
-        if (rem <= 0) { clearInterval(checkinInterval); checkinInterval = null; confirmCheckin(); }
-      }, 1000);
-    }
-  }
-}
-
-// ===== 松山東専用メニュー =====
-function checkSchoolMenu() {
-  if (!currentStudent) return;
-  const hMenu = document.getElementById('higashi-menu');
-  if (hMenu) hMenu.style.display = currentStudent.school === '松山東' ? 'block' : 'none';
-  const kMenu = document.getElementById('kita-menu');
-  if (kMenu) kMenu.style.display = currentStudent.school === '松山北' ? 'block' : 'none';
-}
-
-
-function openVocabTest() {
-  document.getElementById('screen-vocab').style.display='flex';
-  showVocabMenu();
-}
-function closeVocabTest() {
-  document.getElementById('screen-vocab').style.display='none';
-}
-
-
-
-
-// ===== 単語テスト =====
-const VSETS = [
-  {name:'セット1：基本単語',words:[
-    {en:'ability',r:'[əbíləti]',ja:'能力・才能',ex:'She has the ability to learn quickly.'},
-    {en:'accept',r:'[əksépt]',ja:'受け入れる',ex:'Please accept my apology.'},
-    {en:'achieve',r:'[ətʃíːv]',ja:'達成する',ex:'You can achieve anything with effort.'},
-    {en:'affect',r:'[əfékt]',ja:'影響を与える',ex:'The weather affects our mood.'},
-    {en:'allow',r:'[əláu]',ja:'許可する',ex:'Please allow me to explain.'},
-    {en:'appear',r:'[əpíər]',ja:'現れる',ex:'The sun appeared from behind the clouds.'},
-    {en:'apply',r:'[əplái]',ja:'申し込む',ex:'I will apply for the job.'},
-    {en:'avoid',r:'[əvɔid]',ja:'避ける',ex:'Try to avoid making mistakes.'},
-    {en:'benefit',r:'[bénəfit]',ja:'利益・恩恵',ex:'Exercise has many health benefits.'},
-    {en:'cause',r:'[kɔːz]',ja:'原因・引き起こす',ex:'What caused the accident?'},
-    {en:'consider',r:'[kənsídər]',ja:'考慮する',ex:'Please consider my proposal.'},
-    {en:'culture',r:'[kʌltʃər]',ja:'文化',ex:'Japan has a unique culture.'},
-    {en:'demand',r:'[dimǽnd]',ja:'要求・需要',ex:'The demand for smartphones is growing.'},
-    {en:'develop',r:'[divéləp]',ja:'発展する',ex:'Scientists developed a new vaccine.'},
-    {en:'effect',r:'[ifékt]',ja:'影響・効果',ex:'The medicine had a positive effect.'},
-    {en:'effort',r:'[éfərt]',ja:'努力',ex:'Success requires great effort.'},
-    {en:'environment',r:'[invάiərənmənt]',ja:'環境',ex:'We must protect the environment.'},
-    {en:'especially',r:'[ispéʃəli]',ja:'特に',ex:'I love sports, especially soccer.'},
-    {en:'experience',r:'[ikspíəriəns]',ja:'経験',ex:'Travel is a great experience.'},
-    {en:'explain',r:'[ikspléin]',ja:'説明する',ex:'Can you explain this problem?'},
-  ]},
-  {name:'セット2：標準単語',words:[
-    {en:'significant',r:'[signífikənt]',ja:'重要な',ex:'This is a significant discovery.'},
-    {en:'previous',r:'[príːviəs]',ja:'前の',ex:'I learned from my previous mistakes.'},
-    {en:'attitude',r:'[ǽtitjuːd]',ja:'態度・考え方',ex:'Your attitude determines your future.'},
-    {en:'available',r:'[əvéiləbl]',ja:'利用できる',ex:'The service is available 24 hours.'},
-    {en:'challenge',r:'[tʃǽlindʒ]',ja:'挑戦・困難',ex:'Life is full of challenges.'},
-    {en:'concern',r:'[kənsərn]',ja:'心配・懸念',ex:'I have concerns about the plan.'},
-    {en:'contribute',r:'[kəntrɪbjuːt]',ja:'貢献する',ex:'Everyone can contribute to society.'},
-    {en:'despite',r:'[dispáit]',ja:'にもかかわらず',ex:'Despite the rain, we went out.'},
-    {en:'evidence',r:'[évidəns]',ja:'証拠',ex:'There is no evidence for that claim.'},
-    {en:'global',r:'[glóubl]',ja:'世界的な',ex:'Global warming is a serious issue.'},
-    {en:'identify',r:'[aidéntifai]',ja:'特定する',ex:'Can you identify the problem?'},
-    {en:'ignore',r:'[ignɔːr]',ja:'無視する',ex:'Do not ignore the warning signs.'},
-    {en:'improve',r:'[imprúːv]',ja:'改善する',ex:'Practice will improve your skills.'},
-    {en:'include',r:'[inklúːd]',ja:'含む',ex:'The price includes tax.'},
-    {en:'increase',r:'[inkríːs]',ja:'増加する',ex:'Sales have increased this year.'},
-    {en:'individual',r:'[ìndivídʒuəl]',ja:'個人',ex:'Each individual is unique.'},
-    {en:'influence',r:'[ínfluəns]',ja:'影響を与える',ex:'Music influences our emotions.'},
-    {en:'necessary',r:'[nésəsèri]',ja:'必要な',ex:'Sleep is necessary for health.'},
-    {en:'opportunity',r:'[ɑpərtjúːnəti]',ja:'機会',ex:"Don't miss this opportunity."},
-    {en:'pollution',r:'[pəlúːʃən]',ja:'汚染',ex:'Air pollution is a serious problem.'},
-  ]},
-  {name:'セット3：応用単語',words:[
-    {en:'adolescent',r:'[ǽdəlèsnt]',ja:'青年・思春期の',ex:'Adolescent years are challenging.'},
-    {en:'ambiguous',r:'[æmbígjuəs]',ja:'曖昧な',ex:'The instructions were ambiguous.'},
-    {en:'appropriate',r:'[əpróupriət]',ja:'適切な',ex:'Choose appropriate language.'},
-    {en:'approximately',r:'[əprɑksimətli]',ja:'おおよそ',ex:'It costs approximately 1000 yen.'},
-    {en:'circumstances',r:'[sɜːrkəmstænsiz]',ja:'状況・事情',ex:'Under these circumstances, we must act.'},
-    {en:'consequence',r:'[kɑnsikwèns]',ja:'結果・影響',ex:'Think about the consequences.'},
-    {en:'contemporary',r:'[kəntémpərèri]',ja:'現代の',ex:'Contemporary art is fascinating.'},
-    {en:'controversy',r:'[kɑntrəvɜːrsi]',ja:'論争',ex:'The issue caused controversy.'},
-    {en:'elaborate',r:'[ilǽbərət]',ja:'詳細な',ex:'She gave an elaborate explanation.'},
-    {en:'enormous',r:'[inɔːrməs]',ja:'巨大な',ex:'The company made an enormous profit.'},
-    {en:'fundamental',r:'[fʌndəméntl]',ja:'基本的な',ex:'Freedom is a fundamental right.'},
-    {en:'inevitable',r:'[inévitəbl]',ja:'避けられない',ex:'Change is inevitable.'},
-    {en:'phenomenon',r:'[finɑmənɑn]',ja:'現象',ex:'Lightning is a natural phenomenon.'},
-    {en:'perceive',r:'[pərsíːv]',ja:'知覚する',ex:'How do you perceive this situation?'},
-    {en:'prevalent',r:'[prévələnt]',ja:'普及している',ex:'Smartphones are prevalent nowadays.'},
-    {en:'profound',r:'[prəfáund]',ja:'深い',ex:'She has a profound understanding.'},
-    {en:'sufficient',r:'[səfíʃənt]',ja:'十分な',ex:'Is this sufficient for you?'},
-    {en:'sustainable',r:'[səstéinəbl]',ja:'持続可能な',ex:'We need sustainable development.'},
-    {en:'tremendous',r:'[triméndəs]',ja:'莫大な',ex:'She made tremendous progress.'},
-    {en:'underlying',r:'[ʌndərláiiŋ]',ja:'根底にある',ex:'What is the underlying cause?'},
-  ]}
-];
-
-const SB_URL_V = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
-const SB_KEY_V = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
-
-let vSet=0, vWords=[], vIdx=0, vFlipped=false;
-let vQ=[], vQIdx=0, vOK=0, vNG=0, vNGWords=[], vQAnswered=false;
-
-function openVocabTest(){
-  document.getElementById('screen-vocab').style.display='flex';
-  vShowMenu();
-}
-function closeVocabTest(){
-  document.getElementById('screen-vocab').style.display='none';
-}
-function vShow(id){
-  ['v-menu','v-phase1','v-phase2','v-result'].forEach(x=>{
-    const el=document.getElementById(x);
-    el.style.display = x===id ? 'flex' : 'none';
-  });
+  const today = getTodayJST();
+  if (!allCheckins.includes(getTodayJSTString())) return; // 今日のチェックイン記録がなければ無視
+  // 在室中として表示復元
+  checkinStartTime = new Date(savedStart);
+  showCheckinActive(checkinStartTime);
 }
 
 async function vShowMenu(){
