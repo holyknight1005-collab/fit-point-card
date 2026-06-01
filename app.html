@@ -5209,12 +5209,17 @@ async function loadStaffMonitor() {
           else if (!isFut) dotHtml = '<div style="font-size:7px;color:var(--red)">!</div>';
         }
       } else if (!isFut) dotHtml = '<div style="font-size:7px;color:var(--border)">·</div>';
-      calHtml += '<div style="text-align:center;padding:3px;border-radius:4px">' +
+        const clickFn = (!isFut && rec) ? 'showMonitorDetail('' + ds + '')' : '';
+      calHtml += '<div onclick="' + clickFn + '" style="text-align:center;padding:3px;border-radius:4px;cursor:' + (clickFn?'pointer':'default') + '">' +
         '<div style="font-size:10px;color:' + (isFut?'var(--border)':'var(--text)') + '">' + d + '</div>' +
         dotHtml +
       '</div>';
     }
     calHtml += '</div></div>';
+
+    // 詳細表示用にreportsをmonitorReportsに保存
+    window._monitorReports = {};
+    (reports||[]).forEach(r => { window._monitorReports[r.report_date] = r; });
 
     // ToDo状況
     const doneTodos = (todos||[]).filter(t => t.is_done);
@@ -5229,8 +5234,41 @@ async function loadStaffMonitor() {
       (doneTodos.length ? '<div style="margin-top:6px;font-size:11px;color:var(--muted)">完了済み：' + doneTodos.map(t=>t.title).join('、') + '</div>' : '') +
     '</div>';
 
-    el.innerHTML = calHtml + todoHtml;
+    el.innerHTML = calHtml + todoHtml + '<div id="monitor-detail-panel" style="display:none"></div>';
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+function showMonitorDetail(date) {
+  const rec = window._monitorReports?.[date];
+  if (!rec) return;
+  const dt = new Date(date + 'T00:00:00+09:00');
+  const wd = ['日','月','火','水','木','金','土'][dt.getDay()];
+  const dateLabel = (dt.getMonth()+1) + '月' + dt.getDate() + '日（' + wd + '）';
+
+  const panel = document.getElementById('monitor-detail-panel');
+  panel.style.display = 'block';
+  panel.scrollIntoView({ behavior:'smooth', block:'start' });
+
+  const checkItems = [];
+  if (rec.no_class) checkItems.push('<span style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:11px;color:var(--muted)">授業なし</span>');
+  if (rec.attendance_checked) checkItems.push('<span style="background:var(--green-l);border:1px solid #A8D891;border-radius:4px;padding:2px 8px;font-size:11px;color:var(--green-d)">✅ 出席記入済</span>');
+  if (rec.report_checked) {
+    const sub = new Date(rec.submitted_at || date + 'T23:59:59');
+    const isLate = (sub - new Date(date + 'T23:59:59')) / 86400000 > 2;
+    checkItems.push('<span style="background:' + (isLate?'#EEF3FF':'var(--orange-l)') + ';border:1px solid ' + (isLate?'#C4B5FD':'var(--orange)') + ';border-radius:4px;padding:2px 8px;font-size:11px;color:' + (isLate?'#5436DA':'var(--orange-d)') + '">' + (isLate?'🔵':'🟠') + ' 報告書記入済' + (isLate?' (遅延)':'') + '</span>');
+  }
+
+  panel.innerHTML =
+    '<div class="card-box" style="margin-top:8px;border:1.5px solid var(--orange)">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
+        '<div style="font-size:13px;font-weight:700;color:var(--text)">📅 ' + dateLabel + '</div>' +
+        '<button onclick="document.getElementById('monitor-detail-panel').style.display='none'" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer">×</button>' +
+      '</div>' +
+      (checkItems.length ? '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">' + checkItems.join('') + '</div>' : '') +
+      (rec.memo ? '<div style="margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">💬 気になったこと</div>' +
+        '<div style="font-size:13px;color:var(--text);white-space:pre-wrap;line-height:1.6;padding:8px;background:var(--surface2);border-radius:6px">' + rec.memo + '</div></div>' : '') +
+      (!rec.memo && !checkItems.length ? '<div style="font-size:12px;color:var(--muted);text-align:center">記録なし</div>' : '') +
+    '</div>';
 }
 
 // ===== ToDo =====
