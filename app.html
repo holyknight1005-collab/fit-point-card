@@ -225,12 +225,12 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <div id="checkin-active-box" style="display:none;background:var(--orange-l);border:1.5px solid var(--orange);border-radius:var(--radius);padding:16px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
         <div>
-          <div style="font-size:13px;font-weight:700;color:var(--orange-d)">✅ チェックイン中</div>
+          <div style="font-size:13px;font-weight:700;color:var(--orange-d)" id="checkin-status-label">✅ チェックイン中</div>
           <div style="font-size:11px;color:var(--muted);margin-top:2px" id="checkin-start-label">開始: —</div>
         </div>
         <div style="text-align:right">
           <div style="font-family:'DM Mono',monospace;font-size:28px;font-weight:500;color:var(--orange-d)" id="checkin-elapsed">00:00:00</div>
-          <div style="font-size:10px;color:var(--muted)">滞在時間</div>
+          <div style="font-size:10px;color:var(--muted)" id="checkin-elapsed-label">勉強時間</div>
         </div>
       </div>
       <!-- 30分ごとのポイント進捗バー -->
@@ -238,11 +238,21 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div style="background:var(--border);border-radius:4px;height:6px;overflow:hidden;margin-bottom:12px">
         <div id="checkin-progress-bar" style="height:100%;background:var(--orange);border-radius:4px;width:0%;transition:width 1s linear"></div>
       </div>
-      <!-- チェックアウトボタン -->
-      <button onclick="doCheckout()" style="width:100%;padding:14px;background:linear-gradient(135deg,#2D5FA6,#1A3D7A);border:none;border-radius:var(--radius-sm);color:white;font-family:'Noto Sans JP',sans-serif;font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">
-        <span style="font-size:18px">🚪</span> チェックアウト（ポイント確定）
-      </button>
-      <div style="font-size:10px;color:var(--muted);text-align:center;margin-top:6px">チェックアウトしないとポイントは入りません</div>
+      <!-- 一時停止中の表示 -->
+      <div id="pause-info-box" style="display:none;background:white;border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:10px;text-align:center">
+        <div style="font-size:12px;color:var(--muted)">⏸ 一時停止中</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px" id="pause-time-label"></div>
+      </div>
+      <!-- ボタン -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+        <button id="pause-btn" onclick="togglePause()" style="padding:12px;background:white;border:1.5px solid var(--orange);border-radius:var(--radius-sm);color:var(--orange-d);font-family:'Noto Sans JP',sans-serif;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
+          <span>⏸</span> 一時停止
+        </button>
+        <button onclick="doCheckout()" style="padding:12px;background:linear-gradient(135deg,#2D5FA6,#1A3D7A);border:none;border-radius:var(--radius-sm);color:white;font-family:'Noto Sans JP',sans-serif;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
+          <span>🚪</span> チェックアウト
+        </button>
+      </div>
+      <div style="font-size:10px;color:var(--muted);text-align:center">チェックアウトしないとポイントは入りません</div>
     </div>
 
     <!-- ③ チェックアウト完了 -->
@@ -318,7 +328,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <div class="header-user" id="staff-header-name">スタッフモード</div>
     <div style="display:flex;gap:6px">
       <button onclick="openStaffMenu()" style="padding:6px 10px;background:var(--orange);border:none;border-radius:6px;color:white;font-size:11px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">メニュー</button>
-      <button class="back-btn" onclick="logout()">← 戻る</button>
+      <button class="back-btn" onclick="staffLogout()">← 戻る</button>
     </div>
   </div>
   <div class="staff-content">
@@ -1734,6 +1744,16 @@ async function doLogin() {
 
 function logout() { currentStudent = null; allCheckins = []; clearLoginState(); showScreen('screen-login'); }
 
+function staffLogout() {
+  // 保持チェックがない場合はlocalStorageをクリア
+  localStorage.removeItem('fit_staff_id');
+  localStorage.removeItem('fit_staff_pin');
+  currentStaff = null;
+  showScreen('screen-staff-login');
+  document.getElementById('staff-id-input').value = '';
+  document.getElementById('staff-pin-input').value = '';
+}
+
 function initStudentScreen() {
   const s = currentStudent;
   document.getElementById('student-name-header').textContent = s.name;
@@ -2312,21 +2332,29 @@ async function loadDailyAttendance() {
       const stayStr = stayMin ? Math.floor(stayMin/60) + 'h' + (stayMin%60) + 'm' : null;
 
       const isInRoom = !c.checkout_time;
+      const sid = c.student_id;
+      const sname = (s.name||'不明').replace(/'/g, '');
 
-      return '<div style="background:' + (isInRoom ? 'var(--orange-l)' : 'var(--surface)') + ';border:1px solid ' + (isInRoom ? 'var(--orange)' : 'var(--border)') + ';border-radius:var(--radius-sm);padding:10px 13px;display:flex;align-items:center;gap:10px">' +
-        '<div style="width:32px;height:32px;border-radius:50%;background:' + (isInRoom ? 'linear-gradient(135deg,var(--orange),var(--orange-d))' : 'var(--surface2)') + ';display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:' + (isInRoom ? 'white' : 'var(--muted)') + ';flex-shrink:0">' + (s.name||'?')[0] + '</div>' +
-        '<div style="flex:1;min-width:0">' +
-          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-            '<span style="font-size:13px;font-weight:500;color:var(--text)">' + (s.name||'不明') + '</span>' +
-            tag +
-            (isInRoom ? '<span style="font-size:10px;background:var(--orange);color:white;padding:1px 6px;border-radius:10px">在室中</span>' : '') +
-          '</div>' +
-          '<div style="display:flex;align-items:center;gap:8px;margin-top:3px;flex-wrap:wrap">' +
-            '<span style="font-size:11px;color:var(--muted)">IN: <span style="color:var(--text);font-family:DM Mono,monospace">' + inStr + '</span></span>' +
-            (outStr ? '<span style="font-size:11px;color:var(--muted)">OUT: <span style="color:var(--text);font-family:DM Mono,monospace">' + outStr + '</span></span>' : '<span style="font-size:11px;color:var(--orange-d)">OUT: 未チェックアウト</span>') +
-            (stayStr ? '<span style="font-size:11px;color:var(--muted)">在室: <span style="color:var(--green-d);font-weight:700">' + stayStr + '</span></span>' : '') +
+      return '<div style="background:' + (isInRoom ? 'var(--orange-l)' : 'var(--surface)') + ';border:1px solid ' + (isInRoom ? 'var(--orange)' : 'var(--border)') + ';border-radius:var(--radius-sm);padding:10px 13px">' +
+        '<div style="display:flex;align-items:center;gap:10px">' +
+          '<div style="width:32px;height:32px;border-radius:50%;background:' + (isInRoom ? 'linear-gradient(135deg,var(--orange),var(--orange-d))' : 'var(--surface2)') + ';display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:' + (isInRoom ? 'white' : 'var(--muted)') + ';flex-shrink:0">' + (s.name||'?')[0] + '</div>' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+              '<span style="font-size:13px;font-weight:500;color:var(--text)">' + (s.name||'不明') + '</span>' +
+              tag +
+              (isInRoom ? '<span style="font-size:10px;background:var(--orange);color:white;padding:1px 6px;border-radius:10px">在室中</span>' : '') +
+            '</div>' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-top:3px;flex-wrap:wrap">' +
+              '<span style="font-size:11px;color:var(--muted)">IN: <span style="color:var(--text);font-family:DM Mono,monospace">' + inStr + '</span></span>' +
+              (outStr ? '<span style="font-size:11px;color:var(--muted)">OUT: <span style="color:var(--text);font-family:DM Mono,monospace">' + outStr + '</span></span>' : '<span style="font-size:11px;color:var(--orange-d)">OUT: 未CO</span>') +
+              (stayStr ? '<span style="font-size:11px;color:var(--muted)">在室: <span style="color:var(--green-d);font-weight:700">' + stayStr + '</span></span>' : '') +
+            '</div>' +
           '</div>' +
         '</div>' +
+        (isInRoom ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">' +
+          '<button data-sid="' + sid + '" data-sname="' + sname + '" onclick="staffForceCheckout(this.dataset.sid,this.dataset.sname,true)" style="padding:8px;background:linear-gradient(135deg,#3B6D11,#5A9E3C);border:none;border-radius:6px;color:white;font-size:11px;font-weight:700;cursor:pointer">✅ ポイントあり CO</button>' +
+          '<button data-sid="' + sid + '" data-sname="' + sname + '" onclick="staffForceCheckout(this.dataset.sid,this.dataset.sname,false)" style="padding:8px;background:#f5f0e8;border:1px solid #ddd;border-radius:6px;color:#888;font-size:11px;font-weight:700;cursor:pointer">🚫 ポイントなし CO</button>' +
+        '</div>' : '') +
       '</div>';
     }).join('');
   } catch(e) {
@@ -5988,6 +6016,122 @@ function toggleTodoGroup(toId) {
   const isOpen = content.style.display !== 'none';
   content.style.display = isOpen ? 'none' : 'block';
   if (arrow) arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+}
+
+
+// ===== 一時停止機能 =====
+let isPaused = false;
+let pausedElapsedSeconds = 0; // 一時停止時点の経過秒数
+let pauseStartTime = null;    // 一時停止開始時刻
+
+function togglePause() {
+  if (isPaused) {
+    // 再開
+    isPaused = false;
+    // 一時停止中の時間分だけstartTimeを後ろにずらす
+    const pausedDuration = Date.now() - pauseStartTime.getTime();
+    checkinStartTime = new Date(checkinStartTime.getTime() + pausedDuration);
+    localStorage.setItem('fit_checkin_start', checkinStartTime.toISOString());
+    pauseStartTime = null;
+
+    // UI更新
+    document.getElementById('pause-btn').innerHTML = '<span>⏸</span> 一時停止';
+    document.getElementById('pause-btn').style.background = 'white';
+    document.getElementById('pause-btn').style.color = 'var(--orange-d)';
+    document.getElementById('checkin-status-label').textContent = '✅ チェックイン中';
+    document.getElementById('pause-info-box').style.display = 'none';
+    document.getElementById('checkin-elapsed-label').textContent = '勉強時間';
+
+    // タイマー再開
+    if (checkinElapsedInterval) clearInterval(checkinElapsedInterval);
+    checkinElapsedInterval = setInterval(() => updateCheckinDisplay(), 1000);
+    showToast('▶ タイマーを再開しました', 'success');
+  } else {
+    // 一時停止
+    isPaused = true;
+    pauseStartTime = new Date();
+    if (checkinElapsedInterval) { clearInterval(checkinElapsedInterval); checkinElapsedInterval = null; }
+
+    // UI更新
+    document.getElementById('pause-btn').innerHTML = '<span>▶</span> 再開する';
+    document.getElementById('pause-btn').style.background = 'var(--orange)';
+    document.getElementById('pause-btn').style.color = 'white';
+    document.getElementById('checkin-status-label').textContent = '⏸ 一時停止中';
+    document.getElementById('pause-info-box').style.display = 'block';
+    document.getElementById('checkin-elapsed-label').textContent = '勉強時間（停止中）';
+
+    // 停止時刻を表示
+    const h = pauseStartTime.getHours().toString().padStart(2,'0');
+    const m = pauseStartTime.getMinutes().toString().padStart(2,'0');
+    document.getElementById('pause-time-label').textContent = h + ':' + m + ' に停止';
+    showToast('⏸ タイマーを一時停止しました', 'info');
+  }
+}
+
+// doCheckoutを一時停止対応に修正
+const _origDoCheckout = doCheckout;
+doCheckout = async function() {
+  // 一時停止中なら再開してからチェックアウト
+  if (isPaused) {
+    const pausedDuration = Date.now() - pauseStartTime.getTime();
+    checkinStartTime = new Date(checkinStartTime.getTime() + pausedDuration);
+    isPaused = false;
+    pauseStartTime = null;
+  }
+  await _origDoCheckout();
+  isPaused = false;
+  pauseStartTime = null;
+}
+
+// ===== スタッフ側：強制チェックアウト =====
+async function staffForceCheckout(studentId, studentName, withPoints) {
+  const msg = withPoints
+    ? studentName + 'さんをポイント付きでチェックアウトしますか？'
+    : studentName + 'さんをポイントなしでチェックアウトしますか？';
+  if (!confirm(msg)) return;
+
+  showLoading('処理中...');
+  try {
+    // checkinレコードを取得
+    const today = new Date().toISOString().split('T')[0];
+    const checkins = await sbGet('checkins',
+      'student_id=eq.' + studentId + '&checkin_date=eq.' + today + '&checkout_time=is.null&select=id,created_at&order=created_at.desc&limit=1');
+
+    if (!checkins || !checkins.length) {
+      hideLoading();
+      showToast('チェックイン記録が見つかりません', 'error');
+      return;
+    }
+
+    const checkin = checkins[0];
+    const inTime = new Date(checkin.created_at);
+    const now = new Date();
+    const stayMin = Math.floor((now - inTime) / 60000);
+    const pts = withPoints ? Math.floor(stayMin / 30) : 0;
+
+    // checkinsテーブルを更新
+    await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/checkins?id=eq.' + checkin.id, {
+      method: 'PATCH',
+      headers: { 'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU', 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ checkout_time: now.toISOString(), stay_minutes: stayMin })
+    });
+
+    // ポイント付与
+    if (pts > 0) {
+      const students = await sbGet('students', 'id=eq.' + studentId + '&select=points');
+      const curPts = students?.[0]?.points || 0;
+      await sbPatch('students', 'id=eq.' + studentId, { points: curPts + pts });
+      await sbPost('point_logs', { student_id: studentId, points: pts, reason: 'スタッフ強制チェックアウト（' + stayMin + '分）', type: 'checkin' });
+    }
+
+    hideLoading();
+    showToast(studentName + 'さんをチェックアウトしました' + (pts > 0 ? '（+' + pts + 'pt）' : '（ポイントなし）'), 'success');
+    // 一覧を更新
+    loadDailyAttendance();
+  } catch(e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
 }
 
 </script>
