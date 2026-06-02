@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fit ビデオ補習</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root{
+    --bg:#f4f1ea;
+    --ink:#1c2733;
+    --muted:#6b7785;
+    --card:#ffffff;
+    --line:#e3ddd0;
+    --accent:#1f6f5c;
+    --accent-soft:#e6f0ec;
+    --done:#2f8f6f;
+    --shadow:0 2px 10px rgba(28,39,51,.06);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",system-ui,sans-serif;
+    background:var(--bg);
+    color:var(--ink);
+    line-height:1.6;
+    -webkit-text-size-adjust:100%;
+  }
+  header{
+    padding:20px 16px 14px;
+    text-align:center;
+    border-bottom:1px solid var(--line);
+    background:var(--card);
+  }
+  header h1{font-size:18px;letter-spacing:.04em}
+  header p{font-size:13px;color:var(--muted);margin-top:2px}
+  .wrap{max-width:680px;margin:0 auto;padding:16px 14px 60px}
+
+  /* タブ */
+  .tabs{
+    display:flex;gap:6px;margin:16px 0 20px;
+    position:sticky;top:0;z-index:5;
+    background:var(--bg);padding:8px 0;
+  }
+  .tab{
+    flex:1;padding:10px 4px;border:1px solid var(--line);
+    background:var(--card);border-radius:10px;
+    font-size:14px;font-weight:600;color:var(--muted);
+    cursor:pointer;transition:.15s;text-align:center;
+  }
+  .tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+  .video-card{
+    background:var(--card);border:1px solid var(--line);
+    border-radius:14px;margin-bottom:16px;overflow:hidden;
+    box-shadow:var(--shadow);
+  }
+  .video-head{padding:14px 16px 8px}
+  .video-title{font-size:15px;font-weight:700}
+  .video-num{font-size:12px;color:var(--muted)}
+  .video-embed{
+    position:relative;width:100%;aspect-ratio:16/9;background:#000;
+  }
+  .video-embed iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+  .video-body{padding:14px 16px 16px}
+
+  .check-row{
+    display:flex;align-items:center;gap:10px;
+    padding:10px 12px;border:1px solid var(--line);
+    border-radius:10px;margin-bottom:12px;cursor:pointer;
+    user-select:none;transition:.15s;
+  }
+  .check-row.on{background:var(--accent-soft);border-color:var(--accent)}
+  .check-box{
+    width:22px;height:22px;border:2px solid var(--muted);
+    border-radius:6px;flex:none;display:grid;place-items:center;
+    color:#fff;font-size:14px;transition:.15s;
+  }
+  .check-row.on .check-box{background:var(--done);border-color:var(--done)}
+  .check-label{font-size:14px;font-weight:600}
+
+  textarea{
+    width:100%;border:1px solid var(--line);border-radius:10px;
+    padding:10px 12px;font-size:15px;font-family:inherit;resize:vertical;
+    min-height:70px;background:#fcfbf8;color:var(--ink);
+  }
+  textarea:focus{outline:none;border-color:var(--accent)}
+  .counter{font-size:12px;color:var(--muted);text-align:right;margin-top:4px}
+  .counter.over{color:#c0392b}
+
+  .submit{
+    width:100%;margin-top:12px;padding:12px;border:0;border-radius:10px;
+    background:var(--accent);color:#fff;font-size:15px;font-weight:700;
+    cursor:pointer;transition:.15s;
+  }
+  .submit:disabled{background:#b9c2c0;cursor:not-allowed}
+  .submit.done{background:var(--done)}
+
+  .status{font-size:13px;text-align:center;margin-top:8px;min-height:18px}
+  .status.ok{color:var(--done)}
+  .status.err{color:#c0392b}
+
+  .empty{text-align:center;color:var(--muted);padding:40px 0;font-size:14px}
+</style>
+</head>
+<body>
+<header>
+  <h1>fit ビデオ補習</h1>
+  <p>動画を見たらチェック → 感想を書いて提出してね</p>
+</header>
+
+<div class="wrap">
+  <div class="tabs" id="tabs"></div>
+  <div id="list"></div>
+</div>
+
+<script>
+/* ============================================================
+   ① Supabase 接続設定
+   ============================================================ */
+const SUPABASE_URL = "https://crphhvuqzhotsewigujk.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNycGhodnVxemhvdHNld2lndWprIiwicm9sZSI6ImФ.PLACEHOLDER";
+
+/* ============================================================
+   ② 生徒の名前（実験台の子の名前をここに入れる）
+   ============================================================ */
+const STUDENT_NAME = "テスト生徒";
+
+/* ============================================================
+   ③ 動画リスト（ここに足していくだけで増やせます）
+       youtube: 動画ID（URLの v= の後ろ、または youtu.be/ の後ろ）
+       例) https://www.youtube.com/watch?v=ABC123  → "ABC123"
+   ============================================================ */
+const VIDEOS = {
+  chemistry: [
+    { id: "chem01", title: "化学①（サンプル）", youtube: "dQw4w9WgXcQ" },
+  ],
+  physics: [
+    { id: "phys01", title: "物理①（サンプル）", youtube: "dQw4w9WgXcQ" },
+  ],
+  math: [
+    { id: "math01", title: "数学①（サンプル）", youtube: "dQw4w9WgXcQ" },
+    { id: "math02", title: "数学②（サンプル）", youtube: "dQw4w9WgXcQ" },
+  ],
+};
+
+const SUBJECTS = [
+  { key:"chemistry", label:"化学" },
+  { key:"physics",   label:"物理" },
+  { key:"math",      label:"数学" },
+];
+
+const MAX_LEN = 40; // 感想の目安文字数（30字程度＋余裕）
+
+/* ============================================================ */
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let current = "chemistry";
+let submitted = {}; // video_id => true
+
+const tabsEl = document.getElementById("tabs");
+const listEl = document.getElementById("list");
+
+// タブ生成
+SUBJECTS.forEach(s=>{
+  const t = document.createElement("div");
+  t.className = "tab" + (s.key===current ? " active":"");
+  t.textContent = s.label;
+  t.onclick = ()=>{ current = s.key; render(); };
+  t.dataset.key = s.key;
+  tabsEl.appendChild(t);
+});
+
+// 既に提出済みのものを取得
+async function loadSubmitted(){
+  try{
+    const { data, error } = await sb
+      .from("homework_submissions")
+      .select("video_id")
+      .eq("student_name", STUDENT_NAME);
+    if(error) throw error;
+    submitted = {};
+    (data||[]).forEach(r=> submitted[r.video_id]=true );
+  }catch(e){ console.warn("提出履歴の取得に失敗:", e.message); }
+}
+
+function render(){
+  document.querySelectorAll(".tab").forEach(t=>{
+    t.classList.toggle("active", t.dataset.key===current);
+  });
+  const vids = VIDEOS[current] || [];
+  listEl.innerHTML = "";
+  if(vids.length===0){
+    listEl.innerHTML = '<div class="empty">まだ動画が登録されていません</div>';
+    return;
+  }
+  vids.forEach((v,i)=> listEl.appendChild(buildCard(v,i)) );
+}
+
+function buildCard(v,i){
+  const card = document.createElement("div");
+  card.className = "video-card";
+  const isDone = !!submitted[v.id];
+
+  card.innerHTML = `
+    <div class="video-head">
+      <div class="video-num">${i+1}本目</div>
+      <div class="video-title">${v.title}</div>
+    </div>
+    <div class="video-embed">
+      <iframe src="https://www.youtube.com/embed/${v.youtube}"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+        allowfullscreen></iframe>
+    </div>
+    <div class="video-body">
+      <div class="check-row${isDone?' on':''}">
+        <div class="check-box">${isDone?'✓':''}</div>
+        <div class="check-label">動画を最後まで見た</div>
+      </div>
+      <textarea placeholder="感想を書いてね（30字くらい）"${isDone?' disabled':''}></textarea>
+      <div class="counter">0 / ${MAX_LEN}</div>
+      <button class="submit${isDone?' done':''}"${isDone?' disabled':''}>
+        ${isDone?'提出済み ✓':'提出する'}
+      </button>
+      <div class="status"></div>
+    </div>
+  `;
+
+  const checkRow = card.querySelector(".check-row");
+  const checkBox = card.querySelector(".check-box");
+  const textarea = card.querySelector("textarea");
+  const counter  = card.querySelector(".counter");
+  const btn      = card.querySelector(".submit");
+  const status   = card.querySelector(".status");
+
+  let watched = isDone;
+
+  function refreshBtn(){
+    if(isDone) return;
+    btn.disabled = !(watched && textarea.value.trim().length>0);
+  }
+
+  if(!isDone){
+    checkRow.onclick = ()=>{
+      watched = !watched;
+      checkRow.classList.toggle("on", watched);
+      checkBox.textContent = watched ? "✓" : "";
+      refreshBtn();
+    };
+    textarea.oninput = ()=>{
+      const n = textarea.value.length;
+      counter.textContent = `${n} / ${MAX_LEN}`;
+      counter.classList.toggle("over", n>MAX_LEN);
+      refreshBtn();
+    };
+    btn.onclick = ()=> submit(v, textarea, btn, status, checkRow);
+    refreshBtn();
+  }
+
+  return card;
+}
+
+async function submit(v, textarea, btn, status, checkRow){
+  btn.disabled = true;
+  status.className = "status";
+  status.textContent = "送信中…";
+  try{
+    const { error } = await sb.from("homework_submissions").insert({
+      student_name: STUDENT_NAME,
+      subject: current,
+      video_id: v.id,
+      video_title: v.title,
+      watched: true,
+      comment: textarea.value.trim(),
+    });
+    if(error) throw error;
+    submitted[v.id] = true;
+    status.className = "status ok";
+    status.textContent = "提出しました！おつかれさま 🎉";
+    btn.textContent = "提出済み ✓";
+    btn.classList.add("done");
+    textarea.disabled = true;
+    checkRow.onclick = null;
+  }catch(e){
+    status.className = "status err";
+    status.textContent = "送信に失敗しました（"+e.message+"）";
+    btn.disabled = false;
+  }
+}
+
+// 起動
+(async ()=>{
+  await loadSubmitted();
+  render();
+})();
+</script>
+</body>
+</html>
