@@ -1176,6 +1176,17 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <!-- 自分が依頼したToDo -->
       <div class="section-title" style="margin-top:12px">📤 自分が依頼したToDo</div>
       <div id="sm-sent-todos" style="display:flex;flex-direction:column;gap:8px"></div>
+
+      <!-- 全体ToDo一覧 -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px">
+        <div class="section-title" style="margin:0">📋 全体ToDo一覧</div>
+        <div style="display:flex;gap:6px">
+          <button onclick="filterAllTodos('all',this)" class="todo-filter-btn active" style="padding:4px 10px;font-size:11px;border-radius:20px;border:1px solid var(--orange);background:var(--orange);color:white;cursor:pointer;font-family:'Noto Sans JP',sans-serif">全て</button>
+          <button onclick="filterAllTodos('pending',this)" class="todo-filter-btn" style="padding:4px 10px;font-size:11px;border-radius:20px;border:1px solid var(--border);background:white;color:var(--muted);cursor:pointer;font-family:'Noto Sans JP',sans-serif">未完了</button>
+          <button onclick="filterAllTodos('done',this)" class="todo-filter-btn" style="padding:4px 10px;font-size:11px;border-radius:20px;border:1px solid var(--border);background:white;color:var(--muted);cursor:pointer;font-family:'Noto Sans JP',sans-serif">完了</button>
+        </div>
+      </div>
+      <div id="sm-all-todos" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
       <!-- 期日変更モーダル -->
       <div id="todo-due-edit-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:500;align-items:center;justify-content:center">
         <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:360px">
@@ -5385,7 +5396,7 @@ function switchStaffMenuTab(tab, el) {
     btn.style.borderBottomColor = t === tab ? 'var(--orange)' : 'transparent';
   });
   if (tab === 'report') loadStaffReports();
-  if (tab === 'todo') { loadMyTodos(); loadSentTodos(); loadStaffSelect(); }
+  if (tab === 'todo') { loadMyTodos(); loadSentTodos(); loadStaffSelect(); loadAllTodos(); }
   if (tab === 'yesterday') loadYesterdayAttendance();
   if (tab === 'student-view') loadStudentSelectForView();
   if (tab === 'settings') loadSettingsTab();
@@ -5786,6 +5797,63 @@ async function saveTodoDue() {
     closeTodoDueEdit();
     loadSentTodos();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+
+// ===== 全体ToDo一覧 =====
+let allTodosData = [];
+let allTodosFilter = 'all';
+
+async function loadAllTodos() {
+  const todos = await sbGet('staff_todos',
+    'order=created_at.desc&select=*,from:from_staff_id(name),to:to_staff_id(name)') || [];
+  allTodosData = todos;
+  renderAllTodos();
+}
+
+function filterAllTodos(filter, btn) {
+  allTodosFilter = filter;
+  document.querySelectorAll('.todo-filter-btn').forEach(b => {
+    const isActive = b === btn;
+    b.style.background = isActive ? 'var(--orange)' : 'white';
+    b.style.color = isActive ? 'white' : 'var(--muted)';
+    b.style.borderColor = isActive ? 'var(--orange)' : 'var(--border)';
+    b.classList.toggle('active', isActive);
+  });
+  renderAllTodos();
+}
+
+function renderAllTodos() {
+  const el = document.getElementById('sm-all-todos');
+  if (!el) return;
+
+  let filtered = allTodosData;
+  if (allTodosFilter === 'pending') filtered = allTodosData.filter(t => !t.is_done);
+  if (allTodosFilter === 'done') filtered = allTodosData.filter(t => t.is_done);
+
+  if (!filtered.length) {
+    el.innerHTML = '<div class="card-box" style="font-size:12px;color:var(--muted);text-align:center">ToDoがありません</div>';
+    return;
+  }
+
+  const today = getTodayJST();
+  el.innerHTML = filtered.map(t => {
+    const isOverdue = !t.is_done && t.due_date && t.due_date < today;
+    const fromName = t.from?.name || '—';
+    const toName = t.to?.name || '—';
+    return '<div style="background:var(--surface);border:1px solid ' + (t.is_done ? '#A8D891' : isOverdue ? '#F5BABA' : 'var(--border)') + ';border-radius:8px;padding:10px 13px">' +
+      '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:4px">' +
+        '<div style="font-size:13px;font-weight:500;color:' + (t.is_done ? 'var(--muted)' : 'var(--text)') + ';' + (t.is_done ? 'text-decoration:line-through' : '') + ';flex:1">' + t.title + '</div>' +
+        '<span style="flex-shrink:0;font-size:10px;padding:2px 8px;border-radius:10px;background:' + (t.is_done ? 'var(--green-l)' : isOverdue ? 'var(--red-l)' : 'var(--orange-l)') + ';color:' + (t.is_done ? 'var(--green-d)' : isOverdue ? 'var(--red)' : 'var(--orange-d)') + '">' + (t.is_done ? '完了' : isOverdue ? '期限超' : '未完了') + '</span>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+        '<span style="font-size:11px;color:var(--muted)">📤 ' + fromName + ' → 📥 ' + toName + '</span>' +
+        (t.due_date ? '<span style="font-size:11px;color:' + (isOverdue ? 'var(--red)' : 'var(--muted)') + '">期限：' + t.due_date.replace(/-/g, '/') + '</span>' : '') +
+        (t.done_at ? '<span style="font-size:11px;color:var(--green-d)">✅ ' + new Date(t.done_at).toLocaleDateString('ja-JP', {month:'numeric',day:'numeric'}) + '完了</span>' : '') +
+      '</div>' +
+      (t.detail ? '<div style="font-size:11px;color:var(--muted);margin-top:4px;padding:4px 6px;background:var(--surface2);border-radius:4px">' + t.detail + '</div>' : '') +
+    '</div>';
+  }).join('');
 }
 
 </script>
