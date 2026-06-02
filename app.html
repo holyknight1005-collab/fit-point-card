@@ -248,7 +248,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <button id="pause-btn" onclick="togglePause()" style="padding:12px;background:white;border:1.5px solid var(--orange);border-radius:var(--radius-sm);color:var(--orange-d);font-family:'Noto Sans JP',sans-serif;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
           <span>⏸</span> 一時停止
         </button>
-        <button onclick="doCheckout()" style="padding:12px;background:linear-gradient(135deg,#2D5FA6,#1A3D7A);border:none;border-radius:var(--radius-sm);color:white;font-family:'Noto Sans JP',sans-serif;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
+        <button onclick="confirmCheckout()" style="padding:12px;background:linear-gradient(135deg,#2D5FA6,#1A3D7A);border:none;border-radius:var(--radius-sm);color:white;font-family:'Noto Sans JP',sans-serif;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">
           <span>🚪</span> チェックアウト
         </button>
       </div>
@@ -446,6 +446,15 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <div style="background:rgba(255,255,255,0.18);border-radius:10px;padding:8px;text-align:center"><div style="font-family:'DM Mono',monospace;font-size:18px;font-weight:500" id="detail-year-count"></div><div style="font-size:10px;opacity:0.85">今年度</div></div>
       </div>
     </div>
+    <!-- チェックアウト復旧（当日チェックイン済みの場合のみ表示） -->
+    <div id="detail-restore-section" style="display:none">
+      <div class="section-title">⚠️ チェックアウト復旧</div>
+      <div class="card-box" style="background:var(--orange-l);border:1.5px solid var(--orange)">
+        <div style="font-size:12px;color:var(--orange-d);margin-bottom:10px">本日チェックアウト済みですが、間違いの場合は復旧できます。</div>
+        <button onclick="restoreCheckin()" style="width:100%;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔄 チェックイン中に戻す</button>
+      </div>
+    </div>
+
     <div>
       <div class="section-title">今月のカレンダー</div>
       <div class="card-box"><div class="calendar-grid" id="detail-calendar"></div></div>
@@ -2375,6 +2384,8 @@ function renderDetailHistory(tab) {
     loadDetailQuizLogs();
     loadDetailMissionLogs();
     loadDetailVocabLogs();
+    // 今日チェックアウト済みか確認
+    checkDetailRestore(s);
     loadDetailStudySummary('week');
     if (detailStudent.school === '松山北') {
       document.getElementById('detail-math-section').style.display = 'block';
@@ -6131,6 +6142,84 @@ async function staffForceCheckout(studentId, studentName, withPoints) {
   } catch(e) {
     hideLoading();
     showToast('エラー: ' + e.message, 'error');
+  }
+}
+
+
+// ===== チェックアウト確認・復旧 =====
+function confirmCheckout() {
+  const elapsed = checkinStartTime ? Math.floor((Date.now() - checkinStartTime.getTime()) / 1000) : 0;
+  const h = Math.floor(elapsed / 3600);
+  const m = Math.floor((elapsed % 3600) / 60);
+  const pts = Math.floor(elapsed / 1800);
+  const timeStr = h > 0 ? h + '時間' + m + '分' : m + '分';
+  if (confirm('チェックアウトしますか？\n\n在室時間：' + timeStr + '\n獲得ポイント：' + pts + 'pt\n\n※チェックアウト後は取り消せません')) {
+    doCheckout();
+  }
+}
+
+// ===== スタッフ側：チェックアウト復旧 =====
+async function restoreCheckin() {
+  if (!detailStudent) return;
+  if (!confirm(detailStudent.name + 'さんのチェックアウトを取り消してチェックイン中に戻しますか？')) return;
+
+  showLoading('復旧中...');
+  try {
+    const today = new Date().toISOString().split('T')[0];
+
+    // 今日のcheckinレコードのcheckout_timeをクリア
+    const checkins = await sbGet('checkins',
+      'student_id=eq.' + detailStudent.id + '&checkin_date=eq.' + today + '&order=created_at.desc&limit=1&select=id,points_awarded');
+    if (!checkins || !checkins.length) {
+      hideLoading(); showToast('チェックイン記録が見つかりません', 'error'); return;
+    }
+
+    await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/checkins?id=eq.' + checkins[0].id, {
+      method: 'PATCH',
+      headers: { 'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU', 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ checkout_time: null, stay_minutes: null })
+    });
+
+    // チェックアウト時のポイントを取り消す
+    const ptLogs = await sbGet('point_logs',
+      'student_id=eq.' + detailStudent.id + '&type=eq.checkin&order=created_at.desc&limit=1&select=id,points');
+    if (ptLogs && ptLogs.length) {
+      // ポイントを減算
+      const ptsToRemove = ptLogs[0].points || 0;
+      if (ptsToRemove > 0) {
+        const newPts = Math.max(0, detailStudent.points - ptsToRemove);
+        await sbPatch('students', 'id=eq.' + detailStudent.id, { points: newPts });
+        // ポイントログを削除
+        await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/point_logs?id=eq.' + ptLogs[0].id, {
+          method: 'DELETE',
+          headers: { 'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU', 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU' }
+        });
+      }
+    }
+
+    hideLoading();
+    showToast('✅ チェックイン中に戻しました', 'success');
+    document.getElementById('detail-restore-section').style.display = 'none';
+    // 来塾一覧を更新
+    loadDailyAttendance();
+  } catch(e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
+}
+
+
+async function checkDetailRestore(s) {
+  const today = new Date().toISOString().split('T')[0];
+  const checkins = await sbGet('checkins',
+    'student_id=eq.' + s.id + '&checkin_date=eq.' + today + '&select=checkout_time&order=created_at.desc&limit=1');
+  const restoreSection = document.getElementById('detail-restore-section');
+  if (!restoreSection) return;
+  // 今日チェックイン済み かつ チェックアウト済みの場合のみ表示
+  if (checkins && checkins.length && checkins[0].checkout_time) {
+    restoreSection.style.display = 'block';
+  } else {
+    restoreSection.style.display = 'none';
   }
 }
 
