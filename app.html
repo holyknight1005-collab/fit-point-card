@@ -436,7 +436,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
   <div class="staff-content">
     <div style="background:linear-gradient(135deg,var(--orange),var(--orange-d));border-radius:var(--radius);padding:18px 20px;color:white;box-shadow:0 4px 16px rgba(245,166,35,0.35)">
       <div style="display:flex;align-items:center;gap:14px">
-        <div style="width:48px;height:48px;border-radius:50%;background:rgba(255,255,255,0.25);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700" id="detail-avatar"></div>
+        <div style="position:relative;flex-shrink:0;overflow:visible"><div style="width:60px;height:60px;border-radius:50%;background:rgba(255,255,255,0.25);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;background-size:cover;background-position:center;overflow:hidden" id="detail-avatar"></div><label for="detail-photo-input" style="position:absolute;bottom:-4px;right:-4px;width:24px;height:24px;background:#333;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;border:2px solid white;font-size:12px;z-index:10">📷</label><input type="file" id="detail-photo-input" accept="image/*" style="display:none" onchange="uploadStudentPhoto(event)"></div>
         <div style="flex:1"><div style="font-size:16px;font-weight:700" id="detail-fullname"></div><div style="font-size:11px;opacity:0.85;margin-top:2px" id="detail-email-no"></div></div>
         <div style="text-align:right"><div style="font-family:'DM Mono',monospace;font-size:26px;font-weight:500" id="detail-pts"></div><div style="font-size:10px;opacity:0.85">累計ポイント</div></div>
       </div>
@@ -1775,19 +1775,14 @@ function initStudentScreen() {
   const savedId = localStorage.getItem('fit_checkin_student_id');
   const hasSavedCheckin = savedStart && savedId === s.id && new Date(savedStart).toDateString() === new Date().toDateString();
   if (hasSavedCheckin) {
-    // チェックイン中として復元（checkResumeCheckinより先に表示）
+    // localStorageにチェックイン記録あり → チェックイン中として復元
     btn.style.display = 'none';
     document.getElementById('checkin-active-box').style.display = 'block';
     document.getElementById('checkout-done-box').style.display = 'none';
   } else if (allCheckins.includes(today)) {
-    // 今日チェックイン済みだがlocalStorageなし → チェックアウトできるよう表示
-    // チェックイン時刻不明なので現在時刻をセット
-    const fallbackStart = new Date();
-    localStorage.setItem('fit_checkin_start', fallbackStart.toISOString());
-    localStorage.setItem('fit_checkin_student_id', s.id);
-    btn.style.display = 'none';
-    document.getElementById('checkin-active-box').style.display = 'block';
-    document.getElementById('checkout-done-box').style.display = 'none';
+    // 今日チェックイン済み（localStorageなし=チェックアウト済みか別端末）
+    // DBで確認して判断
+    checkCheckinStatus(s.id, btn);
   } else {
     btn.disabled = true;
     btn.style.display = 'block';
@@ -2119,6 +2114,15 @@ async function openStudentDetail(idx) {
     const yearCount = detailCheckins.filter(d => new Date(d) >= april).length;
     document.getElementById('detail-name-header').textContent = s.name;
     document.getElementById('detail-avatar').textContent = s.name[0];
+    // 写真があれば表示
+    if (s.photo_url) {
+      const avatarEl = document.getElementById('detail-avatar');
+      const imgEl = document.createElement('img');
+      imgEl.src = s.photo_url;
+      imgEl.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:50%;position:absolute;top:0;left:0';
+      avatarEl.parentElement.style.position = 'relative';
+      avatarEl.parentElement.appendChild(imgEl);
+    }
     document.getElementById('detail-fullname').textContent = s.name;
     document.getElementById('detail-email-no').textContent = s.email;
     document.getElementById('detail-pts').textContent = s.points.toLocaleString() + 'pt';
@@ -6220,6 +6224,124 @@ async function checkDetailRestore(s) {
     restoreSection.style.display = 'block';
   } else {
     restoreSection.style.display = 'none';
+  }
+}
+
+
+// ===== 生徒写真アップロード =====
+async function uploadStudentPhoto(event) {
+  const file = event.target.files[0];
+  if (!file || !detailStudent) return;
+
+  // 圧縮処理（Canvas使用）
+  showLoading('写真をアップロード中...');
+  try {
+    const compressed = await compressImage(file, 300, 300, 0.7);
+    const fileName = 'student-' + detailStudent.id + '.jpg';
+
+    // Supabaseストレージにアップロード
+    const res = await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/storage/v1/object/student-photos/' + fileName, {
+      method: 'POST',
+      headers: {
+        'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU',
+        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU',
+        'Content-Type': 'image/jpeg',
+        'x-upsert': 'true'
+      },
+      body: compressed
+    });
+
+    if (!res.ok) throw new Error('アップロード失敗');
+
+    const photoUrl = 'https://bqdvmfskpnlshqljwhqz.supabase.co/storage/v1/object/public/student-photos/' + fileName + '?t=' + Date.now();
+
+    // studentsテーブルにphoto_urlを保存
+    await sbPatch('students', 'id=eq.' + detailStudent.id, { photo_url: photoUrl });
+    detailStudent.photo_url = photoUrl;
+
+    // アバターを写真に更新
+    const avatarEl = document.getElementById('detail-avatar');
+    avatarEl.textContent = '';
+    avatarEl.style.backgroundImage = 'url(' + photoUrl + ')';
+    avatarEl.style.backgroundSize = 'cover';
+    avatarEl.style.backgroundPosition = 'center';
+
+    // 生徒一覧のアバターも更新
+    const listAvatar = document.querySelector('[data-student-id="' + detailStudent.id + '"] .student-avatar');
+    if (listAvatar) {
+      listAvatar.textContent = '';
+      listAvatar.style.backgroundImage = 'url(' + photoUrl + ')';
+      listAvatar.style.backgroundSize = 'cover';
+      listAvatar.style.backgroundPosition = 'center';
+    }
+
+    hideLoading();
+    showToast('✅ 写真を登録しました', 'success');
+  } catch(e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
+}
+
+function compressImage(file, maxW, maxH, quality) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let w = img.width, h = img.height;
+        if (w > h) { if (w > maxW) { h = h * maxW / w; w = maxW; } }
+        else { if (h > maxH) { w = w * maxH / h; h = maxH; } }
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob(resolve, 'image/jpeg', quality);
+      };
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+
+async function checkCheckinStatus(studentId, btn) {
+  const today = getTodayJST();
+  try {
+    const checkins = await sbGet('checkins',
+      'student_id=eq.' + studentId + '&checkin_date=eq.' + today + '&select=checkout_time,created_at&order=created_at.desc&limit=1');
+    if (!checkins || !checkins.length) {
+      // チェックイン記録なし
+      btn.disabled = true;
+      btn.style.display = 'block';
+      btn.innerHTML = '✅ チェックイン<span class="btn-sub">自習室で押してポイントゲット！</span>';
+      return;
+    }
+    const latest = checkins[0];
+    if (latest.checkout_time) {
+      // チェックアウト済み → 完了状態を表示
+      document.getElementById('checkin-btn').style.display = 'none';
+      document.getElementById('checkin-active-box').style.display = 'none';
+      document.getElementById('checkout-done-box').style.display = 'block';
+      document.getElementById('checkout-summary').textContent = '本日のチェックアウト完了済みです';
+    } else {
+      // チェックアウト未済（別端末でチェックインした等）
+      // localStorageにチェックイン時刻を設定してチェックアウト可能にする
+      const inTime = new Date(latest.created_at);
+      localStorage.setItem('fit_checkin_start', inTime.toISOString());
+      localStorage.setItem('fit_checkin_student_id', studentId);
+      checkinStartTime = inTime;
+      btn.style.display = 'none';
+      document.getElementById('checkin-active-box').style.display = 'block';
+      document.getElementById('checkout-done-box').style.display = 'none';
+      showCheckinActive(inTime);
+    }
+  } catch(e) {
+    // エラー時はチェックイン済みとして表示
+    btn.disabled = true;
+    btn.style.display = 'block';
+    btn.innerHTML = '✅ 本日はチェックイン済み<span class="btn-sub">また明日も来てね！</span>';
   }
 }
 
