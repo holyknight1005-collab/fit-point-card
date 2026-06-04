@@ -147,6 +147,21 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 </style>
 </head>
 <body>
+<!-- ビデオ補習 申請モーダル -->
+<div id="makeup-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:600;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:380px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <div style="font-size:15px;font-weight:700;color:#7B2D8B">📺 ビデオ補習の申請</div>
+      <button onclick="closeMakeupModal()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="makeup-modal-date" style="font-size:12px;color:var(--muted);margin-bottom:12px"></div>
+    <div id="makeup-modal-list" style="display:flex;flex-direction:column;gap:8px"></div>
+    <div id="makeup-modal-empty" style="display:none;font-size:12px;color:var(--muted);text-align:center;padding:12px">この日に補習を申請できる授業はありません</div>
+    <div style="font-size:10px;color:var(--muted);margin:12px 0;line-height:1.5">※ 欠席したコマを選んで申請できます。スタッフが承認すると1コマにつき +2pt が付与されます。</div>
+    <button id="makeup-modal-submit" onclick="submitMakeupSelected()" style="width:100%;padding:12px;background:#7B2D8B;border:none;border-radius:10px;color:#fff;font-weight:700;font-size:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">選んだ授業を申請する</button>
+  </div>
+</div>
+
 <div class="loading-overlay hidden" id="loading">
   <div class="spinner"></div>
   <div class="loading-text" id="loading-text">読み込み中...</div>
@@ -281,8 +296,8 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <div style="display:flex;gap:12px;justify-content:center;margin-top:10px;flex-wrap:wrap">
           <span style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--green-d)"></span>出席</span>
           <span style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#C75050"></span>欠席</span>
-          <span style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#7B2D8B"></span>補習済み</span>
-          <span style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#E3D0EC;border:1px dashed #7B2D8B"></span>申請中</span>
+          <span style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#7B2D8B"></span>補習完了</span>
+          <span style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#E3D0EC;border:1px dashed #7B2D8B"></span>補習途中・申請中</span>
           <span style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#B8C4D0"></span>予定</span>
         </div>
         <div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※ 授業日に来塾していれば「出席」と表示されます<br>※ 授業日（出席・欠席どちらも）をタップすると、ビデオ補習を申請できます</div>
@@ -394,7 +409,15 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div class="card-box">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
           <input type="date" id="date-picker" class="form-select" style="flex:1" onchange="loadDailyAttendance()">
-          <div style="font-size:13px;font-weight:700;color:var(--orange-d);white-space:nowrap" id="daily-count-label"></div>
+          <div style="font-size:13px;font-weight:700;color:var(--orange-d);white-space:nowrap;cursor:pointer;user-select:none" id="daily-count-label" onclick="toggleDailyFilter()"></div>
+        </div>
+        <div id="daily-filter-panel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;margin-bottom:12px">
+          <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px">絞り込み</div>
+          <div class="filter-bar" id="daily-filter-school" style="margin-bottom:6px"></div>
+          <div class="filter-bar" id="daily-filter-grade" style="margin-bottom:6px"></div>
+          <select class="form-select" id="daily-filter-class" onchange="applyDailyFilter()" style="width:100%;font-size:12px;padding:8px 10px">
+            <option value="">📚 授業で絞り込み（全授業）</option>
+          </select>
         </div>
         <div id="daily-attendance-list" style="display:flex;flex-direction:column;gap:6px"></div>
       </div>
@@ -2518,6 +2541,12 @@ function initDatePicker() {
   loadDailyAttendance();
 }
 
+// 日別来塾者：取得データを保持してクライアント側で絞り込み
+let dailyCheckins = [];          // [{student_id, created_at, checkout_time, stay_minutes}]
+let dailyStudentMap = {};        // id -> student
+let dailyEnrollMap = {};         // student_id -> Set(class_master_id)
+let dailyFilter = { school: '全員', grade: '全学年', classId: '' };
+
 async function loadDailyAttendance() {
   const picker = document.getElementById('date-picker');
   if (!picker) return;
@@ -2531,77 +2560,168 @@ async function loadDailyAttendance() {
   listEl.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px">読み込み中...</div>';
 
   try {
-    // checkin_time・checkout_time・stay_minutesも取得
     const checkins = await sbGet('checkins',
       'checkin_date=eq.' + date + '&select=student_id,created_at,checkout_time,stay_minutes&order=created_at');
     if (!checkins || checkins.length === 0) {
+      dailyCheckins = [];
       labelEl.textContent = '0人';
+      document.getElementById('daily-filter-panel').style.display = 'none';
       listEl.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:12px">この日の来塾者はいません</div>';
       return;
     }
 
     const ids = checkins.map(c => c.student_id);
     const students = await sbGet('students', 'id=in.(' + ids.join(',') + ')&select=id,name,school,grade,points');
-    const studentMap = {};
-    (students||[]).forEach(s => { studentMap[s.id] = s; });
+    dailyStudentMap = {};
+    (students||[]).forEach(s => { dailyStudentMap[s.id] = s; });
 
-    labelEl.textContent = checkins.length + '人';
+    // 受講授業（授業フィルタ用）
+    dailyEnrollMap = {};
+    try {
+      const enrolls = await sbGet('class_enrollments',
+        'student_id=in.(' + ids.join(',') + ')&select=student_id,class_master_id,class_master(id,name,subject)') || [];
+      const classOpts = {};
+      enrolls.forEach(e => {
+        if (!dailyEnrollMap[e.student_id]) dailyEnrollMap[e.student_id] = new Set();
+        dailyEnrollMap[e.student_id].add(e.class_master_id);
+        const cm = e.class_master;
+        if (cm) classOpts[e.class_master_id] = (cm.subject ? '【' + cm.subject + '】' : '') + cm.name;
+      });
+      // 授業セレクト構築
+      const sel = document.getElementById('daily-filter-class');
+      if (sel) {
+        const cur = dailyFilter.classId;
+        sel.innerHTML = '<option value="">📚 授業で絞り込み（全授業）</option>' +
+          Object.entries(classOpts).map(([id,name]) => '<option value="' + id + '">' + name + '</option>').join('');
+        sel.value = cur;
+      }
+    } catch(e) { /* enrollmentsが取れなくても続行 */ }
 
-    // 在室中の人数
-    const inRoom = checkins.filter(c => !c.checkout_time).length;
-    if (inRoom > 0) {
-      labelEl.textContent = checkins.length + '人（在室中：' + inRoom + '人）';
-    }
-
-    listEl.innerHTML = checkins.map(c => {
-      const s = studentMap[c.student_id] || {};
-      const school = s.school || '';
-      const grade = s.grade || '';
-      const tag = (school || grade)
-        ? '<span style="font-size:10px;color:var(--muted)">' + school + ' ' + grade + '</span>'
-        : '';
-
-      // チェックイン時刻
-      const inTime = c.created_at ? new Date(c.created_at) : null;
-      const inStr = inTime ? String(inTime.getHours()).padStart(2,'0') + ':' + String(inTime.getMinutes()).padStart(2,'0') : '—';
-
-      // チェックアウト時刻
-      const outTime = c.checkout_time ? new Date(c.checkout_time) : null;
-      const outStr = outTime ? String(outTime.getHours()).padStart(2,'0') + ':' + String(outTime.getMinutes()).padStart(2,'0') : null;
-
-      // 在室時間
-      const stayMin = c.stay_minutes;
-      const stayStr = stayMin ? Math.floor(stayMin/60) + 'h' + (stayMin%60) + 'm' : null;
-
-      const isInRoom = !c.checkout_time;
-      const sid = c.student_id;
-      const sname = (s.name||'不明').replace(/'/g, '');
-
-      return '<div style="background:' + (isInRoom ? 'var(--orange-l)' : 'var(--surface)') + ';border:1px solid ' + (isInRoom ? 'var(--orange)' : 'var(--border)') + ';border-radius:var(--radius-sm);padding:10px 13px">' +
-        '<div style="display:flex;align-items:center;gap:10px">' +
-          '<div style="width:32px;height:32px;border-radius:50%;background:' + (isInRoom ? 'linear-gradient(135deg,var(--orange),var(--orange-d))' : 'var(--surface2)') + ';display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:' + (isInRoom ? 'white' : 'var(--muted)') + ';flex-shrink:0">' + (s.name||'?')[0] + '</div>' +
-          '<div style="flex:1;min-width:0">' +
-            '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-              '<span style="font-size:13px;font-weight:500;color:var(--text)">' + (s.name||'不明') + '</span>' +
-              tag +
-              (isInRoom ? '<span style="font-size:10px;background:var(--orange);color:white;padding:1px 6px;border-radius:10px">在室中</span>' : '') +
-            '</div>' +
-            '<div style="display:flex;align-items:center;gap:8px;margin-top:3px;flex-wrap:wrap">' +
-              '<span style="font-size:11px;color:var(--muted)">IN: <span style="color:var(--text);font-family:DM Mono,monospace">' + inStr + '</span></span>' +
-              (outStr ? '<span style="font-size:11px;color:var(--muted)">OUT: <span style="color:var(--text);font-family:DM Mono,monospace">' + outStr + '</span></span>' : '<span style="font-size:11px;color:var(--orange-d)">OUT: 未チェックアウト</span>') +
-              (stayStr ? '<span style="font-size:11px;color:var(--muted)">在室: <span style="color:var(--green-d);font-weight:700">' + stayStr + '</span></span>' : '') +
-            '</div>' +
-          '</div>' +
-        '</div>' +
-        (isInRoom ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">' +
-          '<button data-sid="' + sid + '" data-sname="' + sname + '" onclick="staffForceCheckout(this.dataset.sid,this.dataset.sname,true)" style="padding:8px;background:linear-gradient(135deg,#3B6D11,#5A9E3C);border:none;border-radius:6px;color:white;font-size:11px;font-weight:700;cursor:pointer">✅ ポイントあり チェックアウト</button>' +
-          '<button data-sid="' + sid + '" data-sname="' + sname + '" onclick="staffForceCheckout(this.dataset.sid,this.dataset.sname,false)" style="padding:8px;background:#f5f0e8;border:1px solid #ddd;border-radius:6px;color:#888;font-size:11px;font-weight:700;cursor:pointer">🚫 ポイントなし チェックアウト</button>' +
-        '</div>' : '') +
-      '</div>';
-    }).join('');
+    dailyCheckins = checkins;
+    buildDailyFilterButtons();
+    renderDailyAttendance();
   } catch(e) {
     listEl.innerHTML = '<div style="text-align:center;color:var(--red);font-size:12px;padding:8px">取得エラー: ' + e.message + '</div>';
   }
+}
+
+function toggleDailyFilter() {
+  const p = document.getElementById('daily-filter-panel');
+  if (!p) return;
+  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+
+function buildDailyFilterButtons() {
+  // この日の来塾者に存在する学校・学年だけボタン化
+  const schools = new Set(), grades = new Set();
+  dailyCheckins.forEach(c => {
+    const s = dailyStudentMap[c.student_id];
+    if (s) { if (s.school) schools.add(s.school); if (s.grade) grades.add(s.grade); }
+  });
+  const SCHOOL_ORDER = ['松山東','松山南','松山北','松山中央','松山西','愛大附属','済美','SSS','その他'];
+  const GRADE_ORDER = ['1年','2年','3年'];
+  const schoolList = SCHOOL_ORDER.filter(x => schools.has(x));
+  const gradeList = GRADE_ORDER.filter(x => grades.has(x));
+
+  const schoolEl = document.getElementById('daily-filter-school');
+  const gradeEl = document.getElementById('daily-filter-grade');
+  if (schoolEl) {
+    schoolEl.innerHTML = '<button class="filter-btn' + (dailyFilter.school==='全員'?' active':'') + '" onclick="setDailyFilter(\'school\',\'全員\',this)">全員</button>' +
+      schoolList.map(s => '<button class="filter-btn' + (dailyFilter.school===s?' active':'') + '" onclick="setDailyFilter(\'school\',\'' + s + '\',this)">' + s + '</button>').join('');
+  }
+  if (gradeEl) {
+    gradeEl.innerHTML = '<button class="filter-btn' + (dailyFilter.grade==='全学年'?' active':'') + '" onclick="setDailyFilter(\'grade\',\'全学年\',this)">全学年</button>' +
+      gradeList.map(g => '<button class="filter-btn' + (dailyFilter.grade===g?' active':'') + '" onclick="setDailyFilter(\'grade\',\'' + g + '\',this)">' + g + '</button>').join('');
+  }
+}
+
+function setDailyFilter(type, val, el) {
+  dailyFilter[type] = val;
+  const barId = type === 'school' ? 'daily-filter-school' : 'daily-filter-grade';
+  document.querySelectorAll('#' + barId + ' .filter-btn').forEach(b => b.classList.remove('active'));
+  if (el) el.classList.add('active');
+  renderDailyAttendance();
+}
+
+function applyDailyFilter() {
+  dailyFilter.classId = document.getElementById('daily-filter-class').value;
+  renderDailyAttendance();
+}
+
+function renderDailyAttendance() {
+  const listEl = document.getElementById('daily-attendance-list');
+  const labelEl = document.getElementById('daily-count-label');
+  if (!listEl || !labelEl) return;
+
+  // フィルタ適用
+  const filtered = dailyCheckins.filter(c => {
+    const s = dailyStudentMap[c.student_id] || {};
+    if (dailyFilter.school !== '全員' && s.school !== dailyFilter.school) return false;
+    if (dailyFilter.grade !== '全学年' && s.grade !== dailyFilter.grade) return false;
+    if (dailyFilter.classId) {
+      const set = dailyEnrollMap[c.student_id];
+      if (!set || !set.has(dailyFilter.classId)) return false;
+    }
+    return true;
+  });
+
+  // ラベル（在室中人数は全体ベースで表示）
+  const totalInRoom = dailyCheckins.filter(c => !c.checkout_time).length;
+  const isFiltered = dailyFilter.school !== '全員' || dailyFilter.grade !== '全学年' || dailyFilter.classId;
+  let label = dailyCheckins.length + '人';
+  if (totalInRoom > 0) label = dailyCheckins.length + '人（在室中：' + totalInRoom + '人）';
+  if (isFiltered) label = '▼ ' + filtered.length + ' / ' + label;
+  else label = '▼ ' + label;
+  labelEl.textContent = label;
+
+  if (!filtered.length) {
+    listEl.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:12px">条件に合う来塾者はいません</div>';
+    return;
+  }
+
+  listEl.innerHTML = filtered.map(c => {
+    const s = dailyStudentMap[c.student_id] || {};
+    const school = s.school || '';
+    const grade = s.grade || '';
+    const tag = (school || grade)
+      ? '<span style="font-size:10px;color:var(--muted)">' + school + ' ' + grade + '</span>'
+      : '';
+
+    const inTime = c.created_at ? new Date(c.created_at) : null;
+    const inStr = inTime ? String(inTime.getHours()).padStart(2,'0') + ':' + String(inTime.getMinutes()).padStart(2,'0') : '—';
+
+    const outTime = c.checkout_time ? new Date(c.checkout_time) : null;
+    const outStr = outTime ? String(outTime.getHours()).padStart(2,'0') + ':' + String(outTime.getMinutes()).padStart(2,'0') : null;
+
+    const stayMin = c.stay_minutes;
+    const stayStr = stayMin ? Math.floor(stayMin/60) + 'h' + (stayMin%60) + 'm' : null;
+
+    const isInRoom = !c.checkout_time;
+    const sid = c.student_id;
+    const sname = (s.name||'不明').replace(/'/g, '');
+
+    return '<div style="background:' + (isInRoom ? 'var(--orange-l)' : 'var(--surface)') + ';border:1px solid ' + (isInRoom ? 'var(--orange)' : 'var(--border)') + ';border-radius:var(--radius-sm);padding:10px 13px">' +
+      '<div style="display:flex;align-items:center;gap:10px">' +
+        '<div style="width:32px;height:32px;border-radius:50%;background:' + (isInRoom ? 'linear-gradient(135deg,var(--orange),var(--orange-d))' : 'var(--surface2)') + ';display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:' + (isInRoom ? 'white' : 'var(--muted)') + ';flex-shrink:0">' + (s.name||'?')[0] + '</div>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+            '<span style="font-size:13px;font-weight:500;color:var(--text)">' + (s.name||'不明') + '</span>' +
+            tag +
+            (isInRoom ? '<span style="font-size:10px;background:var(--orange);color:white;padding:1px 6px;border-radius:10px">在室中</span>' : '') +
+          '</div>' +
+          '<div style="display:flex;align-items:center;gap:8px;margin-top:3px;flex-wrap:wrap">' +
+            '<span style="font-size:11px;color:var(--muted)">IN: <span style="color:var(--text);font-family:DM Mono,monospace">' + inStr + '</span></span>' +
+            (outStr ? '<span style="font-size:11px;color:var(--muted)">OUT: <span style="color:var(--text);font-family:DM Mono,monospace">' + outStr + '</span></span>' : '<span style="font-size:11px;color:var(--orange-d)">OUT: 未チェックアウト</span>') +
+            (stayStr ? '<span style="font-size:11px;color:var(--muted)">在室: <span style="color:var(--green-d);font-weight:700">' + stayStr + '</span></span>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      (isInRoom ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">' +
+        '<button data-sid="' + sid + '" data-sname="' + sname + '" onclick="staffForceCheckout(this.dataset.sid,this.dataset.sname,true)" style="padding:8px;background:linear-gradient(135deg,#3B6D11,#5A9E3C);border:none;border-radius:6px;color:white;font-size:11px;font-weight:700;cursor:pointer">✅ ポイントあり チェックアウト</button>' +
+        '<button data-sid="' + sid + '" data-sname="' + sname + '" onclick="staffForceCheckout(this.dataset.sid,this.dataset.sname,false)" style="padding:8px;background:#f5f0e8;border:1px solid #ddd;border-radius:6px;color:#888;font-size:11px;font-weight:700;cursor:pointer">🚫 ポイントなし チェックアウト</button>' +
+      '</div>' : '') +
+    '</div>';
+  }).join('');
 }
 
 function switchDetailTab(tab, el) { if (tab !== 'monthly') detailMonthOffset = 0; document.querySelectorAll('#screen-staff-detail .tab-btn').forEach(b => b.classList.remove('active')); el.classList.add('active'); renderDetailHistory(tab); }
@@ -6797,6 +6917,7 @@ let attendanceMonthOffset = 0;        // 0=今月, -1=先月, +1=来月
 let myAttendanceSessions = [];        // [{date, classes:[{id,name,subject}]}]
 let myAttendedDates = new Set();      // 自分が来塾した日（ISO）
 let myMakeupMap = {};                 // 'classId|date' -> 'pending'/'approved'
+let makeupModalDate = null;           // 補習申請モーダルで開いている日付
 
 async function loadMyAttendance() {
   if (!currentStudent) return;
@@ -6902,38 +7023,46 @@ function renderMyAttendanceMonth() {
     const dateISO = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
     const sess = monthSessions[d];
     const isToday = dateISO === todayISO;
-    let bg = 'var(--surface2)', color = 'var(--text)', weight = '400', title = '', clickable = false;
+    let bg = 'var(--surface2)', color = 'var(--text)', weight = '400', title = '', clickable = false, dashedBorder = false;
 
     if (sess) {
       title = sess.classes.map(c => c.name).join('・');
-      // この日の授業に補習状態があるか
-      let makeupStatus = '';
+      const isPast = dateISO <= todayISO;
+      const attendedDay = myAttendedDates.has(dateISO);
+
+      // この日の各コマの状態を判定（出席 or 補習済み = 埋まった / 申請中 / 未対応）
+      let makeupInvolved = false;
+      let allFilled = true;
+      let anyPending = false;
       sess.classes.forEach(c => {
         const st = myMakeupMap[c.id + '|' + dateISO];
-        if (st === 'approved') makeupStatus = 'approved';
-        else if (st === 'pending' && makeupStatus !== 'approved') makeupStatus = 'pending';
+        if (st === 'approved') { makeupInvolved = true; }
+        else if (st === 'pending') { makeupInvolved = true; anyPending = true; allFilled = false; }
+        else if (!attendedDay) { allFilled = false; }
       });
 
-      if (makeupStatus === 'approved') {
-        bg = '#7B2D8B'; color = '#fff'; weight = '700'; title += '：補習済み';
-      } else if (makeupStatus === 'pending') {
-        bg = '#E3D0EC'; color = '#7B2D8B'; weight = '700'; title += '：補習申請中';
-      } else if (dateISO > todayISO) {
+      if (makeupInvolved) {
+        if (allFilled) {
+          bg = '#7B2D8B'; color = '#fff'; weight = '700'; title += '：補習完了';
+        } else {
+          bg = '#E3D0EC'; color = '#7B2D8B'; weight = '700'; dashedBorder = true;
+          title += anyPending ? '：補習申請中' : '：補習途中';
+        }
+      } else if (!isPast) {
         bg = '#B8C4D0'; color = '#fff'; weight = '700'; title += '（予定）';
-      } else if (myAttendedDates.has(dateISO)) {
+      } else if (attendedDay) {
         bg = 'var(--green-d)'; color = '#fff'; weight = '700'; title += '：出席';
       } else {
         bg = '#C75050'; color = '#fff'; weight = '700'; title += '：欠席';
       }
-      // 過去〜今日の授業日はタップで補習申請可能（承認済みは不可）
-      if (dateISO <= todayISO && makeupStatus !== 'approved') clickable = true;
+
+      if (isPast && !allFilled) clickable = true;
     }
 
-    const border = isToday ? 'border:2px solid var(--orange);' : '';
+    const border = isToday ? 'border:2px solid var(--orange);' : (dashedBorder ? 'border:1.5px dashed #7B2D8B;' : '');
     const cursor = clickable ? 'cursor:pointer;' : '';
     const onclick = clickable ? ' onclick="openMakeupRequest(\'' + dateISO + '\')"' : '';
-    const dashed = (sess && myMakeupMap && title.indexOf('補習申請中') >= 0) ? 'border:1.5px dashed #7B2D8B;' : '';
-    html += '<div class="cal-day" title="' + title + '"' + onclick + ' style="background:' + bg + ';color:' + color + ';font-weight:' + weight + ';' + cursor + (border || dashed) + '">' + d + '</div>';
+    html += '<div class="cal-day" title="' + title + '"' + onclick + ' style="background:' + bg + ';color:' + color + ';font-weight:' + weight + ';' + cursor + border + '">' + d + '</div>';
   }
   document.getElementById('my-attendance-grid').innerHTML = html;
 }
@@ -6942,51 +7071,80 @@ function renderMyAttendanceMonth() {
 function openMakeupRequest(dateISO) {
   const sess = myAttendanceSessions.find(s => s.date === dateISO);
   if (!sess) return;
-  // この日に補習申請できる授業（承認済み・申請中を除く）
-  const candidates = sess.classes.filter(c => {
-    const st = myMakeupMap[c.id + '|' + dateISO];
-    return st !== 'approved' && st !== 'pending';
+  const attendedDay = myAttendedDates.has(dateISO);
+  makeupModalDate = dateISO;
+
+  // この日のコマを状態つきで列挙
+  const items = sess.classes.map(c => {
+    const st = myMakeupMap[c.id + '|' + dateISO] || (attendedDay ? 'attended' : 'absent');
+    return { id: c.id, name: c.name, subject: c.subject, status: st };
   });
-  if (!candidates.length) {
-    showToast('この日はすでに申請済みです', 'info');
-    return;
-  }
+
   const dateStr = dateISO.replace(/-/g, '/');
-  if (candidates.length === 1) {
-    const c = candidates[0];
-    if (confirm(dateStr + ' の「' + c.name + '」をビデオ補習で申請しますか？\n\nスタッフが承認すると +2pt が付与されます。')) {
-      submitMakeup(c.id, dateISO);
+  document.getElementById('makeup-modal-date').textContent = dateStr + ' の授業';
+
+  const rows = items.map(it => {
+    let badge, selectable = false;
+    if (it.status === 'approved') {
+      badge = '<span style="font-size:10px;background:#7B2D8B;color:#fff;padding:2px 8px;border-radius:10px;font-weight:700">補習済み</span>';
+    } else if (it.status === 'pending') {
+      badge = '<span style="font-size:10px;background:#E3D0EC;color:#7B2D8B;padding:2px 8px;border-radius:10px;font-weight:700">承認待ち</span>';
+    } else if (it.status === 'attended') {
+      badge = '<span style="font-size:10px;background:#E8F5E8;color:var(--green-d);padding:2px 8px;border-radius:10px;font-weight:700">出席済み</span>';
+    } else {
+      badge = '<span style="font-size:10px;background:#FBEAEA;color:#C75050;padding:2px 8px;border-radius:10px;font-weight:700">欠席</span>';
+      selectable = true;
     }
-  } else {
-    // 複数授業がある日：選択
-    const names = candidates.map((c, i) => (i + 1) + '. ' + c.name).join('\n');
-    const pick = prompt(dateStr + ' の補習を申請する授業の番号を入力してください：\n\n' + names);
-    const idx = parseInt(pick, 10) - 1;
-    if (idx >= 0 && idx < candidates.length) {
-      submitMakeup(candidates[idx].id, dateISO);
-    }
-  }
+    const checkbox = selectable
+      ? '<input type="checkbox" class="makeup-coma-check" value="' + it.id + '" style="width:18px;height:18px;accent-color:#7B2D8B">'
+      : '<span style="width:18px;display:inline-block"></span>';
+    return '<label style="display:flex;align-items:center;gap:10px;padding:10px;background:#fff;border:1px solid var(--border);border-radius:8px;' + (selectable ? 'cursor:pointer' : 'opacity:0.7') + '">' +
+      checkbox +
+      '<div style="flex:1"><div style="font-size:13px;font-weight:700;color:var(--text)">' + it.name + '</div>' +
+      (it.subject ? '<div style="font-size:10px;color:var(--muted)">' + it.subject + '</div>' : '') + '</div>' +
+      badge +
+    '</label>';
+  }).join('');
+
+  const hasSelectable = items.some(it => it.status === 'absent');
+  document.getElementById('makeup-modal-list').innerHTML = rows;
+  document.getElementById('makeup-modal-submit').style.display = hasSelectable ? 'block' : 'none';
+  document.getElementById('makeup-modal-empty').style.display = hasSelectable ? 'none' : 'block';
+  document.getElementById('makeup-modal').style.display = 'flex';
 }
 
-async function submitMakeup(classId, dateISO) {
+function closeMakeupModal() {
+  document.getElementById('makeup-modal').style.display = 'none';
+  makeupModalDate = null;
+}
+
+async function submitMakeupSelected() {
+  const checks = Array.from(document.querySelectorAll('.makeup-coma-check:checked'));
+  if (!checks.length) { showToast('補習する授業を選んでください', 'info'); return; }
+  const dateISO = makeupModalDate;
+  const classIds = checks.map(c => c.value);
   showLoading('申請中...');
   try {
-    await sbPost('video_makeups', {
-      student_id: currentStudent.id,
-      class_master_id: classId,
-      session_date: dateISO,
-      status: 'pending',
-      points_awarded: 0
-    });
-    myMakeupMap[classId + '|' + dateISO] = 'pending';
+    for (const classId of classIds) {
+      await sbPost('video_makeups', {
+        student_id: currentStudent.id,
+        class_master_id: classId,
+        session_date: dateISO,
+        status: 'pending',
+        points_awarded: 0
+      });
+      myMakeupMap[classId + '|' + dateISO] = 'pending';
+    }
     hideLoading();
-    showToast('📺 補習を申請しました。承認をお待ちください', 'success');
+    closeMakeupModal();
+    showToast('📺 ' + classIds.length + '件の補習を申請しました', 'success');
     renderMyAttendanceMonth();
     renderMakeupHistory();
   } catch(e) {
     hideLoading();
     if (e.message && e.message.includes('duplicate')) {
-      showToast('すでに申請済みです', 'info');
+      showToast('すでに申請済みのものがあります', 'info');
+      loadMyAttendance();
     } else {
       showToast('エラー: ' + e.message, 'error');
     }
