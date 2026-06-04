@@ -407,19 +407,42 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <div>
       <div class="section-title">日別来塾者確認</div>
       <div class="card-box">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
           <input type="date" id="date-picker" class="form-select" style="flex:1" onchange="loadDailyAttendance()">
-          <div style="font-size:13px;font-weight:700;color:var(--orange-d);white-space:nowrap;cursor:pointer;user-select:none" id="daily-count-label" onclick="toggleDailyFilter()"></div>
         </div>
-        <div id="daily-filter-panel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;margin-bottom:12px">
-          <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px">絞り込み</div>
-          <div class="filter-bar" id="daily-filter-school" style="margin-bottom:6px"></div>
-          <div class="filter-bar" id="daily-filter-grade" style="margin-bottom:6px"></div>
-          <select class="form-select" id="daily-filter-class" onchange="applyDailyFilter()" style="width:100%;font-size:12px;padding:8px 10px">
-            <option value="">📚 授業で絞り込み（全授業）</option>
-          </select>
+
+        <!-- 来塾人数ヒーロー（タップで開閉） -->
+        <div id="daily-hero" onclick="toggleDailyList()" style="background:linear-gradient(135deg,var(--orange-l),#FFF3E6);border:1.5px solid var(--orange);border-radius:var(--radius);padding:16px;cursor:pointer;user-select:none">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <div>
+              <div style="font-size:11px;color:var(--orange-d);font-weight:700">本日の来塾</div>
+              <div style="display:flex;align-items:baseline;gap:4px">
+                <span style="font-family:'DM Mono',monospace;font-size:38px;font-weight:500;color:var(--orange-d);line-height:1.1" id="daily-hero-count">—</span>
+                <span style="font-size:16px;color:var(--orange-d);font-weight:700">人</span>
+              </div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px" id="daily-hero-inroom"></div>
+            </div>
+            <div style="text-align:center;color:var(--orange-d)">
+              <div id="daily-hero-arrow" style="font-size:20px;transition:transform 0.2s">▾</div>
+              <div style="font-size:10px;font-weight:700" id="daily-hero-action">一覧を開く</div>
+            </div>
+          </div>
+          <!-- 直近の来塾プレビュー（畳んでいる時） -->
+          <div id="daily-recent-preview" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px"></div>
         </div>
-        <div id="daily-attendance-list" style="display:flex;flex-direction:column;gap:6px"></div>
+
+        <!-- 開いたとき：絞り込み＋一覧 -->
+        <div id="daily-detail-wrap" style="display:none;margin-top:12px">
+          <div id="daily-filter-panel" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;margin-bottom:12px">
+            <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px" id="daily-filter-count">絞り込み</div>
+            <div class="filter-bar" id="daily-filter-school" style="margin-bottom:6px"></div>
+            <div class="filter-bar" id="daily-filter-grade" style="margin-bottom:6px"></div>
+            <select class="form-select" id="daily-filter-class" onchange="applyDailyFilter()" style="width:100%;font-size:12px;padding:8px 10px">
+              <option value="">📚 授業で絞り込み（全授業）</option>
+            </select>
+          </div>
+          <div id="daily-attendance-list" style="display:flex;flex-direction:column;gap:6px"></div>
+        </div>
       </div>
     </div>
 
@@ -2554,8 +2577,7 @@ async function loadDailyAttendance() {
   if (!date) return;
 
   const listEl = document.getElementById('daily-attendance-list');
-  const labelEl = document.getElementById('daily-count-label');
-  if (!listEl || !labelEl) return;
+  if (!listEl) return;
 
   listEl.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px">読み込み中...</div>';
 
@@ -2564,8 +2586,9 @@ async function loadDailyAttendance() {
       'checkin_date=eq.' + date + '&select=student_id,created_at,checkout_time,stay_minutes&order=created_at');
     if (!checkins || checkins.length === 0) {
       dailyCheckins = [];
-      labelEl.textContent = '0人';
-      document.getElementById('daily-filter-panel').style.display = 'none';
+      document.getElementById('daily-hero-count').textContent = '0';
+      document.getElementById('daily-hero-inroom').textContent = '';
+      document.getElementById('daily-recent-preview').innerHTML = '';
       listEl.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:12px">この日の来塾者はいません</div>';
       return;
     }
@@ -2599,16 +2622,46 @@ async function loadDailyAttendance() {
 
     dailyCheckins = checkins;
     buildDailyFilterButtons();
+    renderDailyHero();
     renderDailyAttendance();
   } catch(e) {
     listEl.innerHTML = '<div style="text-align:center;color:var(--red);font-size:12px;padding:8px">取得エラー: ' + e.message + '</div>';
   }
 }
 
-function toggleDailyFilter() {
-  const p = document.getElementById('daily-filter-panel');
-  if (!p) return;
-  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+// 来塾人数ヒーロー＋直近プレビュー
+function renderDailyHero() {
+  const total = dailyCheckins.length;
+  const inRoom = dailyCheckins.filter(c => !c.checkout_time).length;
+  const countEl = document.getElementById('daily-hero-count');
+  const inroomEl = document.getElementById('daily-hero-inroom');
+  if (countEl) countEl.textContent = total;
+  if (inroomEl) inroomEl.textContent = inRoom > 0 ? ('在室中 ' + inRoom + '人 / 退室済み ' + (total - inRoom) + '人') : ('全員退室済み（' + total + '人）');
+
+  // 直近5人プレビュー（新しい順）
+  const prev = document.getElementById('daily-recent-preview');
+  if (prev) {
+    const recent = dailyCheckins.slice().reverse().slice(0, 5);
+    prev.innerHTML = recent.map(c => {
+      const s = dailyStudentMap[c.student_id] || {};
+      const isIn = !c.checkout_time;
+      return '<span style="display:inline-flex;align-items:center;gap:4px;background:' + (isIn ? 'var(--orange)' : 'rgba(255,255,255,0.7)') + ';color:' + (isIn ? '#fff' : 'var(--muted)') + ';font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px">' +
+        (isIn ? '●' : '○') + ' ' + (s.name || '?') + '</span>';
+    }).join('') + (dailyCheckins.length > 5 ? '<span style="font-size:11px;color:var(--muted);align-self:center">…ほか' + (dailyCheckins.length - 5) + '人</span>' : '');
+  }
+}
+
+function toggleDailyList() {
+  const wrap = document.getElementById('daily-detail-wrap');
+  const arrow = document.getElementById('daily-hero-arrow');
+  const action = document.getElementById('daily-hero-action');
+  const preview = document.getElementById('daily-recent-preview');
+  if (!wrap) return;
+  const opening = wrap.style.display === 'none';
+  wrap.style.display = opening ? 'block' : 'none';
+  if (arrow) arrow.style.transform = opening ? 'rotate(180deg)' : 'rotate(0deg)';
+  if (action) action.textContent = opening ? '閉じる' : '一覧を開く';
+  if (preview) preview.style.display = opening ? 'none' : 'flex';
 }
 
 function buildDailyFilterButtons() {
@@ -2650,8 +2703,7 @@ function applyDailyFilter() {
 
 function renderDailyAttendance() {
   const listEl = document.getElementById('daily-attendance-list');
-  const labelEl = document.getElementById('daily-count-label');
-  if (!listEl || !labelEl) return;
+  if (!listEl) return;
 
   // フィルタ適用
   const filtered = dailyCheckins.filter(c => {
@@ -2665,14 +2717,12 @@ function renderDailyAttendance() {
     return true;
   });
 
-  // ラベル（在室中人数は全体ベースで表示）
-  const totalInRoom = dailyCheckins.filter(c => !c.checkout_time).length;
+  // 絞り込みパネルの件数表示
   const isFiltered = dailyFilter.school !== '全員' || dailyFilter.grade !== '全学年' || dailyFilter.classId;
-  let label = dailyCheckins.length + '人';
-  if (totalInRoom > 0) label = dailyCheckins.length + '人（在室中：' + totalInRoom + '人）';
-  if (isFiltered) label = '▼ ' + filtered.length + ' / ' + label;
-  else label = '▼ ' + label;
-  labelEl.textContent = label;
+  const countEl = document.getElementById('daily-filter-count');
+  if (countEl) countEl.textContent = isFiltered
+    ? ('絞り込み中：' + filtered.length + ' / ' + dailyCheckins.length + '人')
+    : ('絞り込み（全' + dailyCheckins.length + '人）');
 
   if (!filtered.length) {
     listEl.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:12px">条件に合う来塾者はいません</div>';
