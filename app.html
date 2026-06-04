@@ -338,6 +338,17 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     </div>
   </div>
   <div class="staff-content">
+    <!-- ★ 今日やること -->
+    <div id="today-tasks-section" style="background:linear-gradient(135deg,#FFF8EC,#FFFFFF);border:1.5px solid var(--orange);border-radius:var(--radius);padding:14px 16px">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
+        <span style="font-size:14px;font-weight:700;color:var(--orange-d)">📌 今日やること</span>
+        <span id="today-tasks-alldone" style="display:none;font-size:11px;color:var(--green-d);background:var(--green-l);padding:2px 8px;border-radius:20px;font-weight:700">✅ 完了！</span>
+      </div>
+      <div id="today-tasks-list" style="display:flex;flex-direction:column;gap:8px">
+        <div style="font-size:12px;color:var(--muted)">読み込み中...</div>
+      </div>
+    </div>
+
     <!-- 0. 承認待ち申請 -->
     <div id="pending-section">
       <div class="section-title" style="display:flex;align-items:center;gap:6px">
@@ -2082,7 +2093,95 @@ async function initStaff() {
     if (sel2) sel2.innerHTML = '<option value="">-- 選択してください --</option>' + staffStudents.map((s, i) => '<option value="' + i + '">' + s.name + '</option>').join('');
     hideLoading();
     initDatePicker();
+    loadTodayTasks();
   } catch(e) { hideLoading(); showToast('データ取得エラー: ' + e.message, 'error'); }
+}
+
+// ===== 今日やること（スタッフトップ集計） =====
+async function loadTodayTasks() {
+  if (!currentStaff) return;
+  const listEl = document.getElementById('today-tasks-list');
+  const doneTag = document.getElementById('today-tasks-alldone');
+  if (!listEl) return;
+  const today = getTodayJST();
+  try {
+    // 並行取得：本日の自分の報告書 / 自分宛の未完了ToDo / 本日の来塾者
+    const [myReport, myTodos, todayCheckins] = await Promise.all([
+      sbGet('staff_reports', 'staff_id=eq.' + currentStaff.id + '&report_date=eq.' + today + '&select=id'),
+      sbGet('staff_todos', 'to_staff_id=eq.' + currentStaff.id + '&is_done=eq.false&select=id,due_date'),
+      sbGet('checkins', 'checkin_date=eq.' + today + '&select=student_id')
+    ]);
+
+    // 報告書：本日分が未記入か
+    const reportDone = (myReport && myReport.length > 0);
+
+    // ToDo：未完了件数と、うち期限切れ件数
+    const todos = myTodos || [];
+    const todoCount = todos.length;
+    const overdueCount = todos.filter(t => t.due_date && t.due_date < today).length;
+
+    // 来塾者：本日の人数
+    const checkinCount = new Set((todayCheckins || []).map(c => c.student_id)).size;
+
+    const items = [];
+
+    // 報告書タスク
+    if (reportDone) {
+      items.push(taskRow('📝', '今日の報告書', '記入済み', true, "openTaskReport()"));
+    } else {
+      items.push(taskRow('📝', '今日の報告書', '未記入', false, "openTaskReport()"));
+    }
+
+    // ToDoタスク
+    if (todoCount === 0) {
+      items.push(taskRow('✅', '未完了ToDo', 'なし', true, "openTaskTodo()"));
+    } else {
+      const sub = todoCount + '件' + (overdueCount > 0 ? '（期限切れ ' + overdueCount + '件）' : '');
+      items.push(taskRow('✅', '未完了ToDo', sub, false, "openTaskTodo()", overdueCount > 0));
+    }
+
+    // 来塾者（情報表示・タップで一覧へ）
+    items.push(taskRow('📋', '本日の来塾者', checkinCount + '名', null, "scrollToAttendance()"));
+
+    listEl.innerHTML = items.join('');
+
+    // すべて完了か（報告書済み＆ToDoなし）
+    if (reportDone && todoCount === 0) {
+      doneTag.style.display = 'inline-block';
+    } else {
+      doneTag.style.display = 'none';
+    }
+  } catch(e) {
+    listEl.innerHTML = '<div style="font-size:12px;color:var(--red)">読み込みに失敗しました</div>';
+  }
+}
+
+// タスク1行のHTML生成。done: true=完了(緑) / false=要対応(赤系) / null=情報(中立)
+function taskRow(icon, title, sub, done, onclick, alert) {
+  let badgeBg, badgeColor, badgeText;
+  if (done === true) { badgeBg = 'var(--green-l)'; badgeColor = 'var(--green-d)'; badgeText = sub; }
+  else if (done === false) { badgeBg = alert ? 'var(--red-l)' : '#FFF0D6'; badgeColor = alert ? 'var(--red)' : 'var(--orange-d)'; badgeText = sub; }
+  else { badgeBg = 'var(--surface2)'; badgeColor = 'var(--muted)'; badgeText = sub; }
+  const check = done === true ? '✓ ' : '';
+  return '<div onclick="' + onclick + '" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">' +
+    '<span style="font-size:16px">' + icon + '</span>' +
+    '<span style="flex:1;font-size:13px;font-weight:700;color:var(--text)">' + title + '</span>' +
+    '<span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;background:' + badgeBg + ';color:' + badgeColor + '">' + check + badgeText + '</span>' +
+  '</div>';
+}
+
+// タスクカードのタップ先
+function openTaskReport() {
+  openStaffMenu(); // デフォルトで報告書タブが開く
+}
+function openTaskTodo() {
+  openStaffMenu();
+  const btn = document.getElementById('smtab-todo');
+  if (btn) switchStaffMenuTab('todo', btn);
+}
+function scrollToAttendance() {
+  const el = document.getElementById('date-picker');
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 async function staffAddPoints() {
