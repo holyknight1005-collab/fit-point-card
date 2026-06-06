@@ -427,7 +427,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <!-- 松山東専用メニュー -->
     <div id="higashi-menu" style="display:none">
       <div class="section-title">松山東 専用メニュー <span style="font-size:10px;background:var(--blue-l);color:var(--blue);padding:2px 8px;border-radius:20px;font-weight:700">松山東</span></div>
-      <div class="school-menu" onclick="openVocabTest()">
+      <div class="school-menu" onclick="vShowMenu()">
         <div class="school-menu-header">
           <div class="school-menu-icon">📝</div>
           <div class="school-menu-title">英単語テスト</div>
@@ -2491,15 +2491,6 @@ async function doCheckout() {
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
-function cancelCheckin() {
-  if (checkinElapsedInterval) { clearInterval(checkinElapsedInterval); checkinElapsedInterval = null; }
-  localStorage.removeItem('fit_checkin_start');
-  localStorage.removeItem('fit_checkin_student_id');
-  checkinStartTime = null;
-  document.getElementById('checkin-active-box').style.display = 'none';
-  document.getElementById('checkin-btn').style.display = 'block';
-  showToast('チェックインをキャンセルしました', 'info');
-}
 
 
 
@@ -4007,28 +3998,6 @@ async function saveStudyLog() {
 }
 
 
-async function attendClass(classId) {
-  if (!currentStudent) return;
-  showLoading('出席を記録中...');
-  try {
-    await sbS('POST', 'class_attendance', null, { class_id: classId, student_id: currentStudent.id, points_earned: 3 });
-    const newPts = currentStudent.points + 3;
-    await sbPatch('students', 'id=eq.' + currentStudent.id, { points: newPts });
-    currentStudent.points = newPts;
-    document.getElementById('student-points').textContent = newPts.toLocaleString();
-    hideLoading();
-    showToast('🏫 出席記録！+3pt獲得！', 'success');
-    loadTodayClasses();
-    setTimeout(autoCheckMissions, 500);
-  } catch(e) {
-    hideLoading();
-    if (e.message && e.message.includes('duplicate')) {
-      showToast('すでに出席記録済みです', 'info');
-    } else {
-      showToast('エラー: ' + e.message, 'error');
-    }
-  }
-}
 
 // 履歴・集計
 let stWeekOffset = 0;
@@ -4860,32 +4829,7 @@ async function checkMissionAchieved(missionId, type, subject, targetValue, pts) 
 // 授業登録：対象生徒管理
 let mgClassStudents = []; // 選択済み生徒リスト
 
-async function filterClassStudents() {
-  const school = document.getElementById('mg-class-school').value;
-  const grade = document.getElementById('mg-class-grade').value;
-  let query = 'select=id,name,school,grade&order=school,grade,name';
-  if (school) query += '&school=eq.' + encodeURIComponent(school);
-  if (grade) query += '&grade=eq.' + encodeURIComponent(grade);
-  const students = await sbGet('students', query);
-  const sel = document.getElementById('mg-class-student-sel');
-  sel.innerHTML = '<option value="">生徒を選択...</option>' +
-    (students||[]).map(s =>
-      '<option value="' + s.id + '" data-name="' + s.name + '">' +
-      s.name + '（' + (s.school||'') + ' ' + (s.grade||'') + '）</option>'
-    ).join('');
-}
 
-function addClassStudent() {
-  const sel = document.getElementById('mg-class-student-sel');
-  const id = sel.value;
-  const name = sel.options[sel.selectedIndex]?.text || '';
-  if (!id) return;
-  if (mgClassStudents.find(s => s.id === id)) {
-    showToast('すでに追加されています', 'info'); return;
-  }
-  mgClassStudents.push({ id, name });
-  renderClassStudentList();
-}
 
 function removeClassStudent(id) {
   mgClassStudents = mgClassStudents.filter(s => s.id !== id);
@@ -4930,47 +4874,6 @@ function closeStaffManage() {
   el.style.pointerEvents = 'none';
 }
 
-// 授業登録
-async function registerClass() {
-  const subject = document.getElementById('mg-class-subject').value;
-  const name = document.getElementById('mg-class-name').value.trim();
-  const teacher = document.getElementById('mg-class-teacher').value.trim();
-  const date = document.getElementById('mg-class-date').value;
-  const start = document.getElementById('mg-class-start').value;
-  const end = document.getElementById('mg-class-end').value;
-  const school = document.getElementById('mg-class-school').value;
-  const grade = document.getElementById('mg-class-grade').value;
-  if (!name || !date) { showToast('授業名と日付は必須です', 'error'); return; }
-  showLoading('登録中...');
-  try {
-    if (mgClassStudents.length > 0) {
-      // 生徒ごとに個別登録
-      for (const s of mgClassStudents) {
-        await sbPost('classes', {
-          subject, name, teacher, class_date: date,
-          start_time: start, end_time: end,
-          target_school: '', target_grade: '',
-          target_student_id: s.id
-        });
-      }
-      showToast('✅ ' + mgClassStudents.length + '人分の授業を登録しました', 'success');
-    } else {
-      // 学校・学年で一括登録
-      await sbPost('classes', {
-        subject, name, teacher, class_date: date,
-        start_time: start, end_time: end,
-        target_school: school, target_grade: grade
-      });
-      showToast('✅ 授業を登録しました', 'success');
-    }
-    hideLoading();
-    document.getElementById('mg-class-name').value = '';
-    mgClassStudents = [];
-    renderClassStudentList();
-    loadMgClasses();
-    loadMgClassSelect();
-  } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
-}
 
 async function loadMgClasses() {
   const weekAgo = new Date(Date.now()-7*86400000).toISOString().split('T')[0];
@@ -5337,26 +5240,6 @@ function renderAIPreview() {
   ).join('');
 }
 
-function previewFromJSON() {
-  const raw = document.getElementById('mg-quiz-json').value.trim();
-  if (!raw) { showToast('JSONを貼り付けてください', 'error'); return; }
-  try {
-    // コードブロックやプレフィックスを除去
-    const cleaned = raw.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(cleaned);
-    const questions = parsed.questions || parsed;
-    if (!Array.isArray(questions) && !parsed.questions) throw new Error('questions配列が見つかりません');
-    aiGeneratedQuestions = Array.isArray(questions) ? questions : parsed.questions;
-    if (aiGeneratedQuestions.length === 0) throw new Error('問題が0件です');
-    renderAIPreview();
-    document.getElementById('ai-preview').style.display = 'flex';
-    document.getElementById('ai-preview').style.flexDirection = 'column';
-    document.getElementById('ai-preview').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    showToast('✅ ' + aiGeneratedQuestions.length + '問を読み込みました！', 'success');
-  } catch(e) {
-    showToast('JSONエラー: ' + e.message, 'error');
-  }
-}
 
 async function saveAIQuestions() {
   const classId = document.getElementById('mg-quiz-class').value;
@@ -7388,13 +7271,6 @@ function closePhotoModal() {
 }
 
 
-function onClassNameSelect() {
-  const sel = document.getElementById('mg-class-name-select');
-  const input = document.getElementById('mg-class-name');
-  if (sel.value) {
-    input.value = sel.value;
-  }
-}
 
 
 // ===== 授業マスター管理 =====
@@ -7543,17 +7419,13 @@ function previewSessions() {
   const dates = [];
   let cur = new Date(fy, fm-1, fd);
   const endDate = new Date(ty, tm-1, td);
-  const dayNames = ['日','月','火','水','木','金','土'];
-  console.log('weekday選択値:', weekday, '(' + dayNames[weekday] + ')');
   while (cur <= endDate) {
     const day = cur.getDay();
     if (day === weekday) {
-      console.log('マッチ:', cur.getFullYear()+'/'+(cur.getMonth()+1)+'/'+cur.getDate(), dayNames[day]);
       dates.push(new Date(cur));
     }
     cur.setDate(cur.getDate() + 1);
   }
-  console.log('合計', dates.length, '件');
 
   if (!dates.length) { showToast('期間内に該当曜日がありません', 'error'); return; }
 
