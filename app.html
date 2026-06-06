@@ -270,7 +270,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <div class="point-hero">
       <div class="point-label">累計ポイント</div>
       <div><span class="point-value" id="student-points">0</span><span class="point-unit">pt</span></div>
-      <div class="point-streak" id="student-streak">🔥 連続 0 日来塾中</div>
+      <div class="point-streak" id="student-streak"></div>
     </div>
     <div id="gps-status-box" class="gps-status checking">📍 GPS位置を確認中...</div>
     <!-- ① チェックインボタン（未チェックイン時） -->
@@ -641,7 +641,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <div style="text-align:right"><div style="font-family:'DM Mono',monospace;font-size:26px;font-weight:500" id="detail-pts"></div><div style="font-size:10px;opacity:0.85">累計ポイント</div></div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px">
-        <div style="background:rgba(255,255,255,0.18);border-radius:10px;padding:8px;text-align:center"><div style="font-family:'DM Mono',monospace;font-size:18px;font-weight:500" id="detail-streak"></div><div style="font-size:10px;opacity:0.85">連続来塾</div></div>
+        <div style="background:rgba(255,255,255,0.18);border-radius:10px;padding:8px;text-align:center"><div style="font-family:'DM Mono',monospace;font-size:18px;font-weight:500" id="detail-streak"></div><div style="font-size:10px;opacity:0.85">連続ログイン</div></div>
         <div style="background:rgba(255,255,255,0.18);border-radius:10px;padding:8px;text-align:center"><div style="font-family:'DM Mono',monospace;font-size:18px;font-weight:500" id="detail-month-count"></div><div style="font-size:10px;opacity:0.85">今月</div></div>
         <div style="background:rgba(255,255,255,0.18);border-radius:10px;padding:8px;text-align:center"><div style="font-family:'DM Mono',monospace;font-size:18px;font-weight:500" id="detail-year-count"></div><div style="font-size:10px;opacity:0.85">今年度</div></div>
       </div>
@@ -2324,11 +2324,46 @@ async function saveMyProfile() {
   }
 }
 
+// ===== 連続ログイン日数（アプリを開いた日が連続している日数）=====
+async function updateLoginStreak() {
+  if (!currentStudent) return;
+  const label = document.getElementById('student-streak');
+  const today = getTodayJST(); // 'YYYY-MM-DD'（JST）
+  const last = currentStudent.last_active_date || null;
+  let streak = currentStudent.login_streak || 0;
+
+  if (last === today) {
+    // 今日はすでにカウント済み → 据え置き
+  } else {
+    // 前回アクティブ日と今日の差を日数で判定
+    let diff = null;
+    if (last) {
+      const a = new Date(last + 'T00:00:00+09:00');
+      const b = new Date(today + 'T00:00:00+09:00');
+      diff = Math.round((b - a) / 86400000);
+    }
+    if (diff === 1) {
+      streak = streak + 1;       // 昨日も来ていた → 連続
+    } else {
+      streak = 1;                // 間が空いた or 初回 → リセットして今日からスタート
+    }
+    // DBとローカルを更新
+    currentStudent.login_streak = streak;
+    currentStudent.last_active_date = today;
+    try {
+      await sbPatch('students', 'id=eq.' + currentStudent.id, { login_streak: streak, last_active_date: today });
+    } catch(e) { /* カラム未追加時などは表示のみ継続 */ }
+  }
+  if (label) {
+    label.textContent = streak > 0 ? '🔥 連続 ' + streak + ' 日ログイン中' : '';
+  }
+}
+
 function initStudentScreen() {
   const s = currentStudent;
   document.getElementById('student-name-header').textContent = s.name;
   document.getElementById('student-points').textContent = s.points.toLocaleString();
-  document.getElementById('student-streak').textContent = '🔥 連続 ' + s.streak + ' 日来塾中';
+  updateLoginStreak();
   loadUnifiedCalendar();
   loadStudentAnnouncements();
   loadStudentDashboard();
@@ -2495,15 +2530,12 @@ async function doCheckout() {
     // ポイント付与
     if (pts > 0) {
       const newPts = currentStudent.points + pts;
-      await sbPatch('students', 'id=eq.' + currentStudent.id, { points: newPts, streak: currentStudent.streak + 1, last_checkin: getTodayJST() });
+      await sbPatch('students', 'id=eq.' + currentStudent.id, { points: newPts, last_checkin: getTodayJST() });
       await sbPost('point_logs', { student_id: currentStudent.id, points: pts, reason: 'チェックアウト（' + Math.floor(elapsed/60) + '分在室）', type: 'checkin' });
       currentStudent.points = newPts;
-      currentStudent.streak = currentStudent.streak + 1;
       document.getElementById('student-points').textContent = newPts.toLocaleString();
-      document.getElementById('student-streak').textContent = '🔥 連続 ' + currentStudent.streak + ' 日来塾中';
     } else {
-      await sbPatch('students', 'id=eq.' + currentStudent.id, { streak: currentStudent.streak + 1, last_checkin: getTodayJST() });
-      currentStudent.streak = currentStudent.streak + 1;
+      await sbPatch('students', 'id=eq.' + currentStudent.id, { last_checkin: getTodayJST() });
     }
     // checkinsにチェックアウト時刻・在室時間を記録
     try {
@@ -2840,7 +2872,7 @@ async function openStudentDetail(idx) {
     document.getElementById('detail-fullname').textContent = s.name;
     document.getElementById('detail-email-no').textContent = s.email;
     document.getElementById('detail-pts').textContent = s.points.toLocaleString() + 'pt';
-    document.getElementById('detail-streak').textContent = s.streak + '日';
+    document.getElementById('detail-streak').textContent = (s.login_streak || 0) + '日';
     document.getElementById('detail-month-count').textContent = monthCount + '日';
     document.getElementById('detail-year-count').textContent = yearCount + '日';
     document.getElementById('detail-gender').value = s.gender || '';
@@ -6019,7 +6051,7 @@ async function loadStudentView() {
         '<div style="font-size:18px;font-weight:700;margin-bottom:4px">' + s.name + '</div>' +
         '<div style="font-size:12px;opacity:0.9">' + (s.school||'') + ' ' + (s.grade||'') + '</div>' +
         '<div style="font-family:DM Mono,monospace;font-size:32px;font-weight:500;margin:8px 0">' + (s.points||0).toLocaleString() + '<span style="font-size:14px">pt</span></div>' +
-        '<div style="font-size:11px;opacity:0.8">🔥 連続 ' + (s.streak||0) + ' 日</div>' +
+        '<div style="font-size:11px;opacity:0.8">🔥 連続 ' + (s.login_streak||0) + ' 日ログイン</div>' +
       '</div>' +
       // 今週の勉強
       '<div class="card-box">' +
