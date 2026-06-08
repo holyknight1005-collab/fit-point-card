@@ -70,7 +70,7 @@
   <div class="login-logo">
     <div class="ico">⚗️</div>
     <div class="ttl">J化学演習</div>
-    <div class="sub">fitポイントと同じID・パスワードでログイン</div>
+    <div class="sub">fitポイントと同じID・パスワードでログイン<br>（スタッフはスタッフIDで閲覧できます）</div>
   </div>
   <div class="login-card">
     <label class="field-label">メールアドレス</label>
@@ -168,41 +168,75 @@ function showToast(msg,type){ const t=document.getElementById('toast'); t.textCo
 
 /* ===== 認証（本体と同じ fit_email / fit_pin を共有） ===== */
 let currentStudent = null;
+let isStaff = false; // スタッフ閲覧モード（ポイント・進捗は保存しない）
 
 function saveLoginState(email,pin){ localStorage.setItem('fit_email',email); localStorage.setItem('fit_pin',pin); localStorage.setItem('fit_role','student'); }
 function clearLoginState(){ localStorage.removeItem('fit_email'); localStorage.removeItem('fit_pin'); localStorage.removeItem('fit_role'); }
+
+// スタッフとしてログイン（staff_id + pin）。入力がメール形式でなく、students で見つからない場合に試す
+async function tryStaffLogin(idOrEmail, pin){
+  const staffId = idOrEmail.trim();
+  const data = await sbGet('staff','staff_id=eq.'+encodeURIComponent(staffId)+'&pin=eq.'+encodeURIComponent(pin)+'&is_active=eq.true&select=*');
+  if(!data || !data.length) return false;
+  const st = data[0];
+  isStaff = true;
+  // スタッフを仮の生徒オブジェクトとして扱う（表示用。保存系は isStaff で必ずスキップ）
+  currentStudent = { id: st.id, name: st.name + '（スタッフ）', points: 0 };
+  localStorage.setItem('fit_email', staffId);
+  localStorage.setItem('fit_pin', pin);
+  localStorage.setItem('fit_role', 'staff');
+  return true;
+}
 
 async function autoLogin(){
   const email=localStorage.getItem('fit_email');
   const pin=localStorage.getItem('fit_pin');
   const role=localStorage.getItem('fit_role');
-  if(!email||!pin||role==='staff'){ showScreen('screen-login'); return; }
+  if(!email||!pin){ showScreen('screen-login'); return; }
   showLoading('自動ログイン中...');
   try{
+    if(role==='staff'){
+      const ok = await tryStaffLogin(email, pin);
+      if(!ok){ clearLoginState(); hideLoading(); showScreen('screen-login'); return; }
+      await afterLogin();
+      return;
+    }
     const data=await sbGet('students','email=eq.'+encodeURIComponent(email)+'&pin=eq.'+encodeURIComponent(pin)+'&select=*');
     if(!data||!data.length){ clearLoginState(); hideLoading(); showScreen('screen-login'); return; }
-    currentStudent=data[0];
+    currentStudent=data[0]; isStaff=false;
     await afterLogin();
   }catch(e){ clearLoginState(); hideLoading(); showScreen('screen-login'); }
 }
 
 async function doLogin(){
   const email=document.getElementById('login-email').value.trim().toLowerCase();
+  const rawId=document.getElementById('login-email').value.trim();
   const pin=document.getElementById('login-pin').value.trim();
   const err=document.getElementById('login-error');
   if(!email||!pin){ err.textContent='メールアドレスとパスワードを入力してください'; err.classList.add('show'); return; }
   showLoading('ログイン中...');
   try{
+    // まず生徒として試す
     const data=await sbGet('students','email=eq.'+encodeURIComponent(email)+'&pin=eq.'+encodeURIComponent(pin)+'&select=*');
-    if(!data||!data.length){ err.textContent='メールアドレスまたはパスワードが違います'; err.classList.add('show'); hideLoading(); return; }
-    err.classList.remove('show');
-    currentStudent=data[0];
-    saveLoginState(email,pin);
-    await afterLogin();
+    if(data && data.length){
+      err.classList.remove('show');
+      currentStudent=data[0]; isStaff=false;
+      saveLoginState(email,pin);
+      await afterLogin();
+      return;
+    }
+    // 生徒で見つからなければスタッフIDとして試す
+    const staffOk = await tryStaffLogin(rawId, pin);
+    if(staffOk){
+      err.classList.remove('show');
+      await afterLogin();
+      return;
+    }
+    err.textContent='メールアドレス（またはスタッフID）かパスワードが違います'; err.classList.add('show'); hideLoading();
   }catch(e){ hideLoading(); err.textContent='接続エラー: '+e.message; err.classList.add('show'); }
 }
 
-function logout(){ currentStudent=null; clearLoginState(); showScreen('screen-login'); }
+function logout(){ currentStudent=null; isStaff=false; clearLoginState(); showScreen('screen-login'); }
 
 /* ===== 受講判定：教科「化学」のクラスを受講しているか ===== */
 async function isChemEnrolled(){
@@ -222,11 +256,15 @@ async function isChemEnrolled(){
 }
 
 async function afterLogin(){
-  const ok=await isChemEnrolled();
+  const ok = isStaff ? true : await isChemEnrolled();
   hideLoading();
   if(!ok){ showScreen('screen-denied'); return; }
   document.getElementById('home-hello').textContent=(currentStudent.name||'')+'さん、こんにちは';
   document.getElementById('student-points').textContent=(currentStudent.points||0).toLocaleString();
+  if(isStaff){
+    const pill=document.querySelector('.point-pill');
+    if(pill) pill.innerHTML='👀 閲覧モード';
+  }
   showScreen('screen-home');
   renderHomeCards();
 }
@@ -824,7 +862,7 @@ function chemResult(scoreText,msg){
 
 /* ポイント連動：students.points 加算 + point_logs 記録 */
 async function chemAwardPoints(pts, reason){
-  if(!currentStudent || pts<=0) return;
+  if(!currentStudent || isStaff || pts<=0) return;
   try{
     const newPts=(currentStudent.points||0)+pts;
     await sbPatch('students','id=eq.'+currentStudent.id,{points:newPts});
@@ -860,7 +898,7 @@ function chemMark(q, isCorrect){
 
 /* Supabaseへ間違いを記録（同じ問題は回数+1のupsert） */
 async function chemRecordWrong(q){
-  if(!currentStudent) return;
+  if(!currentStudent || isStaff) return;
   try{
     // 既存行を探す
     const exist = await sbGet('chem_wrong_logs',
@@ -882,7 +920,7 @@ async function chemRecordWrong(q){
 
 /* 正解したら解決済みに */
 async function chemResolveWrong(q){
-  if(!currentStudent) return;
+  if(!currentStudent || isStaff) return;
   try{
     await sbPatch('chem_wrong_logs',
       'student_id=eq.'+currentStudent.id
@@ -921,7 +959,7 @@ function chemRetryWrong(){
 
 /* ホーム：苦手（未解決の間違い）を全パート横断で復習 */
 async function chemStartReview(){
-  if(!currentStudent) return;
+  if(!currentStudent || isStaff) return;
   showLoading('まちがえた問題を集めています...');
   try{
     const rows = await sbGet('chem_wrong_logs',
