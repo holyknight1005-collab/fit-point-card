@@ -497,7 +497,16 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       </div>
     </div>
 
-    <!-- 理系タグ：科目アプリ（理系タグ持ちのみ表示） -->
+    <!-- ★ 今週の予定（ログイン直後に見える時間割・予定） -->
+    <div id="home-schedule-section" style="background:linear-gradient(135deg,#F3ECFB,#FFFFFF);border:1.5px solid #B98FD0;border-radius:var(--radius);padding:14px 16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <span style="font-size:14px;font-weight:700;color:#7B2D8B">📅 今週の予定</span>
+        <button onclick="openHomeFeature('calendar')" style="font-size:11px;font-weight:700;color:#7B2D8B;background:#F3ECFB;border:1px solid #B98FD0;border-radius:20px;padding:4px 12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">予定表を開く ›</button>
+      </div>
+      <div id="home-schedule-list" style="display:flex;flex-direction:column;gap:8px">
+        <div style="font-size:12px;color:var(--muted)">読み込み中...</div>
+      </div>
+    </div>
     <div id="science-apps-section" style="display:none">
       <div class="section-title" style="display:flex;align-items:center;gap:6px">🔬 科目アプリ</div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
@@ -749,8 +758,22 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     </div>
 
     <div>
-      <div class="section-title">今月のカレンダー</div>
-      <div class="card-box"><div class="calendar-grid" id="detail-calendar"></div></div>
+      <div class="section-title">カレンダー（来塾・授業）</div>
+      <div class="card-box">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <button onclick="changeDetailCalMonth(-1)" style="padding:6px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:13px;font-weight:700;color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">‹</button>
+          <div id="detail-cal-month" style="font-size:14px;font-weight:700;color:var(--text)"></div>
+          <button onclick="changeDetailCalMonth(1)" style="padding:6px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:13px;font-weight:700;color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">›</button>
+        </div>
+        <div class="calendar-grid" id="detail-calendar"></div>
+        <div id="detail-cal-summary" style="font-size:11px;color:var(--muted);margin-top:8px;text-align:center"></div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;justify-content:center;font-size:10px;color:var(--muted)">
+          <span style="display:flex;align-items:center;gap:3px"><span style="width:11px;height:11px;border-radius:3px;background:var(--orange);display:inline-block"></span>来塾</span>
+          <span style="display:flex;align-items:center;gap:3px"><span style="width:11px;height:11px;border-radius:3px;background:var(--green-d);display:inline-block"></span>授業出席</span>
+          <span style="display:flex;align-items:center;gap:3px"><span style="width:11px;height:11px;border-radius:3px;background:#C75050;display:inline-block"></span>授業欠席</span>
+          <span style="display:flex;align-items:center;gap:3px"><span style="width:11px;height:11px;border-radius:3px;background:#B8C4D0;display:inline-block"></span>授業予定</span>
+        </div>
+      </div>
     </div>
     <div>
       <div class="section-title">来塾履歴</div>
@@ -2695,6 +2718,7 @@ async function initStaff() {
     hideLoading();
     initDatePicker();
     loadTodayTasks();
+    loadHomeSchedule();
     updateScienceAppsCard();
   } catch(e) { hideLoading(); showToast('データ取得エラー: ' + e.message, 'error'); }
 }
@@ -2796,6 +2820,80 @@ async function loadTodayTasks() {
     }
   } catch(e) {
     listEl.innerHTML = '<div style="font-size:12px;color:var(--red)">読み込みに失敗しました<br><span style="font-size:10px;word-break:break-all">' + escapeHtml(String(e.message || e)).slice(0, 200) + '</span></div>';
+  }
+}
+
+// ===== 今週の予定（ホーム：今日〜7日先の授業・イベント） =====
+async function loadHomeSchedule() {
+  if (!currentStaff) return;
+  const listEl = document.getElementById('home-schedule-list');
+  if (!listEl) return;
+  const todayISO = getTodayJST();
+  const end = new Date();
+  end.setDate(end.getDate() + 6);
+  const endISO = end.getFullYear() + '-' + String(end.getMonth() + 1).padStart(2, '0') + '-' + String(end.getDate()).padStart(2, '0');
+  try {
+    const [sessions, events] = await Promise.all([
+      sbGet('class_sessions', 'session_date=gte.' + todayISO + '&session_date=lte.' + endISO + '&select=class_master_id,period,start_time,end_time,session_date&order=session_date,period') || [],
+      sbGet('events', 'event_date=gte.' + todayISO + '&event_date=lte.' + endISO + '&select=title,event_date,color&order=event_date').catch(() => [])
+    ]);
+
+    // 担当講師判定用に class_master を引く
+    const classIds = [...new Set((sessions || []).map(s => s.class_master_id).filter(Boolean))];
+    const cmMap = {};
+    if (classIds.length) {
+      try {
+        const cms = await sbGet('class_master', 'id=in.(' + classIds.join(',') + ')&select=id,name,teacher_staff_id') || [];
+        cms.forEach(cm => { cmMap[cm.id] = cm; });
+      } catch(e) { /* 名前が引けなくても続行 */ }
+    }
+
+    // 自分の担当授業を優先表示。担当が無ければ全授業を表示。
+    let mySessions = (sessions || []).map(s => {
+      const cm = cmMap[s.class_master_id] || {};
+      return {
+        date: s.session_date, period: s.period,
+        start_time: s.start_time, end_time: s.end_time,
+        name: cm.name || '授業',
+        mine: !!(cm.teacher_staff_id && cm.teacher_staff_id === currentStaff.id)
+      };
+    });
+    const hasMine = mySessions.some(s => s.mine);
+    const shownSessions = hasMine ? mySessions.filter(s => s.mine) : mySessions;
+
+    // 日付ごとにまとめる
+    const days = ['日','月','火','水','木','金','土'];
+    const byDate = {};
+    shownSessions.forEach(s => { (byDate[s.date] = byDate[s.date] || { sessions: [], events: [] }).sessions.push(s); });
+    (events || []).forEach(ev => { (byDate[ev.event_date] = byDate[ev.event_date] || { sessions: [], events: [] }).events.push(ev); });
+
+    const dates = Object.keys(byDate).sort();
+    if (!dates.length) {
+      listEl.innerHTML = '<div style="font-size:12px;color:var(--muted)">今週の予定はありません</div>';
+      return;
+    }
+
+    let html = '';
+    dates.forEach(dateISO => {
+      const dt = new Date(dateISO + 'T00:00:00+09:00');
+      const isToday = dateISO === todayISO;
+      const dateLabel = (dt.getMonth() + 1) + '/' + dt.getDate() + '（' + days[dt.getDay()] + '）' + (isToday ? ' 今日' : '');
+      html += '<div style="border:1px solid ' + (isToday ? '#B98FD0' : 'var(--border)') + ';background:' + (isToday ? '#F3ECFB' : 'var(--surface)') + ';border-radius:var(--radius-sm);padding:8px 10px">' +
+        '<div style="font-size:11px;font-weight:700;color:' + (isToday ? '#7B2D8B' : 'var(--muted)') + ';margin-bottom:4px">' + dateLabel + '</div>';
+      const entry = byDate[dateISO];
+      entry.sessions.slice().sort((a,b) => (a.period||0)-(b.period||0)).forEach(s => {
+        const time = (s.start_time && s.end_time) ? (String(s.start_time).slice(0,5) + '〜' + String(s.end_time).slice(0,5)) : (s.period ? s.period + '限' : '');
+        const mineBadge = s.mine ? '<span style="font-size:9px;background:var(--orange);color:#fff;padding:1px 6px;border-radius:10px;margin-left:6px">担当</span>' : '';
+        html += '<div style="font-size:12px;color:var(--text);padding:2px 0">📚 ' + (s.period ? s.period + '限 ' : '') + escapeHtml(s.name) + mineBadge + '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + time + '</span></div>';
+      });
+      entry.events.forEach(ev => {
+        html += '<div style="font-size:12px;color:var(--text);padding:2px 0"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + (ev.color || '#F5A623') + ';margin-right:5px"></span>' + escapeHtml(ev.title) + '</div>';
+      });
+      html += '</div>';
+    });
+    listEl.innerHTML = html;
+  } catch(e) {
+    listEl.innerHTML = '<div style="font-size:12px;color:var(--red)">読み込みに失敗しました</div>';
   }
 }
 
@@ -2954,7 +3052,7 @@ async function openStudentDetail(idx, from) {
     document.getElementById('detail-gender').value = s.gender || '';
     setClubUI('detail', s.club);
     setBirthdayUI('detail', s.birthday);
-    renderCalendar('detail-calendar', detailCheckins);
+    loadDetailCalendar();
     loadDetailEnrollments();
     document.querySelectorAll('#screen-staff-detail .tab-btn').forEach((b, i) => b.classList.toggle('active', i === 0));
     renderDetailHistory('week');
@@ -7779,6 +7877,135 @@ let unifiedEvents = {};                // 'YYYY-MM-DD' -> [{title,detail,color}]
 let unifiedBirthdays = {};             // 'MM-DD' -> [{name,who}]  who:'staff'/'me'
 let makeupModalDate = null;            // 補習申請モーダルで開いている日付
 let dayModalDate = null;               // 日付詳細モーダルで開いている日付
+
+// ===== スタッフ側：生徒詳細カレンダー（来塾＋授業出欠を統合表示） =====
+let detailCalMonthOffset = 0;
+let detailCalSessions = [];            // [{date, classes:[{id,name,subject}]}]
+let detailCalAttended = new Set();     // 来塾した日（ISO）
+let detailCalMakeup = {};              // 'classId|date' -> 'pending'/'approved'
+
+async function loadDetailCalendar() {
+  if (!detailStudent) return;
+  detailCalSessions = [];
+  detailCalMakeup = {};
+  detailCalAttended = new Set(detailCheckins.map(d => {
+    // detailCheckins は toDateString() 形式 → ISO に変換
+    const dt = new Date(d);
+    return dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
+  }));
+  try {
+    const enrollments = await sbGet('class_enrollments',
+      'student_id=eq.' + detailStudent.id + '&select=class_master_id,class_master(id,name,subject)') || [];
+    if (enrollments.length) {
+      const classInfo = {};
+      enrollments.forEach(e => {
+        const c = e.class_master || {};
+        classInfo[e.class_master_id] = { id: e.class_master_id, name: c.name || '授業', subject: c.subject || '' };
+      });
+      const myClassIds = enrollments.map(e => e.class_master_id);
+      const sessions = await sbGet('class_sessions',
+        'class_master_id=in.(' + myClassIds.join(',') + ')&select=class_master_id,session_date,period&order=session_date') || [];
+      const byDate = {};
+      sessions.forEach(s => {
+        const info = classInfo[s.class_master_id];
+        if (!info) return;
+        if (!byDate[s.session_date]) byDate[s.session_date] = { date: s.session_date, classes: [] };
+        if (!byDate[s.session_date].classes.some(c => c.id === info.id)) byDate[s.session_date].classes.push(info);
+      });
+      detailCalSessions = Object.values(byDate);
+      try {
+        const makeups = await sbGet('video_makeups',
+          'student_id=eq.' + detailStudent.id + '&status=in.(pending,approved)&select=class_master_id,session_date,status') || [];
+        makeups.forEach(m => { detailCalMakeup[m.class_master_id + '|' + m.session_date] = m.status; });
+      } catch(e) { /* テーブル未作成時は無視 */ }
+    }
+  } catch(e) { /* 授業なしでも続行 */ }
+  detailCalMonthOffset = 0;
+  renderDetailCalMonth();
+}
+
+function changeDetailCalMonth(delta) {
+  detailCalMonthOffset += delta;
+  renderDetailCalMonth();
+}
+
+function detailGetDayStatus(dateISO, sess, todayISO) {
+  const attendedDay = detailCalAttended.has(dateISO);
+  if (sess) {
+    const isPast = dateISO <= todayISO;
+    let makeupInvolved = false, allFilled = true, anyPending = false;
+    sess.classes.forEach(c => {
+      const st = detailCalMakeup[c.id + '|' + dateISO];
+      if (st === 'approved') { makeupInvolved = true; }
+      else if (st === 'pending') { makeupInvolved = true; anyPending = true; allFilled = false; }
+      else if (!attendedDay) { allFilled = false; }
+    });
+    if (makeupInvolved) {
+      if (allFilled) return { bg:'#7B2D8B', color:'#fff', label:'補習完了', dashed:false };
+      return { bg:'#E3D0EC', color:'#7B2D8B', label:(anyPending?'補習申請中':'補習途中'), dashed:true };
+    }
+    if (!isPast) return { bg:'#B8C4D0', color:'#fff', label:'予定', dashed:false };
+    if (attendedDay) return { bg:'var(--green-d)', color:'#fff', label:'出席', dashed:false };
+    return { bg:'#C75050', color:'#fff', label:'欠席', dashed:false };
+  }
+  if (attendedDay) return { bg:'var(--orange)', color:'#fff', label:'来塾', dashed:false };
+  return { bg:'var(--surface2)', color:'var(--text)', label:'', dashed:false };
+}
+
+function renderDetailCalMonth() {
+  const grid = document.getElementById('detail-calendar');
+  if (!grid) return;
+  const base = new Date();
+  base.setDate(1);
+  base.setMonth(base.getMonth() + detailCalMonthOffset);
+  const year = base.getFullYear(), month = base.getMonth();
+  const todayISO = getTodayJST();
+  const label = document.getElementById('detail-cal-month');
+  if (label) label.textContent = year + '年' + (month + 1) + '月';
+
+  const monthSessions = {};
+  detailCalSessions.forEach(s => {
+    const dt = new Date(s.date + 'T00:00:00+09:00');
+    if (dt.getFullYear() === year && dt.getMonth() === month) monthSessions[dt.getDate()] = s;
+  });
+
+  let attendedCount = 0, pastCount = 0, visitCount = 0;
+  for (let d = 1; d <= new Date(year, month + 1, 0).getDate(); d++) {
+    const dateISO = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    if (detailCalAttended.has(dateISO)) visitCount++;
+  }
+  Object.values(monthSessions).forEach(s => {
+    if (s.date <= todayISO) { pastCount++; if (detailCalAttended.has(s.date)) attendedCount++; }
+  });
+  const sumEl = document.getElementById('detail-cal-summary');
+  if (sumEl) {
+    const parts = ['来塾 ' + visitCount + '回'];
+    if (pastCount) parts.push('授業出席 ' + attendedCount + '/' + pastCount + '回（' + Math.round(attendedCount / pastCount * 100) + '%）');
+    sumEl.textContent = parts.join('　/　');
+  }
+
+  const days = ['日','月','火','水','木','金','土'];
+  const firstDay = new Date(year, month, 1).getDay();
+  const lastDate = new Date(year, month + 1, 0).getDate();
+  let html = days.map(d => '<div class="cal-day-label">' + d + '</div>').join('');
+  for (let i = 0; i < firstDay; i++) html += '<div class="cal-day empty"></div>';
+
+  for (let d = 1; d <= lastDate; d++) {
+    const dateISO = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    const sess = monthSessions[d];
+    const isToday = dateISO === todayISO;
+    const st = detailGetDayStatus(dateISO, sess, todayISO);
+    const titleParts = [];
+    if (sess) titleParts.push(sess.classes.map(c => c.name).join('・') + (st.label ? '：' + st.label : ''));
+    else if (st.label) titleParts.push(st.label);
+    const title = titleParts.join(' / ').replace(/"/g, '&quot;');
+    const border = isToday ? 'border:2px solid var(--orange);' : (st.dashed ? 'border:1.5px dashed #7B2D8B;' : '');
+    html += '<div class="cal-day" title="' + title + '"' +
+      ' style="position:relative;background:' + st.bg + ';color:' + st.color + ';font-weight:' + (st.label?'700':'400') + ';' + border + '">' +
+      d + '</div>';
+  }
+  grid.innerHTML = html;
+}
 
 async function loadUnifiedCalendar() {
   if (!currentStudent) return;
