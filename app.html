@@ -2085,7 +2085,7 @@ async function doLogin() {
 
 // doStaffLogin → 下部の個人ログイン版を使用
 
-function logout() { currentStudent = null; allCheckins = []; clearLoginState(); showScreen('screen-login'); }
+function logout() { currentStudent = null; allCheckins = []; if (typeof stopForceCheckoutPolling === 'function') stopForceCheckoutPolling(); clearLoginState(); showScreen('screen-login'); }
 
 function staffLogout() {
   // 保持チェックがない場合はlocalStorageをクリア
@@ -2345,6 +2345,7 @@ let gpsWatchId = null;
 
 // ===== チェックイン / チェックアウト =====
 let checkinElapsedInterval = null;
+let forceCheckoutPollInterval = null; // スタッフ強制チェックアウト検知用ポーリング
 function startCheckin() {
   if (!currentStudent) return;
   const today = getTodayJSTString();
@@ -2400,6 +2401,58 @@ function showCheckinActive(startTime) {
   if (checkinElapsedInterval) clearInterval(checkinElapsedInterval);
   checkinElapsedInterval = setInterval(() => updateCheckinDisplay(), 1000);
   updateCheckinDisplay();
+  // スタッフによる強制チェックアウトを検知するポーリング（30秒ごと）
+  startForceCheckoutPolling();
+}
+
+// スタッフが強制チェックアウトしたかを30秒ごとにDB確認し、
+// チェックアウト済みなら生徒画面も自動で完了状態に切り替える
+function startForceCheckoutPolling() {
+  if (forceCheckoutPollInterval) clearInterval(forceCheckoutPollInterval);
+  forceCheckoutPollInterval = setInterval(checkForcedCheckout, 30000);
+}
+function stopForceCheckoutPolling() {
+  if (forceCheckoutPollInterval) { clearInterval(forceCheckoutPollInterval); forceCheckoutPollInterval = null; }
+}
+async function checkForcedCheckout() {
+  // 在室中でなければ何もしない
+  if (!checkinStartTime || !currentStudent) { stopForceCheckoutPolling(); return; }
+  try {
+    const today = getTodayJST();
+    // 今日の最新チェックイン行を確認
+    const rows = await sbGet('checkins',
+      'student_id=eq.' + currentStudent.id + '&checkin_date=eq.' + today +
+      '&select=id,checkout_time,stay_minutes&order=created_at.desc&limit=1');
+    if (!rows || !rows.length) return;
+    const row = rows[0];
+    // checkout_time が入っている = スタッフが強制チェックアウト済み
+    if (row.checkout_time) {
+      // 自分のタイマー・ポーリングを止める
+      if (checkinElapsedInterval) { clearInterval(checkinElapsedInterval); checkinElapsedInterval = null; }
+      stopForceCheckoutPolling();
+      checkinStartTime = null;
+      localStorage.removeItem('fit_checkin_start');
+      localStorage.removeItem('fit_checkin_student_id');
+      // 画面を完了表示に切り替え
+      document.getElementById('checkin-btn').style.display = 'none';
+      document.getElementById('checkin-active-box').style.display = 'none';
+      const doneBox = document.getElementById('checkout-done-box');
+      doneBox.style.display = 'block';
+      const stayMin = row.stay_minutes != null ? row.stay_minutes : 0;
+      const h = Math.floor(stayMin / 60), m = stayMin % 60;
+      const summary = document.getElementById('checkout-summary');
+      if (summary) summary.textContent = 'スタッフによりチェックアウトされました（在室時間: ' + h + '時間' + m + '分）';
+      // 最新のポイントを反映
+      try {
+        const st = await sbGet('students', 'id=eq.' + currentStudent.id + '&select=points');
+        if (st && st[0]) {
+          currentStudent.points = st[0].points;
+          document.getElementById('student-points').textContent = (st[0].points || 0).toLocaleString();
+        }
+      } catch(e) {}
+      showToast('スタッフによりチェックアウトされました', 'info');
+    }
+  } catch(e) { console.error('強制チェックアウト確認エラー:', e); }
 }
 
 function updateCheckinDisplay() {
@@ -2454,6 +2507,7 @@ async function doCheckout() {
     localStorage.removeItem('fit_checkin_start');
     localStorage.removeItem('fit_checkin_student_id');
     if (checkinElapsedInterval) { clearInterval(checkinElapsedInterval); checkinElapsedInterval = null; }
+    stopForceCheckoutPolling();
     // UI完了表示
     document.getElementById('checkin-btn').style.display = 'none';
     document.getElementById('checkin-active-box').style.display = 'none';
@@ -2550,8 +2604,27 @@ function renderHistoryBase(tab, checkins, summaryId, listId) {
   }
 }
 
+// 前日以前の「チェックアウトし忘れ」を、ポイントなしで自動チェックアウトする。
+// checkin_date が今日より前で checkout_time が未設定のレコードが対象。
+// ポイントは付けず（stay_minutes=0）、checkout_time だけ埋めて締める。
+async function cleanupStaleCheckins() {
+  try {
+    const today = getTodayJST();
+    const stale = await sbGet('checkins',
+      'checkin_date=lt.' + today + '&checkout_time=is.null&select=id,checkin_date&limit=500');
+    if (!stale || !stale.length) return;
+    for (const row of stale) {
+      // その日の終わり（JST 23:59:59）を擬似チェックアウト時刻にする
+      const closeTime = new Date(row.checkin_date + 'T23:59:59+09:00').toISOString();
+      await sbPatch('checkins', 'id=eq.' + row.id, { checkout_time: closeTime, stay_minutes: 0 });
+    }
+    console.log('未チェックアウト ' + stale.length + '件をポイントなしで締めました');
+  } catch(e) { console.error('未チェックアウト締め処理エラー:', e); }
+}
+
 async function initStaff() {
   loadPendingApplications();
+  cleanupStaleCheckins(); // 前日以前の未チェックアウトをポイントなしで締める
   showLoading('データを読み込み中...');
   try {
     const todayISO = getTodayJST();
