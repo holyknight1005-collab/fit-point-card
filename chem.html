@@ -79,7 +79,46 @@
     <input id="login-pin" class="field-input" type="password" inputmode="numeric" placeholder="パスワード" autocomplete="current-password">
     <button class="primary-btn" onclick="doLogin()">ログイン</button>
     <div id="login-error" class="error-msg"></div>
+    <div style="text-align:center;margin-top:16px">
+      <button class="home-logout" onclick="showScreen('screen-staff-login')" style="padding:7px 14px">👨‍🏫 スタッフの方はこちら</button>
+    </div>
   </div>
+</div>
+
+<!-- ===== スタッフログイン ===== -->
+<div id="screen-staff-login" class="screen">
+  <div class="login-logo">
+    <div class="ico">👨‍🏫</div>
+    <div class="ttl">スタッフログイン</div>
+    <div class="sub">スタッフIDと5桁パスワードを入力してください</div>
+  </div>
+  <div class="login-card">
+    <label class="field-label">スタッフID</label>
+    <input id="staff-id" class="field-input" type="text" autocomplete="username" placeholder="例：fit001" style="text-transform:lowercase">
+    <label class="field-label">パスワード（5桁）</label>
+    <input id="staff-pin" class="field-input" type="password" inputmode="numeric" maxlength="5" placeholder="・・・・・" autocomplete="current-password">
+    <button class="primary-btn" onclick="doStaffLogin()">ログイン</button>
+    <div id="staff-login-error" class="error-msg"></div>
+    <div style="text-align:center;margin-top:16px">
+      <button class="home-logout" onclick="showScreen('screen-login')" style="padding:7px 14px">← 生徒ログインに戻る</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== スタッフ：間違い分析 ===== -->
+<div id="screen-staff" class="screen">
+  <div class="home-top">
+    <div class="home-hello" id="staff-hello">スタッフモード</div>
+    <button class="home-logout" onclick="logout()">ログアウト</button>
+  </div>
+  <div class="section-title">📊 化学演習・間違い分析</div>
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <button class="home-logout" id="staff-tab-student" onclick="staffRenderBy('student')" style="flex:1;padding:9px 0;font-size:12px">生徒別</button>
+    <button class="home-logout" id="staff-tab-part" onclick="staffRenderBy('part')" style="flex:1;padding:9px 0;font-size:12px">パート別</button>
+    <button class="home-logout" onclick="staffOpenPractice()" style="flex:1;padding:9px 0;font-size:12px;color:var(--green-d);border-color:var(--green)">演習を試す</button>
+  </div>
+  <div id="staff-summary" style="font-size:12px;color:var(--muted);margin-bottom:10px"></div>
+  <div id="staff-analysis" style="display:flex;flex-direction:column;gap:10px"></div>
 </div>
 
 <!-- ===== 受講していない場合 ===== -->
@@ -168,15 +207,30 @@ function showToast(msg,type){ const t=document.getElementById('toast'); t.textCo
 
 /* ===== 認証（本体と同じ fit_email / fit_pin を共有） ===== */
 let currentStudent = null;
+let currentStaff = null;
 
 function saveLoginState(email,pin){ localStorage.setItem('fit_email',email); localStorage.setItem('fit_pin',pin); localStorage.setItem('fit_role','student'); }
-function clearLoginState(){ localStorage.removeItem('fit_email'); localStorage.removeItem('fit_pin'); localStorage.removeItem('fit_role'); }
+function saveStaffLoginState(staffId,pin){ localStorage.setItem('fit_staff_id',staffId); localStorage.setItem('fit_staff_pin',pin); localStorage.setItem('fit_role','staff'); }
+function clearLoginState(){ localStorage.removeItem('fit_email'); localStorage.removeItem('fit_pin'); localStorage.removeItem('fit_role'); localStorage.removeItem('fit_staff_id'); localStorage.removeItem('fit_staff_pin'); }
 
 async function autoLogin(){
+  const role=localStorage.getItem('fit_role');
+  // スタッフの引き継ぎ（app.html からの遷移）
+  if(role==='staff'){
+    const sid=localStorage.getItem('fit_staff_id');
+    const spin=localStorage.getItem('fit_staff_pin');
+    if(sid&&spin){
+      showLoading('自動ログイン中...');
+      try{
+        const data=await sbGet('staff','staff_id=eq.'+encodeURIComponent(sid)+'&pin=eq.'+encodeURIComponent(spin)+'&is_active=eq.true&select=*');
+        if(data&&data.length){ currentStaff=data[0]; await afterStaffLogin(); return; }
+      }catch(e){ /* fallthrough */ }
+    }
+    hideLoading(); showScreen('screen-staff-login'); return;
+  }
   const email=localStorage.getItem('fit_email');
   const pin=localStorage.getItem('fit_pin');
-  const role=localStorage.getItem('fit_role');
-  if(!email||!pin||role==='staff'){ showScreen('screen-login'); return; }
+  if(!email||!pin){ showScreen('screen-login'); return; }
   showLoading('自動ログイン中...');
   try{
     const data=await sbGet('students','email=eq.'+encodeURIComponent(email)+'&pin=eq.'+encodeURIComponent(pin)+'&select=*');
@@ -202,7 +256,113 @@ async function doLogin(){
   }catch(e){ hideLoading(); err.textContent='接続エラー: '+e.message; err.classList.add('show'); }
 }
 
-function logout(){ currentStudent=null; clearLoginState(); showScreen('screen-login'); }
+function logout(){ currentStudent=null; currentStaff=null; clearLoginState(); showScreen('screen-login'); }
+
+/* ===== スタッフ認証 ===== */
+async function doStaffLogin(){
+  const sid=document.getElementById('staff-id').value.trim().toLowerCase();
+  const pin=document.getElementById('staff-pin').value.trim();
+  const err=document.getElementById('staff-login-error');
+  if(!sid||!pin){ err.textContent='IDとパスワードを入力してください'; err.classList.add('show'); return; }
+  showLoading('ログイン中...');
+  try{
+    const data=await sbGet('staff','staff_id=eq.'+encodeURIComponent(sid)+'&pin=eq.'+encodeURIComponent(pin)+'&is_active=eq.true&select=*');
+    if(!data||!data.length){ err.textContent='IDまたはパスワードが違います'; err.classList.add('show'); hideLoading(); return; }
+    err.classList.remove('show');
+    currentStaff=data[0];
+    saveStaffLoginState(sid,pin);
+    await afterStaffLogin();
+  }catch(e){ hideLoading(); err.textContent='通信がうまくつながらなかったみたい。もう一度試してね。'; err.classList.add('show'); }
+}
+
+async function afterStaffLogin(){
+  hideLoading();
+  document.getElementById('staff-hello').textContent=(currentStaff.name||'スタッフ')+'さん（スタッフ）';
+  showScreen('screen-staff');
+  await staffLoadAnalysis();
+}
+
+/* スタッフ：間違いログを集計して表示 */
+let staffWrongRows=[];
+let staffStudentMap={};
+async function staffLoadAnalysis(){
+  const box=document.getElementById('staff-analysis');
+  const sum=document.getElementById('staff-summary');
+  box.innerHTML=''; sum.textContent='読み込み中...';
+  try{
+    // 未解決の間違いを全件取得
+    staffWrongRows=await sbGet('chem_wrong_logs','resolved=eq.false&select=student_id,part,part_title,question,wrong_count&order=wrong_count.desc') || [];
+    // 生徒名を引く
+    const ids=[...new Set(staffWrongRows.map(r=>r.student_id))];
+    staffStudentMap={};
+    if(ids.length){
+      const studs=await sbGet('students','id=in.('+ids.join(',')+')&select=id,name') || [];
+      studs.forEach(s=>{ staffStudentMap[s.id]=s.name||'(名前なし)'; });
+    }
+    const totalWrong=staffWrongRows.reduce((a,r)=>a+(r.wrong_count||1),0);
+    sum.textContent='未解決の間違い：'+staffWrongRows.length+'件（のべ'+totalWrong+'回）／対象生徒 '+ids.length+'名';
+    staffRenderBy('student');
+  }catch(e){
+    sum.textContent='';
+    box.innerHTML='<div style="font-size:13px;color:var(--red)">読み込みに失敗しました。chem_wrong_logs テーブルとRLS設定を確認してください。</div>';
+  }
+}
+
+function staffRenderBy(mode){
+  const box=document.getElementById('staff-analysis');
+  // タブのハイライト
+  const ts=document.getElementById('staff-tab-student'), tp=document.getElementById('staff-tab-part');
+  if(ts&&tp){
+    ts.style.color = mode==='student'?'var(--green-d)':'var(--muted)';
+    ts.style.borderColor = mode==='student'?'var(--green)':'var(--border)';
+    tp.style.color = mode==='part'?'var(--green-d)':'var(--muted)';
+    tp.style.borderColor = mode==='part'?'var(--green)':'var(--border)';
+  }
+  box.innerHTML='';
+  if(!staffWrongRows.length){ box.innerHTML='<div style="font-size:13px;color:var(--muted)">未解決の間違いはありません。</div>'; return; }
+  // 集計
+  const groups={};
+  staffWrongRows.forEach(r=>{
+    const key = mode==='student' ? (staffStudentMap[r.student_id]||r.student_id) : (r.part_title||r.part);
+    if(!groups[key]) groups[key]={count:0, total:0, items:[]};
+    groups[key].count++;
+    groups[key].total+=(r.wrong_count||1);
+    groups[key].items.push(r);
+  });
+  // のべ回数の多い順
+  const sorted=Object.entries(groups).sort((a,b)=>b[1].total-a[1].total);
+  sorted.forEach(([key,g])=>{
+    const card=document.createElement('div');
+    card.style.cssText='background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px;box-shadow:0 2px 8px rgba(0,0,0,.05)';
+    const detailId='det-'+Math.random().toString(36).slice(2,9);
+    const itemsHtml=g.items
+      .sort((a,b)=>(b.wrong_count||1)-(a.wrong_count||1))
+      .map(r=>{
+        const label = mode==='student' ? (r.part_title||r.part) : (staffStudentMap[r.student_id]||r.student_id);
+        return '<div style="font-size:12px;color:var(--text);padding:6px 0;border-top:1px solid var(--border)">'
+          +'<span style="color:var(--muted)">['+escapeHtml(label)+']</span> '
+          +escapeHtml(r.question)
+          +' <b style="color:var(--red)">×'+(r.wrong_count||1)+'</b></div>';
+      }).join('');
+    card.innerHTML='<div onclick="(function(el){var d=el.parentNode.querySelector(\'#'+detailId+'\');d.style.display=d.style.display===\'none\'?\'block\':\'none\';})(this)" style="display:flex;align-items:center;gap:8px;cursor:pointer">'
+      +'<div style="flex:1;font-size:14px;font-weight:700;color:var(--green-d)">'+escapeHtml(key)+'</div>'
+      +'<div style="font-size:12px;color:var(--muted)">'+g.count+'問／のべ'+g.total+'回</div>'
+      +'<span style="color:var(--muted);font-size:14px">▾</span></div>'
+      +'<div id="'+detailId+'" style="display:none;margin-top:4px">'+itemsHtml+'</div>';
+    box.appendChild(card);
+  });
+}
+
+function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* スタッフが演習を試す（ポイント・ログは残らない） */
+function staffOpenPractice(){
+  showScreen('screen-home');
+  document.getElementById('home-hello').textContent=(currentStaff.name||'スタッフ')+'さん（確認モード）';
+  const pill=document.getElementById('student-points');
+  if(pill) pill.parentNode.style.display='none';
+  renderHomeCards();
+}
 
 /* ===== 受講判定：教科「化学」のクラスを受講しているか ===== */
 async function isChemEnrolled(){
