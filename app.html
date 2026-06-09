@@ -1354,7 +1354,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
     <!-- 予定表（スタッフ用カレンダー）タブ -->
     <div id="smcontent-calendar" style="display:none">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">講師の時間割・fitの予定・誕生日をまとめて表示します。日付をタップすると詳細が見られます。</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">講師の時間割・fitの予定・誕生日・自分の報告書/出席状況をまとめて表示します。日付をタップすると詳細・報告書入力ができます。</div>
       <!-- フィルタ -->
       <div style="display:flex;gap:6px;margin-bottom:10px">
         <button id="staffcal-filter-mine" onclick="setStaffCalFilter('mine')" style="flex:1;padding:8px 4px;font-size:11px;font-weight:700;border-radius:8px;border:1.5px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;font-family:'Noto Sans JP',sans-serif">自分の担当</button>
@@ -1372,7 +1372,11 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <div style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--orange)"></span>授業あり</div>
         <div style="display:flex;align-items:center;gap:4px"><span>🎂</span>誕生日</div>
         <div style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#F5A623"></span>fitの予定</div>
+        <div style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green-d)"></span>出席記入済</div>
+        <div style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--orange)"></span>報告書済</div>
+        <div style="display:flex;align-items:center;gap:4px"><span style="color:var(--red);font-weight:700">!</span>報告書未入力</div>
       </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.5">※ 報告書・出席の状況は「自分の担当」表示のときに出ます。</div>
     </div>
 
     <!-- アラートボードタブ -->
@@ -7618,6 +7622,7 @@ let staffCalFilter = 'all'; // 'all' | 'mine'
 let staffCalSessions = [];  // [{date, period, class_name, class_master_id, teacher_id, teacher_name, mine}]
 let staffCalEvents = {};    // dateISO -> [{title, detail, color}]
 let staffCalBirthdays = {}; // 'MM-DD' -> [{name, type:'staff'|'student'}]
+let staffCalReports = {};   // dateISO -> staff_reports レコード（自分の報告書/出席状況）
 let staffCalModalDate = null;
 
 async function loadStaffCalendar() {
@@ -7634,13 +7639,14 @@ async function loadStaffCalendar() {
     const lastDate = new Date(year, month + 1, 0).getDate();
     const lastISO = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(lastDate).padStart(2, '0');
 
-    // 並行取得：当月の授業 / 講師マップ / イベント / スタッフ誕生日 / 生徒誕生日
-    const [sessions, staffList, events, staffBdays, studentBdays] = await Promise.all([
+    // 並行取得：当月の授業 / 講師マップ / イベント / スタッフ誕生日 / 生徒誕生日 / 自分の報告書
+    const [sessions, staffList, events, staffBdays, studentBdays, myReports] = await Promise.all([
       sbGet('class_sessions', 'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO + '&select=class_master_id,period,start_time,end_time,session_date&order=session_date,period'),
       sbGet('staff', 'select=id,name'),
       sbGet('events', 'event_date=gte.' + firstISO + '&event_date=lte.' + lastISO + '&select=title,event_date,detail,color').catch(() => []),
       sbGet('staff', 'birthday=not.is.null&select=name,birthday').catch(() => []),
-      sbGet('students', 'birthday=not.is.null&select=name,birthday').catch(() => [])
+      sbGet('students', 'birthday=not.is.null&select=name,birthday').catch(() => []),
+      (currentStaff ? sbGet('staff_reports', 'staff_id=eq.' + currentStaff.id + '&report_date=gte.' + firstISO + '&report_date=lte.' + lastISO).catch(() => []) : Promise.resolve([]))
     ]);
 
     // 講師名マップ
@@ -7691,6 +7697,10 @@ async function loadStaffCalendar() {
       const md = s.birthday.slice(5);
       (staffCalBirthdays[md] = staffCalBirthdays[md] || []).push({ name: s.name, type: 'student' });
     });
+
+    // 自分の報告書・出席状況（report_date でマップ化）
+    staffCalReports = {};
+    (myReports || []).forEach(r => { staffCalReports[r.report_date] = r; });
 
     renderStaffCalMonth();
   } catch(e) {
@@ -7744,15 +7754,42 @@ function renderStaffCalMonth() {
     const sess = staffCalSessionsOn(dateISO);
     const evs = staffCalEvents[dateISO] || [];
     const bdays = staffCalBirthdays[md] || [];
+    const rec = staffCalReports[dateISO];
+    const todayStr = todayISO;
+    const isPast = dateISO < todayStr;
+    // 報告書・出席ステータス（自分の担当フィルタ時のみ表示）
+    const showReport = (staffCalFilter === 'mine');
+    let repDone = false, attDone = false, repLate = false, noClass = false, repMissing = false;
+    if (showReport && rec) {
+      noClass = !!rec.no_class;
+      if (!noClass) {
+        repDone = !!rec.report_checked;
+        attDone = !!rec.attendance_checked;
+        if (repDone) {
+          const submitted = new Date(rec.submitted_at || rec.report_date + 'T23:59:59');
+          const target = new Date(dateISO + 'T23:59:59');
+          repLate = (submitted - target) / 86400000 > 2;
+        }
+      }
+    } else if (showReport && !rec && isPast) {
+      repMissing = true; // 過去日で未入力
+    }
+
     const hasClass = sess.length > 0;
     const hasEvent = evs.length > 0;
     const hasBday = bdays.length > 0;
-    const tappable = hasClass || hasEvent || hasBday;
+    const tappable = hasClass || hasEvent || hasBday || (showReport && (rec || isPast));
 
     const titleParts = [];
     sess.forEach(s => titleParts.push((s.period ? s.period + '限 ' : '') + s.class_name + (s.teacher_name ? '（' + s.teacher_name + '）' : '')));
     evs.forEach(ev => titleParts.push('🎪 ' + ev.title));
     bdays.forEach(b => titleParts.push('🎂 ' + b.name));
+    if (showReport) {
+      if (noClass) titleParts.push('休講');
+      if (repDone) titleParts.push(repLate ? '報告書(遅延)' : '報告書済');
+      if (attDone) titleParts.push('出席記入済');
+      if (repMissing) titleParts.push('報告書未入力');
+    }
     const title = titleParts.join(' / ').replace(/"/g, '&quot;');
 
     // 授業がある日は背景を薄オレンジに
@@ -7765,10 +7802,23 @@ function renderStaffCalMonth() {
     if (hasBday) marks += '<span style="position:absolute;top:1px;right:2px;font-size:9px;line-height:1">🎂</span>';
     if (hasEvent) {
       const dotColor = evs[0].color || '#F5A623';
-      marks += '<span style="position:absolute;bottom:2px;right:3px;width:6px;height:6px;border-radius:50%;background:' + dotColor + '"></span>';
+      marks += '<span style="position:absolute;top:2px;left:3px;width:6px;height:6px;border-radius:50%;background:' + dotColor + '"></span>';
     }
     // 授業件数バッジ（左下）
     if (hasClass) marks += '<span style="position:absolute;bottom:1px;left:3px;font-size:8px;font-weight:700;color:var(--orange-d)">' + sess.length + '</span>';
+    // 報告書・出席ドット（右下に集約。自分の担当時のみ）
+    if (showReport) {
+      let statusDots = '';
+      if (repDone) statusDots += '<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:' + (repLate ? '#2D5FA6' : 'var(--orange)') + '"></span>';
+      if (attDone) statusDots += '<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--green-d)"></span>';
+      if (statusDots) {
+        marks += '<span style="position:absolute;bottom:2px;right:3px;display:flex;gap:1px">' + statusDots + '</span>';
+      } else if (noClass) {
+        marks += '<span style="position:absolute;bottom:1px;right:3px;font-size:7px;color:var(--muted)">休</span>';
+      } else if (repMissing) {
+        marks += '<span style="position:absolute;bottom:1px;right:3px;font-size:8px;font-weight:700;color:var(--red)">!</span>';
+      }
+    }
 
     html += '<div class="cal-day" title="' + title + '"' + onclick +
       ' style="position:relative;background:' + bg + ';' + cursor + border + '">' + d + marks + '</div>';
@@ -7829,6 +7879,42 @@ function openStaffCalModal(dateISO) {
     body += '</div>';
   }
 
+  // 報告書・出席（自分の状況。未来日は入力不可）
+  {
+    const rec = staffCalReports[dateISO];
+    const todayStr = getTodayJST();
+    const isFuture = dateISO > todayStr;
+    if (!isFuture) {
+      let statusHtml = '';
+      if (rec) {
+        const items = [];
+        if (rec.no_class) {
+          items.push('<span style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:11px;color:var(--muted)">休講</span>');
+        } else {
+          if (rec.report_checked) {
+            const submitted = new Date(rec.submitted_at || rec.report_date + 'T23:59:59');
+            const target = new Date(dateISO + 'T23:59:59');
+            const isLate = (submitted - target) / 86400000 > 2;
+            items.push('<span style="background:' + (isLate?'#EEF3FF':'var(--orange-l)') + ';border:1px solid ' + (isLate?'#C4B5FD':'var(--orange)') + ';border-radius:4px;padding:2px 8px;font-size:11px;color:' + (isLate?'#5436DA':'var(--orange-d)') + '">' + (isLate?'🔵':'🟠') + ' 報告書記入済' + (isLate?'（遅延）':'') + '</span>');
+          }
+          if (rec.attendance_checked) {
+            items.push('<span style="background:var(--green-l);border:1px solid #A8D891;border-radius:4px;padding:2px 8px;font-size:11px;color:var(--green-d)">✅ 出席記入済</span>');
+          }
+        }
+        if (items.length) statusHtml = '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">' + items.join('') + '</div>';
+        if (rec.memo) statusHtml += '<div style="font-size:11px;color:var(--muted);white-space:pre-wrap;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px">' + escapeHtml(rec.memo) + '</div>';
+        if (!items.length && !rec.memo) statusHtml = '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">未入力です</div>';
+      } else {
+        statusHtml = '<div style="font-size:11px;color:var(--red);margin-bottom:6px">⚠️ まだ報告書・出席が入力されていません</div>';
+      }
+      const btnLabel = rec ? '報告書・出席を編集' : '報告書・出席を入力';
+      body += '<div><div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px">📝 報告書・出席（自分）</div>' +
+        statusHtml +
+        '<button onclick="openReportFromCalendar(\'' + dateISO + '\')" style="width:100%;margin-top:6px;padding:9px;font-size:12px;font-weight:700;color:#fff;background:var(--orange);border:none;border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + btnLabel + '</button>' +
+      '</div>';
+    }
+  }
+
   if (!body) body = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">予定はありません</div>';
   document.getElementById('staffcal-modal-body').innerHTML = body;
   document.getElementById('staffcal-modal').style.display = 'flex';
@@ -7836,6 +7922,16 @@ function openStaffCalModal(dateISO) {
 
 function closeStaffCalModal() {
   document.getElementById('staffcal-modal').style.display = 'none';
+}
+
+// 予定表モーダル → 報告書入力へ遷移
+async function openReportFromCalendar(dateISO) {
+  closeStaffCalModal();
+  // 報告書タブへ切替（loadStaffReports が走り reportMap が埋まる）
+  switchStaffMenuTab('report', document.getElementById('smtab-report'));
+  // reportMap のロード完了を待ってから入力を開く
+  try { await loadStaffReports(); } catch(e) {}
+  openReportDate(dateISO);
 }
 
 // ===== 統合カレンダー（生徒側）=====
