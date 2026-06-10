@@ -220,6 +220,23 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
   </div>
 </div>
 
+<!-- QRチェックイン読み取りモーダル -->
+<div id="qr-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:650;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:380px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div style="font-size:15px;font-weight:700;color:var(--green-d)">📷 QRでチェックイン</div>
+      <button onclick="closeQrCheckin()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">第2教室に貼ってあるQRコードを、枠の中にうつしてください。</div>
+    <div style="position:relative;width:100%;aspect-ratio:1/1;background:#000;border-radius:12px;overflow:hidden">
+      <video id="qr-video" playsinline style="width:100%;height:100%;object-fit:cover"></video>
+      <div style="position:absolute;inset:18%;border:3px solid rgba(255,255,255,0.85);border-radius:12px;box-shadow:0 0 0 100vh rgba(0,0,0,0.15)"></div>
+    </div>
+    <canvas id="qr-canvas" style="display:none"></canvas>
+    <div id="qr-status" style="font-size:12px;color:var(--muted);text-align:center;margin-top:12px">カメラを起動しています…</div>
+  </div>
+</div>
+
 <div class="loading-overlay hidden" id="loading">
   <div class="spinner"></div>
   <div class="loading-text" id="loading-text">読み込み中...</div>
@@ -292,6 +309,10 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <!-- ① チェックインボタン（未チェックイン時） -->
     <button class="checkin-btn" id="checkin-btn" onclick="startCheckin()" disabled>
       ✅ チェックイン<span class="btn-sub">自習室で押してください</span>
+    </button>
+    <!-- ①-2 QRチェックイン（第2教室用） -->
+    <button id="qr-checkin-btn" onclick="openQrCheckin()" style="display:none;width:100%;margin-top:10px;padding:14px;background:white;border:1.5px solid var(--green-d);border-radius:var(--radius);color:var(--green-d);font-family:'Noto Sans JP',sans-serif;font-size:15px;font-weight:700;cursor:pointer">
+      📷 QRでチェックイン<span style="display:block;font-size:11px;font-weight:400;opacity:0.85;margin-top:3px">第2教室の方はこちら</span>
     </button>
 
     <!-- ② チェックイン中（在室中） -->
@@ -1773,6 +1794,12 @@ const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 const STAFF_PASSWORD = '99999';
 const FIT_LAT = 33.840737, FIT_LNG = 132.770524, FIT_RADIUS = 100;
 
+// ===== 教室定義 =====
+// location 値 → 表示ラベル。本校(fit)はGPS判定、それ以外はQR判定。
+const LOCATION_LABELS = { fit: '本校', annex: '第2教室' };
+// QRチェックイン対応教室：QR文字列 → location値。固定QRに 'fit-checkin:annex' を埋め込む。
+const QR_CHECKIN_MAP = { 'fit-checkin:annex': 'annex' };
+
 // 日本時間で今日の日付を取得
 function getTodayJST() {
   const now = new Date();
@@ -2412,28 +2439,127 @@ function startCheckin() {
       if (dist > FIT_RADIUS) {
         showToast('⚠️ 自習室の範囲外です（' + Math.round(dist) + 'm）', 'error'); return;
       }
-      confirmCheckin();
+      confirmCheckin('fit');
     },
     err => { hideLoading(); showToast('GPS取得エラー', 'error'); },
     { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
   );
 }
 
-async function confirmCheckin() {
+// QRチェックインボタンの表示切替（未チェックイン時のみ表示）
+function updateQrCheckinBtn(show) {
+  const b = document.getElementById('qr-checkin-btn');
+  if (b) b.style.display = show ? 'block' : 'none';
+}
+
+// ===== QRチェックイン（第2教室） =====
+let qrStream = null;       // カメラのMediaStream
+let qrScanRAF = null;      // requestAnimationFrame ID
+let qrBusy = false;        // チェックイン処理中の二重実行防止
+
+// jsQRを必要時に動的ロード（初回タップ時のみ）
+function loadJsQR() {
+  return new Promise((resolve, reject) => {
+    if (window.jsQR) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('QR読み取りライブラリの読み込みに失敗しました'));
+    document.head.appendChild(s);
+  });
+}
+
+async function openQrCheckin() {
   if (!currentStudent) return;
+  const today = getTodayJSTString();
+  if (allCheckins.includes(today)) { showToast('本日はすでにチェックイン済みです！', 'info'); return; }
+
+  const modal = document.getElementById('qr-modal');
+  const statusEl = document.getElementById('qr-status');
+  modal.style.display = 'flex';
+  statusEl.textContent = '読み込み中…';
+  qrBusy = false;
+
+  try {
+    await loadJsQR();
+  } catch(e) {
+    statusEl.textContent = '❌ ' + e.message;
+    return;
+  }
+
+  const video = document.getElementById('qr-video');
+  try {
+    qrStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    video.srcObject = qrStream;
+    await video.play();
+    statusEl.textContent = 'QRコードを枠に合わせてください';
+    qrScanRAF = requestAnimationFrame(scanQrFrame);
+  } catch(e) {
+    statusEl.textContent = '🔒 カメラを使えませんでした（許可が必要です）';
+  }
+}
+
+function scanQrFrame() {
+  const video = document.getElementById('qr-video');
+  const canvas = document.getElementById('qr-canvas');
+  if (!video || video.readyState !== video.HAVE_ENOUGH_DATA || qrBusy) {
+    qrScanRAF = requestAnimationFrame(scanQrFrame);
+    return;
+  }
+  const w = video.videoWidth, h = video.videoHeight;
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0, w, h);
+  const img = ctx.getImageData(0, 0, w, h);
+  const code = window.jsQR ? window.jsQR(img.data, w, h) : null;
+  if (code && code.data) {
+    const loc = QR_CHECKIN_MAP[code.data.trim()];
+    if (loc) {
+      qrBusy = true;
+      handleQrCheckin(loc);
+      return; // ループ停止（成功）
+    } else {
+      document.getElementById('qr-status').textContent = '⚠️ このQRは対象外です';
+    }
+  }
+  qrScanRAF = requestAnimationFrame(scanQrFrame);
+}
+
+async function handleQrCheckin(loc) {
+  stopQrCamera();
+  document.getElementById('qr-modal').style.display = 'none';
+  await confirmCheckin(loc);
+}
+
+function stopQrCamera() {
+  if (qrScanRAF) { cancelAnimationFrame(qrScanRAF); qrScanRAF = null; }
+  if (qrStream) { qrStream.getTracks().forEach(t => t.stop()); qrStream = null; }
+  const video = document.getElementById('qr-video');
+  if (video) video.srcObject = null;
+}
+
+function closeQrCheckin() {
+  stopQrCamera();
+  document.getElementById('qr-modal').style.display = 'none';
+}
+
+async function confirmCheckin(location) {
+  if (!currentStudent) return;
+  const loc = location || 'fit'; // 教室識別（既定は本校 fit）
   const today = getTodayJSTString();
   const now = new Date();
   showLoading('チェックイン中...');
   try {
-    await sbPost('checkins', { student_id: currentStudent.id, checkin_date: getTodayJST() });
+    await sbPost('checkins', { student_id: currentStudent.id, checkin_date: getTodayJST(), location: loc });
     allCheckins.push(today);
     // localStorage にチェックイン時刻を保存
     checkinStartTime = now;
     localStorage.setItem('fit_checkin_start', now.toISOString());
     localStorage.setItem('fit_checkin_student_id', currentStudent.id);
+    localStorage.setItem('fit_checkin_location', loc);
     hideLoading();
     showCheckinActive(now);
-    showToast('✅ チェックイン！頑張ろう！', 'success');
+    showToast('✅ チェックイン！頑張ろう！（' + LOCATION_LABELS[loc] + '）', 'success');
     if (typeof unifiedAttendedDates !== 'undefined') { unifiedAttendedDates.add(getTodayJST()); renderUnifiedMonth(); }
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
@@ -2441,6 +2567,7 @@ async function confirmCheckin() {
 function showCheckinActive(startTime) {
   // UIの切り替え
   document.getElementById('checkin-btn').style.display = 'none';
+  updateQrCheckinBtn(false);
   document.getElementById('checkin-active-box').style.display = 'block';
   document.getElementById('checkout-done-box').style.display = 'none';
   // 開始時刻ラベル
@@ -3220,7 +3347,7 @@ async function loadDailyAttendance() {
 
   try {
     const checkins = await sbGet('checkins',
-      'checkin_date=eq.' + date + '&select=student_id,created_at,checkout_time,stay_minutes&order=created_at');
+      'checkin_date=eq.' + date + '&select=student_id,created_at,checkout_time,stay_minutes,location&order=created_at');
     if (!checkins || checkins.length === 0) {
       dailyCheckins = [];
       document.getElementById('daily-hero-count').textContent = '0';
@@ -3394,6 +3521,7 @@ function renderDailyAttendance() {
           '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
             '<span style="font-size:13px;font-weight:500;color:var(--text)">' + (s.name||'不明') + '</span>' +
             tag +
+            ((c.location && c.location !== 'fit') ? '<span style="font-size:10px;background:var(--green-l);color:var(--green-d);border:1px solid #A8D891;padding:1px 6px;border-radius:10px">' + (LOCATION_LABELS[c.location] || c.location) + '</span>' : '') +
             (isInRoom ? '<span style="font-size:10px;background:var(--orange);color:white;padding:1px 6px;border-radius:10px">在室中</span>' : '') +
           '</div>' +
           '<div style="display:flex;align-items:center;gap:8px;margin-top:3px;flex-wrap:wrap">' +
@@ -5617,9 +5745,12 @@ async function loadYesterdayAttendance() {
   el.innerHTML = '<div class="card-box" style="margin-bottom:8px;font-size:13px;font-weight:700;color:var(--text)">' + yesterday.replace(/-/g,'/') + '　' + checkins.length + '名来塾</div>' +
     checkins.map(c => {
       const s = c.students || {};
+      const locBadge = (c.location && c.location !== 'fit')
+        ? '<span style="font-size:9px;background:var(--green-l);color:var(--green-d);border:1px solid #A8D891;padding:1px 6px;border-radius:10px;margin-left:6px">' + (LOCATION_LABELS[c.location] || c.location) + '</span>'
+        : '';
       return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 13px;display:flex;align-items:center;gap:10px">' +
         '<div style="width:36px;height:36px;border-radius:50%;background:var(--orange);display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-size:16px;flex-shrink:0">' + (s.name||'?')[0] + '</div>' +
-        '<div><div style="font-size:13px;font-weight:500;color:var(--text)">' + (s.name||'不明') + '</div>' +
+        '<div><div style="font-size:13px;font-weight:500;color:var(--text)">' + (s.name||'不明') + locBadge + '</div>' +
         '<div style="font-size:11px;color:var(--muted)">' + (s.school||'') + ' ' + (s.grade||'') + '</div></div>' +
       '</div>';
     }).join('');
@@ -7182,12 +7313,14 @@ async function checkCheckinStatus(studentId, btn) {
       btn.disabled = true;
       btn.style.display = 'block';
       btn.innerHTML = '✅ チェックイン<span class="btn-sub">自習室で押してポイントゲット！</span>';
+      updateQrCheckinBtn(true);
       return;
     }
     const latest = checkins[0];
     if (latest.checkout_time) {
       // チェックアウト済み → 完了状態を表示
       document.getElementById('checkin-btn').style.display = 'none';
+      updateQrCheckinBtn(false);
       document.getElementById('checkin-active-box').style.display = 'none';
       document.getElementById('checkout-done-box').style.display = 'block';
       document.getElementById('checkout-summary').textContent = '本日のチェックアウト完了済みです';
@@ -7207,6 +7340,7 @@ async function checkCheckinStatus(studentId, btn) {
     // エラー時はチェックイン済みとして表示
     btn.disabled = true;
     btn.style.display = 'block';
+    updateQrCheckinBtn(false);
     btn.innerHTML = '✅ 本日はチェックイン済み<span class="btn-sub">また明日も来てね！</span>';
   }
 }
