@@ -409,8 +409,16 @@ function renderHomeCards(){
       wrap.appendChild(head);
       lastGroup=g;
     }
-    const count = d.type==='reading' ? d.cards.length+'項目'
-                : (d.pick||(d.pool?d.pool.length:0))+'問（ランダム）';
+    let count;
+    if(d.type==='reading'){
+      count = d.cards.length+'項目';
+    } else {
+      const totalQ = chemFullPool(d).length;
+      const remainQ = chemRemainingPool(key, d).length;
+      count = (remainQ===0)
+        ? '✅ 全'+totalQ+'問 制覇'
+        : '残り'+remainQ+' / 全'+totalQ+'問';
+    }
     const card=document.createElement('div');
     card.style.cssText='background:#fff;border:1px solid #DCEDE4;border-left:4px solid '+d.color+';border-radius:14px;padding:15px 16px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.05)';
     card.onclick=()=>chemStart(key);
@@ -431,10 +439,31 @@ function chemStart(key){
   document.getElementById('chem-header').textContent=chemCur.title;
   document.getElementById('chem-quiz-title').textContent=chemCur.title;
   if(chemCur.type==='reading'){ chemRenderReading(); return; }
-  if(key==='mole'){ chemQset=chemSample(chemCur.pool,10).concat(chemSample(chemCur.advPool,5)); }
-  else { chemQset=chemSample(chemCur.pool, chemCur.pick); }
+  // 正解済みを除いた残りプールから出題
+  const remaining = chemRemainingPool(key, chemCur);
+  if(remaining.length===0){
+    // 全問制覇 → クリア画面
+    chemShowCleared(key);
+    return;
+  }
+  chemQset = chemSample(remaining, chemCur.pick);
   chemShow('quiz');
   chemRenderQ();
+}
+
+/* 全問正解済みのときのクリア画面（リセット可能） */
+function chemShowCleared(key){
+  const d=CHEM_DATA[key];
+  const total=chemFullPool(d).length;
+  chemShow('result');
+  document.getElementById('chem-result-score').textContent='🎉 全問制覇！';
+  document.getElementById('chem-result-msg').textContent=d.title+' の全'+total+'問を正解済みです。';
+  const box=document.getElementById('chem-result-extra');
+  if(box){
+    box.innerHTML='<button onclick="chemResetMastered(\''+key+'\');chemStart(\''+key+'\')" '
+      +'style="padding:13px 26px;background:linear-gradient(135deg,#C26A1B,#9A5215);border:none;border-radius:12px;color:#fff;font-family:\'Noto Sans JP\',sans-serif;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:10px">'
+      +'もう一度はじめから（リセット）</button>';
+  }
 }
 
 /* 化学画面内の表示切替（quiz / result のみ。menu はホーム側を使う） */
@@ -445,7 +474,7 @@ function chemShow(which){
 }
 /* 出題画面の「戻る」→ホームへ */
 function chemBack(){ backToHome(); }
-function backToHome(){ document.getElementById('screen-chem').style.display='none'; showScreen('screen-home'); document.getElementById('student-points').textContent=(currentStudent.points||0).toLocaleString(); }
+function backToHome(){ document.getElementById('screen-chem').style.display='none'; showScreen('screen-home'); if(typeof renderHomeCards==='function') renderHomeCards(); document.getElementById('student-points').textContent=((currentStudent&&currentStudent.points)||0).toLocaleString(); }
 
 window.addEventListener('DOMContentLoaded', autoLogin);
 
@@ -948,6 +977,39 @@ const CHEM_ORDER = ['knowledge','separation','symbol','econfig','ion','element',
 
 let chemCur=null, chemIdx=0, chemScore=0, chemQset=[];
 
+/* ============================================================ */
+/* 正解済み管理（全問制覇モード・localStorage保存）            */
+/*  正解した問題のsubjectを「正解済み」として記録し、         */
+/*  次回以降の出題から除外。残りが尽きたらリセット可能。       */
+/* ============================================================ */
+function chemMasteredKey(partKey){
+  const who = (typeof currentStudent!=='undefined' && currentStudent && currentStudent.id) ? currentStudent.id : 'guest';
+  return 'chem_mastered_'+who+'_'+partKey;
+}
+function chemGetMastered(partKey){
+  try{ return JSON.parse(localStorage.getItem(chemMasteredKey(partKey))||'[]'); }
+  catch(e){ return []; }
+}
+function chemAddMastered(partKey, subject){
+  const list = chemGetMastered(partKey);
+  if(!list.includes(subject)){
+    list.push(subject);
+    try{ localStorage.setItem(chemMasteredKey(partKey), JSON.stringify(list)); }catch(e){}
+  }
+}
+function chemResetMastered(partKey){
+  try{ localStorage.removeItem(chemMasteredKey(partKey)); }catch(e){}
+}
+/* パートの全問プール（mole は基本＋応用）を返す */
+function chemFullPool(d){
+  return (d.pool||[]).concat(d.advPool||[]);
+}
+/* まだ正解していない問題だけ返す */
+function chemRemainingPool(partKey, d){
+  const mastered = chemGetMastered(partKey);
+  return chemFullPool(d).filter(q=>!mastered.includes(q.subject));
+}
+
 /* 配列をシャッフルしてn個取り出す */
 function chemSample(arr, n){
   const a = arr.slice();
@@ -1133,6 +1195,8 @@ let chemReviewMode = false;  // 復習モード中か（復習中の間違いは
 /* 採点フック：正誤を記録 */
 function chemMark(q, isCorrect){
   if(isCorrect){
+    // 正解 → 全問制覇モードの「正解済み」に追加（このパート単位）
+    if(chemCur && chemCur._key) chemAddMastered(chemCur._key, q.subject);
     // 復習で正解 → 解決済みにする
     if(chemReviewMode) chemResolveWrong(q);
     else chemResolveWrong(q); // 通常モードでも、過去に間違えた問題を正解したら解決
