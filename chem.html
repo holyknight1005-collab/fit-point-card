@@ -134,12 +134,19 @@
   <div class="home-top">
     <div class="home-hello" id="home-hello">こんにちは</div>
     <div style="display:flex;align-items:center;gap:8px">
+      <div class="point-pill" id="streak-pill" style="display:none"></div>
       <div class="point-pill">fitP <b id="student-points">0</b></div>
       <button class="home-logout" onclick="logout()">ログアウト</button>
     </div>
   </div>
   <div class="section-title">J化学演習</div>
   <div style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:14px">パートを選んでね。正解するとfitポイントがたまります。</div>
+  <div onclick="chemQuickMix()" style="background:linear-gradient(135deg,#1B7A52,#0E4D33);border-radius:14px;padding:14px 16px;color:#fff;cursor:pointer;box-shadow:0 3px 12px rgba(27,122,82,.3);margin-bottom:10px;display:flex;align-items:center;gap:10px">
+    <span style="font-size:22px">⚡</span>
+    <div style="flex:1"><div style="font-size:15px;font-weight:700">サクッと5問</div>
+    <div style="font-size:11px;opacity:.9;margin-top:2px">全パートからランダム5問。1〜2分の隙間時間に！</div></div>
+    <span style="font-size:18px">›</span>
+  </div>
   <div onclick="chemStartReview()" style="background:linear-gradient(135deg,#C26A1B,#9A5215);border-radius:14px;padding:14px 16px;color:#fff;cursor:pointer;box-shadow:0 3px 12px rgba(194,106,27,.3);margin-bottom:14px;display:flex;align-items:center;gap:10px">
     <span style="font-size:22px">🔁</span>
     <div style="flex:1"><div style="font-size:15px;font-weight:700">まちがえた問題を復習</div>
@@ -237,7 +244,11 @@ async function autoLogin(){
     if(!data||!data.length){ clearLoginState(); hideLoading(); showScreen('screen-login'); return; }
     currentStudent=data[0];
     await afterLogin();
-  }catch(e){ clearLoginState(); hideLoading(); showScreen('screen-login'); }
+  }catch(e){
+    // 通信エラー時はログイン情報を消さない（電波回復後にリロードすれば再ログイン不要）
+    hideLoading(); showScreen('screen-login');
+    showToast('通信エラー：電波の良い場所でもう一度開いてみてね','info');
+  }
 }
 
 async function doLogin(){
@@ -389,10 +400,12 @@ async function afterLogin(){
   document.getElementById('student-points').textContent=(currentStudent.points||0).toLocaleString();
   showScreen('screen-home');
   renderHomeCards();
+  chemFlushPending(); // 前回失敗したポイントがあれば自動加算
 }
 
 /* ホームのカテゴリーカードを描画（出題画面の中ではなくホームに） */
 function renderHomeCards(){
+  if(typeof chemRenderStreak==='function') chemRenderStreak();
   const wrap=document.getElementById('chem-cards');
   wrap.innerHTML='';
   let lastGroup=null;
@@ -477,6 +490,8 @@ function chemBack(){ backToHome(); }
 function backToHome(){ document.getElementById('screen-chem').style.display='none'; showScreen('screen-home'); if(typeof renderHomeCards==='function') renderHomeCards(); document.getElementById('student-points').textContent=((currentStudent&&currentStudent.points)||0).toLocaleString(); }
 
 window.addEventListener('DOMContentLoaded', autoLogin);
+window.addEventListener('offline', ()=>showToast('📡 オフラインになりました。ポイント加算など通信が必要な機能は一時的に使えません','info'));
+window.addEventListener('online', ()=>{ showToast('📡 オンラインに戻りました','success'); chemFlushPending(); });
 
 /* === J化学演習エンジン（本体と共通） === */
 /* ========================================================= */
@@ -504,8 +519,6 @@ const CHEM_DATA = {
     pool:[
       {subject:'物質そのものは変わらず状態が変わる変化を何という？', answer:'物理変化', choices:['物理変化','化学変化','状態方程式','分解']},
       {subject:'別の物質ができる変化を何という？', answer:'化学変化', choices:['化学変化','物理変化','蒸発','昇華']},
-      {subject:'次のうち混合物はどれ？', answer:'空気', choices:['空気','水','食塩','鉄']},
-      {subject:'次のうち純物質はどれ？', answer:'水', choices:['水','空気','海水','牛乳']},
       {subject:'1種類の元素だけからなる物質を何という？', answer:'単体', choices:['単体','化合物','混合物','同素体']},
       {subject:'2種類以上の元素からなる物質を何という？', answer:'化合物', choices:['化合物','単体','混合物','元素']},
       {subject:'次のうち単体はどれ？', answer:'酸素O₂', choices:['酸素O₂','水H₂O','二酸化炭素CO₂','食塩NaCl']},
@@ -542,7 +555,6 @@ const CHEM_DATA = {
       {subject:'NH₃の分子の形は？', answer:'三角錐形', choices:['三角錐形','折れ線形','直線形','正四面体形']},
       {subject:'CH₄の分子の形は？', answer:'正四面体形', choices:['正四面体形','三角錐形','折れ線形','直線形']},
       {subject:'CO₂の分子の形は？', answer:'直線形', choices:['直線形','折れ線形','三角錐形','正四面体形']},
-      {subject:'次のうち混合物はどれ？', answer:'石油', choices:['石油','酸素','アルゴン','二酸化炭素']},
       {subject:'次のうち単体はどれ？', answer:'オゾンO₃', choices:['オゾンO₃','水H₂O','アンモニアNH₃','メタンCH₄']},
       {subject:'物質を構成する基本的な成分（H, O, Na など）を何という？', answer:'元素', choices:['元素','単体','分子','原子']},
       {subject:'同素体の覚え方「SCOP」。Cは何？', answer:'炭素', choices:['炭素','カルシウム','塩素','銅']},
@@ -558,6 +570,13 @@ const CHEM_DATA = {
       {subject:'最も外側の電子殻にある電子を何という？', answer:'最外殻電子', choices:['最外殻電子','内殻電子','中性子','陽子']},
       {subject:'貴ガスのように安定した電子配置を何という？', answer:'閉殻（オクテット）', choices:['閉殻（オクテット）','価電子0','同位体','イオン化']},
       {subject:'2族の元素（Be・Mg を除く）をまとめて何という？', answer:'アルカリ土類金属', choices:['アルカリ土類金属','アルカリ金属','ハロゲン','貴ガス']},
+      // --- すべて選べ（純物質・混合物の区別／ひっかけ入り） ---
+      {type:'multi', subject:'次のうち【混合物】をすべて選べ。', answers:['塩酸','空気','石油','海水'], choices:['塩酸','空気','石油','海水','水','酸素','硫酸銅五水和物','ドライアイス'], explain:'塩酸＝HClの水溶液（混合物）。硫酸銅五水和物CuSO₄·5H₂Oは化学式で表せる純物質なのが要注意。'},
+      {type:'multi', subject:'次のうち【純物質】をすべて選べ。', answers:['水','酸素','硫酸銅五水和物','ドライアイス'], choices:['水','酸素','硫酸銅五水和物','ドライアイス','塩酸','空気','石油','海水'], explain:'硫酸銅五水和物CuSO₄·5H₂Oは決まった組成をもつ純物質（化合物）。塩酸・空気・石油・海水は混合物。'},
+      {type:'multi', subject:'次のうち【純物質】をすべて選べ。', answers:['氷','二酸化炭素','エタノール','塩化ナトリウム'], choices:['氷','二酸化炭素','エタノール','塩化ナトリウム','牛乳','空気','食塩水','みりん'], explain:'氷は純粋な水（純物質）。一方「食塩水」は混合物で「塩化ナトリウム」は純物質、という対比に注意。'},
+      {type:'multi', subject:'次のうち【混合物】をすべて選べ。', answers:['牛乳','空気','食塩水','合金（黄銅）'], choices:['牛乳','空気','食塩水','合金（黄銅）','鉄','水','酸素','銅'], explain:'黄銅（しんちゅう）は銅と亜鉛の合金＝混合物。金属でも合金は混合物なのがひっかけ。'},
+      {type:'multi', subject:'次のうち【単体】をすべて選べ。', answers:['酸素O₂','オゾンO₃','鉄Fe','黒鉛C'], choices:['酸素O₂','オゾンO₃','鉄Fe','黒鉛C','水H₂O','二酸化炭素CO₂','塩化ナトリウムNaCl','アンモニアNH₃'], explain:'1種類の元素からなるものが単体。オゾンや黒鉛も単体（同素体）であることに注意。'},
+      {type:'multi', subject:'次のうち【化合物】をすべて選べ。', answers:['水H₂O','二酸化炭素CO₂','塩化ナトリウムNaCl','アンモニアNH₃'], choices:['水H₂O','二酸化炭素CO₂','塩化ナトリウムNaCl','アンモニアNH₃','酸素O₂','鉄Fe','オゾンO₃','黒鉛C'], explain:'2種類以上の元素が結びついた純物質が化合物。'},
       {subject:'金属元素と非金属元素では、陽イオンになりやすいのは？', answer:'金属元素', choices:['金属元素','非金属元素','どちらも同じ','貴ガス']},
       {subject:'分子をつくらず、陽イオンと陰イオンが規則正しく並んだ固体を何という？', answer:'イオン結晶', choices:['イオン結晶','分子結晶','金属結晶','非晶質']},
       {subject:'金属が電気をよく通すのは、何があるから？', answer:'自由電子', choices:['自由電子','陽子','中性子','非共有電子対']},
@@ -599,6 +618,15 @@ const CHEM_DATA = {
       {subject:'【具体例→どれ？】ドライアイスのように固体から直接気体になる性質を利用する分離は？', answer:'昇華法', choices:['昇華法','蒸留','抽出','ろ過']},
       {subject:'【具体例→どれ？】葉の色素（クロロフィルなど）を、紙や薄層で成分ごとに分ける操作は？', answer:'クロマトグラフィー', choices:['クロマトグラフィー','ろ過','抽出','蒸留']},
       {subject:'【具体例→どれ？】水性ペンのインクの色素を、紙にしみこませて分ける操作は？', answer:'クロマトグラフィー', choices:['クロマトグラフィー','ろ過','再結晶','分留']},
+
+      {subject:'【器具・操作】蒸留で、温度計の球部（液だめ）はどの高さに合わせる？', answer:'枝の付け根（枝口）の高さ', choices:['枝の付け根（枝口）の高さ','フラスコ内の液面','フラスコの底','冷却器の出口']},
+      {subject:'【器具・操作】蒸留で、リービッヒ冷却器の冷却水はどう流す？', answer:'下（出口側）から上へ', choices:['下（出口側）から上へ','上から下へ','どちらでもよい','流さなくてよい']},
+      {subject:'【器具・操作】蒸留で、フラスコに沸騰石を入れるのはなぜ？', answer:'突沸を防ぐため', choices:['突沸を防ぐため','沸点を上げるため','蒸発を速めるため','色の変化を見るため']},
+      {subject:'【器具・操作】蒸留で、フラスコに入れる液量はどのくらいが適切？', answer:'半分以下', choices:['半分以下','口いっぱいまで','3分の2以上','ほんの数滴']},
+      {subject:'【器具・操作】ろ過で、液を注ぐときの正しい方法は？', answer:'ガラス棒に伝わらせて注ぐ', choices:['ガラス棒に伝わらせて注ぐ','直接勢いよく注ぐ','ろ紙の縁をねらって注ぐ','加熱しながら注ぐ']},
+      {subject:'【器具・操作】ろ過で、ろうとの足（先）はどこにつける？', answer:'ビーカーの内壁', choices:['ビーカーの内壁','ビーカーの中央','液面の中','どこにもつけない']},
+      {subject:'【用語】混合物から目的の物質を取り出す操作を何という？', answer:'分離', choices:['分離','精製','化合','蒸発']},
+      {subject:'【用語】取り出した物質から不純物を取り除き、純度を高める操作を何という？', answer:'精製', choices:['精製','分離','ろ過','溶解']},
     ]
   },
 
@@ -684,6 +712,16 @@ const CHEM_DATA = {
       {subject:'Ne の価電子はいくつと考える？', answer:'0', choices:['0','8','2','10']},
       {subject:'Ar の価電子はいくつと考える？', answer:'0', choices:['0','8','18','2']},
       {subject:'最外殻電子が8個で安定な電子配置を何という？', answer:'貴ガス型', choices:['貴ガス型','金属型','不安定型','遷移型']},
+      // --- 電子の総数（＝原子番号、イオンは増減に注意） ---
+      {subject:'O（原子番号8）の原子がもつ電子の総数は何個？', answer:'8', choices:['8','6','2','16']},
+      {subject:'Na（原子番号11）の原子がもつ電子の総数は何個？', answer:'11', choices:['11','1','10','12']},
+      {subject:'中性の原子で、電子の総数と等しいのはどれ？', answer:'陽子の数（原子番号）', choices:['陽子の数（原子番号）','中性子の数','質量数','価電子の数']},
+      {subject:'Na⁺ がもつ電子の総数は何個？（Naの原子番号11）', answer:'10', choices:['10','11','12','1']},
+      {subject:'Cl⁻ がもつ電子の総数は何個？（Clの原子番号17）', answer:'18', choices:['18','17','16','7']},
+      {subject:'Mg²⁺ がもつ電子の総数は何個？（Mgの原子番号12）', answer:'10', choices:['10','12','14','2']},
+      {subject:'O²⁻ がもつ電子の総数は何個？（Oの原子番号8）', answer:'10', choices:['10','8','6','16']},
+      {subject:'次のうち電子の総数が10個でない粒子は？', answer:'Cl⁻', choices:['Cl⁻','Na⁺','Ne','O²⁻']},
+      {subject:'¹⁶O（原子番号8・質量数16）の中性子の数は何個？', answer:'8', choices:['8','16','24','6']},
     ]
   },
 
@@ -745,6 +783,20 @@ const CHEM_DATA = {
       {subject:'【ナトリウム】を水に入れると激しく反応する。', answer:'単体', choices:['元素','単体']},
       {subject:'貝がらは【カルシウム】を含む炭酸カルシウムでできている。', answer:'元素', choices:['元素','単体']},
       {subject:'オゾンは【酸素】の同素体である。', answer:'元素', choices:['元素','単体']},
+      {subject:'【酸素】とオゾンは互いに同素体である。', answer:'単体', choices:['元素','単体']},
+      {subject:'水素は【酸素】と化合して水になる。', answer:'単体', choices:['元素','単体']},
+      {subject:'【塩素】は黄緑色で刺激臭のある気体である。', answer:'単体', choices:['元素','単体']},
+      {subject:'塩化水素は水素と【塩素】からできている。', answer:'元素', choices:['元素','単体']},
+      {subject:'乾電池の負極には【亜鉛】が使われている。', answer:'単体', choices:['元素','単体']},
+      {subject:'骨や歯には【リン】が含まれている。', answer:'元素', choices:['元素','単体']},
+      {subject:'【リン】には黄リンや赤リンの同素体がある。', answer:'元素', choices:['元素','単体']},
+      {subject:'アンモニアは【窒素】と水素から合成される。', answer:'単体', choices:['元素','単体']},
+      {subject:'地殻に最も多く含まれるのは【酸素】である。', answer:'元素', choices:['元素','単体']},
+      {subject:'優勝者には【金】のメダルが与えられた。', answer:'単体', choices:['元素','単体']},
+      {subject:'【水銀】は常温で液体の金属である。', answer:'単体', choices:['元素','単体']},
+      {subject:'葉緑素（クロロフィル）には【マグネシウム】が含まれる。', answer:'元素', choices:['元素','単体']},
+      {subject:'【マグネシウム】は空気中で強い光を出して燃える。', answer:'単体', choices:['元素','単体']},
+      {subject:'牛乳には【カルシウム】が多く含まれている。', answer:'元素', choices:['元素','単体']},
     ]
   },
 
@@ -865,13 +917,23 @@ const CHEM_DATA = {
       {subject:'陰イオンは、もとの原子に比べて半径はどうなる？', answer:'大きくなる', choices:['大きくなる','小さくなる','変わらない','半分になる']},
       {subject:'電子配置が同じイオン（O²⁻・F⁻・Na⁺・Mg²⁺）で、半径が最も大きいのは？', answer:'O²⁻', choices:['O²⁻','F⁻','Na⁺','Mg²⁺']},
       {subject:'電子配置が同じイオン（O²⁻・F⁻・Na⁺・Mg²⁺）で、半径が最も小さいのは？', answer:'Mg²⁺', choices:['Mg²⁺','Na⁺','F⁻','O²⁻']},
+      {subject:'溶液＝溶質＋何？', answer:'溶媒', choices:['溶媒','溶解','沈殿','結晶']},
+      {subject:'食塩水で、溶質にあたるのは？', answer:'食塩', choices:['食塩','水','食塩水','コップ']},
+      {subject:'食塩水で、溶媒にあたるのは？', answer:'水', choices:['水','食塩','食塩水','イオン']},
+      {subject:'質量パーセント濃度の式は？', answer:'溶質の質量÷溶液の質量×100', choices:['溶質の質量÷溶液の質量×100','溶質の質量÷溶媒の質量×100','溶媒の質量÷溶液の質量×100','溶液の質量÷溶質の質量×100']},
+      {subject:'モル濃度の式は？', answer:'溶質の物質量(mol)÷溶液の体積(L)', choices:['溶質の物質量(mol)÷溶液の体積(L)','溶質の質量(g)÷溶液の体積(L)','溶質の物質量(mol)÷溶媒の体積(L)','溶液の体積(L)÷溶質の物質量(mol)']},
+      {subject:'NaClのように、組成式中の原子量の総和を何という？', answer:'式量', choices:['式量','分子量','質量数','モル質量']},
+      {subject:'標準状態で気体1molの体積（22.4L）は、気体の種類によって変わる？', answer:'変わらない', choices:['変わらない','重い気体ほど大きい','軽い気体ほど大きい','分子の数で変わる']},
+      {subject:'標準状態・同体積のH₂とO₂で、分子の数が多いのはどちら？', answer:'同じ', choices:['同じ','H₂','O₂','比べられない']},
+      {subject:'密度の単位 g/cm³ が表すのは？', answer:'1cm³あたりの質量', choices:['1cm³あたりの質量','1gあたりの体積','1molあたりの質量','1Lあたりの物質量']},
+      {subject:'同じ質量で比べたとき、物質量(mol)が大きいのはモル質量が？', answer:'小さい物質', choices:['小さい物質','大きい物質','どちらも同じ','密度が大きい物質']},
     ]
   },
 
   mole: {
     group:'basic2',
     title:'物質量', icon:'⚖️', color:'#C26A1B', type:'input', pick:15,
-    sub:'基本10問＋応用5問（アボガドロ定数 6.0×10²³）',
+    sub:'基本＋応用（質量⇄mol⇄原子数。個数は ×10²³ の係数で入力）',
     // 基本問題プール（10問抽出）
     pool:[
       {subject:'H₂O 36g は何mol？（分子量18）', answer:'2', hint:'36 ÷ 18 = 2 mol'},
@@ -920,15 +982,25 @@ const CHEM_DATA = {
       {subject:'標準状態で 1mol の O₂ の質量は何g？（分子量32）', answer:'32', hint:'1mol → 32 g（体積は22.4L）'},
       {subject:'標準状態で 44.8L の CO₂ は何g？（分子量44）', answer:'88', hint:'44.8÷22.4=2mol、2×44 = 88 g'},
     ],
-    // 応用問題プール（5問抽出）
+    // 応用問題プール（5問抽出）：質量⇄mol⇄原子数を2段階以上でつなぐ・水和物・体積換算
     advPool:[
-      {subject:'2mol の NH₃ 中に水素原子は何個？（×10²³で答える）', answer:'36', hint:'NH₃は1分子にH3個。2mol×3×6.0×10²³ = 36×10²³ 個'},
-      {subject:'1mol の H₂O 中に水素原子は何個？（×10²³で答える）', answer:'12', hint:'H₂Oは1分子にH2個。1×2×6.0×10²³ = 12×10²³ 個'},
-      {subject:'0.5mol の CO₂ 中に酸素原子は何個？（×10²³で答える）', answer:'6', hint:'CO₂は1分子にO2個。0.5×2×6.0×10²³ = 6×10²³ 個'},
-      {subject:'1mol の CH₄ 中の原子は全部で何個？（×10²³で答える）', answer:'30', hint:'CH₄は1分子に原子5個。1×5×6.0×10²³ = 30×10²³ 個'},
-      {subject:'2mol の H₂SO₄ 中に酸素原子は何個？（×10²³で答える）', answer:'48', hint:'H₂SO₄は1分子にO4個。2×4×6.0×10²³ = 48×10²³ 個'},
-      {subject:'1mol の N₂ 中に窒素原子は何個？（×10²³で答える）', answer:'12', hint:'N₂は1分子にN2個。1×2×6.0×10²³ = 12×10²³ 個'},
-      {subject:'0.5mol の NaCl 中のイオンは全部で何個？（×10²³で答える）', answer:'6', hint:'NaClは1単位にイオン2個。0.5×2×6.0×10²³ = 6×10²³ 個'},
+      // 質量→水素原子の個数
+      {subject:'水 H₂O 36g 中に水素原子は何個？（分子量18、×10²³で答える）', answer:'24', hint:'36÷18=2mol。H₂Oは1分子にH2個 → 2×2×6.0×10²³=24×10²³個'},
+      {subject:'水 H₂O 9g 中に水素原子は何個？（分子量18、×10²³で答える）', answer:'6', hint:'9÷18=0.5mol。0.5×2×6.0×10²³=6×10²³個'},
+      {subject:'アンモニア NH₃ 17g 中に水素原子は何個？（分子量17、×10²³で答える）', answer:'18', hint:'17÷17=1mol。NH₃は1分子にH3個 → 1×3×6.0×10²³=18×10²³個'},
+      // 質量→特定原子の質量（多段階）
+      {subject:'水 H₂O 36g 中に含まれる水素原子の質量は何g？（H=1.0、分子量18）', answer:'4', hint:'36÷18=2mol、Hは1分子に2個で4mol、4×1.0=4g'},
+      {subject:'水 H₂O 36g 中に含まれる酸素原子の質量は何g？（O=16、分子量18）', answer:'32', hint:'2molの水中にOは2mol、2×16=32g（残り4gがH）'},
+      {subject:'二酸化炭素 CO₂ 22g 中に含まれる炭素原子の質量は何g？（C=12、分子量44）', answer:'6', hint:'22÷44=0.5mol、Cは0.5mol、0.5×12=6g'},
+      // 個数→質量
+      {subject:'水分子が 3.0×10²³ 個ある。質量は何g？（分子量18）', answer:'9', hint:'3.0×10²³÷6.0×10²³=0.5mol、0.5×18=9g'},
+      // 体積→原子数
+      {subject:'標準状態の O₂ 11.2L 中に酸素原子は何個？（×10²³で答える）', answer:'6', hint:'11.2÷22.4=0.5mol、O₂は1分子にO2個 → 0.5×2×6.0×10²³=6×10²³個'},
+      // 水和物（ひっかけ）
+      {subject:'硫酸銅五水和物 CuSO₄·5H₂O 250g は何mol？（式量250）', answer:'1', hint:'水和水も式量に含む。250÷250=1mol'},
+      {subject:'CuSO₄·5H₂O 1mol を加熱して水をすべて飛ばすと、CuSO₄は何g残る？（CuSO₄=160）', answer:'160', hint:'無水物CuSO₄は1mol残る。1×160=160g（水90gが抜ける）'},
+      // 密度がらみ
+      {subject:'密度1.0g/cm³ の水 36cm³ は何mol？（分子量18）', answer:'2', hint:'36cm³×1.0=36g、36÷18=2mol'},
     ]
   },
 
@@ -1047,6 +1119,11 @@ async function chemFinishReading(){
 function chemRenderQ(){
   const total=chemQset.length;
   if(chemIdx>=total){
+    if(chemReviewMode){
+      // まちがい直し中はポイントを付与しない（二重取得防止）
+      chemResult(chemScore+' / '+total, 'まちがい直しが完了！正解したものは苦手リストから消えます。');
+      return;
+    }
     const pts=chemScore;
     chemAwardPoints(pts, 'J化学演習：'+chemCur.title+'（'+chemScore+'/'+total+'正解）')
       .then(()=>chemResult(chemScore+' / '+total, '正解数。獲得 +'+pts+'pt'));
@@ -1057,9 +1134,11 @@ function chemRenderQ(){
   document.getElementById('chem-fb').style.color='';
   document.getElementById('chem-next').innerHTML='';
   const q=chemQset[chemIdx];
-  if(chemCur.type==='choice') chemRenderChoice(q);
-  else if(chemCur.type==='input') chemRenderInput(q);
-  else if(chemCur.type==='reveal') chemRenderReveal(q);
+  const t = q.type || chemCur.type; // 問題ごとの type を優先（パート内 multi 混在に対応）
+  if(t==='multi') chemRenderMulti(q);
+  else if(t==='input') chemRenderInput(q);
+  else if(t==='reveal') chemRenderReveal(q);
+  else chemRenderChoice(q);
 }
 
 /* 選択式（化学式・元素単体） */
@@ -1079,6 +1158,55 @@ function chemRenderChoice(q){
 // 【 】で囲んだ部分を下線表示に
 function chemUnderline(s){
   return s.replace(/【(.+?)】/g,'<u style="text-decoration-thickness:2px;text-underline-offset:3px">$1</u>');
+}
+
+/* 複数選択式（すべて選べ・過不足なしで正解） */
+/* データ形式: {subject, answers:['塩酸','空気'], choices:[...], explain?} */
+let chemMultiSel = [];
+function chemRenderMulti(q){
+  chemMultiSel = [];
+  let html='<div style="background:#fff;border:1px solid #DCEDE4;border-radius:14px;padding:22px 16px;text-align:center;margin-bottom:14px">'
+    +'<div style="font-size:12px;color:#7A8F86;margin-bottom:8px">あてはまるものを<b style="color:#C26A1B">すべて</b>選ぼう（過不足なしで正解）</div>'
+    +'<div style="font-size:'+(q.subject.length>14?'17px':'20px')+';font-weight:700;color:#2C2C2A;line-height:1.5">'+chemUnderline(q.subject)+'</div></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">';
+  chemSample(q.choices).forEach(c=>{
+    html+='<button class="chem-mopt" data-val="'+escapeHtml(c)+'" onclick="chemToggleMulti(this)" '
+      +'style="background:#fff;border:1.5px solid #DCEDE4;border-radius:12px;padding:14px;font-size:15px;font-family:inherit;color:#2C2C2A;cursor:pointer;text-align:center;transition:all .12s">'+escapeHtml(c)+'</button>';
+  });
+  html+='</div>'
+    +'<div style="text-align:center;margin-top:14px"><button id="chem-multi-submit" onclick="chemCheckMulti()" '
+    +'style="padding:12px 28px;background:linear-gradient(135deg,#C26A1B,#9A5215);border:none;border-radius:12px;color:#fff;font-family:\'Noto Sans JP\',sans-serif;font-size:14px;font-weight:700;cursor:pointer">決定</button></div>';
+  document.getElementById('chem-qbody').innerHTML=html;
+}
+function chemToggleMulti(btn){
+  const v=btn.getAttribute('data-val');
+  const i=chemMultiSel.indexOf(v);
+  const on = i<0;
+  if(on) chemMultiSel.push(v); else chemMultiSel.splice(i,1);
+  // 選択状態はクラス相当のフラグで管理し、スタイルを丸ごと再設定（文字列置換に依存しない）
+  btn.dataset.sel = on ? '1' : '0';
+  if(on){ btn.style.borderColor='#C26A1B'; btn.style.background='#FFF3E8'; btn.style.color='#9A5215'; btn.style.fontWeight='700'; }
+  else { btn.style.borderColor='#DCEDE4'; btn.style.background='#fff'; btn.style.color='#2C2C2A'; btn.style.fontWeight='400'; }
+}
+function chemCheckMulti(){
+  const q=chemQset[chemIdx];
+  const submit=document.getElementById('chem-multi-submit');
+  if(!submit || submit.disabled) return;
+  if(chemMultiSel.length===0){ showToast('1つ以上選んでね','info'); return; }
+  submit.disabled=true;
+  document.querySelectorAll('.chem-mopt').forEach(o=>{o.disabled=true;o.style.cursor='default';});
+  const want=new Set(q.answers);
+  const got=new Set(chemMultiSel);
+  // 各ボタンに正誤の色付け
+  document.querySelectorAll('.chem-mopt').forEach(o=>{
+    const v=o.getAttribute('data-val');
+    const inWant=want.has(v), inGot=got.has(v);
+    if(inWant){ o.style.cssText+=';border-color:#1B7A52;background:#E1F4EC;color:#1B7A52;font-weight:700'; if(!inGot) o.innerHTML='○ '+o.innerHTML; }
+    else if(inGot){ o.style.cssText+=';border-color:#D94040;background:#FFECEC;color:#D94040'; o.innerHTML='✕ '+o.innerHTML; }
+  });
+  const ok = want.size===got.size && [...want].every(v=>got.has(v));
+  if(ok){ chemMark(q,true); chemCorrect(q.explain||''); }
+  else { chemMark(q,false); chemWrong('正解は「'+q.answers.join('・')+'」'+(q.explain?'　'+q.explain:'')); }
 }
 function chemPickChoice(btn){
   const q=chemQset[chemIdx];
@@ -1105,11 +1233,21 @@ function chemRenderInput(q){
   inp.focus();
   inp.addEventListener('keydown',e=>{ if(e.key==='Enter') chemCheckInput(); });
 }
+/* 全角数字・全角ピリオド等を半角に変換（スマホの全角入力対策） */
+function chemToHalfWidth(s){
+  return String(s)
+    .replace(/[０-９]/g, c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0))
+    .replace(/[．。]/g,'.')
+    .replace(/[－ー−]/g,'-')
+    .replace(/\s/g,'');
+}
 function chemCheckInput(){
+  const inp=document.getElementById('chem-ans');
+  if(!inp || inp.disabled) return; // Enter＋ボタンの二重判定を防止
   const q=chemQset[chemIdx];
-  const v=(document.getElementById('chem-ans').value||'').trim().replace(/[，,]/g,'');
-  if(v==='') return;
-  document.getElementById('chem-ans').disabled=true;
+  const v=chemToHalfWidth((inp.value||'').trim().replace(/[，,]/g,''));
+  if(v==='' || isNaN(parseFloat(v))){ showToast('数字を入力してね','info'); return; }
+  inp.disabled=true;
   if(parseFloat(v)===parseFloat(q.answer)){ chemMark(q,true); chemCorrect(q.hint); }
   else { chemMark(q,false); chemWrong('正解は '+q.answer+'　'+(q.hint||'')); }
 }
@@ -1162,10 +1300,11 @@ function chemNextBtn(){
   const last=chemIdx>=chemQset.length-1;
   const nextFn=(chemCur&&chemCur.type==='mixed')?'chemRenderReviewQ()':'chemRenderQ()';
   document.getElementById('chem-next').innerHTML=
-    '<button onclick="chemIdx++;'+nextFn+'" style="padding:13px 26px;background:linear-gradient(135deg,#1B7A52,#0E4D33);border:none;border-radius:12px;color:#fff;font-family:\'Noto Sans JP\',sans-serif;font-size:14px;font-weight:700;cursor:pointer">'+(last?'結果を見る':'次の問題 →')+'</button>';
+    '<button onclick="this.disabled=true;chemIdx++;'+nextFn+'" style="padding:13px 26px;background:linear-gradient(135deg,#1B7A52,#0E4D33);border:none;border-radius:12px;color:#fff;font-family:\'Noto Sans JP\',sans-serif;font-size:14px;font-weight:700;cursor:pointer">'+(last?'結果を見る':'次の問題 →')+'</button>';
 }
 
 function chemResult(scoreText,msg){
+  chemTouchStreak();
   chemShow('result');
   document.getElementById('chem-result-score').textContent=scoreText;
   document.getElementById('chem-result-msg').textContent=msg;
@@ -1176,14 +1315,60 @@ function chemResult(scoreText,msg){
 async function chemAwardPoints(pts, reason){
   if(!currentStudent || pts<=0) return;
   try{
-    const newPts=(currentStudent.points||0)+pts;
+    // 加算直前に最新ポイントを取り直す（app.html 側の更新を上書きしないため）
+    let base=(currentStudent.points||0);
+    try{
+      const rows=await sbGet('students','id=eq.'+currentStudent.id+'&select=points');
+      if(rows && rows.length) base=(rows[0].points||0);
+    }catch(e){ /* 取得失敗時は手元の値で続行 */ }
+    const newPts=base+pts;
     await sbPatch('students','id=eq.'+currentStudent.id,{points:newPts});
     await sbPost('point_logs',{student_id:currentStudent.id, points:pts, reason:reason, type:'chem'});
     currentStudent.points=newPts;
     const el=document.getElementById('student-points');
     if(el) el.textContent=newPts.toLocaleString();
     showToast('⚗️ +'+pts+'pt 獲得！','success');
-  }catch(e){ console.error('chem points error', e); }
+  }catch(e){
+    console.error('chem points error', e);
+    // 失敗分をローカルに退避し、通信回復後・次回ログイン時に自動加算
+    chemQueuePending(pts, reason);
+    showToast('通信エラー：+'+pts+'pt は、つながったときに自動で加算されます','info');
+  }
+}
+
+/* ===== ポイント加算の失敗分をローカル保存→自動リトライ ===== */
+function chemPendingKey(){ return 'chem_pending_points_'+(currentStudent?currentStudent.id:'guest'); }
+function chemQueuePending(pts, reason){
+  try{
+    const list=JSON.parse(localStorage.getItem(chemPendingKey())||'[]');
+    list.push({pts:pts, reason:reason, at:new Date().toISOString()});
+    localStorage.setItem(chemPendingKey(), JSON.stringify(list));
+  }catch(e){}
+}
+async function chemFlushPending(){
+  if(!currentStudent) return;
+  let list=[];
+  try{ list=JSON.parse(localStorage.getItem(chemPendingKey())||'[]'); }catch(e){ return; }
+  if(!list.length) return;
+  const remain=[];
+  let got=0;
+  for(const item of list){
+    try{
+      const rows=await sbGet('students','id=eq.'+currentStudent.id+'&select=points');
+      const base=(rows&&rows.length)?(rows[0].points||0):(currentStudent.points||0);
+      const newPts=base+item.pts;
+      await sbPatch('students','id=eq.'+currentStudent.id,{points:newPts});
+      await sbPost('point_logs',{student_id:currentStudent.id, points:item.pts, reason:item.reason+'（後追い加算）', type:'chem'});
+      currentStudent.points=newPts;
+      got+=item.pts;
+    }catch(e){ remain.push(item); }
+  }
+  try{ localStorage.setItem(chemPendingKey(), JSON.stringify(remain)); }catch(e){}
+  if(got>0){
+    const el=document.getElementById('student-points');
+    if(el) el.textContent=(currentStudent.points||0).toLocaleString();
+    showToast('🔄 未加算だった +'+got+'pt を加算しました','success');
+  }
 }
 
 /* ============================================================ */
@@ -1287,7 +1472,7 @@ async function chemStartReview(){
       if(!part) return;
       const src = (part.pool||[]).concat(part.advPool||[]);
       const q = src.find(x=>x.subject===r.question);
-      if(q){ const c=Object.assign({},q,{_part:r.part,_partTitle:r.part_title||part.title,_type:part.type}); restored.push(c); }
+      if(q){ const c=Object.assign({},q,{_part:r.part,_partTitle:r.part_title||part.title,_type:(q.type||part.type)}); restored.push(c); }
     });
     if(!restored.length){ showToast('復習できる問題が見つかりませんでした','info'); return; }
     // 復習専用のミニパートを構成（パート混在に対応するため、各問でtypeを切り替える）
@@ -1307,7 +1492,14 @@ async function chemStartReview(){
 function chemRenderReviewQ(){
   const total=chemQset.length;
   if(chemIdx>=total){
-    chemResult(chemScore+' / '+total, 'まちがい直しが完了！正解したものは苦手リストから消えます。');
+    if(chemReviewMode){
+      chemResult(chemScore+' / '+total, 'まちがい直しが完了！正解したものは苦手リストから消えます。');
+    } else {
+      const pts=chemScore;
+      const label=chemCur._mixTitle||'ミックス演習';
+      chemAwardPoints(pts, 'J化学演習：'+label+'（'+chemScore+'/'+total+'正解）')
+        .then(()=>chemResult(chemScore+' / '+total, '正解数。獲得 +'+pts+'pt'));
+    }
     return;
   }
   chemProgress(chemIdx,total);
@@ -1320,8 +1512,67 @@ function chemRenderReviewQ(){
   chemCur.title = q._partTitle || 'まちがい直し';
   const t = q._type;
   if(t==='choice') chemRenderChoice(q);
+  else if(t==='multi') chemRenderMulti(q);
   else if(t==='input') chemRenderInput(q);
   else if(t==='reveal') chemRenderReveal(q);
+}
+
+/* ============================================================ */
+/* 隙間時間用：サクッと5問ミックス（全パート横断・通常加点）    */
+/* ============================================================ */
+function chemQuickMix(){
+  let pool=[];
+  const collect=(useFull)=>{
+    CHEM_ORDER.forEach(key=>{
+      const d=CHEM_DATA[key];
+      if(d.type==='reading') return;
+      const qs = useFull ? chemFullPool(d) : chemRemainingPool(key,d);
+      qs.forEach(q=>pool.push(Object.assign({},q,{_part:key,_partTitle:d.title,_type:(q.type||d.type)})));
+    });
+  };
+  collect(false);
+  if(!pool.length) collect(true); // 全問制覇済みなら全プールから
+  chemCur={title:'サクッと5問', _key:'quick', type:'mixed', _mixTitle:'サクッと5問'};
+  chemReviewMode=false;
+  chemQset=chemSample(pool,5);
+  chemIdx=0; chemScore=0; chemSessionWrong=[];
+  document.getElementById('screen-chem').style.display='flex';
+  document.getElementById('chem-header').textContent='サクッと5問';
+  document.getElementById('chem-quiz-title').textContent='サクッと5問';
+  chemShow('quiz');
+  chemRenderReviewQ();
+}
+
+/* ============================================================ */
+/* 連続学習日数（ストリーク）：1日1回、演習を終えると伸びる     */
+/* ============================================================ */
+function chemStreakKey(){ return 'chem_streak_'+(currentStudent?currentStudent.id:'guest'); }
+function chemDateStr(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function chemTouchStreak(){
+  if(!currentStudent) return;
+  let s={last:null,count:0};
+  try{ s=JSON.parse(localStorage.getItem(chemStreakKey()))||s; }catch(e){}
+  const today=chemDateStr(new Date());
+  if(s.last===today) return; // 今日はもう更新済み
+  const y=new Date(); y.setDate(y.getDate()-1);
+  s.count=(s.last===chemDateStr(y))?(s.count||0)+1:1;
+  s.last=today;
+  try{ localStorage.setItem(chemStreakKey(), JSON.stringify(s)); }catch(e){}
+  chemRenderStreak();
+  if(s.count>=2) showToast('🔥 '+s.count+'日連続で学習中！','success');
+}
+function chemRenderStreak(){
+  const el=document.getElementById('streak-pill');
+  if(!el) return;
+  if(!currentStudent){ el.style.display='none'; return; }
+  let s={last:null,count:0};
+  try{ s=JSON.parse(localStorage.getItem(chemStreakKey()))||s; }catch(e){}
+  const today=chemDateStr(new Date());
+  const y=new Date(); y.setDate(y.getDate()-1);
+  const alive=(s.last===today || s.last===chemDateStr(y));
+  const n=alive?(s.count||0):0;
+  if(n>0){ el.style.display=''; el.textContent='🔥 '+n+'日連続'; }
+  else { el.style.display='none'; }
 }
 
 </script>
