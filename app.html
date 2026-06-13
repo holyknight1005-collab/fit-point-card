@@ -693,7 +693,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
         <div id="student-count" style="font-size:11px;color:var(--muted)"></div>
         <div style="display:flex;gap:6px">
-          <button id="toggle-grad-btn" onclick="toggleShowGraduated()" style="display:none;font-size:11px;padding:4px 12px;border-radius:20px;border:1.5px solid #e57373;background:transparent;color:#d32f2f;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🎓 卒塾生</button>
+          <button id="toggle-grad-btn" onclick="toggleShowGraduated()" style="display:none;font-size:11px;padding:4px 12px;border-radius:20px;border:1.5px solid #e57373;background:transparent;color:#d32f2f;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🎓 卒業・退塾</button>
           <button id="toggle-all-btn" onclick="toggleShowAll()" style="font-size:11px;padding:4px 12px;border-radius:20px;border:1.5px solid var(--orange);background:transparent;color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">全員表示</button>
         </div>
       </div>
@@ -1954,7 +1954,7 @@ function toggleShowGraduated() {
   const btn = document.getElementById('toggle-grad-btn');
   if (btn) {
     btn.style.background = showGraduated ? '#ffebee' : 'transparent';
-    btn.textContent = showGraduated ? '🎓 在籍生に戻す' : '🎓 卒塾生';
+    btn.textContent = showGraduated ? '🎓 在籍生に戻す' : '🎓 卒業・退塾';
   }
   renderStudentList();
 }
@@ -2034,7 +2034,7 @@ function renderStudentList() {
       return '<div class="student-row" onclick="openStudentDetail(' + idx + ')">' +
         '<div class="student-avatar">' + s.name[0] + '</div>' +
         '<div class="student-info">' +
-          '<div class="student-name">' + s.name + (s.is_active === false ? ' <span style="font-size:10px;color:#d32f2f;font-weight:700">🎓卒塾</span>' : '') + '</div>' +
+          '<div class="student-name">' + s.name + (s.is_active === false ? ' <span style="font-size:10px;color:#d32f2f;font-weight:700">' + (s.inactive_reason === '退塾' ? '🚪退塾' : '🎓卒業') + '</span>' : '') + '</div>' +
           '<div class="student-email">' + school + grade + s.email + '</div>' +
         '</div>' +
         (todayIds.has(s.id) ? '<div class="today-badge">来塾</div>' : '') +
@@ -2076,6 +2076,8 @@ async function autoLogin() {
   try {
     const data = await sbGet('students', 'email=eq.' + encodeURIComponent(email) + '&pin=eq.' + encodeURIComponent(pin) + '&select=*');
     if (!data || data.length === 0) { clearLoginState(); hideLoading(); return; }
+    // 退塾者は自動ログインも不可（卒業生は可）
+    if (data[0].is_active === false && data[0].inactive_reason === '退塾') { clearLoginState(); hideLoading(); return; }
     currentStudent = data[0];
     const since = new Date(); since.setFullYear(since.getFullYear() - 1);
     const checkins = await sbGet('checkins', 'student_id=eq.' + currentStudent.id + '&checkin_date=gte.' + since.toISOString().split('T')[0] + '&select=checkin_date&order=checkin_date.desc');
@@ -2176,6 +2178,11 @@ async function doLogin() {
   try {
     const data = await sbGet('students', 'email=eq.' + encodeURIComponent(email) + '&pin=eq.' + encodeURIComponent(pin) + '&select=*');
     if (!data || data.length === 0) { err.textContent = 'メールアドレスまたはパスワードが違います'; err.classList.add('show'); hideLoading(); return; }
+    // 退塾者はログイン不可（卒業生はログイン可）
+    if (data[0].is_active === false && data[0].inactive_reason === '退塾') {
+      err.textContent = 'このアカウントは現在ご利用いただけません。塾までお問い合わせください。';
+      err.classList.add('show'); hideLoading(); return;
+    }
     err.classList.remove('show');
     currentStudent = data[0];
     const since = new Date(); since.setFullYear(since.getFullYear() - 1);
@@ -2404,22 +2411,6 @@ function initStudentScreen() {
   checkSchoolMenu();
   setTimeout(checkInstallGuide, 2000);
   loadTodayClasses();
-}
-
-function renderCalendar(gridId, checkins) {
-  const grid = document.getElementById(gridId);
-  const days = ['日','月','火','水','木','金','土'];
-  const today = new Date(), year = today.getFullYear(), month = today.getMonth();
-  const firstDay = new Date(year, month, 1).getDay(), lastDate = new Date(year, month + 1, 0).getDate();
-  let html = days.map(d => '<div class="cal-day-label">' + d + '</div>').join('');
-  for (let i = 0; i < firstDay; i++) html += '<div class="cal-day empty"></div>';
-  for (let d = 1; d <= lastDate; d++) {
-    const date = new Date(year, month, d);
-    const isToday = d === today.getDate(), isChecked = checkins.includes(date.toDateString());
-    let cls = 'cal-day'; if (isChecked) cls += ' checked'; if (isToday) cls += ' today';
-    html += '<div class="' + cls + '">' + d + '</div>';
-  }
-  grid.innerHTML = html;
 }
 
 function startGPS() {
@@ -3154,8 +3145,9 @@ async function saveStudentAttributes() {
   }
 }
 
-// ===== 在籍管理（卒塾＝論理削除 / 復籍）=====
+// ===== 在籍管理（卒業・退塾＝論理削除 / 復籍）=====
 // admin のみ表示。is_active=false で一覧から除外（データは保持）
+// inactive_reason: '卒業'＝ログイン可 / '退塾'＝ログイン不可
 function renderGraduateSection() {
   const sec = document.getElementById('detail-graduate-section');
   const box = document.getElementById('detail-graduate-box');
@@ -3169,32 +3161,38 @@ function renderGraduateSection() {
   const isActive = detailStudent.is_active !== false;
   if (isActive) {
     box.innerHTML =
-      '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">卒塾・退塾した生徒は一覧から非表示にできます。データは保持され、いつでも復籍できます。</div>' +
-      '<button onclick="graduateStudent()" style="width:100%;padding:11px;background:var(--surface2);border:1.5px solid #e57373;border-radius:8px;color:#d32f2f;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🎓 卒塾（一覧から非表示にする）</button>';
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">卒業・退塾した生徒は一覧から非表示になります。データは保持され、いつでも復籍できます。<br>🎓 卒業：本人はログイン可能のまま<br>🚪 退塾：本人はログイン不可になります</div>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button onclick="deactivateStudent(\'卒業\')" style="flex:1;padding:11px;background:var(--surface2);border:1.5px solid var(--orange);border-radius:8px;color:var(--orange-d);font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🎓 卒業</button>' +
+        '<button onclick="deactivateStudent(\'退塾\')" style="flex:1;padding:11px;background:var(--surface2);border:1.5px solid #e57373;border-radius:8px;color:#d32f2f;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🚪 退塾</button>' +
+      '</div>';
   } else {
+    const reason = detailStudent.inactive_reason || '卒塾';
     let info = '';
     if (detailStudent.inactive_at) {
       const dt = new Date(detailStudent.inactive_at);
-      info = '（' + dt.getFullYear() + '/' + (dt.getMonth() + 1) + '/' + dt.getDate() + ' 卒塾）';
+      info = '（' + dt.getFullYear() + '/' + (dt.getMonth() + 1) + '/' + dt.getDate() + '）';
     }
     box.innerHTML =
-      '<div style="font-size:12px;color:var(--orange-d);font-weight:700;margin-bottom:10px">この生徒は卒塾済みです' + info + '。一覧には表示されません。</div>' +
+      '<div style="font-size:12px;color:var(--orange-d);font-weight:700;margin-bottom:10px">この生徒は' + reason + '済みです' + info + '。一覧には表示されません。' + (reason === '退塾' ? '<br>本人はログインできません。' : '<br>本人はログイン可能です。') + '</div>' +
       '<button onclick="reactivateStudent()" style="width:100%;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🔄 復籍させる（一覧に戻す）</button>';
   }
 }
 
-async function graduateStudent() {
+async function deactivateStudent(reason) {
   if (!detailStudent) return;
   if (!currentStaff || currentStaff.role !== 'admin') { showToast('管理者のみ操作できます', 'error'); return; }
-  if (!confirm(detailStudent.name + 'さんを卒塾扱いにします。\n\n生徒一覧から非表示になりますが、データは保持され、いつでも復籍できます。\n\nよろしいですか？')) return;
+  const extra = reason === '退塾' ? '\n※退塾にすると本人はログインできなくなります。' : '\n※卒業の場合、本人は引き続きログインできます。';
+  if (!confirm(detailStudent.name + 'さんを「' + reason + '」扱いにします。\n\n生徒一覧から非表示になりますが、データは保持され、いつでも復籍できます。' + extra + '\n\nよろしいですか？')) return;
   showLoading('処理中...');
   try {
     const nowIso = new Date().toISOString();
-    await sbPatch('students', 'id=eq.' + detailStudent.id, { is_active: false, inactive_at: nowIso });
+    await sbPatch('students', 'id=eq.' + detailStudent.id, { is_active: false, inactive_at: nowIso, inactive_reason: reason });
     detailStudent.is_active = false;
     detailStudent.inactive_at = nowIso;
+    detailStudent.inactive_reason = reason;
     hideLoading();
-    showToast('🎓 卒塾扱いにしました', 'success');
+    showToast((reason === '卒業' ? '🎓' : '🚪') + ' ' + reason + '扱いにしました', 'success');
     renderGraduateSection();
   } catch(e) {
     hideLoading();
@@ -3208,9 +3206,10 @@ async function reactivateStudent() {
   if (!confirm(detailStudent.name + 'さんを復籍させます。\n生徒一覧に再表示されます。よろしいですか？')) return;
   showLoading('処理中...');
   try {
-    await sbPatch('students', 'id=eq.' + detailStudent.id, { is_active: true, inactive_at: null });
+    await sbPatch('students', 'id=eq.' + detailStudent.id, { is_active: true, inactive_at: null, inactive_reason: null });
     detailStudent.is_active = true;
     detailStudent.inactive_at = null;
+    detailStudent.inactive_reason = null;
     hideLoading();
     showToast('🔄 復籍させました', 'success');
     renderGraduateSection();
