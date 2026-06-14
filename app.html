@@ -2018,7 +2018,38 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <div class="toast" id="toast"></div>
 
-<script>// ===== スタッフメニュー変数 =====
+<script>// ===== アプリバージョン（更新検知用） =====
+// デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
+const APP_VERSION = '20260615a';
+
+// version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
+async function checkAppVersion() {
+  try {
+    const url = 'version.txt?t=' + Date.now(); // キャッシュ回避
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) return; // version.txt が無い/取得失敗時は何もしない（フェイルセーフ）
+    const latest = (await res.text()).trim();
+    if (!latest) return;
+    if (latest === APP_VERSION) {
+      // 最新。リロードガードはクリアしておく（次回更新に備える）
+      try { sessionStorage.removeItem('fitReloadedFor'); } catch(e) {}
+      return;
+    }
+    // バージョン不一致＝新版あり。ただし同一セッションで一度リロード済みなら止める（無限ループ防止）
+    let guard = null;
+    try { guard = sessionStorage.getItem('fitReloadedFor'); } catch(e) {}
+    if (guard === latest) return; // すでにこの版へリロード試行済み → これ以上やらない
+    try { sessionStorage.setItem('fitReloadedFor', latest); } catch(e) {}
+    // キャッシュを振り切るため ?v= を付けて再読み込み
+    const u = new URL(window.location.href);
+    u.searchParams.set('v', latest);
+    window.location.replace(u.toString());
+  } catch(e) {
+    // ネットワークエラー等は無視（オフラインでもアプリは使える）
+  }
+}
+
+// ===== スタッフメニュー変数 =====
 let reportMonthOffset = 0;
 let reportDates = [];
 let reportMap = {};
@@ -2395,6 +2426,7 @@ function checkInstallGuide() {
 }
 
 window.addEventListener('load', function() {
+  checkAppVersion(); // 新版があれば自動リロード（autoLoginより先に。リロード時はここで止まる）
   autoLogin();
 });
 
