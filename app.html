@@ -2021,7 +2021,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260615a';
+const APP_VERSION = '20260615b';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -2076,6 +2076,13 @@ const QR_CHECKIN_MAP = { 'fit-checkin:annex': 'annex' };
 function getTodayJST() {
   const now = new Date();
   const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  return jst.toISOString().split('T')[0];
+}
+// 任意のDateをJST基準の 'YYYY-MM-DD' 文字列に変換する。
+// 直接 d.toISOString().split('T')[0] を使うとUTC基準になり、深夜帯に1日ズレる。
+// 「○日前」などの計算結果も必ずこれを通すこと。
+function toJSTDateStr(date) {
+  const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
   return jst.toISOString().split('T')[0];
 }
 function getTodayJSTString() {
@@ -2341,7 +2348,7 @@ async function autoLogin() {
     if (data[0].is_active === false && data[0].inactive_reason === '退塾') { clearLoginState(); hideLoading(); return; }
     currentStudent = data[0];
     const since = new Date(); since.setFullYear(since.getFullYear() - 1);
-    const checkins = await sbGet('checkins', 'student_id=eq.' + currentStudent.id + '&checkin_date=gte.' + since.toISOString().split('T')[0] + '&select=checkin_date&order=checkin_date.desc');
+    const checkins = await sbGet('checkins', 'student_id=eq.' + currentStudent.id + '&checkin_date=gte.' + toJSTDateStr(since) + '&select=checkin_date&order=checkin_date.desc');
     allCheckins = (checkins || []).map(c => new Date(c.checkin_date + 'T00:00:00+09:00').toDateString());
     await loadCheckinPtsByDate(currentStudent.id);
     hideLoading();
@@ -2454,7 +2461,7 @@ async function doLogin() {
     err.classList.remove('show');
     currentStudent = data[0];
     const since = new Date(); since.setFullYear(since.getFullYear() - 1);
-    const sinceStr = since.toISOString().split('T')[0];
+    const sinceStr = toJSTDateStr(since);
     const checkins = await sbGet('checkins', 'student_id=eq.' + currentStudent.id + '&checkin_date=gte.' + sinceStr + '&select=checkin_date&order=checkin_date.desc');
     allCheckins = (checkins || []).map(c => new Date(c.checkin_date + 'T00:00:00+09:00').toDateString());
     await loadCheckinPtsByDate(currentStudent.id);
@@ -3072,7 +3079,7 @@ async function loadCheckinPtsByDate(studentId) {
   checkinPtsByDate = {};
   try {
     const since = new Date(); since.setFullYear(since.getFullYear() - 1);
-    const sinceStr = since.toISOString().split('T')[0];
+    const sinceStr = toJSTDateStr(since);
     const rows = await sbGet('checkins',
       'student_id=eq.' + studentId + '&checkin_date=gte.' + sinceStr +
       '&select=checkin_date,stay_minutes&order=checkin_date.desc') || [];
@@ -3595,7 +3602,7 @@ async function openStudentDetail(idx, from) {
   showLoading('履歴を読み込み中...');
   try {
     const since = new Date(); since.setFullYear(since.getFullYear() - 1);
-    const checkins = await sbGet('checkins', 'student_id=eq.' + s.id + '&checkin_date=gte.' + since.toISOString().split('T')[0] + '&select=checkin_date&order=checkin_date.desc');
+    const checkins = await sbGet('checkins', 'student_id=eq.' + s.id + '&checkin_date=gte.' + toJSTDateStr(since) + '&select=checkin_date&order=checkin_date.desc');
     detailCheckins = (checkins || []).map(c => new Date(c.checkin_date + 'T00:00:00+09:00').toDateString());
     await loadCheckinPtsByDate(s.id);
     const today = new Date(), m = today.getMonth(), y = today.getFullYear();
@@ -4563,12 +4570,12 @@ function stGetWeekRange(offset) {
   const sunday = new Date(monday);
   sunday.setDate(monday.getDate() + 6);
   return {
-    start: monday.toISOString().split('T')[0],
-    end: sunday.toISOString().split('T')[0],
+    start: toJSTDateStr(monday),
+    end: toJSTDateStr(sunday),
     days: Array.from({length:7}, (_,i) => {
       const d = new Date(monday);
       d.setDate(monday.getDate() + i);
-      return d.toISOString().split('T')[0];
+      return toJSTDateStr(d);
     })
   };
 }
@@ -5031,7 +5038,7 @@ async function saveReviewLog() {
 async function autoCheckMissions() {
   if (!currentStudent) return;
   const today = getTodayJST();
-  const weekAgo = new Date(new Date(today).getTime() - 6*86400000).toISOString().split('T')[0];
+  const weekAgo = toJSTDateStr(new Date(new Date(today).getTime() - 6*86400000));
 
   // 未達成のミッションを取得
   const missions = await sbR('GET', 'missions', 'is_active=eq.true&select=*');
@@ -5322,7 +5329,7 @@ async function checkMissionAchieved(missionId, type, subject, targetValue, pts) 
   try {
     achieved = false;
     const today = getTodayJST();
-    const weekAgo = new Date(new Date(today).getTime() - 6*86400000).toISOString().split('T')[0];
+    const weekAgo = toJSTDateStr(new Date(new Date(today).getTime() - 6*86400000));
 
     if (type === 'study') {
       const logs = await sbR('GET', 'study_logs',
@@ -5422,7 +5429,7 @@ function closeStaffManage() {
 
 
 async function loadMgClasses() {
-  const weekAgo = new Date(Date.now()-7*86400000).toISOString().split('T')[0];
+  const weekAgo = toJSTDateStr(new Date(Date.now()-7*86400000));
   const classes = await sbGet('classes', 'class_date=gte.' + weekAgo + '&order=class_date.desc&select=*&limit=20');
   const el = document.getElementById('mg-class-list');
   if (!classes || !classes.length) { el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">登録済みの授業はありません</div>'; return; }
@@ -5527,7 +5534,7 @@ async function deleteMgMission(id) {
 
 // テスト作成
 async function loadMgClassSelect() {
-  const weekAgo = new Date(Date.now()-30*86400000).toISOString().split('T')[0];
+  const weekAgo = toJSTDateStr(new Date(Date.now()-30*86400000));
   const classes = await sbGet('classes', 'class_date=gte.' + weekAgo + '&order=class_date.desc&select=id,name,class_date');
   const sel = document.getElementById('mg-quiz-class');
   sel.innerHTML = '<option value="">授業を選択してください</option>' +
@@ -5845,7 +5852,7 @@ function detailGetWeekRange(offset) {
   monday.setDate(today.getDate() + mondayDiff + offset * 7);
   const sunday = new Date(monday);
   sunday.setDate(monday.getDate() + 6);
-  const fmt = d => d.toISOString().split('T')[0];
+  const fmt = d => toJSTDateStr(d);
   return { start: fmt(monday), end: fmt(sunday) };
 }
 
@@ -6017,7 +6024,7 @@ async function loadDetailStudySummary(tab) {
   // 過去3ヶ月分取得
   const since = new Date();
   since.setMonth(since.getMonth() - 3);
-  const sinceStr = since.toISOString().split('T')[0];
+  const sinceStr = toJSTDateStr(since);
 
   const logs = await sbGet('study_logs', 
     'student_id=eq.' + detailStudent.id + '&log_date=gte.' + sinceStr + '&order=log_date&select=log_date,duration_min,subject');
@@ -6038,7 +6045,7 @@ async function loadDetailStudySummary(tab) {
       const mondayDiff = day === 0 ? -6 : 1 - day;
       const monday = new Date(d);
       monday.setDate(d.getDate() + mondayDiff);
-      const key = monday.toISOString().split('T')[0];
+      const key = toJSTDateStr(monday);
       if (!weekMap[key]) weekMap[key] = { total: 0, subjects: {} };
       weekMap[key].total += l.duration_min || 0;
       if (!weekMap[key].subjects[l.subject]) weekMap[key].subjects[l.subject] = 0;
@@ -6609,7 +6616,7 @@ function showMonitorDetail(date) {
 
 // ===== 昨日の出席 =====
 async function loadYesterdayAttendance() {
-  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  const yesterday = toJSTDateStr(new Date(Date.now() - 86400000));
   const checkins = await sbGet('checkins', 'checkin_date=eq.' + yesterday + '&select=*,students(name,school,grade)&order=created_at');
   const el = document.getElementById('sm-yesterday-list');
   if (!checkins || !checkins.length) {
@@ -6656,7 +6663,7 @@ async function loadStudentView() {
     if (!s) { showToast('生徒データが見つかりません', 'error'); return; }
 
     const today = new Date();
-    const weekAgo = new Date(today.getTime()-7*86400000).toISOString().split('T')[0];
+    const weekAgo = toJSTDateStr(new Date(today.getTime()-7*86400000));
     const weekStudy = (studyLogs||[]).filter(l => l.log_date >= weekAgo);
     const weekMin = weekStudy.reduce((a,b) => a+(b.duration_min||0), 0);
 
@@ -8023,8 +8030,9 @@ async function staffForceCheckout(studentId, studentName, withPoints) {
 
   showLoading('処理中...');
   try {
-    // checkinレコードを取得
-    const today = new Date().toISOString().split('T')[0];
+    // checkinレコードを取得（JST基準。保存時と同じ getTodayJST() を使う。
+    // toISOString() はUTCになり深夜帯に1日ズレてヒットしないバグの原因だった）
+    const today = getTodayJST();
     const checkins = await sbGet('checkins',
       'student_id=eq.' + studentId + '&checkin_date=eq.' + today + '&checkout_time=is.null&select=id,created_at&order=created_at.desc&limit=1');
 
@@ -8085,7 +8093,7 @@ async function restoreCheckin() {
 
   showLoading('復旧中...');
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayJST(); // JST基準（toISOStringはUTCで深夜帯にズレるため）
 
     // 今日のcheckinレコードのcheckout_timeをクリア
     const checkins = await sbGet('checkins',
@@ -8126,7 +8134,7 @@ async function restoreCheckin() {
 
 
 async function checkDetailRestore(s) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayJST(); // JST基準（toISOStringはUTCで深夜帯にズレるため）
   const checkins = await sbGet('checkins',
     'student_id=eq.' + s.id + '&checkin_date=eq.' + today + '&select=checkout_time&order=created_at.desc&limit=1');
   const restoreSection = document.getElementById('detail-restore-section');
@@ -8359,7 +8367,7 @@ function initSessionDefaults() {
   const today = new Date();
   const nextMonth = new Date(today.getFullYear(), today.getMonth()+1, 0);
   document.getElementById('cs-from').value = getTodayJST();
-  document.getElementById('cs-to').value = nextMonth.toISOString().split('T')[0];
+  document.getElementById('cs-to').value = toJSTDateStr(nextMonth);
   document.getElementById('cs-weekday').value = '1'; // 月曜デフォルト
   sessionRows = [];
   document.getElementById('cs-rows').innerHTML = '';
