@@ -2602,6 +2602,10 @@ function initStudentScreen() {
   loadStudentDashboard();
   const today = getTodayJSTString();
   const btn = document.getElementById('checkin-btn');
+  // まず3つの状態をすべてリセット（前回表示の残りによる二重表示を防ぐ）
+  document.getElementById('checkin-active-box').style.display = 'none';
+  document.getElementById('checkout-done-box').style.display = 'none';
+  btn.style.display = 'none';
   const savedStart = localStorage.getItem('fit_checkin_start');
   const savedId = localStorage.getItem('fit_checkin_student_id');
   const hasSavedCheckin = savedStart && savedId === s.id && new Date(savedStart).toDateString() === new Date().toDateString();
@@ -2615,6 +2619,9 @@ function initStudentScreen() {
     // DBで確認して判断
     checkCheckinStatus(s.id, btn);
   } else {
+    // 今日まだチェックインしていない → チェックインボタンのみ表示
+    document.getElementById('checkin-active-box').style.display = 'none';
+    document.getElementById('checkout-done-box').style.display = 'none';
     btn.disabled = true;
     btn.style.display = 'block';
     btn.innerHTML = '✅ チェックイン<span class="btn-sub">自習室で押してポイントゲット！</span>';
@@ -2637,7 +2644,16 @@ function startGPS() {
   navigator.geolocation.getCurrentPosition(
     function(pos) {
       const dist = getDistance(pos.coords.latitude, pos.coords.longitude, FIT_LAT, FIT_LNG);
-      if (dist <= FIT_RADIUS) { box.className = 'gps-status ok'; box.textContent = '✅ fitの自習室にいます（約' + Math.round(dist) + 'm）'; if (!isCurrentlyCheckedIn()) btn.disabled = false; }
+      if (dist <= FIT_RADIUS) {
+        box.className = 'gps-status ok'; box.textContent = '✅ fitの自習室にいます（約' + Math.round(dist) + 'm）';
+        // チェックアウト完了ボックスや在室ボックスが出ているときは
+        // チェックインボタンを再表示・有効化しない（状態の二重表示を防ぐ）
+        const doneBox = document.getElementById('checkout-done-box');
+        const activeBox = document.getElementById('checkin-active-box');
+        const doneShown = doneBox && doneBox.style.display !== 'none';
+        const activeShown = activeBox && activeBox.style.display !== 'none';
+        if (!isCurrentlyCheckedIn() && !doneShown && !activeShown) btn.disabled = false;
+      }
       else { box.className = 'gps-status ng'; box.textContent = '📍 自習室から約' + Math.round(dist) + 'm離れています'; }
     },
     function(err) { box.className = 'gps-status ng'; box.textContent = err.code === 1 ? '🔒 GPS許可が必要です' : '⚠️ GPS取得に失敗しました'; },
@@ -8021,6 +8037,8 @@ async function checkCheckinStatus(studentId, btn) {
       'student_id=eq.' + studentId + '&checkin_date=eq.' + today + '&select=checkout_time,created_at&order=created_at.desc&limit=1');
     if (!checkins || !checkins.length) {
       // チェックイン記録なし
+      document.getElementById('checkin-active-box').style.display = 'none';
+      document.getElementById('checkout-done-box').style.display = 'none';
       btn.disabled = true;
       btn.style.display = 'block';
       btn.innerHTML = '✅ チェックイン<span class="btn-sub">自習室で押してポイントゲット！</span>';
