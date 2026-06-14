@@ -348,6 +348,13 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div style="font-size:22px;margin-bottom:6px">🎉</div>
       <div style="font-size:14px;font-weight:700;color:var(--green-d)">チェックアウト完了！</div>
       <div style="font-size:12px;color:var(--muted);margin-top:4px" id="checkout-summary"></div>
+      <!-- 同じ日にもう一度来塾した場合の再チェックイン -->
+      <button id="recheckin-btn" onclick="startCheckin()" style="display:none;margin-top:12px;width:100%;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-family:'Noto Sans JP',sans-serif;font-size:13px;font-weight:700;cursor:pointer">
+        🔁 もう一度チェックイン
+      </button>
+      <button id="recheckin-qr-btn" onclick="openQrCheckin()" style="display:none;margin-top:8px;width:100%;padding:10px;background:white;border:1.5px solid var(--orange);border-radius:var(--radius-sm);color:var(--orange-d);font-family:'Noto Sans JP',sans-serif;font-size:12px;font-weight:700;cursor:pointer">
+        📷 第2教室QRで再チェックイン
+      </button>
     </div>
 
     <!-- 公式LINE への導線 -->
@@ -1857,6 +1864,8 @@ async function sbDelete(table, query) {
 }
 
 let currentStudent = null, currentTab = 'week', allCheckins = [], staffStudents = [], detailCheckins = [];
+// 日付文字列(toDateString) -> その日に獲得したチェックインポイント合計
+let checkinPtsByDate = {};
 let detailBackTarget = 'staff';
 
 function showLoading(t) { document.getElementById('loading-text').textContent = t || '読み込み中...'; document.getElementById('loading').classList.remove('hidden'); }
@@ -2076,6 +2085,7 @@ async function autoLogin() {
     const since = new Date(); since.setFullYear(since.getFullYear() - 1);
     const checkins = await sbGet('checkins', 'student_id=eq.' + currentStudent.id + '&checkin_date=gte.' + since.toISOString().split('T')[0] + '&select=checkin_date&order=checkin_date.desc');
     allCheckins = (checkins || []).map(c => new Date(c.checkin_date + 'T00:00:00+09:00').toDateString());
+    await loadCheckinPtsByDate(currentStudent.id);
     hideLoading();
     showScreen('screen-student');
     initStudentScreen();
@@ -2183,6 +2193,7 @@ async function doLogin() {
     const sinceStr = since.toISOString().split('T')[0];
     const checkins = await sbGet('checkins', 'student_id=eq.' + currentStudent.id + '&checkin_date=gte.' + sinceStr + '&select=checkin_date&order=checkin_date.desc');
     allCheckins = (checkins || []).map(c => new Date(c.checkin_date + 'T00:00:00+09:00').toDateString());
+    await loadCheckinPtsByDate(currentStudent.id);
     hideLoading();
     saveLoginState(email, pin, 'student');
     showScreen('screen-student');
@@ -2358,12 +2369,22 @@ async function updateLoginStreak() {
     } else {
       streak = 1;                // 間が空いた or 初回 → リセットして今日からスタート
     }
-    // DBとローカルを更新
+    // === ログインボーナス：連続日数に応じて付与（1日目+1…上限+5）===
+    const bonus = Math.min(streak, 5);
+    let newPoints = currentStudent.points;
+    try {
+      newPoints = (currentStudent.points || 0) + bonus;
+      await sbPatch('students', 'id=eq.' + currentStudent.id, { login_streak: streak, last_active_date: today, points: newPoints });
+      await sbPost('point_logs', { student_id: currentStudent.id, points: bonus, reason: 'ログインボーナス（連続' + streak + '日）', type: 'login_bonus' });
+      currentStudent.points = newPoints;
+      // 画面のポイント表示を更新
+      const pEl = document.getElementById('student-points');
+      if (pEl) pEl.textContent = newPoints.toLocaleString();
+      showToast('🎁 ログインボーナス +' + bonus + 'pt（連続' + streak + '日）', 'success');
+    } catch(e) { /* カラム未追加時などは表示のみ継続 */ }
+    // DBとローカルを更新（ストリーク情報）
     currentStudent.login_streak = streak;
     currentStudent.last_active_date = today;
-    try {
-      await sbPatch('students', 'id=eq.' + currentStudent.id, { login_streak: streak, last_active_date: today });
-    } catch(e) { /* カラム未追加時などは表示のみ継続 */ }
   }
   if (label) {
     label.textContent = streak > 0 ? '🔥 連続 ' + streak + ' 日ログイン中' : '';
@@ -2414,7 +2435,7 @@ function startGPS() {
   navigator.geolocation.getCurrentPosition(
     function(pos) {
       const dist = getDistance(pos.coords.latitude, pos.coords.longitude, FIT_LAT, FIT_LNG);
-      if (dist <= FIT_RADIUS) { box.className = 'gps-status ok'; box.textContent = '✅ fitの自習室にいます（約' + Math.round(dist) + 'm）'; if (!allCheckins.includes(new Date().toDateString())) btn.disabled = false; }
+      if (dist <= FIT_RADIUS) { box.className = 'gps-status ok'; box.textContent = '✅ fitの自習室にいます（約' + Math.round(dist) + 'm）'; if (!isCurrentlyCheckedIn()) btn.disabled = false; }
       else { box.className = 'gps-status ng'; box.textContent = '📍 自習室から約' + Math.round(dist) + 'm離れています'; }
     },
     function(err) { box.className = 'gps-status ng'; box.textContent = err.code === 1 ? '🔒 GPS許可が必要です' : '⚠️ GPS取得に失敗しました'; },
@@ -2439,11 +2460,20 @@ let gpsWatchId = null;
 // ===== チェックイン / チェックアウト =====
 let checkinElapsedInterval = null;
 let forceCheckoutPollInterval = null; // スタッフ強制チェックアウト検知用ポーリング
+// 同じ日に複数回チェックイン可能。
+// 「現在チェックアウトせず在室中」のときだけ新規チェックインをブロックする。
+function isCurrentlyCheckedIn() {
+  // localStorage にチェックイン開始時刻が残っていれば在室中
+  const savedStart = localStorage.getItem('fit_checkin_start');
+  const savedId = localStorage.getItem('fit_checkin_student_id');
+  if (!savedStart || !currentStudent || savedId !== currentStudent.id) return false;
+  return new Date(savedStart).toDateString() === new Date().toDateString();
+}
+
 function startCheckin() {
   if (!currentStudent) return;
-  const today = getTodayJSTString();
-  if (allCheckins.includes(today)) {
-    showToast('本日はすでにチェックイン済みです！', 'info'); return;
+  if (isCurrentlyCheckedIn()) {
+    showToast('すでにチェックイン中です（先にチェックアウトしてください）', 'info'); return;
   }
   showLoading('GPS確認中...');
   if (gpsWatchId !== null) { navigator.geolocation.clearWatch(gpsWatchId); gpsWatchId = null; }
@@ -2486,8 +2516,7 @@ function loadJsQR() {
 
 async function openQrCheckin() {
   if (!currentStudent) return;
-  const today = getTodayJSTString();
-  if (allCheckins.includes(today)) { showToast('本日はすでにチェックイン済みです！', 'info'); return; }
+  if (isCurrentlyCheckedIn()) { showToast('すでにチェックイン中です（先にチェックアウトしてください）', 'info'); return; }
 
   const modal = document.getElementById('qr-modal');
   const statusEl = document.getElementById('qr-status');
@@ -2579,12 +2608,23 @@ async function confirmCheckin(location) {
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
+// 再チェックインボタンの表示切替（チェックアウト完了ボックス内）。
+// 同じ日にもう一度来塾したとき、再びチェックインできるようにする。
+// GPS判定は startCheckin / openQrCheckin 内で行うため、ここでは表示するだけ。
+function showRecheckinButtons(show) {
+  const btn = document.getElementById('recheckin-btn');
+  const qrBtn = document.getElementById('recheckin-qr-btn');
+  if (btn) btn.style.display = show ? 'block' : 'none';
+  if (qrBtn) qrBtn.style.display = show ? 'block' : 'none';
+}
+
 function showCheckinActive(startTime) {
   // UIの切り替え
   document.getElementById('checkin-btn').style.display = 'none';
   updateQrCheckinBtn(false);
   document.getElementById('checkin-active-box').style.display = 'block';
   document.getElementById('checkout-done-box').style.display = 'none';
+  showRecheckinButtons(false);
   // 開始時刻ラベル
   const h = startTime.getHours().toString().padStart(2,'0');
   const m = startTime.getMinutes().toString().padStart(2,'0');
@@ -2635,6 +2675,7 @@ async function checkForcedCheckout() {
       const h = Math.floor(stayMin / 60), m = stayMin % 60;
       const summary = document.getElementById('checkout-summary');
       if (summary) summary.textContent = 'スタッフによりチェックアウトされました（在室時間: ' + h + '時間' + m + '分）';
+      showRecheckinButtons(true);
       // 最新のポイントを反映
       try {
         const st = await sbGet('students', 'id=eq.' + currentStudent.id + '&select=points');
@@ -2685,10 +2726,10 @@ async function doCheckout() {
     } else {
       await sbPatch('students', 'id=eq.' + currentStudent.id, { last_checkin: getTodayJST() });
     }
-    // checkinsにチェックアウト時刻・在室時間を記録
+    // checkinsにチェックアウト時刻・在室時間を記録（未チェックアウトの最新行を締める）
     try {
       const checkins = await sbGet('checkins',
-        'student_id=eq.' + currentStudent.id + '&checkin_date=eq.' + getTodayJST() + '&select=id&order=created_at.desc&limit=1');
+        'student_id=eq.' + currentStudent.id + '&checkin_date=eq.' + getTodayJST() + '&checkout_time=is.null&select=id&order=created_at.desc&limit=1');
       if (checkins && checkins[0]) {
         await sbPatch('checkins', 'id=eq.' + checkins[0].id, {
           checkout_time: new Date().toISOString(),
@@ -2708,11 +2749,17 @@ async function doCheckout() {
     const h = Math.floor(elapsed / 3600), m = Math.floor((elapsed % 3600) / 60);
     document.getElementById('checkout-summary').textContent =
       '在室時間: ' + h + '時間' + m + '分　獲得ポイント: +' + pts + 'pt';
+    showRecheckinButtons(true);
     hideLoading();
     showToast('🎉 お疲れ様！+' + pts + 'pt獲得！', 'success');
     checkinStartTime = null;
+    // 今日の獲得ポイントをマップに反映（再チェックイン時は加算）
+    if (pts > 0) {
+      const todayKey = new Date().toDateString();
+      checkinPtsByDate[todayKey] = (checkinPtsByDate[todayKey] || 0) + pts;
+    }
     if (typeof renderUnifiedMonth === 'function' && unifiedAttendedDates) { unifiedAttendedDates.add(getTodayJST()); renderUnifiedMonth(); }
-    loadHistory();
+    renderHistory(currentTab);
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
@@ -2722,6 +2769,33 @@ async function doCheckout() {
 
 
 function switchTab(tab, el) { currentTab = tab; if (tab !== 'monthly') monthOffset = 0; document.querySelectorAll('#screen-student .tab-btn').forEach(b => b.classList.remove('active')); el.classList.add('active'); renderHistory(tab); }
+// チェックインで獲得したポイントを日付ごとに集計してマップ化する。
+// checkins.stay_minutes（在室分数）から 30分=1pt で算出するので、
+// point_logs の有無に関係なく過去・未来とも正確。
+// 同じ日に複数回チェックアウトした場合はその日の合計になる。
+async function loadCheckinPtsByDate(studentId) {
+  checkinPtsByDate = {};
+  try {
+    const since = new Date(); since.setFullYear(since.getFullYear() - 1);
+    const sinceStr = since.toISOString().split('T')[0];
+    const rows = await sbGet('checkins',
+      'student_id=eq.' + studentId + '&checkin_date=gte.' + sinceStr +
+      '&select=checkin_date,stay_minutes&order=checkin_date.desc') || [];
+    rows.forEach(r => {
+      const key = new Date(r.checkin_date + 'T00:00:00+09:00').toDateString(); // JSTの日付で集計
+      const pts = Math.floor((r.stay_minutes || 0) / 30); // 30分=1pt（30分未満は0pt）
+      checkinPtsByDate[key] = (checkinPtsByDate[key] || 0) + pts;
+    });
+  } catch(e) { console.error('checkinPtsByDate取得エラー:', e); }
+}
+
+// その日のチェックイン獲得ポイントを返す。
+// stay_minutes から算出済みなので、来塾していれば 0pt も含めて確定値を返す。
+function ptsForDate(dateStr, hasCheckin) {
+  if (checkinPtsByDate[dateStr] != null) return checkinPtsByDate[dateStr];
+  return 0;
+}
+
 function renderHistory(tab) { renderHistoryBase(tab, allCheckins, 'history-summary', 'history-list'); }
 
 // 月別カレンダー用の現在月オフセット
@@ -2733,22 +2807,25 @@ function renderHistoryBase(tab, checkins, summaryId, listId) {
   if (tab === 'week') {
     const days = []; for (i = 0; i < 7; i++) { const d = new Date(today); d.setDate(d.getDate() - i); days.push(d); }
     const count = days.filter(d => set.has(d.toDateString())).length;
-    sEl.innerHTML = '<div class="summary-chip"><div class="s-num">' + count + '<span style="font-size:13px">日</span></div><div class="s-label">今週の来塾</div></div><div class="summary-chip"><div class="s-num">' + (count*10) + '<span style="font-size:13px">pt</span></div><div class="s-label">今週の獲得</div></div>';
-    lEl.innerHTML = days.map(d => { const ok = set.has(d.toDateString()), m = d.getMonth()+1, dd = d.getDate(), wd = ['日','月','火','水','木','金','土'][d.getDay()]; return '<div class="history-item ' + (ok?'checked-day':'unchecked-day') + '"><div class="history-date">' + m + '月' + dd + '日（' + wd + '）</div>' + (ok ? '<div class="history-pts">+10 pt</div>' : '<div class="history-zero">—</div>') + '</div>'; }).join('');
+    const weekPts = days.reduce((a,d) => a + ptsForDate(d.toDateString(), set.has(d.toDateString())), 0);
+    sEl.innerHTML = '<div class="summary-chip"><div class="s-num">' + count + '<span style="font-size:13px">日</span></div><div class="s-label">今週の来塾</div></div><div class="summary-chip"><div class="s-num">' + weekPts + '<span style="font-size:13px">pt</span></div><div class="s-label">今週の獲得</div></div>';
+    lEl.innerHTML = days.map(d => { const key = d.toDateString(), ok = set.has(key), m = d.getMonth()+1, dd = d.getDate(), wd = ['日','月','火','水','木','金','土'][d.getDay()]; return '<div class="history-item ' + (ok?'checked-day':'unchecked-day') + '"><div class="history-date">' + m + '月' + dd + '日（' + wd + '）</div>' + (ok ? '<div class="history-pts">+' + ptsForDate(key, true) + ' pt</div>' : '<div class="history-zero">—</div>') + '</div>'; }).join('');
   }
   if (tab === 'month') {
     const days = []; for (let i = 0; i < 30; i++) { const d = new Date(today); d.setDate(d.getDate() - i); days.push(d); }
     const count = days.filter(d => set.has(d.toDateString())).length;
-    sEl.innerHTML = '<div class="summary-chip"><div class="s-num">' + count + '<span style="font-size:13px">日</span></div><div class="s-label">今月の来塾</div></div><div class="summary-chip"><div class="s-num">' + (count*10) + '<span style="font-size:13px">pt</span></div><div class="s-label">今月の獲得</div></div>';
-    const weeks = []; for (let w = 0; w < 5; w++) { const wd = days.slice(w*7,(w+1)*7); if (!wd.length) continue; const wc = wd.filter(d => set.has(d.toDateString())).length, fr = wd[wd.length-1], to = wd[0]; weeks.push({ label: (fr.getMonth()+1)+'/'+fr.getDate()+'〜'+(to.getMonth()+1)+'/'+to.getDate(), count: wc, days: wd.length }); }
-    lEl.innerHTML = weeks.map(w => '<div class="history-item checked-day" style="' + (w.count===0?'opacity:.5':'') + '"><div class="history-date" style="font-size:11px">' + w.label + '</div><div style="display:flex;align-items:center;gap:8px"><div style="font-size:12px;color:var(--muted)">' + w.count + '/' + w.days + '日</div><div class="history-pts">+' + (w.count*10) + ' pt</div></div></div>').join('');
+    const monthPts = days.reduce((a,d) => a + ptsForDate(d.toDateString(), set.has(d.toDateString())), 0);
+    sEl.innerHTML = '<div class="summary-chip"><div class="s-num">' + count + '<span style="font-size:13px">日</span></div><div class="s-label">今月の来塾</div></div><div class="summary-chip"><div class="s-num">' + monthPts + '<span style="font-size:13px">pt</span></div><div class="s-label">今月の獲得</div></div>';
+    const weeks = []; for (let w = 0; w < 5; w++) { const wd = days.slice(w*7,(w+1)*7); if (!wd.length) continue; const wc = wd.filter(d => set.has(d.toDateString())).length, wp = wd.reduce((a,d) => a + ptsForDate(d.toDateString(), set.has(d.toDateString())), 0), fr = wd[wd.length-1], to = wd[0]; weeks.push({ label: (fr.getMonth()+1)+'/'+fr.getDate()+'〜'+(to.getMonth()+1)+'/'+to.getDate(), count: wc, pts: wp, days: wd.length }); }
+    lEl.innerHTML = weeks.map(w => '<div class="history-item checked-day" style="' + (w.count===0?'opacity:.5':'') + '"><div class="history-date" style="font-size:11px">' + w.label + '</div><div style="display:flex;align-items:center;gap:8px"><div style="font-size:12px;color:var(--muted)">' + w.count + '/' + w.days + '日</div><div class="history-pts">+' + w.pts + ' pt</div></div></div>').join('');
   }
   if (tab === 'year') {
     const months = []; let maxDays = 0;
-    for (i = 11; i >= 0; i--) { const y = today.getFullYear(), m = today.getMonth()-i, first = new Date(y,m,1), last = new Date(y,m+1,0); let cnt = 0; for (let d = new Date(first); d <= last; d.setDate(d.getDate()+1)) { if (set.has(d.toDateString())) cnt++; } if (cnt > maxDays) maxDays = cnt; months.push({ label: first.getFullYear()+'/'+String(first.getMonth()+1).padStart(2,'0'), count: cnt }); }
+    for (i = 11; i >= 0; i--) { const y = today.getFullYear(), m = today.getMonth()-i, first = new Date(y,m,1), last = new Date(y,m+1,0); let cnt = 0, mp = 0; for (let d = new Date(first); d <= last; d.setDate(d.getDate()+1)) { const has = set.has(d.toDateString()); if (has) cnt++; mp += ptsForDate(d.toDateString(), has); } if (cnt > maxDays) maxDays = cnt; months.push({ label: first.getFullYear()+'/'+String(first.getMonth()+1).padStart(2,'0'), count: cnt, pts: mp }); }
     const total = months.reduce((a,b) => a+b.count, 0);
-    sEl.innerHTML = '<div class="summary-chip"><div class="s-num">' + total + '<span style="font-size:13px">日</span></div><div class="s-label">年間来塾日数</div></div><div class="summary-chip"><div class="s-num">' + (total*10).toLocaleString() + '<span style="font-size:11px">pt</span></div><div class="s-label">年間獲得ポイント</div></div>';
-    lEl.innerHTML = months.map(m => { const bw = maxDays > 0 ? Math.round(m.count/maxDays*100) : 0; return '<div class="month-row"><div class="m-name">' + m.label + '</div><div class="month-bar-wrap"><div class="month-bar" style="width:' + bw + '%"></div></div><div class="m-days">' + m.count + '日</div><div class="m-pts">' + (m.count*10) + 'pt</div></div>'; }).join('');
+    const totalPts = months.reduce((a,b) => a+b.pts, 0);
+    sEl.innerHTML = '<div class="summary-chip"><div class="s-num">' + total + '<span style="font-size:13px">日</span></div><div class="s-label">年間来塾日数</div></div><div class="summary-chip"><div class="s-num">' + totalPts.toLocaleString() + '<span style="font-size:11px">pt</span></div><div class="s-label">年間獲得ポイント</div></div>';
+    lEl.innerHTML = months.map(m => { const bw = maxDays > 0 ? Math.round(m.count/maxDays*100) : 0; return '<div class="month-row"><div class="m-name">' + m.label + '</div><div class="month-bar-wrap"><div class="month-bar" style="width:' + bw + '%"></div></div><div class="m-days">' + m.count + '日</div><div class="m-pts">' + m.pts + 'pt</div></div>'; }).join('');
   }
   if (tab === 'monthly') {
     const isDetail = (listId === 'detail-list');
@@ -2758,13 +2835,15 @@ function renderHistoryBase(tab, checkins, summaryId, listId) {
     const firstDay = new Date(year, month, 1).getDay();
     const lastDate = new Date(year, month+1, 0).getDate();
     const monthLabel = year + '年' + (month+1) + '月';
-    const monthCount = Array.from({length: lastDate}, (_, i) => new Date(year, month, i+1)).filter(d => set.has(d.toDateString())).length;
+    const monthDays = Array.from({length: lastDate}, (_, i) => new Date(year, month, i+1));
+    const monthCount = monthDays.filter(d => set.has(d.toDateString())).length;
+    const monthlyPts = monthDays.reduce((a,d) => a + ptsForDate(d.toDateString(), set.has(d.toDateString())), 0);
     const prevFn = isDetail ? 'detailMonthOffset--; switchDetailTab("monthly", document.querySelector("#screen-staff-detail .tab-btn:nth-child(2)"))' : 'monthOffset--; switchTab("monthly", document.querySelector("#screen-student .tab-btn:nth-child(2)"))';
     const nextFn = isDetail ? 'detailMonthOffset++; switchDetailTab("monthly", document.querySelector("#screen-staff-detail .tab-btn:nth-child(2)"))' : 'monthOffset++; switchTab("monthly", document.querySelector("#screen-student .tab-btn:nth-child(2)"))';
     const nextDisabled = offset >= 0 ? 'disabled style="opacity:.4;cursor:not-allowed"' : '';
     const days = ['日','月','火','水','木','金','土'];
     let calHtml = '<div class="month-nav"><button class="month-nav-btn" onclick="' + prevFn + '">‹</button><div class="month-nav-title">' + monthLabel + '</div><button class="month-nav-btn" ' + nextDisabled + ' onclick="' + nextFn + '">›</button></div>';
-    calHtml += '<div class="month-stats"><div class="month-stat-chip"><div class="s-num">' + monthCount + '<span style="font-size:12px">日</span></div><div class="s-label">来塾日数</div></div><div class="month-stat-chip"><div class="s-num">' + (monthCount*10) + '<span style="font-size:12px">pt</span></div><div class="s-label">獲得ポイント</div></div></div>';
+    calHtml += '<div class="month-stats"><div class="month-stat-chip"><div class="s-num">' + monthCount + '<span style="font-size:12px">日</span></div><div class="s-label">来塾日数</div></div><div class="month-stat-chip"><div class="s-num">' + monthlyPts + '<span style="font-size:12px">pt</span></div><div class="s-label">獲得ポイント</div></div></div>';
     calHtml += '<div class="calendar-grid">';
     calHtml += days.map(d => '<div class="cal-day-label">' + d + '</div>').join('');
     for (i = 0; i < firstDay; i++) calHtml += '<div class="cal-day empty"></div>';
@@ -2781,13 +2860,14 @@ function renderHistoryBase(tab, checkins, summaryId, listId) {
   }
   if (tab === 'all') {
     const sorted = Array.from(set).sort((a,b) => new Date(b) - new Date(a));
-    sEl.innerHTML = '<div class="summary-chip"><div class="s-num">' + sorted.length + '<span style="font-size:13px">日</span></div><div class="s-label">累計来塾日数</div></div><div class="summary-chip"><div class="s-num">' + (sorted.length*10).toLocaleString() + '<span style="font-size:11px">pt</span></div><div class="s-label">累計獲得ポイント</div></div>';
+    const totalAllPts = sorted.reduce((a,d) => a + ptsForDate(d, true), 0);
+    sEl.innerHTML = '<div class="summary-chip"><div class="s-num">' + sorted.length + '<span style="font-size:13px">日</span></div><div class="s-label">累計来塾日数</div></div><div class="summary-chip"><div class="s-num">' + totalAllPts.toLocaleString() + '<span style="font-size:11px">pt</span></div><div class="s-label">累計獲得ポイント</div></div>';
     if (sorted.length === 0) { lEl.innerHTML = '<div class="all-history-empty">まだ来塾記録がありません</div>'; return; }
     lEl.innerHTML = '<div class="all-history-list">' + sorted.map(d => {
       const dt = new Date(d);
       const m = dt.getMonth()+1, dd = dt.getDate(), y = dt.getFullYear();
       const wd = ['日','月','火','水','木','金','土'][dt.getDay()];
-      return '<div class="all-history-item"><div class="ah-date">' + y + '/' + String(m).padStart(2,'0') + '/' + String(dd).padStart(2,'0') + '（' + wd + '）</div><div class="ah-pts">+10 pt</div></div>';
+      return '<div class="all-history-item"><div class="ah-date">' + y + '/' + String(m).padStart(2,'0') + '/' + String(dd).padStart(2,'0') + '（' + wd + '）</div><div class="ah-pts">+' + ptsForDate(d, true) + ' pt</div></div>';
     }).join('') + '</div>';
     // ポイント履歴も表示
     if (currentStudent) {
@@ -3222,6 +3302,7 @@ async function openStudentDetail(idx, from) {
     const since = new Date(); since.setFullYear(since.getFullYear() - 1);
     const checkins = await sbGet('checkins', 'student_id=eq.' + s.id + '&checkin_date=gte.' + since.toISOString().split('T')[0] + '&select=checkin_date&order=checkin_date.desc');
     detailCheckins = (checkins || []).map(c => new Date(c.checkin_date + 'T00:00:00+09:00').toDateString());
+    await loadCheckinPtsByDate(s.id);
     const today = new Date(), m = today.getMonth(), y = today.getFullYear();
     const monthCount = detailCheckins.filter(d => { const dt = new Date(d); return dt.getMonth() === m && dt.getFullYear() === y; }).length;
     const aprilYear = today.getMonth() >= 3 ? y : y - 1;
@@ -7413,12 +7494,13 @@ async function checkCheckinStatus(studentId, btn) {
     }
     const latest = checkins[0];
     if (latest.checkout_time) {
-      // チェックアウト済み → 完了状態を表示
+      // チェックアウト済み → 完了状態を表示（再チェックイン可）
       document.getElementById('checkin-btn').style.display = 'none';
       updateQrCheckinBtn(false);
       document.getElementById('checkin-active-box').style.display = 'none';
       document.getElementById('checkout-done-box').style.display = 'block';
       document.getElementById('checkout-summary').textContent = '本日のチェックアウト完了済みです';
+      showRecheckinButtons(true);
     } else {
       // チェックアウト未済（別端末でチェックインした等）
       // localStorageにチェックイン時刻を設定してチェックアウト可能にする
