@@ -2023,11 +2023,24 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
   </div>
 </div>
 
+<div id="makeup-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1001;align-items:center;justify-content:center" onclick="if(event.target===this)closeMakeupModal()">
+  <div style="background:var(--bg,#fff);border-radius:14px;max-width:92vw;width:380px;max-height:82vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.3)">
+    <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+      <div style="flex:1"><div style="font-size:14px;font-weight:700;color:var(--text)">🔁 振替出席の記録</div>
+      <div id="makeup-modal-sub" style="font-size:11px;color:var(--muted);margin-top:2px"></div></div>
+      <button onclick="closeMakeupModal()" style="width:28px;height:28px;background:var(--surface2);border:none;border-radius:50%;font-size:16px;cursor:pointer">×</button>
+    </div>
+    <div id="makeup-modal-body" style="padding:12px 16px;overflow-y:auto;flex:1">
+      <div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">読み込み中...</div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260615c';
+const APP_VERSION = '20260615d';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -2173,13 +2186,50 @@ function setFilter(type, value, el) {
   renderStudentList();
 }
 
+// 授業セレクトを科目→学年→授業名の階層 optgroup で構築する共通ヘルパー
+// HTMLの optgroup はネスト不可のため「科目 / N年」を1ラベルにまとめた擬似2階層にする
+const SUBJECT_ORDER = ['英語','数学','国語','理科','社会','その他'];
+function buildHierClassOptions(masters) {
+  // 科目 → 学年ラベル → [授業] にグループ化
+  const tree = {};
+  (masters || []).forEach(m => {
+    const subj = m.subject || 'その他';
+    const grades = (m.grade_level || '').split(',').map(g => g.trim()).filter(Boolean);
+    // 学年キー：複数学年は「1・2・3年」、未設定は「学年未設定」
+    const gradeKey = grades.length ? grades.map(g => g + '年').join('・') : '学年未設定';
+    if (!tree[subj]) tree[subj] = {};
+    if (!tree[subj][gradeKey]) tree[subj][gradeKey] = [];
+    tree[subj][gradeKey].push(m);
+  });
+  // 科目を既定順 → それ以外を後ろに
+  const subjects = Object.keys(tree).sort((a,b) => {
+    const ia = SUBJECT_ORDER.indexOf(a), ib = SUBJECT_ORDER.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b);
+  });
+  let html = '';
+  subjects.forEach(subj => {
+    // 学年ラベルを「1年→2年→3年→複数→未設定」の自然順で
+    const gradeKeys = Object.keys(tree[subj]).sort((a,b) => {
+      const rank = k => k === '学年未設定' ? 99 : (k.match(/・/) ? 50 + k.length : parseInt(k));
+      return rank(a) - rank(b);
+    });
+    gradeKeys.forEach(gk => {
+      const list = tree[subj][gk].sort((a,b) => (a.name||'').localeCompare(b.name||''));
+      html += '<optgroup label="── ' + subj + '／' + gk + ' ──">' +
+        list.map(m => '<option value="' + m.id + '">' + (m.name || '不明') + '</option>').join('') +
+        '</optgroup>';
+    });
+  });
+  return html;
+}
+
 // 授業セレクトを読み込む（生徒一覧の絞り込み用）
 async function loadStudentListClassFilter() {
   const sel = document.getElementById('filter-class-sel');
   if (!sel) return;
-  const masters = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject') || [];
+  const masters = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject,grade_level') || [];
   sel.innerHTML = '<option value="">📚 授業で絞り込み（全授業）</option>' +
-    masters.map(c => '<option value="' + c.id + '">' + (c.subject ? '【' + c.subject + '】' : '') + c.name + '</option>').join('');
+    buildHierClassOptions(masters);
   // 既存の選択を維持
   if (filterClassId) sel.value = filterClassId;
 }
@@ -3850,20 +3900,20 @@ async function loadDailyAttendance() {
     dailyEnrollMap = {};
     try {
       const enrolls = await sbGet('class_enrollments',
-        'student_id=in.(' + ids.join(',') + ')&select=student_id,class_master_id,class_master(id,name,subject)') || [];
-      const classOpts = {};
+        'student_id=in.(' + ids.join(',') + ')&select=student_id,class_master_id,class_master(id,name,subject,grade_level)') || [];
+      const classMasterMap = {};
       enrolls.forEach(e => {
         if (!dailyEnrollMap[e.student_id]) dailyEnrollMap[e.student_id] = new Set();
         dailyEnrollMap[e.student_id].add(e.class_master_id);
         const cm = e.class_master;
-        if (cm) classOpts[e.class_master_id] = (cm.subject ? '【' + cm.subject + '】' : '') + cm.name;
+        if (cm) classMasterMap[e.class_master_id] = cm;
       });
-      // 授業セレクト構築
+      // 授業セレクト構築（科目→学年→授業名の階層）
       const sel = document.getElementById('daily-filter-class');
       if (sel) {
         const cur = dailyFilter.classId;
         sel.innerHTML = '<option value="">📚 授業で絞り込み（全授業）</option>' +
-          Object.entries(classOpts).map(([id,name]) => '<option value="' + id + '">' + name + '</option>').join('');
+          buildHierClassOptions(Object.values(classMasterMap));
         sel.value = cur;
       }
     } catch(e) { /* enrollmentsが取れなくても続行 */ }
@@ -8407,10 +8457,15 @@ async function loadClassMasterList() {
       const gradeBadge = (c.grade_level && c.grade_level.trim())
         ? '<span style="font-size:10px;background:var(--orange-l);color:var(--orange-d);border:1px solid var(--orange);padding:1px 7px;border-radius:10px;margin-left:6px">' + c.grade_level.split(',').filter(Boolean).map(g => g + '年').join('・') + '</span>'
         : '<span style="font-size:10px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);padding:1px 7px;border-radius:10px;margin-left:6px">学年なし</span>';
-      return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:4px">' +
-        '<div style="flex:1"><div style="font-size:13px;font-weight:500;color:var(--text)">' + c.name + gradeBadge + '</div>' +
+      const pairName = c.makeup_pair_id ? (classMasterList.find(x => x.id === c.makeup_pair_id) || {}).name : null;
+      const pairBadge = pairName
+        ? '<span style="font-size:10px;background:#E8F0FA;color:#2D5FA6;border:1px solid #B8D0EC;padding:1px 7px;border-radius:10px;margin-left:6px">🔁 ' + pairName + '</span>'
+        : '';
+      return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:4px;flex-wrap:wrap">' +
+        '<div style="flex:1;min-width:140px"><div style="font-size:13px;font-weight:500;color:var(--text)">' + c.name + gradeBadge + pairBadge + '</div>' +
         '<div style="font-size:10px;color:var(--muted)">' + (c.staff?.name || '担当未設定') + '</div></div>' +
         '<button onclick="setClassGrade(\'' + c.id + '\',\'' + (c.grade_level||'') + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">学年設定</button>' +
+        '<button onclick="setClassMakeupPair(\'' + c.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">振替設定</button>' +
         '<button onclick="setClassTeacher(\'' + c.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">担当設定</button>' +
         '<button onclick="deleteClassMaster(\'' + c.id + '\')" style="padding:3px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">削除</button>' +
       '</div>';
@@ -8447,6 +8502,59 @@ async function setClassGrade(classId, current) {
   await sbPatch('class_master', 'id=eq.' + classId, { grade_level: uniq.join(',') });
   showToast('学年を設定しました', 'success');
   loadClassMasterList();
+}
+
+// 振替ペア設定（1対1・相互）。同じ授業の振替先をもう片方に指定する。
+async function setClassMakeupPair(classId) {
+  const me = classMasterList.find(c => c.id === classId);
+  if (!me) { showToast('授業が見つかりません', 'error'); return; }
+  // 候補：自分以外の授業（管理者は全件、講師は自分の担当のみ表示済み）
+  const cands = classMasterList.filter(c => c.id !== classId);
+  if (!cands.length) { showToast('ペアにできる授業がありません', 'error'); return; }
+  // 番号付きで選ばせる（このアプリの prompt パターン）
+  const curPair = me.makeup_pair_id ? classMasterList.find(c => c.id === me.makeup_pair_id) : null;
+  let msg = '「' + me.name + '」の振替先授業を選んでください。\n';
+  msg += '（どちらか片方に出席すれば出席扱いにできます）\n\n';
+  msg += '0: 振替ペアを解除' + (curPair ? '（現在: ' + curPair.name + '）' : '（現在なし）') + '\n';
+  cands.forEach((c, i) => {
+    const mark = (curPair && curPair.id === c.id) ? ' ◀現在' : '';
+    msg += (i + 1) + ': ' + (c.subject ? '【' + c.subject + '】' : '') + c.name + mark + '\n';
+  });
+  const input = prompt(msg, '');
+  if (input === null) return;
+  const n = parseInt(input.trim(), 10);
+  if (isNaN(n) || n < 0 || n > cands.length) { showToast('番号が正しくありません', 'error'); return; }
+
+  showLoading('設定中...');
+  try {
+    if (n === 0) {
+      // 解除：自分と、自分を指していた相手の両方をクリア
+      await sbPatch('class_master', 'id=eq.' + classId, { makeup_pair_id: null });
+      if (me.makeup_pair_id) {
+        await sbPatch('class_master', 'id=eq.' + me.makeup_pair_id, { makeup_pair_id: null });
+      }
+      hideLoading();
+      showToast('振替ペアを解除しました', 'success');
+    } else {
+      const partner = cands[n - 1];
+      // 既存ペアが別の授業を指していたら、その相手側もクリアして整合を保つ
+      if (me.makeup_pair_id && me.makeup_pair_id !== partner.id) {
+        await sbPatch('class_master', 'id=eq.' + me.makeup_pair_id, { makeup_pair_id: null });
+      }
+      if (partner.makeup_pair_id && partner.makeup_pair_id !== classId) {
+        await sbPatch('class_master', 'id=eq.' + partner.makeup_pair_id, { makeup_pair_id: null });
+      }
+      // 相互に書き込み
+      await sbPatch('class_master', 'id=eq.' + classId, { makeup_pair_id: partner.id });
+      await sbPatch('class_master', 'id=eq.' + partner.id, { makeup_pair_id: classId });
+      hideLoading();
+      showToast('「' + partner.name + '」と振替ペアにしました', 'success');
+    }
+    loadClassMasterList();
+  } catch(e) {
+    hideLoading();
+    showToast('設定に失敗しました: ' + e.message, 'error');
+  }
 }
 
 async function deleteClassMaster(id) {
@@ -8670,7 +8778,7 @@ async function loadDetailEnrollments() {
   const sel = document.getElementById('enrollment-class-sel');
   if (sel) sel.value = '';
   const enrollments = await sbGet('class_enrollments',
-    'student_id=eq.' + detailStudent.id + '&select=id,class_master(id,name,subject)') || [];
+    'student_id=eq.' + detailStudent.id + '&select=id,class_master(id,name,subject,makeup_pair_id)') || [];
   const el = document.getElementById('detail-enrollments');
   if (!el) return;
   if (!enrollments.length) {
@@ -8680,9 +8788,13 @@ async function loadDetailEnrollments() {
   const SUBJ_COLORS = {'英語':'#2D5FA6','国語':'#8B2020','数学':'#7B2D8B','理科':'#1A7340','社会':'#8B6020','その他':'#5A5A5A'};
   el.innerHTML = enrollments.map(e => {
     const c = e.class_master || {};
-    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface2);border-radius:8px">' +
+    const makeupBtn = c.makeup_pair_id
+      ? '<button onclick="openMakeupAttendance(\'' + c.id + '\',\'' + (c.name||'').replace(/'/g,'') + '\')" style="padding:2px 8px;background:#E8F0FA;border:1px solid #B8D0EC;border-radius:6px;color:#2D5FA6;font-size:10px;cursor:pointer">🔁 振替</button>'
+      : '';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface2);border-radius:8px;flex-wrap:wrap">' +
       '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:' + (SUBJ_COLORS[c.subject]||'#5A5A5A') + '20;color:' + (SUBJ_COLORS[c.subject]||'#5A5A5A') + ';font-weight:700">' + (c.subject||'') + '</span>' +
-      '<span style="font-size:13px;color:var(--text);flex:1">' + (c.name||'不明') + '</span>' +
+      '<span style="font-size:13px;color:var(--text);flex:1;min-width:90px">' + (c.name||'不明') + '</span>' +
+      makeupBtn +
       '<button onclick="removeEnrollment(\'' + e.id + '\')" style="padding:2px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">削除</button>' +
     '</div>';
   }).join('');
@@ -8733,6 +8845,104 @@ async function removeEnrollment(enrollmentId) {
   });
   showToast('削除しました', 'info');
   loadDetailEnrollments();
+}
+
+// ===== 振替出席（生徒詳細から）=====
+let makeupModalClassId = null;
+async function openMakeupAttendance(classId, className) {
+  if (!detailStudent) return;
+  makeupModalClassId = classId;
+  const modal = document.getElementById('makeup-modal');
+  modal.style.display = 'flex';
+  document.getElementById('makeup-modal-sub').textContent = detailStudent.name + '　／　' + className;
+  const body = document.getElementById('makeup-modal-body');
+  body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">読み込み中...</div>';
+  try {
+    const todayISO = getTodayJST();
+    // 本来コマ（この授業）の過去〜本日の授業日
+    const sessions = await sbGet('class_sessions',
+      'class_master_id=eq.' + classId + '&session_date=lte.' + todayISO + '&select=session_date&order=session_date.desc&limit=30') || [];
+    // この生徒の来塾日（振替不要日の判定用）
+    const checkins = await sbGet('checkins',
+      'student_id=eq.' + detailStudent.id + '&select=checkin_date') || [];
+    const attendedSet = new Set(checkins.map(c => c.checkin_date));
+    // 既存の振替記録
+    let madeSet = new Set();
+    try {
+      const made = await sbGet('class_makeup_attendance',
+        'student_id=eq.' + detailStudent.id + '&class_master_id=eq.' + classId + '&select=session_date') || [];
+      made.forEach(m => madeSet.add(m.session_date));
+    } catch(e) { /* テーブル未作成 */ }
+
+    if (!sessions.length) {
+      body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">過去の授業日がありません</div>';
+      return;
+    }
+    body.innerHTML =
+      '<div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">本来この曜日に出られず、振替先に出席した日に「振替で出席」を付けてください。付けた日は出席扱いになります。</div>' +
+      sessions.map(s => {
+        const d = new Date(s.session_date + 'T00:00:00+09:00');
+        const wd = ['日','月','火','水','木','金','土'][d.getDay()];
+        const label = (d.getMonth()+1) + '/' + d.getDate() + '（' + wd + '）';
+        const isMade = madeSet.has(s.session_date);
+        const isAttended = attendedSet.has(s.session_date);
+        let right;
+        if (isAttended && !isMade) {
+          right = '<span style="font-size:10px;color:var(--green-d);font-weight:700">来塾済み</span>';
+        } else if (isMade) {
+          right = '<button onclick="toggleMakeupAttendance(\'' + s.session_date + '\',true)" style="padding:4px 10px;background:#E8F0FA;border:1px solid #2D5FA6;border-radius:6px;color:#2D5FA6;font-size:11px;font-weight:700;cursor:pointer">🔁 振替済み（解除）</button>';
+        } else {
+          right = '<button onclick="toggleMakeupAttendance(\'' + s.session_date + '\',false)" style="padding:4px 10px;background:var(--green-d);border:none;border-radius:6px;color:white;font-size:11px;font-weight:700;cursor:pointer">振替で出席にする</button>';
+        }
+        return '<div style="display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid var(--border)">' +
+          '<span style="font-size:13px;color:var(--text);flex:1">' + label + '</span>' + right + '</div>';
+      }).join('');
+  } catch(e) {
+    body.innerHTML = '<div style="font-size:12px;color:var(--red);text-align:center;padding:16px">読み込みに失敗しました: ' + e.message + '</div>';
+  }
+}
+
+function closeMakeupModal() {
+  document.getElementById('makeup-modal').style.display = 'none';
+  makeupModalClassId = null;
+}
+
+async function toggleMakeupAttendance(sessionDate, isMade) {
+  if (!detailStudent || !makeupModalClassId) return;
+  const classId = makeupModalClassId;
+  showLoading(isMade ? '解除中...' : '記録中...');
+  try {
+    if (isMade) {
+      // 解除：DELETE
+      await fetch(SB_URL + '/rest/v1/class_makeup_attendance?student_id=eq.' + detailStudent.id +
+        '&class_master_id=eq.' + classId + '&session_date=eq.' + sessionDate, {
+        method: 'DELETE',
+        headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY }
+      });
+      hideLoading();
+      showToast('振替を解除しました', 'info');
+    } else {
+      await sbPost('class_makeup_attendance', {
+        student_id: detailStudent.id,
+        class_master_id: classId,
+        session_date: sessionDate,
+        created_by: (currentStaff && currentStaff.staff_id) || null
+      });
+      hideLoading();
+      showToast('振替で出席にしました', 'success');
+    }
+    // モーダルを開き直して表示更新
+    const sub = document.getElementById('makeup-modal-sub').textContent;
+    const cname = sub.split('／')[1] ? sub.split('／')[1].trim() : '';
+    openMakeupAttendance(classId, cname);
+  } catch(e) {
+    hideLoading();
+    if ((e.message||'').includes('duplicate') || (e.message||'').includes('unique')) {
+      showToast('すでに記録済みです', 'error');
+    } else {
+      showToast('失敗しました: ' + e.message, 'error');
+    }
+  }
 }
 
 // ===== 生徒ホーム：今日の授業表示 =====
@@ -9126,6 +9336,12 @@ async function loadDetailCalendar() {
     const dt = new Date(d);
     return dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
   }));
+  // 振替出席を出席扱いに加える
+  try {
+    const made = await sbGet('class_makeup_attendance',
+      'student_id=eq.' + detailStudent.id + '&select=session_date') || [];
+    made.forEach(m => detailCalAttended.add(m.session_date));
+  } catch(e) { /* テーブル未作成時は無視 */ }
   try {
     const enrollments = await sbGet('class_enrollments',
       'student_id=eq.' + detailStudent.id + '&select=class_master_id,class_master(id,name,subject)') || [];
@@ -9280,6 +9496,13 @@ async function loadUnifiedCalendar() {
       'student_id=eq.' + currentStudent.id + '&select=checkin_date') || [];
     unifiedAttendedDates = new Set(myCheckins.map(c => c.checkin_date));
   } catch(e) { unifiedAttendedDates = new Set(allCheckins ? [] : []); }
+
+  // --- 振替出席（本来コマの授業日を出席扱いに加える）---
+  try {
+    const made = await sbGet('class_makeup_attendance',
+      'student_id=eq.' + currentStudent.id + '&select=session_date') || [];
+    made.forEach(m => unifiedAttendedDates.add(m.session_date));
+  } catch(e) { /* テーブル未作成時は無視 */ }
 
   // --- イベント ---
   unifiedEvents = {};
