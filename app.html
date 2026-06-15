@@ -834,6 +834,32 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       </div>
     </div>
 
+    <!-- 出席を後から追加 -->
+    <div>
+      <div class="section-title">📝 出席を追加</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">来塾記録が漏れた日を後から登録できます。通常のチェックイン同様にポイントが付きます。</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="date" id="manual-attend-date" class="form-input-sm" style="flex:1;font-size:13px;padding:9px 10px">
+        <button onclick="addManualAttendance()" style="padding:9px 14px;background:var(--green-d);border:none;border-radius:8px;color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;white-space:nowrap">出席追加</button>
+      </div>
+    </div>
+
+    <!-- 生徒個別の予定（面談・自習デー等） -->
+    <div>
+      <div class="section-title">📌 予定（面談・自習デー）</div>
+      <div id="detail-plans" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
+      <button onclick="openPlanAdd()" style="width:100%;padding:10px;background:var(--surface2);border:1.5px dashed var(--border);border-radius:8px;color:var(--muted);font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋ 予定を追加</button>
+      <div id="plan-add-box" style="display:none;margin-top:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px">
+        <div style="display:flex;gap:6px;margin-bottom:8px" id="plan-kind-bar"></div>
+        <input type="date" id="plan-date" class="form-input-sm" style="width:100%;font-size:13px;padding:9px 10px;margin-bottom:8px">
+        <input type="text" id="plan-memo" class="form-input-sm" placeholder="メモ（例: 進路面談 18:00〜／苦手単元の自習）" style="width:100%;font-size:13px;padding:9px 10px;margin-bottom:8px">
+        <div style="display:flex;gap:8px">
+          <button onclick="addStudentPlan()" style="flex:1;padding:10px;background:linear-gradient(135deg,#2D5FA6,#1A3D7A);border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">登録</button>
+          <button onclick="document.getElementById('plan-add-box').style.display='none'" style="flex:1;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--muted);font-size:13px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">キャンセル</button>
+        </div>
+      </div>
+    </div>
+
     <!-- チェックアウト復旧（当日チェックイン済みの場合のみ表示） -->
     <div id="detail-restore-section" style="display:none">
       <div class="section-title">⚠️ チェックアウト復旧</div>
@@ -2040,7 +2066,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260615d';
+const APP_VERSION = '20260615f';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -3689,6 +3715,9 @@ async function openStudentDetail(idx, from) {
     setBirthdayUI('detail', s.birthday);
     loadDetailCalendar();
     loadDetailEnrollments();
+    loadDetailPlans();
+    const madInput = document.getElementById('manual-attend-date');
+    if (madInput) madInput.value = getTodayJST();
     renderGraduateSection();
     document.querySelectorAll('#screen-staff-detail .tab-btn').forEach((b, i) => b.classList.toggle('active', i === 0));
     renderDetailHistory('week');
@@ -8945,6 +8974,155 @@ async function toggleMakeupAttendance(sessionDate, isMade) {
   }
 }
 
+// ===== 出席を後から追加（生徒詳細）=====
+async function addManualAttendance() {
+  if (!detailStudent) return;
+  const dateInput = document.getElementById('manual-attend-date');
+  const dateStr = dateInput ? dateInput.value : '';
+  if (!dateStr) { showToast('日付を選んでください', 'error'); return; }
+  const todayISO = getTodayJST();
+  if (dateStr > todayISO) { showToast('未来の日付は選べません', 'error'); return; }
+  // 既存チェック
+  const existing = await sbGet('checkins',
+    'student_id=eq.' + detailStudent.id + '&checkin_date=eq.' + dateStr + '&select=id') || [];
+  if (existing.length) { showToast('その日はすでに出席記録があります', 'error'); return; }
+  const d = new Date(dateStr + 'T00:00:00+09:00');
+  const wd = ['日','月','火','水','木','金','土'][d.getDay()];
+  if (!confirm((d.getMonth()+1) + '/' + d.getDate() + '（' + wd + '）の出席を追加します。\nポイントも付与されます。よろしいですか？')) return;
+  showLoading('追加中...');
+  try {
+    await sbPost('checkins', { student_id: detailStudent.id, checkin_date: dateStr, location: 'fit' });
+    // 授業1コマ相当のポイント付与（3pt）
+    try {
+      await sbPost('point_logs', { student_id: detailStudent.id, points: 3, reason: '出席追加（' + dateStr + '）', type: 'checkin' });
+      const st = await sbGet('students', 'id=eq.' + detailStudent.id + '&select=points') || [];
+      const cur = (st[0] && st[0].points) || 0;
+      await sbPatch('students', 'id=eq.' + detailStudent.id, { points: cur + 3 });
+    } catch(e) { /* ポイント加算失敗でも出席記録は残す */ }
+    hideLoading();
+    showToast('出席を追加しました（+3pt）', 'success');
+    if (dateInput) dateInput.value = '';
+  } catch(e) {
+    hideLoading();
+    if ((e.message||'').includes('duplicate') || (e.message||'').includes('409')) {
+      showToast('その日はすでに出席記録があります', 'error');
+    } else {
+      showToast('追加に失敗しました: ' + e.message, 'error');
+    }
+  }
+}
+
+// ===== 生徒個別の予定（面談・自習デー・その他）=====
+const PLAN_KINDS = [
+  { key: '面談', label: '面談', color: '#2D5FA6' },
+  { key: '自習デー', label: '自習デー', color: '#1A7340' },
+  { key: 'その他', label: 'その他', color: '#8B6020' }
+];
+let selectedPlanKind = '面談';
+
+function openPlanAdd() {
+  const box = document.getElementById('plan-add-box');
+  box.style.display = 'block';
+  selectedPlanKind = '面談';
+  renderPlanKindBar();
+  // 既定の日付は今日
+  const dateEl = document.getElementById('plan-date');
+  if (dateEl && !dateEl.value) dateEl.value = getTodayJST();
+  const memoEl = document.getElementById('plan-memo');
+  if (memoEl) memoEl.value = '';
+}
+
+function renderPlanKindBar() {
+  const bar = document.getElementById('plan-kind-bar');
+  if (!bar) return;
+  bar.innerHTML = PLAN_KINDS.map(k =>
+    '<button onclick="setPlanKind(\'' + k.key + '\')" style="flex:1;padding:7px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+    (selectedPlanKind === k.key
+      ? 'background:' + k.color + ';border:1.5px solid ' + k.color + ';color:white'
+      : 'background:transparent;border:1.5px solid var(--border);color:var(--muted)') +
+    '">' + k.label + '</button>'
+  ).join('');
+}
+
+function setPlanKind(kind) {
+  selectedPlanKind = kind;
+  renderPlanKindBar();
+}
+
+async function addStudentPlan() {
+  if (!detailStudent) return;
+  const dateStr = (document.getElementById('plan-date') || {}).value || '';
+  const memo = ((document.getElementById('plan-memo') || {}).value || '').trim();
+  if (!dateStr) { showToast('日付を選んでください', 'error'); return; }
+  showLoading('登録中...');
+  try {
+    await sbPost('student_plans', {
+      student_id: detailStudent.id,
+      plan_date: dateStr,
+      kind: selectedPlanKind,
+      memo: memo || null,
+      created_by: (currentStaff && currentStaff.staff_id) || null
+    });
+    hideLoading();
+    showToast('予定を登録しました', 'success');
+    document.getElementById('plan-add-box').style.display = 'none';
+    loadDetailPlans();
+  } catch(e) {
+    hideLoading();
+    showToast('登録に失敗しました: ' + e.message, 'error');
+  }
+}
+
+async function loadDetailPlans() {
+  if (!detailStudent) return;
+  const el = document.getElementById('detail-plans');
+  if (!el) return;
+  // 追加ボックスを閉じてリセット（生徒切替時に開きっぱなし防止）
+  const box = document.getElementById('plan-add-box');
+  if (box) box.style.display = 'none';
+  let plans = [];
+  try {
+    plans = await sbGet('student_plans',
+      'student_id=eq.' + detailStudent.id + '&select=id,plan_date,kind,memo&order=plan_date.desc&limit=40') || [];
+  } catch(e) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted)">予定機能はまだ準備中です（student_plansテーブル未作成）</div>';
+    return;
+  }
+  if (!plans.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted)">登録された予定はありません</div>';
+    return;
+  }
+  const todayISO = getTodayJST();
+  const colorOf = k => (PLAN_KINDS.find(x => x.key === k) || { color: '#5A5A5A' }).color;
+  el.innerHTML = plans.map(p => {
+    const d = new Date(p.plan_date + 'T00:00:00+09:00');
+    const wd = ['日','月','火','水','木','金','土'][d.getDay()];
+    const dateLabel = (d.getMonth()+1) + '/' + d.getDate() + '（' + wd + '）';
+    const past = p.plan_date < todayISO;
+    const col = colorOf(p.kind);
+    return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface2);border-radius:8px;' + (past ? 'opacity:0.55' : '') + '">' +
+      '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:' + col + '20;color:' + col + ';font-weight:700;white-space:nowrap">' + (p.kind||'予定') + '</span>' +
+      '<div style="flex:1;min-width:0"><div style="font-size:13px;color:var(--text)">' + dateLabel + '</div>' +
+      (p.memo ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + p.memo + '</div>' : '') + '</div>' +
+      '<button onclick="deleteStudentPlan(\'' + p.id + '\')" style="padding:2px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer;white-space:nowrap">削除</button>' +
+    '</div>';
+  }).join('');
+}
+
+async function deleteStudentPlan(planId) {
+  if (!confirm('この予定を削除しますか？')) return;
+  try {
+    await fetch(SB_URL + '/rest/v1/student_plans?id=eq.' + planId, {
+      method: 'DELETE',
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY }
+    });
+    showToast('削除しました', 'info');
+    loadDetailPlans();
+  } catch(e) {
+    showToast('削除に失敗しました', 'error');
+  }
+}
+
 // ===== 生徒ホーム：今日の授業表示 =====
 async function loadTodayClasses() {
   if (!currentStudent) return;
@@ -9513,6 +9691,21 @@ async function loadUnifiedCalendar() {
       unifiedEvents[ev.event_date].push({ title: ev.title, detail: ev.detail || '', color: ev.color || '#F5A623' });
     });
   } catch(e) { /* events未作成時は無視 */ }
+
+  // --- 生徒個別の予定（面談・自習デー等）をカレンダーに表示 ---
+  try {
+    const PLAN_COLORS = { '面談': '#2D5FA6', '自習デー': '#1A7340', 'その他': '#8B6020' };
+    const plans = await sbGet('student_plans',
+      'student_id=eq.' + currentStudent.id + '&select=plan_date,kind,memo&order=plan_date') || [];
+    plans.forEach(p => {
+      if (!unifiedEvents[p.plan_date]) unifiedEvents[p.plan_date] = [];
+      unifiedEvents[p.plan_date].push({
+        title: p.kind || '予定',
+        detail: p.memo || '',
+        color: PLAN_COLORS[p.kind] || '#8B6020'
+      });
+    });
+  } catch(e) { /* student_plans未作成時は無視 */ }
 
   // --- 誕生日（スタッフ全員＋自分） ---
   unifiedBirthdays = {};
