@@ -1611,8 +1611,49 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div class="add-points-form" style="margin-bottom:18px">
         <div><div class="form-label">タイトル</div><input class="form-input-sm" type="text" id="announce-title" placeholder="例：夏期講習の申込について"></div>
         <div><div class="form-label">本文</div><textarea class="form-input-sm" id="announce-body" rows="4" placeholder="生徒に伝えたい内容を入力" style="resize:vertical"></textarea></div>
+
+        <!-- 公開対象 -->
+        <div>
+          <div class="form-label">公開対象</div>
+          <select class="form-select" id="announce-target-type" onchange="onAnnounceTargetTypeChange()">
+            <option value="all">全員に公開</option>
+            <option value="school">学校別</option>
+            <option value="grade">学年別</option>
+            <option value="students">個別の生徒を選択</option>
+          </select>
+        </div>
+        <!-- 学校別 -->
+        <div id="announce-school-wrap" style="display:none">
+          <div class="form-label">対象の学校</div>
+          <select class="form-select" id="announce-school">
+            <option value="松山東">松山東</option><option value="松山南">松山南</option><option value="松山北">松山北</option><option value="松山中央">松山中央</option><option value="松山西">松山西</option><option value="愛大附属">愛大附属</option><option value="済美">済美</option><option value="SSS">SSS</option><option value="その他">その他</option>
+          </select>
+        </div>
+        <!-- 学年別 -->
+        <div id="announce-grade-wrap" style="display:none">
+          <div class="form-label">対象の学年</div>
+          <select class="form-select" id="announce-grade">
+            <option value="1年">1年</option><option value="2年">2年</option><option value="3年">3年</option>
+          </select>
+        </div>
+        <!-- 個別生徒 -->
+        <div id="announce-students-wrap" style="display:none">
+          <div class="form-label">対象の生徒（タップで選択／複数可）</div>
+          <input class="form-input-sm" type="text" id="announce-student-search" placeholder="🔍 名前で絞り込み" oninput="renderAnnounceStudentPicker()" style="margin-bottom:6px">
+          <div id="announce-student-picker" style="max-height:180px;overflow-y:auto;border:1.5px solid var(--border);border-radius:10px;padding:6px;display:flex;flex-direction:column;gap:4px"></div>
+          <div id="announce-student-count" style="font-size:10px;color:var(--muted);margin-top:4px">選択中: 0名</div>
+        </div>
+
+        <!-- 画像添付 -->
+        <div>
+          <div class="form-label">画像（任意・複数可）</div>
+          <input type="file" id="announce-image-input" accept="image/*" multiple onchange="onAnnounceImagesSelected(event)" style="display:none">
+          <label for="announce-image-input" style="display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border:1.5px dashed var(--border);border-radius:10px;cursor:pointer;font-size:12px;color:var(--muted);font-weight:700">📷 画像を追加する</label>
+          <div id="announce-image-preview" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px"></div>
+        </div>
+
         <button class="form-btn" onclick="createAnnouncement()">お知らせを投稿する</button>
-        <div style="font-size:10px;color:var(--muted)">※ 投稿すると、生徒のホーム画面に表示されます</div>
+        <div style="font-size:10px;color:var(--muted)">※ 投稿すると、対象の生徒のホーム画面に表示されます</div>
       </div>
       <div class="section-title">📋 投稿済みのお知らせ</div>
       <div id="announce-list" style="display:flex;flex-direction:column;gap:8px">
@@ -2029,7 +2070,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260617a';
+const APP_VERSION = '20260617b';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -5253,20 +5294,37 @@ function dashBar(heightPx, monthLabel, valueLabel, color) {
 }
 
 // ===== お知らせ（掲示板）：生徒側 =====
+// 自分（currentStudent）がこのお知らせの対象か判定
+function isAnnounceForMe(a) {
+  const t = a.target_type || 'all';
+  if (t === 'all') return true;
+  if (!currentStudent) return false;
+  if (t === 'school') return (currentStudent.school || '') === a.target_value;
+  if (t === 'grade')  return (currentStudent.grade || '') === a.target_value;
+  if (t === 'students') return Array.isArray(a.target_ids) && a.target_ids.map(String).includes(String(currentStudent.id));
+  return true;
+}
+
 async function loadStudentAnnouncements() {
   const box = document.getElementById('student-announce-box');
   const list = document.getElementById('student-announce-list');
   if (!box || !list) return;
   try {
-    const data = await sbGet('announcements', 'is_active=eq.true&order=created_at.desc&select=*') || [];
+    const raw = await sbGet('announcements', 'is_active=eq.true&order=created_at.desc&select=*') || [];
+    const data = raw.filter(isAnnounceForMe);
     if (!data.length) { box.style.display = 'none'; return; }
     box.style.display = 'block';
     list.innerHTML = data.map(a => {
       const d = a.created_at ? new Date(a.created_at) : null;
       const dateStr = d ? (d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate()) : '';
+      const imgs = Array.isArray(a.image_urls) ? a.image_urls : [];
+      const imgHtml = imgs.length ? '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">' +
+        imgs.map(u => '<img src="' + u + '" onclick="openPhotoModal(\'' + u + '\',\'' + escapeHtml(a.title).replace(/\x27/g,'') + '\')" style="width:80px;height:80px;object-fit:cover;border-radius:10px;border:1px solid var(--border);cursor:zoom-in">').join('') +
+        '</div>' : '';
       return '<div class="card-box" style="border-left:3px solid var(--orange)">' +
         '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(a.title) + '</div>' +
         '<div style="font-size:12px;color:var(--text);margin-top:4px;white-space:pre-wrap;line-height:1.5">' + escapeHtml(a.body) + '</div>' +
+        imgHtml +
         '<div style="font-size:10px;color:var(--muted);margin-top:6px">' + dateStr + (a.created_by_name ? ' ・ ' + escapeHtml(a.created_by_name) + '先生' : '') + '</div>' +
       '</div>';
     }).join('');
@@ -6938,26 +6996,181 @@ async function loadAlertBoard() {
 }
 
 // ===== お知らせ（掲示板）：スタッフ側 =====
+
+// 公開対象・画像の作業用ステート
+let announceAllStudents = [];          // [{id,name,school,grade}]
+let announceSelectedIds = new Set();   // 個別選択中の生徒ID
+let announcePendingImages = [];        // [{blob, url(objectURL)}] アップロード前のプレビュー用
+
+// お知らせフォーム初期化（タブを開いた時に呼ぶ）
+async function initAnnounceForm() {
+  // フォームをリセット
+  const tt = document.getElementById('announce-target-type');
+  if (tt) tt.value = 'all';
+  onAnnounceTargetTypeChange();
+  // 生徒一覧を読み込み（個別選択用）
+  try {
+    const all = await sbGet('students', 'select=id,name,school,grade,is_active&order=school,grade,name') || [];
+    announceAllStudents = all.filter(s => s.is_active !== false);
+  } catch(e) { announceAllStudents = []; }
+  renderAnnounceStudentPicker();
+}
+
+// 公開対象タイプ変更
+function onAnnounceTargetTypeChange() {
+  const t = document.getElementById('announce-target-type').value;
+  const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? 'block' : 'none'; };
+  show('announce-school-wrap',   t === 'school');
+  show('announce-grade-wrap',    t === 'grade');
+  show('announce-students-wrap', t === 'students');
+}
+
+// 個別生徒ピッカーの描画
+function renderAnnounceStudentPicker() {
+  const box = document.getElementById('announce-student-picker');
+  if (!box) return;
+  const kw = (document.getElementById('announce-student-search').value || '').trim();
+  const list = kw ? announceAllStudents.filter(s => (s.name || '').includes(kw)) : announceAllStudents;
+  if (!list.length) {
+    box.innerHTML = '<div style="font-size:11px;color:var(--muted);text-align:center;padding:6px">該当する生徒がいません</div>';
+  } else {
+    box.innerHTML = list.map(s => {
+      const on = announceSelectedIds.has(String(s.id));
+      const sub = (s.school || '') + (s.grade || '');
+      return '<div onclick="toggleAnnounceStudent(\'' + s.id + '\')" style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;cursor:pointer;background:' + (on ? 'var(--orange-l)' : 'transparent') + '">' +
+        '<span style="width:18px;height:18px;border-radius:5px;border:1.5px solid ' + (on ? 'var(--orange)' : 'var(--border)') + ';background:' + (on ? 'var(--orange)' : 'transparent') + ';color:white;display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0">' + (on ? '✓' : '') + '</span>' +
+        '<span style="font-size:12px;color:var(--text);font-weight:700">' + escapeHtml(s.name) + '</span>' +
+        '<span style="font-size:10px;color:var(--muted)">' + escapeHtml(sub) + '</span>' +
+      '</div>';
+    }).join('');
+  }
+  const cnt = document.getElementById('announce-student-count');
+  if (cnt) cnt.textContent = '選択中: ' + announceSelectedIds.size + '名';
+}
+
+function toggleAnnounceStudent(id) {
+  id = String(id);
+  if (announceSelectedIds.has(id)) announceSelectedIds.delete(id);
+  else announceSelectedIds.add(id);
+  renderAnnounceStudentPicker();
+}
+
+// 画像を選択 → 圧縮してプレビューに追加
+async function onAnnounceImagesSelected(event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  showLoading('画像を処理中...');
+  try {
+    for (const file of files) {
+      const blob = await compressImage(file, 1000, 1000, 0.75);
+      announcePendingImages.push({ blob: blob, url: URL.createObjectURL(blob) });
+    }
+    renderAnnounceImagePreview();
+  } catch(e) {
+    showToast('画像の処理に失敗しました', 'error');
+  }
+  hideLoading();
+  event.target.value = ''; // 同じファイルを再選択できるようにクリア
+}
+
+function renderAnnounceImagePreview() {
+  const box = document.getElementById('announce-image-preview');
+  if (!box) return;
+  box.innerHTML = announcePendingImages.map((img, i) =>
+    '<div style="position:relative;width:72px;height:72px;border-radius:10px;overflow:hidden;border:1px solid var(--border)">' +
+      '<img src="' + img.url + '" style="width:100%;height:100%;object-fit:cover">' +
+      '<button onclick="removeAnnounceImage(' + i + ')" style="position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;border:none;background:rgba(0,0,0,0.6);color:white;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1">×</button>' +
+    '</div>'
+  ).join('');
+}
+
+function removeAnnounceImage(i) {
+  const img = announcePendingImages[i];
+  if (img && img.url) URL.revokeObjectURL(img.url);
+  announcePendingImages.splice(i, 1);
+  renderAnnounceImagePreview();
+}
+
+// 1枚の画像を announcements バケットにアップロードして公開URLを返す
+async function uploadAnnounceImage(blob) {
+  const fileName = 'announce-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.jpg';
+  const res = await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/storage/v1/object/announcements/' + fileName, {
+    method: 'POST',
+    headers: {
+      'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU',
+      'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU',
+      'Content-Type': 'image/jpeg',
+      'x-upsert': 'true'
+    },
+    body: blob
+  });
+  if (!res.ok) throw new Error('画像アップロード失敗');
+  return 'https://bqdvmfskpnlshqljwhqz.supabase.co/storage/v1/object/public/announcements/' + fileName;
+}
+
 async function createAnnouncement() {
   const title = document.getElementById('announce-title').value.trim();
   const body = document.getElementById('announce-body').value.trim();
   if (!title) { showToast('タイトルを入力してください', 'error'); return; }
   if (!body) { showToast('本文を入力してください', 'error'); return; }
+
+  // 公開対象を決定
+  const targetType = document.getElementById('announce-target-type').value;
+  let targetValue = null, targetIds = null;
+  if (targetType === 'school') {
+    targetValue = document.getElementById('announce-school').value;
+  } else if (targetType === 'grade') {
+    targetValue = document.getElementById('announce-grade').value;
+  } else if (targetType === 'students') {
+    if (announceSelectedIds.size === 0) { showToast('対象の生徒を1名以上選んでください', 'error'); return; }
+    targetIds = Array.from(announceSelectedIds);
+  }
+
   showLoading('投稿中...');
   try {
+    // 画像を順次アップロード
+    const imageUrls = [];
+    for (const img of announcePendingImages) {
+      const url = await uploadAnnounceImage(img.blob);
+      imageUrls.push(url);
+    }
+
     await sbPost('announcements', {
       title: title,
       body: body,
       created_by: currentStaff ? currentStaff.id : null,
       created_by_name: currentStaff ? currentStaff.name : '',
-      is_active: true
+      is_active: true,
+      target_type: targetType,
+      target_value: targetValue,
+      target_ids: targetIds,
+      image_urls: imageUrls.length ? imageUrls : null
     });
     hideLoading();
     showToast('📢 お知らせを投稿しました', 'success');
+
+    // フォームをクリア
     document.getElementById('announce-title').value = '';
     document.getElementById('announce-body').value = '';
+    announceSelectedIds = new Set();
+    announcePendingImages.forEach(img => { if (img.url) URL.revokeObjectURL(img.url); });
+    announcePendingImages = [];
+    document.getElementById('announce-target-type').value = 'all';
+    onAnnounceTargetTypeChange();
+    renderAnnounceImagePreview();
+    renderAnnounceStudentPicker();
+
     loadAnnouncementsStaff();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+// 公開対象を日本語ラベルにする
+function announceTargetLabel(a) {
+  if (!a.target_type || a.target_type === 'all') return '全員';
+  if (a.target_type === 'school') return (a.target_value || '') + ' の生徒';
+  if (a.target_type === 'grade')  return (a.target_value || '') + ' の生徒';
+  if (a.target_type === 'students') return '個別 ' + ((a.target_ids && a.target_ids.length) || 0) + '名';
+  return '全員';
 }
 
 async function loadAnnouncementsStaff() {
@@ -6973,11 +7186,18 @@ async function loadAnnouncementsStaff() {
       const d = a.created_at ? new Date(a.created_at) : null;
       const dateStr = d ? (d.getFullYear() + '/' + (d.getMonth()+1) + '/' + d.getDate()) : '';
       const active = a.is_active !== false;
+      const tgtLabel = announceTargetLabel(a);
+      const imgs = Array.isArray(a.image_urls) ? a.image_urls : [];
+      const imgHtml = imgs.length ? '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">' +
+        imgs.map(u => '<img src="' + u + '" onclick="openPhotoModal(\'' + u + '\',\'' + escapeHtml(a.title).replace(/\x27/g,'') + '\')" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:zoom-in">').join('') +
+        '</div>' : '';
       return '<div class="card-box" style="' + (active ? '' : 'opacity:0.55;') + '">' +
         '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">' +
           '<div style="flex:1;min-width:0">' +
             '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(a.title) + (active ? '' : ' <span style="font-size:9px;color:var(--muted)">（非表示）</span>') + '</div>' +
+            '<div style="display:inline-block;font-size:10px;color:var(--orange-d);background:var(--orange-l);border-radius:6px;padding:1px 7px;margin-top:3px">🎯 ' + escapeHtml(tgtLabel) + '</div>' +
             '<div style="font-size:12px;color:var(--text);margin-top:4px;white-space:pre-wrap;line-height:1.5">' + escapeHtml(a.body) + '</div>' +
+            imgHtml +
             '<div style="font-size:10px;color:var(--muted);margin-top:6px">' + dateStr + (a.created_by_name ? ' ・ ' + escapeHtml(a.created_by_name) : '') + '</div>' +
           '</div>' +
           '<div style="display:flex;flex-direction:column;gap:4px">' +
@@ -9935,7 +10155,7 @@ function switchManageTab(tab, el) {
   if (tab === 'birthday') loadStudentBirthdays();
   if (tab === 'calendar') loadStaffCalendar();
   if (tab === 'alert') loadAlertBoard();
-  if (tab === 'announce') loadAnnouncementsStaff();
+  if (tab === 'announce') { loadAnnouncementsStaff(); initAnnounceForm(); }
   if (tab === 'settings') loadSettingsTab();
 }
 
