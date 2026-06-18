@@ -1396,6 +1396,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <button onclick="switchManageTab('birthday',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🎂 誕生日</button>
       <button onclick="switchManageTab('calendar',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📅 予定表</button>
       <button onclick="switchManageTab('announce',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📢 お知らせ</button>
+      <button onclick="switchManageTab('attendance',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📋 授業出欠</button>
       <button onclick="switchManageTab('settings',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">⚙️ 設定</button>
       <button onclick="switchManageTab('mission',this)" class="tab-btn manage-tab-btn" style="display:none;flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🎯 ミッション</button>
       <button onclick="switchManageTab('quiz',this)" class="tab-btn manage-tab-btn" style="display:none;flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📝 テスト</button>
@@ -1692,6 +1693,36 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div id="announce-list" style="display:flex;flex-direction:column;gap:8px">
         <div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">読み込み中...</div>
       </div>
+    </div>
+
+    <!-- 授業出欠タブ -->
+    <div id="smcontent-attendance" style="display:none">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">授業と授業日を選ぶと名簿が表示されます。来塾を初期値に、タップで出欠を切り替えて保存できます。</div>
+      <select class="form-select" id="att-class-select" onchange="onAttClassChange()" style="width:100%;margin-bottom:8px;font-size:13px">
+        <option value="">📚 授業を選択</option>
+      </select>
+      <select class="form-select" id="att-session-select" onchange="loadAttendanceRoster()" style="width:100%;margin-bottom:10px;font-size:13px">
+        <option value="">📅 授業日を選択</option>
+      </select>
+
+      <div id="att-summary" style="display:none;gap:8px;margin-bottom:10px">
+        <div style="flex:1;background:var(--green-l);border:1px solid #A8D891;border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:10px;color:var(--green-d);font-weight:700">出席</div>
+          <div style="font-size:20px;font-weight:700;color:var(--green-d)" id="att-count-present">0</div>
+        </div>
+        <div style="flex:1;background:var(--red-l);border:1px solid #F5BABA;border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:10px;color:var(--red);font-weight:700">欠席</div>
+          <div style="font-size:20px;font-weight:700;color:var(--red)" id="att-count-absent">0</div>
+        </div>
+        <div style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:10px;color:var(--muted);font-weight:700">名簿</div>
+          <div style="font-size:20px;font-weight:700;color:var(--text)" id="att-count-total">0</div>
+        </div>
+      </div>
+
+      <div id="att-roster" style="display:flex;flex-direction:column;gap:6px"></div>
+
+      <button id="att-save-btn" onclick="saveAttendance()" style="display:none;width:100%;margin-top:12px;padding:12px;background:linear-gradient(135deg,#3B6D11,#5A9E3C);border:none;border-radius:8px;color:white;font-size:14px;font-weight:700;cursor:pointer">💾 出欠を保存</button>
     </div>
 
     <!-- 設定タブ -->
@@ -2103,7 +2134,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260617f';
+const APP_VERSION = '20260618a';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -2564,6 +2595,7 @@ function staffLogout() {
   // 保持チェックがない場合はlocalStorageをクリア
   localStorage.removeItem('fit_staff_id');
   localStorage.removeItem('fit_staff_pin');
+  if (typeof stopAutoClosePolling === 'function') stopAutoClosePolling();
   currentStaff = null;
   showScreen('screen-staff-login');
   document.getElementById('staff-id-input').value = '';
@@ -3264,24 +3296,77 @@ function renderHistoryBase(tab, checkins, summaryId, listId) {
 // 前日以前の「チェックアウトし忘れ」を、ポイントなしで自動チェックアウトする。
 // checkin_date が今日より前で checkout_time が未設定のレコードが対象。
 // ポイントは付けず（stay_minutes=0）、checkout_time だけ埋めて締める。
+// 自動締めの基準時刻（閉塾後）。この時刻で未チェックアウト者を強制締めする。
+const AUTO_CLOSE_HH = 21, AUTO_CLOSE_MM = 40;
+
+// 前日以前の未チェックアウトをポイントなしで締める（取りこぼし保険）。
+// 締め時刻はその日の 21:40（JST）に統一。stay_minutes=0 なのでポイントは入らない。
 async function cleanupStaleCheckins() {
   try {
     const today = getTodayJST();
     const stale = await sbGet('checkins',
       'checkin_date=lt.' + today + '&checkout_time=is.null&select=id,checkin_date&limit=500');
     if (!stale || !stale.length) return;
+    const hh = String(AUTO_CLOSE_HH).padStart(2,'0'), mm = String(AUTO_CLOSE_MM).padStart(2,'0');
     for (const row of stale) {
-      // その日の終わり（JST 23:59:59）を擬似チェックアウト時刻にする
-      const closeTime = new Date(row.checkin_date + 'T23:59:59+09:00').toISOString();
+      // その日の 21:40（JST）を擬似チェックアウト時刻にする
+      const closeTime = new Date(row.checkin_date + 'T' + hh + ':' + mm + ':00+09:00').toISOString();
       await sbPatch('checkins', 'id=eq.' + row.id, { checkout_time: closeTime, stay_minutes: 0 });
     }
-    console.log('未チェックアウト ' + stale.length + '件をポイントなしで締めました');
+    console.log('前日以前の未チェックアウト ' + stale.length + '件をポイントなしで締めました');
   } catch(e) { console.error('未チェックアウト締め処理エラー:', e); }
+}
+
+// 当日分の自動締め：現在が当日 21:40（JST）以降のとき、未チェックアウト者を
+// 退室時刻 21:40・ポイントなし（stay_minutes=0）で締める。来塾記録（IN時刻）は残す。
+// スタッフ端末が開いていれば initStaff とポーリングから呼ばれ、自動で締まる。
+async function closeTodayCheckinsAt2140() {
+  try {
+    const today = getTodayJST();
+    // 現在のJST時刻が 21:40 を過ぎているか判定
+    const nowJST = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const nowMin = nowJST.getUTCHours() * 60 + nowJST.getUTCMinutes();
+    if (nowMin < AUTO_CLOSE_HH * 60 + AUTO_CLOSE_MM) return 0; // まだ21:40前なら何もしない
+
+    const open = await sbGet('checkins',
+      'checkin_date=eq.' + today + '&checkout_time=is.null&select=id&limit=500');
+    if (!open || !open.length) return 0;
+
+    const hh = String(AUTO_CLOSE_HH).padStart(2,'0'), mm = String(AUTO_CLOSE_MM).padStart(2,'0');
+    const closeTime = new Date(today + 'T' + hh + ':' + mm + ':00+09:00').toISOString();
+    for (const row of open) {
+      await sbPatch('checkins', 'id=eq.' + row.id, { checkout_time: closeTime, stay_minutes: 0 });
+    }
+    console.log('当日の未チェックアウト ' + open.length + '件を21:40・ポイントなしで締めました');
+    return open.length;
+  } catch(e) { console.error('当日自動締め処理エラー:', e); return 0; }
+}
+
+// スタッフホーム表示中、5分ごとに当日21:40締めをチェックするポーリング。
+let autoClosePollInterval = null;
+function startAutoClosePolling() {
+  if (autoClosePollInterval) clearInterval(autoClosePollInterval);
+  autoClosePollInterval = setInterval(async () => {
+    const n = await closeTodayCheckinsAt2140();
+    if (n > 0) {
+      // 当日来塾者画面を開いていれば一覧を更新
+      if (typeof loadDailyAttendance === 'function') {
+        const picker = document.getElementById('date-picker');
+        if (picker && picker.value === getTodayJST()) loadDailyAttendance();
+      }
+      showToast('未チェックアウト ' + n + '名を自動締めしました（ポイントなし）', 'info');
+    }
+  }, 5 * 60 * 1000);
+}
+function stopAutoClosePolling() {
+  if (autoClosePollInterval) { clearInterval(autoClosePollInterval); autoClosePollInterval = null; }
 }
 
 async function initStaff() {
   loadPendingApplications();
   cleanupStaleCheckins(); // 前日以前の未チェックアウトをポイントなしで締める
+  closeTodayCheckinsAt2140(); // 当日が21:40以降なら未チェックアウトを締める（即時）
+  startAutoClosePolling(); // 以降5分ごとに21:40締めをチェック
   showLoading('データを読み込み中...');
   try {
     const todayISO = getTodayJST();
@@ -5695,7 +5780,7 @@ function openStaffManage(tab) {
     'mission':'ミッション作成', 'quiz':'テスト作成',
     'report':'報告書・出席', 'todo':'ToDo', 'yesterday':'昨日の来塾', 'makeup':'補習',
     'student-view':'生徒画面', 'birthday':'誕生日', 'calendar':'予定表',
-    'alert':'アラート', 'announce':'お知らせ', 'settings':'設定'
+    'alert':'アラート', 'announce':'お知らせ', 'attendance':'授業出欠', 'settings':'設定'
   };
   document.getElementById('manage-header-title').textContent = titles[tab] || '管理';
   // タブボタンを探してアクティブ表示（onclick属性で一致させる）
@@ -10330,11 +10415,238 @@ async function deleteCheckItem(id) {
   } catch(e) { showToast('エラー: ' + e.message, 'error'); }
 }
 
+// ===== 授業出欠（講師・管理者：全授業閲覧/編集可） =====
+// session_attendance テーブルに保存。出欠は checkins(来塾) を初期値に手動上書き。
+let attRosterRows = [];      // [{student, status, note, checkinTime, noteOpen}]
+let attSelectedClassId = null;
+let attSelectedSession = null; // {session_date, period}
+
+// 出欠タブ初期化：授業プルダウンを構築
+async function initAttendanceTab() {
+  document.getElementById('att-session-select').innerHTML = '<option value="">📅 授業日を選択</option>';
+  document.getElementById('att-roster').innerHTML = '';
+  document.getElementById('att-summary').style.display = 'none';
+  document.getElementById('att-save-btn').style.display = 'none';
+  const sel = document.getElementById('att-class-select');
+  if (sel.options.length > 1) return; // 既に構築済みなら再構築しない
+  const masters = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject') || [];
+  // 担当講師名を併記するため staff を引く
+  sel.innerHTML = '<option value="">📚 授業を選択</option>' +
+    masters.map(m => '<option value="' + m.id + '">' + (m.subject ? '【' + m.subject + '】' : '') + m.name + '</option>').join('');
+}
+
+// 授業選択 → その授業の授業日プルダウンを構築（新しい順）
+async function onAttClassChange() {
+  const classId = document.getElementById('att-class-select').value;
+  attSelectedClassId = classId || null;
+  const ssel = document.getElementById('att-session-select');
+  document.getElementById('att-roster').innerHTML = '';
+  document.getElementById('att-summary').style.display = 'none';
+  document.getElementById('att-save-btn').style.display = 'none';
+  if (!classId) { ssel.innerHTML = '<option value="">📅 授業日を選択</option>'; return; }
+  const sessions = await sbGet('class_sessions',
+    'class_master_id=eq.' + classId + '&select=session_date,period,start_time&order=session_date.desc,period') || [];
+  if (!sessions.length) {
+    ssel.innerHTML = '<option value="">授業日がありません</option>';
+    return;
+  }
+  ssel.innerHTML = '<option value="">📅 授業日を選択</option>' +
+    sessions.map(s => {
+      const d = new Date(s.session_date + 'T00:00:00+09:00');
+      const wd = ['日','月','火','水','木','金','土'][d.getDay()];
+      const label = (d.getMonth()+1) + '/' + d.getDate() + '（' + wd + '）' + (s.period ? ' ' + s.period + '限' : '');
+      return '<option value="' + s.session_date + '|' + (s.period||'') + '">' + label + '</option>';
+    }).join('');
+}
+
+// 授業日選択 → 名簿(class_enrollments)を取得し、来塾(checkins)を初期値に出欠を組み立て
+async function loadAttendanceRoster() {
+  const classId = attSelectedClassId;
+  const sv = document.getElementById('att-session-select').value;
+  if (!classId || !sv) {
+    document.getElementById('att-roster').innerHTML = '';
+    document.getElementById('att-summary').style.display = 'none';
+    document.getElementById('att-save-btn').style.display = 'none';
+    return;
+  }
+  const [sdate, periodStr] = sv.split('|');
+  const period = periodStr ? parseInt(periodStr) : null;
+  attSelectedSession = { session_date: sdate, period: period };
+
+  showLoading('名簿を読み込み中...');
+  try {
+    // 名簿
+    const enrolls = await sbGet('class_enrollments',
+      'class_master_id=eq.' + classId + '&select=student_id') || [];
+    const studentIds = enrolls.map(e => e.student_id);
+    if (!studentIds.length) {
+      hideLoading();
+      document.getElementById('att-roster').innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">この授業に受講登録された生徒がいません</div>';
+      document.getElementById('att-summary').style.display = 'none';
+      document.getElementById('att-save-btn').style.display = 'none';
+      return;
+    }
+    // その授業日の来塾（checkin_date一致）
+    const checkins = await sbGet('checkins',
+      'student_id=in.(' + studentIds.join(',') + ')&checkin_date=eq.' + sdate + '&select=student_id,created_at') || [];
+    const checkinMap = {};
+    checkins.forEach(c => {
+      // 同日複数回来塾なら最初のIN時刻を採用
+      if (!checkinMap[c.student_id] || c.created_at < checkinMap[c.student_id]) checkinMap[c.student_id] = c.created_at;
+    });
+    // 既存の保存済み出欠
+    let saved = [];
+    try {
+      saved = await sbGet('session_attendance',
+        'class_master_id=eq.' + classId + '&session_date=eq.' + sdate +
+        (period ? '&period=eq.' + period : '&period=is.null') +
+        '&select=student_id,status,note') || [];
+    } catch(e) { saved = []; }
+    const savedMap = {};
+    saved.forEach(r => { savedMap[r.student_id] = r; });
+
+    // staffStudents から生徒情報を引く（写真・学校・学年）。並びは学校→学年→名前
+    attRosterRows = studentIds.map(sid => {
+      const stu = staffStudents.find(s => s.id === sid) || { id: sid, name: '(不明な生徒)' };
+      const inTime = checkinMap[sid] || null;
+      // 初期値：保存済みがあればそれ、なければ来塾していれば present、いなければ absent
+      let status, note;
+      if (savedMap[sid]) {
+        status = savedMap[sid].status;
+        note = savedMap[sid].note || '';
+      } else {
+        status = inTime ? 'present' : 'absent';
+        note = '';
+      }
+      return { student: stu, status: status, note: note, checkinTime: inTime, noteOpen: !!note };
+    }).sort((a,b) => {
+      const sa = (a.student.school||'') + (a.student.grade||'') + (a.student.name||'');
+      const sb = (b.student.school||'') + (b.student.grade||'') + (b.student.name||'');
+      return sa.localeCompare(sb, 'ja');
+    });
+
+    hideLoading();
+    renderAttendanceRoster();
+  } catch(e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
+}
+
+// 名簿描画
+function renderAttendanceRoster() {
+  const el = document.getElementById('att-roster');
+  el.innerHTML = attRosterRows.map((row, i) => {
+    const s = row.student;
+    const present = row.status === 'present';
+    // 来塾時刻表示（JST）
+    let inLabel = '来塾未確認';
+    if (row.checkinTime) {
+      const t = new Date(row.checkinTime);
+      const jst = new Date(t.getTime() + 9*3600000);
+      inLabel = '来塾' + String(jst.getUTCHours()).padStart(2,'0') + ':' + String(jst.getUTCMinutes()).padStart(2,'0');
+    }
+    const sub = [s.school, s.grade ? s.grade + '年' : '', inLabel].filter(Boolean).join(' ・ ');
+    // アバター
+    const avatar = s.photo_url
+      ? '<div style="width:36px;height:36px;border-radius:50%;background-image:url(' + s.photo_url + ');background-size:cover;background-position:center;flex-shrink:0"></div>'
+      : '<div style="width:36px;height:36px;border-radius:50%;background:var(--orange-l);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:var(--orange-d);flex-shrink:0">' + (s.name||'?').charAt(0) + '</div>';
+    const presentBtn = '<span onclick="setAttStatus(' + i + ',\'present\')" style="font-size:12px;font-weight:700;padding:6px 12px;border-radius:6px;cursor:pointer;' +
+      (present ? 'background:var(--green-l);color:var(--green-d);border:1px solid #A8D891' : 'background:var(--surface);color:var(--muted);border:1px solid var(--border)') + '">出席</span>';
+    const absentBtn = '<span onclick="setAttStatus(' + i + ',\'absent\')" style="font-size:12px;font-weight:700;padding:6px 12px;border-radius:6px;cursor:pointer;' +
+      (!present ? 'background:var(--red-l);color:var(--red);border:1px solid #F5BABA' : 'background:var(--surface);color:var(--muted);border:1px solid var(--border)') + '">欠席</span>';
+    const noteBadge = row.note ? '<span style="font-size:9px;color:var(--orange-d)">●</span>' : '';
+    const noteArea = row.noteOpen
+      ? '<input type="text" value="' + (row.note||'').replace(/"/g,'&quot;') + '" oninput="setAttNote(' + i + ',this.value)" placeholder="メモ・欠席理由" style="width:100%;margin-top:8px;font-size:12px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box">'
+      : '';
+    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 11px">' +
+      '<div style="display:flex;align-items:center;gap:10px">' +
+        avatar +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:14px;font-weight:500;color:var(--text)">' + (s.name||'(不明)') + ' ' + noteBadge + '</div>' +
+          '<div style="font-size:11px;color:var(--muted)">' + sub + '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:4px;flex-shrink:0">' + presentBtn + absentBtn + '</div>' +
+      '</div>' +
+      '<div style="margin-top:6px"><span onclick="toggleAttNote(' + i + ')" style="font-size:11px;color:var(--muted);cursor:pointer">📝 メモ' + (row.noteOpen ? ' ▲' : ' ▼') + '</span></div>' +
+      noteArea +
+    '</div>';
+  }).join('');
+  updateAttSummary();
+  document.getElementById('att-summary').style.display = 'flex';
+  document.getElementById('att-save-btn').style.display = 'block';
+}
+
+function setAttStatus(i, status) {
+  if (!attRosterRows[i]) return;
+  attRosterRows[i].status = status;
+  renderAttendanceRoster();
+}
+function toggleAttNote(i) {
+  if (!attRosterRows[i]) return;
+  attRosterRows[i].noteOpen = !attRosterRows[i].noteOpen;
+  renderAttendanceRoster();
+}
+function setAttNote(i, val) {
+  if (!attRosterRows[i]) return;
+  attRosterRows[i].note = val; // 再描画しない（入力中フォーカス保持のため）
+}
+function updateAttSummary() {
+  const present = attRosterRows.filter(r => r.status === 'present').length;
+  const absent = attRosterRows.length - present;
+  document.getElementById('att-count-present').textContent = present;
+  document.getElementById('att-count-absent').textContent = absent;
+  document.getElementById('att-count-total').textContent = attRosterRows.length;
+}
+
+// 保存：session_attendance に1行ずつ upsert（UNIQUE制約 + Prefer: resolution=merge-duplicates）
+async function saveAttendance() {
+  if (!attSelectedClassId || !attSelectedSession || !attRosterRows.length) return;
+  if (!confirm('この授業日の出欠を保存しますか？')) return;
+  showLoading('保存中...');
+  try {
+    const staffId = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : null;
+    const nowIso = new Date().toISOString();
+    const rows = attRosterRows.map(r => ({
+      class_master_id: attSelectedClassId,
+      session_date: attSelectedSession.session_date,
+      period: attSelectedSession.period,
+      student_id: r.student.id,
+      status: r.status,
+      note: r.note || null,
+      updated_by: staffId,
+      updated_at: nowIso
+    }));
+    // UNIQUE(class_master_id,session_date,period,student_id) で upsert
+    const res = await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/session_attendance', {
+      method: 'POST',
+      headers: {
+        'apikey': SB_KEY,
+        'Authorization': 'Bearer ' + SB_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates'
+      },
+      body: JSON.stringify(rows)
+    });
+    hideLoading();
+    if (!res.ok) {
+      const txt = await res.text();
+      showToast('保存に失敗しました（' + res.status + '）', 'error');
+      console.error('session_attendance保存エラー:', res.status, txt);
+      return;
+    }
+    showToast('出欠を保存しました（出席' + attRosterRows.filter(r=>r.status==='present').length + '・欠席' + attRosterRows.filter(r=>r.status==='absent').length + '）', 'success');
+  } catch(e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
+}
+
 function switchManageTab(tab, el) {
   // manage-* 系（授業管理など）
   const manageTabs = ['class-master','class-session','check-item','mission','quiz'];
   // smcontent-* 系（小メニューから統合したタブ）
-  const menuTabs = ['report','todo','yesterday','makeup','student-view','birthday','calendar','alert','announce','settings'];
+  const menuTabs = ['report','todo','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','settings'];
   manageTabs.forEach(t => {
     const el2 = document.getElementById('manage-' + t);
     if (el2) el2.style.display = 'none';
@@ -10375,6 +10687,7 @@ function switchManageTab(tab, el) {
   if (tab === 'calendar') loadStaffCalendar();
   if (tab === 'alert') loadAlertBoard();
   if (tab === 'announce') { loadAnnouncementsStaff(); initAnnounceForm(); }
+  if (tab === 'attendance') initAttendanceTab();
   if (tab === 'settings') loadSettingsTab();
 }
 
