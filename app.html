@@ -323,6 +323,11 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div><span class="point-value" id="student-points">0</span><span class="point-unit">pt</span></div>
       <div class="point-streak" id="student-streak"></div>
     </div>
+    <!-- 小テスト案内カード（open配信が1件以上あるときのみ表示） -->
+    <button id="quiz-notice-card" onclick="openQuizApp()" style="display:none;width:100%;padding:14px 16px;margin-bottom:12px;background:linear-gradient(135deg,#2D6DB5,#184A86);border:none;border-radius:var(--radius-sm);color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;text-align:left;box-shadow:0 3px 10px rgba(45,109,181,0.3);align-items:center;justify-content:space-between">
+      <span id="quiz-notice-text">📝 受けられる小テストがあります</span>
+      <span style="font-size:18px;margin-left:8px">›</span>
+    </button>
     <div id="gps-status-box" class="gps-status checking">📍 GPS位置を確認中...</div>
     <!-- ① チェックインボタン（未チェックイン時） -->
     <button class="checkin-btn" id="checkin-btn" onclick="startCheckin()" disabled>
@@ -2137,7 +2142,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260618b';
+const APP_VERSION = '20260619a';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -2539,6 +2544,28 @@ function openQuizApp() {
   window.location.href = 'https://holyknight1005-collab.github.io/fit-point-card/quiz.html';
 }
 
+// 生徒ホーム：受けられる小テスト案内カード
+// 自分の受講授業(class_enrollments) × status=open の配信(mini_quiz_assignments)が
+// 1件以上あるときだけ案内カードを表示する。0件なら非表示。
+async function loadQuizNotice() {
+  const card = document.getElementById('quiz-notice-card');
+  if (!card || !currentStudent) return;
+  card.style.display = 'none';
+  try {
+    const enrolls = await sbGet('class_enrollments', 'student_id=eq.' + currentStudent.id + '&select=class_master_id');
+    const classIds = [...new Set(enrolls.map(e => e.class_master_id).filter(Boolean))];
+    if (!classIds.length) return;
+    const assigns = await sbGet('mini_quiz_assignments', 'class_master_id=in.(' + classIds.join(',') + ')&status=eq.open&select=id');
+    if (!assigns.length) return;
+    const txt = document.getElementById('quiz-notice-text');
+    if (txt) txt.textContent = '📝 受けられる小テストが' + assigns.length + '件あります';
+    card.style.display = 'flex';
+  } catch (e) {
+    // 取得失敗時はカードを出さない（ホーム表示を妨げない）
+    console.warn('loadQuizNotice error:', e);
+  }
+}
+
 function closeInstallGuide() {
   const el = document.getElementById('install-guide');
   el.style.display = 'none';
@@ -2826,6 +2853,7 @@ function initStudentScreen() {
   checkSchoolMenu();
   setTimeout(checkInstallGuide, 2000);
   loadTodayClasses();
+  loadQuizNotice();
   setTimeout(updateHomeCheckBadge, 1200);
 }
 
