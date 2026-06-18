@@ -251,11 +251,30 @@ let staffId = null;          // 'fitNNN'（スタッフ時）
 function saveLoginState(email,pin,role){ localStorage.setItem('fit_email',email); localStorage.setItem('fit_pin',pin); localStorage.setItem('fit_role',role); }
 function clearLoginState(){ localStorage.removeItem('fit_email'); localStorage.removeItem('fit_pin'); localStorage.removeItem('fit_role'); }
 
+// PINハッシュ化（app.html と同一：staff_id をソルトに利用）
+async function hashPin(staffId, pin){
+  const salt = 'fit-juku::' + String(staffId).toLowerCase() + '::';
+  const enc = new TextEncoder().encode(salt + String(pin));
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
 async function tryStaffLogin(idOrEmail, pin){
-  const sid = idOrEmail.trim();
-  const data = await sbGet('staff','staff_id=eq.'+encodeURIComponent(sid)+'&pin=eq.'+encodeURIComponent(pin)+'&is_active=eq.true&select=*');
+  const sid = idOrEmail.trim().toLowerCase();
+  // staff_id だけで取得し、PIN照合はクライアント側で行う（pin_hash対応）
+  const data = await sbGet('staff','staff_id=eq.'+encodeURIComponent(sid)+'&is_active=eq.true&select=*');
   if(!data || !data.length) return false;
   const st = data[0];
+  let ok = false;
+  if(st.pin_hash){
+    // 移行済み：入力PINをハッシュ化して照合
+    const h = await hashPin(sid, pin);
+    ok = (h === st.pin_hash);
+  }else{
+    // 未移行：平文pinと照合
+    ok = (String(st.pin) === pin);
+  }
+  if(!ok) return false;
   isStaff = true; staffId = st.staff_id;
   currentStudent = { id: st.id, name: st.name, points: 0 };
   return true;
