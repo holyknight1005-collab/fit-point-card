@@ -9,6 +9,8 @@
 <title>fit授業後小テスト</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
 <style>
   :root{--green:#2D6DB5;--green-d:#184A86;--green-l:#E8F1FB;--bg:#F5F8FC;--surface:#fff;--text:#2C2C2A;--muted:#7A7770;--border:#D2E0EF;--red:#D94040;--red-l:#FFECEC;--green-ok:#2E8B57;--green-ok-l:#E8F6EE;--orange:#E08A1E;--orange-l:#FDF1DF;--radius:16px;--radius-sm:10px;}
   *{box-sizing:border-box;margin:0;padding:0}
@@ -240,6 +242,73 @@ function hideLoading(){ document.getElementById('loading').classList.add('hidden
 let toastTimer=null;
 function showToast(msg,type){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show '+(type||''); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('show'),2600); }
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// ============================================================
+// 数式表示（KaTeX）
+// プレーン文字列（例「π/3」「sinθ=1/2」）を LaTeX に自動変換し、
+// KaTeX できれいに描画する。$...$ で囲んだ箇所は LaTeX としてそのまま扱う。
+// ============================================================
+
+// ギリシャ文字・記号 → LaTeX
+const MATH_SYMBOLS = [
+  ['≦','\\leqq'],['≧','\\geqq'],['≤','\\le'],['≥','\\ge'],['≠','\\neq'],
+  ['×','\\times'],['÷','\\div'],['±','\\pm'],['√','\\sqrt'],['∞','\\infty'],
+  ['°','^\\circ'],['π','\\pi'],['θ','\\theta'],['α','\\alpha'],['β','\\beta'],
+  ['γ','\\gamma'],['Δ','\\Delta'],['Σ','\\sum'],['∫','\\int'],
+  ['²','^2'],['³','^3'],['⁴','^4']
+];
+
+// 三角・対数・極限などの関数名（\sin 等にして斜体化を防ぐ）
+const MATH_FUNCS = ['sin','cos','tan','log','ln','lim','sec','csc','cot'];
+
+// プレーン式 → LaTeX 文字列
+function toLatex(raw){
+  let s = String(raw==null?'':raw);
+  // 記号を LaTeX に置換
+  MATH_SYMBOLS.forEach(([from,to])=>{ s = s.split(from).join(to); });
+  // 関数名を \sin 等に（既に \ が付くものは触らない／lookbehind不使用でiOS旧版も安全）
+  MATH_FUNCS.forEach(fn=>{
+    s = s.replace(new RegExp('(\\\\?)\\b'+fn+'\\b','g'), function(m, bs){
+      return bs ? m : '\\'+fn+' ';
+    });
+  });
+  // 「分子/分母」を \frac に変換。
+  // 分子：数字・\pi・\theta・ギリシャ・英字・( ) の連なり、分母：同様。
+  // 例: 5\pi/6 → \frac{5\pi}{6} , 1/2 → \frac{1}{2} , (x+1)/2 → \frac{(x+1)}{2}
+  const term = '(?:\\\\[a-zA-Z]+|[0-9A-Za-z]|\\([^()]*\\))+';
+  const fracRe = new RegExp('('+term+')\\s*/\\s*('+term+')','g');
+  s = s.replace(fracRe, function(m, num, den){
+    return '\\dfrac{'+num+'}{'+den+'}';
+  });
+  return s;
+}
+
+// 文字列を KaTeX 描画済み HTML にして返す（失敗時は esc にフォールバック）
+function mathHTML(raw){
+  const s = String(raw==null?'':raw);
+  try{
+    if(typeof katex==='undefined'){ return esc(s); } // 未ロード時は素のテキスト
+    // $...$ が含まれていれば、その内側だけ数式・外側は通常テキストとして扱う
+    if(s.indexOf('$')>=0){
+      let out=''; let i=0;
+      while(i<s.length){
+        const open=s.indexOf('$',i);
+        if(open<0){ out+=esc(s.slice(i)); break; }
+        out+=esc(s.slice(i,open));
+        const close=s.indexOf('$',open+1);
+        if(close<0){ out+=esc(s.slice(open)); break; }
+        const expr=s.slice(open+1,close);
+        out+=katex.renderToString(toLatex(expr),{throwOnError:false,displayMode:false});
+        i=close+1;
+      }
+      return out;
+    }
+    // $ が無い＝式全体を自動変換して描画
+    return katex.renderToString(toLatex(s),{throwOnError:false,displayMode:false});
+  }catch(e){
+    return esc(s);
+  }
+}
 
 // ============================================================
 // 認証（students優先→staffフォールバック、math.htmlと同一作法）
@@ -736,12 +805,12 @@ function renderSolve(){
   document.getElementById('solve-questions').innerHTML = st.questions.map((q,i)=>{
     const opts = q.display.map(c=>{
       const selp = (st.given[q.id]===String(c))?' sel':'';
-      return '<div class="choice-opt'+selp+'" onclick="pickAnswer(this)" data-qid="'+esc(q.id)+'" data-val="'+esc(String(c))+'">'+esc(c)+'</div>';
+      return '<div class="choice-opt'+selp+'" onclick="pickAnswer(this)" data-qid="'+esc(q.id)+'" data-val="'+esc(String(c))+'">'+mathHTML(c)+'</div>';
     }).join('');
     const typeLabel = q.type==='number' ? '<span class="pill pill-num">数値</span>' : '<span class="pill pill-choice">6択</span>';
     return '<div class="card" data-qid="'+q.id+'">'+
       '<div style="font-size:11px;color:var(--green-d);margin-bottom:3px">問'+(i+1)+' '+typeLabel+'</div>'+
-      '<div style="font-size:15px;font-weight:500;margin-bottom:10px">'+esc(q.text)+'</div>'+
+      '<div style="font-size:15px;font-weight:500;margin-bottom:10px">'+mathHTML(q.text)+'</div>'+
       opts+
     '</div>';
   }).join('');
