@@ -1453,6 +1453,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <button onclick="switchManageTab('attendance',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📋 授業出欠</button>
       <button onclick="switchManageTab('quizstatus',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📝 小テスト状況</button>
       <button onclick="switchManageTab('appusage',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📊 教科アプリ</button>
+      <button onclick="switchManageTab('classanalysis',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📊 授業分析</button>
       <button onclick="switchManageTab('settings',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">⚙️ 設定</button>
       <button onclick="switchManageTab('mission',this)" class="tab-btn manage-tab-btn" style="display:none;flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🎯 ミッション</button>
       <button onclick="switchManageTab('quiz',this)" class="tab-btn manage-tab-btn" style="display:none;flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📝 テスト</button>
@@ -1797,6 +1798,21 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <button onclick="setAppUsageFilter('chem',this)" class="au-filter-btn" style="flex:1;padding:8px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);cursor:pointer">化学</button>
       </div>
       <div id="au-list" style="display:flex;flex-direction:column;gap:8px"></div>
+    </div>
+
+    <!-- 授業分析タブ -->
+    <div id="smcontent-classanalysis" style="display:none">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">授業を選ぶと、出席率・推移・生徒別の出席状況・連続欠席アラートが見られます。</div>
+      <select id="ca-class-select" onchange="onCaClassChange()" class="form-select" style="width:100%;margin-bottom:10px;font-size:13px">
+        <option value="">📚 授業を選択</option>
+      </select>
+      <!-- 期間フィルタ -->
+      <div id="ca-period-filter" style="display:none;gap:6px;margin-bottom:12px">
+        <button onclick="setCaPeriod('month',this)" class="ca-period-btn" style="flex:1;padding:8px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);cursor:pointer">今月</button>
+        <button onclick="setCaPeriod('term',this)" class="ca-period-btn" style="flex:1;padding:8px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);cursor:pointer">3ヶ月</button>
+        <button onclick="setCaPeriod('all',this)" class="ca-period-btn active" style="flex:1;padding:8px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer">全期間</button>
+      </div>
+      <div id="ca-body"></div>
     </div>
 
     <!-- 設定タブ -->
@@ -2208,7 +2224,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620e';
+const APP_VERSION = '20260620f';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -11170,7 +11186,7 @@ function switchManageTab(tab, el) {
   // manage-* 系（授業管理など）
   const manageTabs = ['class-master','class-session','check-item','mission','quiz'];
   // smcontent-* 系（小メニューから統合したタブ）
-  const menuTabs = ['report','todo','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','settings','quizstatus','appusage'];
+  const menuTabs = ['report','todo','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','settings','quizstatus','appusage','classanalysis'];
   manageTabs.forEach(t => {
     const el2 = document.getElementById('manage-' + t);
     if (el2) el2.style.display = 'none';
@@ -11214,10 +11230,322 @@ function switchManageTab(tab, el) {
   if (tab === 'attendance') initAttendanceTab();
   if (tab === 'quizstatus') loadQuizStatusClasses();
   if (tab === 'appusage') loadAppUsage();
+  if (tab === 'classanalysis') initClassAnalysis();
   if (tab === 'settings') loadSettingsTab();
 }
 
 
+
+// ============================================================
+// 授業分析（classanalysis）
+// session_attendance（present/absent/note）を授業ごとに集計
+// ============================================================
+let caSelectedClassId = null;
+let caPeriod = 'all';          // 'month' | 'term'(3ヶ月) | 'all'
+let caClassName = '';
+
+async function initClassAnalysis() {
+  caSelectedClassId = null;
+  caPeriod = 'all';
+  document.getElementById('ca-body').innerHTML = '';
+  document.getElementById('ca-period-filter').style.display = 'none';
+  const sel = document.getElementById('ca-class-select');
+  if (sel.options.length > 1) return; // 構築済みなら再構築しない
+  const masters = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject') || [];
+  sel.innerHTML = '<option value="">📚 授業を選択</option>' +
+    masters.map(m => '<option value="' + m.id + '">' + (m.subject ? '【' + escapeHtml(m.subject) + '】' : '') + escapeHtml(m.name) + '</option>').join('');
+}
+
+function onCaClassChange() {
+  const sel = document.getElementById('ca-class-select');
+  caSelectedClassId = sel.value || null;
+  caClassName = sel.value ? sel.options[sel.selectedIndex].text : '';
+  if (!caSelectedClassId) {
+    document.getElementById('ca-body').innerHTML = '';
+    document.getElementById('ca-period-filter').style.display = 'none';
+    return;
+  }
+  document.getElementById('ca-period-filter').style.display = 'flex';
+  loadClassAnalysis();
+}
+
+function setCaPeriod(p, btn) {
+  caPeriod = p;
+  document.querySelectorAll('.ca-period-btn').forEach(b => {
+    b.classList.remove('active');
+    b.style.background = 'var(--surface)';
+    b.style.color = 'var(--muted)';
+  });
+  if (btn) {
+    btn.classList.add('active');
+    btn.style.background = 'var(--orange-l)';
+    btn.style.color = 'var(--orange-d)';
+  }
+  if (caSelectedClassId) loadClassAnalysis();
+}
+
+// 期間フィルタの開始日（JST 'YYYY-MM-DD'）を返す。allはnull。
+function caPeriodSince() {
+  if (caPeriod === 'all') return null;
+  const today = new Date(getTodayJST() + 'T00:00:00+09:00');
+  if (caPeriod === 'month') {
+    return getTodayJST().slice(0, 7) + '-01';
+  }
+  if (caPeriod === 'term') {
+    const d = new Date(today.getFullYear(), today.getMonth() - 2, 1); // 当月含む3ヶ月
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-01';
+  }
+  return null;
+}
+
+async function loadClassAnalysis() {
+  const classId = caSelectedClassId;
+  if (!classId) return;
+  showLoading('授業データを集計中...');
+  try {
+    const since = caPeriodSince();
+    const todayStr = getTodayJST();
+
+    // 実施済みの授業日（今日まで）
+    let sessQ = 'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
+      '&select=session_date,period&order=session_date,period';
+    if (since) sessQ += '&session_date=gte.' + since;
+    const sessions = await sbGet('class_sessions', sessQ) || [];
+
+    // 受講名簿
+    const enrolls = await sbGet('class_enrollments',
+      'class_master_id=eq.' + classId + '&select=student_id') || [];
+    const studentIds = enrolls.map(e => e.student_id);
+
+    // 出欠記録
+    let attQ = 'class_master_id=eq.' + classId +
+      '&select=session_date,period,student_id,status,note';
+    if (since) attQ += '&session_date=gte.' + since;
+    attQ += '&session_date=lte.' + todayStr;
+    const atts = await sbGet('session_attendance', attQ) || [];
+
+    // 期間内の来塾（checkins）— ギャップ検出用
+    let checkins = [];
+    if (studentIds.length && sessions.length) {
+      const dates = [...new Set(sessions.map(s => s.session_date))];
+      // 日付inクエリ（多すぎる場合は期間gte/lteで取得）
+      const minD = dates.reduce((a, b) => a < b ? a : b);
+      const maxD = dates.reduce((a, b) => a > b ? a : b);
+      checkins = await sbGet('checkins',
+        'student_id=in.(' + studentIds.join(',') + ')&checkin_date=gte.' + minD +
+        '&checkin_date=lte.' + maxD + '&select=student_id,checkin_date') || [];
+    }
+    hideLoading();
+    renderClassAnalysis(sessions, studentIds, atts, checkins);
+  } catch (e) {
+    hideLoading();
+    document.getElementById('ca-body').innerHTML =
+      '<div style="font-size:12px;color:var(--red);padding:12px">集計エラー: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderClassAnalysis(sessions, studentIds, atts, checkins) {
+  const body = document.getElementById('ca-body');
+  if (!sessions.length) {
+    body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">この期間に実施された授業日がありません。</div>';
+    return;
+  }
+  if (!studentIds.length) {
+    body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">この授業に受講登録された生徒がいません。</div>';
+    return;
+  }
+
+  // セッションキー（日付|時限）一覧（時系列）
+  const sessKeys = sessions.map(s => s.session_date + '|' + (s.period || ''));
+  // 出欠マップ: key -> {student_id -> {status,note}}
+  const attMap = {};
+  atts.forEach(a => {
+    const k = a.session_date + '|' + (a.period || '');
+    if (!attMap[k]) attMap[k] = {};
+    attMap[k][a.student_id] = { status: a.status, note: a.note || '' };
+  });
+  // 来塾マップ: 'student_id|date' -> true
+  const ciMap = {};
+  checkins.forEach(c => { ciMap[c.student_id + '|' + c.checkin_date] = true; });
+
+  // 各セッションの出席率（出欠が1件でも記録された回のみ集計対象）
+  const sessRates = [];
+  sessKeys.forEach((k, i) => {
+    const m = attMap[k];
+    if (!m) { sessRates.push(null); return; } // 未記入の回
+    const ids = Object.keys(m);
+    const present = ids.filter(id => m[id].status === 'present').length;
+    sessRates.push(ids.length ? Math.round(present / ids.length * 100) : null);
+  });
+  const recordedSessions = sessKeys.filter(k => attMap[k]); // 出欠記入済みの回
+  const recordedCount = recordedSessions.length;
+
+  // 全体出席率（記入済みの回のみ）
+  let totP = 0, totN = 0;
+  recordedSessions.forEach(k => {
+    const m = attMap[k];
+    Object.keys(m).forEach(id => { totN++; if (m[id].status === 'present') totP++; });
+  });
+  const overallRate = totN ? Math.round(totP / totN * 100) : null;
+
+  // 生徒別集計
+  const perStudent = studentIds.map(sid => {
+    let p = 0, n = 0;
+    const absentNotes = [];
+    let gapCount = 0; // 来塾あり×授業欠席
+    // 連続欠席（直近の記入済みセッションから遡る）
+    let streak = 0, streakBroken = false;
+    for (let i = recordedSessions.length - 1; i >= 0; i--) {
+      const k = recordedSessions[i];
+      const rec = attMap[k][sid];
+      if (!rec) continue; // この生徒の記録がない回はスキップ
+      n++;
+      if (rec.status === 'present') {
+        p++;
+        streakBroken = true;
+      } else {
+        if (!streakBroken) streak++;
+        if (rec.note) absentNotes.push(rec.note);
+        // ギャップ判定：その日に来塾しているか
+        const date = k.split('|')[0];
+        if (ciMap[sid + '|' + date]) gapCount++;
+      }
+    }
+    const rate = n ? Math.round(p / n * 100) : null;
+    const stu = staffStudents.find(s => s.id === sid) || { id: sid, name: '(不明)' };
+    return { stu, p, n, rate, streak, absentNotes, gapCount };
+  }).sort((a, b) => {
+    // 出席率の低い順（null=記録なしは末尾）
+    if (a.rate === null) return 1;
+    if (b.rate === null) return -1;
+    return a.rate - b.rate;
+  });
+
+  const directAbsentNow = perStudent.filter(x => x.streak >= 1).length;
+
+  // ---- サマリーカード ----
+  let html = '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px">';
+  const rateColor = overallRate === null ? 'var(--muted)' : (overallRate >= 80 ? 'var(--green)' : (overallRate >= 60 ? 'var(--orange-d)' : 'var(--red)'));
+  html += caStatCard('全体出席率', overallRate === null ? '—' : overallRate + '%', rateColor);
+  html += caStatCard('実施回数', recordedCount + '回', 'var(--text)');
+  html += caStatCard('受講生徒', studentIds.length + '名', 'var(--text)');
+  html += caStatCard('連続欠席中', directAbsentNow + '名', directAbsentNow > 0 ? 'var(--red)' : 'var(--text)');
+  html += '</div>';
+
+  // ---- 推移グラフ ----
+  const ratePoints = sessKeys.map((k, i) => ({ key: k, rate: sessRates[i] })).filter(x => x.rate !== null);
+  if (ratePoints.length >= 2) {
+    html += '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px">出席率の推移</div>';
+    html += '<div class="card-box" style="padding:12px 10px;margin-bottom:14px">' + caSparkline(ratePoints) + '</div>';
+  }
+
+  // ---- 連続欠席アラート ----
+  const alertStudents = perStudent.filter(x => x.streak >= 2).sort((a, b) => b.streak - a.streak);
+  if (alertStudents.length) {
+    html += '<div style="background:var(--red-l);border:1px solid #F5BABA;border-radius:8px;padding:10px 12px;margin-bottom:14px">';
+    html += '<div style="font-size:13px;font-weight:700;color:var(--red);margin-bottom:6px">⚠️ 連続欠席アラート</div>';
+    html += alertStudents.map(x =>
+      '<div style="font-size:12px;color:var(--red);margin-bottom:2px">' +
+      escapeHtml(x.stu.name) + '：' + x.streak + '回連続欠席' +
+      (x.absentNotes.length ? '（' + escapeHtml(x.absentNotes[0]) + '）' : '') + '</div>'
+    ).join('');
+    html += '</div>';
+  }
+
+  // ---- 来塾あり×授業欠席ギャップ ----
+  const gapStudents = perStudent.filter(x => x.gapCount > 0).sort((a, b) => b.gapCount - a.gapCount);
+  if (gapStudents.length) {
+    html += '<div style="background:#FFF6E5;border:1px solid #F0D08A;border-radius:8px;padding:10px 12px;margin-bottom:14px">';
+    html += '<div style="font-size:13px;font-weight:700;color:var(--orange-d);margin-bottom:6px">🏫 来塾あり・授業欠席</div>';
+    html += '<div style="font-size:11px;color:var(--orange-d);margin-bottom:6px">塾には来ていたのに授業を欠席した回数です。</div>';
+    html += gapStudents.map(x =>
+      '<div style="font-size:12px;color:var(--orange-d);margin-bottom:2px">' +
+      escapeHtml(x.stu.name) + '：' + x.gapCount + '回</div>'
+    ).join('');
+    html += '</div>';
+  }
+
+  // ---- 生徒別出席率 ----
+  html += '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px">生徒別出席率（低い順）</div>';
+  html += '<div style="display:flex;flex-direction:column;gap:6px">';
+  perStudent.forEach(x => {
+    html += caStudentRow(x);
+  });
+  html += '</div>';
+
+  body.innerHTML = html;
+}
+
+function caStatCard(label, value, color) {
+  return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">' +
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:2px">' + label + '</div>' +
+    '<div style="font-size:22px;font-weight:700;color:' + color + '">' + value + '</div>' +
+    '</div>';
+}
+
+function caStudentRow(x) {
+  const s = x.stu;
+  const idx = staffStudents.findIndex(st => st.id === s.id);
+  const clickAttr = idx >= 0 ? ' onclick="openStudentDetail(' + idx + ',\'staff\')" style="cursor:pointer"' : '';
+  const rate = x.rate;
+  let barColor = '#639922', txtColor = 'var(--text)';
+  if (rate !== null) {
+    if (rate < 60) { barColor = '#E24B4A'; txtColor = 'var(--red)'; }
+    else if (rate < 80) { barColor = '#EF9F27'; txtColor = 'var(--orange-d)'; }
+  }
+  const avatar = s.photo_url
+    ? '<div style="width:32px;height:32px;border-radius:50%;background-image:url(' + s.photo_url + ');background-size:cover;background-position:center;flex-shrink:0"></div>'
+    : '<div style="width:32px;height:32px;border-radius:50%;background:var(--orange-l);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:var(--orange-d);flex-shrink:0">' + (s.name || '?').charAt(0) + '</div>';
+  const barW = rate === null ? 0 : rate;
+  const rateLabel = rate === null ? '記録なし' : rate + '%';
+  // 欠席メモ（最大2件）
+  const notesHtml = x.absentNotes.length
+    ? '<div style="font-size:10px;color:var(--muted);margin-top:3px">📝 ' +
+      x.absentNotes.slice(0, 2).map(n => escapeHtml(n)).join(' / ') + '</div>'
+    : '';
+  const streakBadge = x.streak >= 2
+    ? '<span style="font-size:10px;background:var(--red-l);color:var(--red);border:1px solid #F5BABA;border-radius:4px;padding:1px 6px;margin-left:6px;font-weight:700">連続' + x.streak + '</span>'
+    : '';
+  return '<div' + clickAttr + ' style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 11px;display:flex;align-items:center;gap:10px;' + (idx >= 0 ? 'cursor:pointer' : '') + '">' +
+    avatar +
+    '<div style="flex:1;min-width:0">' +
+      '<div style="font-size:14px;color:var(--text)">' + escapeHtml(s.name || '(不明)') + streakBadge + '</div>' +
+      '<div style="height:6px;background:var(--surface2,#EEE);border-radius:3px;margin-top:4px;overflow:hidden">' +
+        '<div style="width:' + barW + '%;height:100%;background:' + barColor + '"></div>' +
+      '</div>' +
+      notesHtml +
+    '</div>' +
+    '<div style="font-size:13px;font-weight:700;color:' + txtColor + ';flex-shrink:0;white-space:nowrap">' + rateLabel +
+      '<div style="font-size:10px;color:var(--muted);font-weight:400;text-align:right">' + x.p + '/' + x.n + '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+// 出席率推移の簡易スパークライン（SVG）
+function caSparkline(points) {
+  const W = 320, H = 90, padL = 24, padR = 8, padT = 8, padB = 18;
+  const n = points.length;
+  const xStep = (W - padL - padR) / Math.max(1, n - 1);
+  const yScale = r => padT + (100 - r) / 100 * (H - padT - padB);
+  let poly = points.map((p, i) => (padL + i * xStep).toFixed(1) + ',' + yScale(p.rate).toFixed(1)).join(' ');
+  let dots = points.map((p, i) => {
+    const cx = padL + i * xStep, cy = yScale(p.rate);
+    const col = p.rate >= 80 ? '#639922' : (p.rate >= 60 ? '#EF9F27' : '#E24B4A');
+    return '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="2.5" fill="' + col + '"/>';
+  }).join('');
+  // 直近点のラベル
+  const last = points[n - 1];
+  const lastX = padL + (n - 1) * xStep, lastY = yScale(last.rate);
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto" role="img">' +
+    '<line x1="' + padL + '" y1="' + yScale(100) + '" x2="' + W + '" y2="' + yScale(100) + '" stroke="var(--border)" stroke-width="1"/>' +
+    '<line x1="' + padL + '" y1="' + yScale(50) + '" x2="' + W + '" y2="' + yScale(50) + '" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="2,2"/>' +
+    '<text x="2" y="' + (yScale(100) + 3).toFixed(0) + '" style="font-size:9px;fill:var(--muted)">100</text>' +
+    '<text x="2" y="' + (yScale(50) + 3).toFixed(0) + '" style="font-size:9px;fill:var(--muted)">50</text>' +
+    '<polyline points="' + poly + '" fill="none" stroke="#378ADD" stroke-width="2"/>' +
+    dots +
+    '<text x="' + Math.min(lastX, W - 24).toFixed(0) + '" y="' + Math.max(yScale(last.rate) - 6, 10).toFixed(0) + '" style="font-size:10px;font-weight:700;fill:#185FA5">' + last.rate + '%</text>' +
+  '</svg>';
+}
 
 </script>
 </body>
