@@ -216,21 +216,31 @@ function showToast(msg,type){ const t=document.getElementById('toast'); t.textCo
 let currentStudent = null;
 let currentStaff = null;
 
+// PINハッシュ（app.html と同一仕様：salt = 'fit-juku::'+staffId(小文字)+'::'）
+async function hashPin(staffId, pin) {
+  const salt = 'fit-juku::' + String(staffId).toLowerCase() + '::';
+  const enc = new TextEncoder().encode(salt + String(pin));
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 function saveLoginState(email,pin){ localStorage.setItem('fit_email',email); localStorage.setItem('fit_pin',pin); localStorage.setItem('fit_role','student'); }
-function saveStaffLoginState(staffId,pin){ localStorage.setItem('fit_staff_id',staffId); localStorage.setItem('fit_staff_pin',pin); localStorage.setItem('fit_role','staff'); }
-function clearLoginState(){ localStorage.removeItem('fit_email'); localStorage.removeItem('fit_pin'); localStorage.removeItem('fit_role'); localStorage.removeItem('fit_staff_id'); localStorage.removeItem('fit_staff_pin'); }
+function saveStaffLoginState(staffId,hash){ localStorage.setItem('fit_staff_id',staffId); localStorage.setItem('fit_staff_hash',hash); localStorage.setItem('fit_role','staff'); }
+function clearLoginState(){ localStorage.removeItem('fit_email'); localStorage.removeItem('fit_pin'); localStorage.removeItem('fit_role'); localStorage.removeItem('fit_staff_id'); localStorage.removeItem('fit_staff_hash'); localStorage.removeItem('fit_staff_pin'); }
 
 async function autoLogin(){
   const role=localStorage.getItem('fit_role');
   // スタッフの引き継ぎ（app.html からの遷移）
   if(role==='staff'){
     const sid=localStorage.getItem('fit_staff_id');
-    const spin=localStorage.getItem('fit_staff_pin');
-    if(sid&&spin){
+    const shash=localStorage.getItem('fit_staff_hash');
+    if(sid&&shash){
       showLoading('自動ログイン中...');
       try{
-        const data=await sbGet('staff','staff_id=eq.'+encodeURIComponent(sid)+'&pin=eq.'+encodeURIComponent(spin)+'&is_active=eq.true&select=*');
-        if(data&&data.length){ currentStaff=data[0]; await afterStaffLogin(); return; }
+        const data=await sbGet('staff','staff_id=eq.'+encodeURIComponent(sid)+'&is_active=eq.true&select=*');
+        if(data&&data.length&&data[0].pin_hash&&data[0].pin_hash===shash){
+          currentStaff=data[0]; await afterStaffLogin(); return;
+        }
       }catch(e){ /* fallthrough */ }
     }
     hideLoading(); showScreen('screen-staff-login'); return;
@@ -277,11 +287,23 @@ async function doStaffLogin(){
   if(!sid||!pin){ err.textContent='IDとパスワードを入力してください'; err.classList.add('show'); return; }
   showLoading('ログイン中...');
   try{
-    const data=await sbGet('staff','staff_id=eq.'+encodeURIComponent(sid)+'&pin=eq.'+encodeURIComponent(pin)+'&is_active=eq.true&select=*');
+    // staff_id だけで取得し、PIN照合はクライアント側で（pin_hash対応）
+    const data=await sbGet('staff','staff_id=eq.'+encodeURIComponent(sid)+'&is_active=eq.true&select=*');
     if(!data||!data.length){ err.textContent='IDまたはパスワードが違います'; err.classList.add('show'); hideLoading(); return; }
+    const staff=data[0];
+    let ok=false, hash=null;
+    if(staff.pin_hash){
+      hash=await hashPin(sid,pin);
+      ok=(hash===staff.pin_hash);
+    }else{
+      // 未移行（平文pin）フォールバック。chem側では移行書き込みはしない。
+      ok=(String(staff.pin)===pin);
+      if(ok) hash=await hashPin(sid,pin);
+    }
+    if(!ok){ err.textContent='IDまたはパスワードが違います'; err.classList.add('show'); hideLoading(); return; }
     err.classList.remove('show');
-    currentStaff=data[0];
-    saveStaffLoginState(sid,pin);
+    currentStaff=staff;
+    saveStaffLoginState(sid, hash || staff.pin_hash || '');
     await afterStaffLogin();
   }catch(e){ hideLoading(); err.textContent='通信がうまくつながらなかったみたい。もう一度試してね。'; err.classList.add('show'); }
 }
