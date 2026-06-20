@@ -656,6 +656,9 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <button onclick="openStaffManage('class-master')" class="home-menu-btn">
           <span style="font-size:22px">📚</span>授業管理
         </button>
+        <button onclick="openHomeFeature('attendance')" class="home-menu-btn">
+          <span style="font-size:22px">📋</span>授業出欠
+        </button>
         <button onclick="openHomeFeature('quizstatus')" class="home-menu-btn">
           <span style="font-size:22px">📝</span>小テスト状況
         </button>
@@ -2227,7 +2230,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620f';
+const APP_VERSION = '20260620h';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -11302,6 +11305,20 @@ function caPeriodSince() {
   return null;
 }
 
+// 'YYYY-MM-DD' と 'HH:MM[:SS]' から、その時刻のエポックms（JST基準）を返す
+function jstTimeToMs(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+  const t = String(timeStr).slice(0, 5); // "HH:MM"
+  const parts = t.split(':');
+  if (parts.length < 2) return null;
+  const hh = parseInt(parts[0], 10), mm = parseInt(parts[1], 10);
+  if (isNaN(hh) || isNaN(mm)) return null;
+  // JST(+09:00)固定でISO化してパース
+  const iso = dateStr + 'T' + String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0') + ':00+09:00';
+  const ms = new Date(iso).getTime();
+  return isNaN(ms) ? null : ms;
+}
+
 async function loadClassAnalysis() {
   const classId = caSelectedClassId;
   if (!classId) return;
@@ -11312,7 +11329,7 @@ async function loadClassAnalysis() {
 
     // 実施済みの授業日（今日まで）
     let sessQ = 'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
-      '&select=session_date,period&order=session_date,period';
+      '&select=session_date,period,start_time,end_time&order=session_date,period';
     if (since) sessQ += '&session_date=gte.' + since;
     const sessions = await sbGet('class_sessions', sessQ) || [];
 
@@ -11328,16 +11345,15 @@ async function loadClassAnalysis() {
     attQ += '&session_date=lte.' + todayStr;
     const atts = await sbGet('session_attendance', attQ) || [];
 
-    // 期間内の来塾（checkins）— ギャップ検出用
+    // 期間内の来塾（checkins）— 自動出席判定＋ギャップ検出用
     let checkins = [];
     if (studentIds.length && sessions.length) {
       const dates = [...new Set(sessions.map(s => s.session_date))];
-      // 日付inクエリ（多すぎる場合は期間gte/lteで取得）
       const minD = dates.reduce((a, b) => a < b ? a : b);
       const maxD = dates.reduce((a, b) => a > b ? a : b);
       checkins = await sbGet('checkins',
         'student_id=in.(' + studentIds.join(',') + ')&checkin_date=gte.' + minD +
-        '&checkin_date=lte.' + maxD + '&select=student_id,checkin_date') || [];
+        '&checkin_date=lte.' + maxD + '&select=student_id,checkin_date,created_at,checkout_time') || [];
     }
     hideLoading();
     renderClassAnalysis(sessions, studentIds, atts, checkins);
@@ -11361,16 +11377,70 @@ function renderClassAnalysis(sessions, studentIds, atts, checkins) {
 
   // セッションキー（日付|時限）一覧（時系列）
   const sessKeys = sessions.map(s => s.session_date + '|' + (s.period || ''));
-  // 出欠マップ: key -> {student_id -> {status,note}}
+  // セッション情報マップ: key -> {start_time,end_time,session_date}
+  const sessInfo = {};
+  sessions.forEach(s => { sessInfo[s.session_date + '|' + (s.period || '')] = s; });
+
+  // 出欠マップ: key -> {student_id -> {status,note,auto}}
+  // auto=true は来塾から自動判定した推定値（手動保存はauto=false）
   const attMap = {};
   atts.forEach(a => {
     const k = a.session_date + '|' + (a.period || '');
     if (!attMap[k]) attMap[k] = {};
-    attMap[k][a.student_id] = { status: a.status, note: a.note || '' };
+    attMap[k][a.student_id] = { status: a.status, note: a.note || '', auto: false };
   });
-  // 来塾マップ: 'student_id|date' -> true
-  const ciMap = {};
-  checkins.forEach(c => { ciMap[c.student_id + '|' + c.checkin_date] = true; });
+
+  // 来塾詳細マップ: 'student_id|date' -> [{inMs, outMs|null}]
+  const ciDetail = {};
+  const ciMap = {}; // 'student_id|date' -> true（来塾有無）
+  checkins.forEach(c => {
+    const key = c.student_id + '|' + c.checkin_date;
+    ciMap[key] = true;
+    if (!ciDetail[key]) ciDetail[key] = [];
+    const inMs = c.created_at ? new Date(c.created_at).getTime() : null;
+    const outMs = c.checkout_time ? new Date(c.checkout_time).getTime() : null;
+    if (inMs) ciDetail[key].push({ inMs, outMs });
+  });
+
+  // 自動出席判定：未保存(手動記録なし)の生徒×授業日を、来塾の在室から推定して補完
+  let autoSessionCount = 0; // 自動判定を含む授業日の数
+  sessKeys.forEach(k => {
+    const info = sessInfo[k];
+    if (!info || !info.start_time || !info.end_time) return; // 時間未設定の回は自動判定不可
+    const date = info.session_date;
+    const startMs = jstTimeToMs(date, info.start_time);
+    const endMs = jstTimeToMs(date, info.end_time);
+    if (startMs == null || endMs == null || endMs <= startMs) return;
+    const classDur = endMs - startMs;
+    let touched = false;
+    studentIds.forEach(sid => {
+      if (attMap[k] && attMap[k][sid]) return; // 手動保存済みは尊重
+      const segs = ciDetail[sid + '|' + date] || [];
+      let present = false;
+      if (segs.length) {
+        // 在室と授業時間の重なり合計を算出
+        let overlap = 0, inClassByInTime = false;
+        segs.forEach(seg => {
+          // in時刻が授業時間内か（out不明時の判定に使用）
+          if (seg.inMs >= startMs && seg.inMs <= endMs) inClassByInTime = true;
+          if (seg.outMs != null) {
+            const ov = Math.min(endMs, seg.outMs) - Math.max(startMs, seg.inMs);
+            if (ov > 0) overlap += ov;
+          }
+        });
+        const hasAnyOut = segs.some(s => s.outMs != null);
+        if (hasAnyOut) {
+          present = overlap >= classDur * 0.5; // 重なり50%以上
+        } else {
+          present = inClassByInTime;            // out不明：授業中にinしていれば出席
+        }
+      }
+      if (!attMap[k]) attMap[k] = {};
+      attMap[k][sid] = { status: present ? 'present' : 'absent', note: '', auto: true };
+      touched = true;
+    });
+    if (touched) autoSessionCount++;
+  });
 
   // 各セッションの出席率（出欠が1件でも記録された回のみ集計対象）
   const sessRates = [];
@@ -11435,6 +11505,13 @@ function renderClassAnalysis(sessions, studentIds, atts, checkins) {
   html += caStatCard('受講生徒', studentIds.length + '名', 'var(--text)');
   html += caStatCard('連続欠席中', directAbsentNow + '名', directAbsentNow > 0 ? 'var(--red)' : 'var(--text)');
   html += '</div>';
+
+  // 自動判定の注記（来塾から推定した回が含まれる場合）
+  if (autoSessionCount > 0) {
+    html += '<div style="background:#EAF1FB;border:1px solid #B5D4F4;border-radius:8px;padding:8px 11px;margin-bottom:14px;font-size:11px;color:#185FA5;line-height:1.6">' +
+      '🔵 出欠未入力の授業日は、授業時間中の<b>来塾記録から出席を自動推定</b>しています。途中退室などで実際と異なる場合は「📋 授業出欠」で修正・保存すると正確な記録に上書きされます。' +
+      '</div>';
+  }
 
   // ---- 推移グラフ ----
   const ratePoints = sessKeys.map((k, i) => ({ key: k, rate: sessRates[i] })).filter(x => x.rate !== null);
