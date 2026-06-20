@@ -883,6 +883,32 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       </div>
     </div>
 
+    <!-- ログイン情報（パスワード確認・再設定） -->
+    <div>
+      <div class="section-title">🔑 ログイン情報</div>
+      <div class="card-box">
+        <div style="margin-bottom:10px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">メールアドレス</div>
+          <div id="detail-login-email" style="font-size:13px;font-weight:700;word-break:break-all"></div>
+        </div>
+        <div style="margin-bottom:10px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">現在のパスワード（5桁）</div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <div id="detail-login-pin" style="flex:1;font-size:15px;font-weight:700;letter-spacing:3px;font-family:monospace">●●●●●</div>
+            <button id="detail-login-pin-toggle" onclick="toggleDetailPinReveal()" style="padding:6px 12px;background:var(--surface2);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:'Noto Sans JP',sans-serif">表示</button>
+          </div>
+        </div>
+        <div style="border-top:1px solid var(--border);margin:10px 0;padding-top:10px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">パスワード再設定</div>
+          <div style="display:flex;gap:6px;margin-bottom:6px">
+            <input type="tel" inputmode="numeric" maxlength="5" id="detail-newpin" placeholder="新しい5桁" class="form-select" style="flex:1;font-size:14px;letter-spacing:2px;font-family:monospace">
+            <button onclick="genDetailPin()" style="padding:0 12px;background:var(--surface2);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:'Noto Sans JP',sans-serif">自動生成</button>
+          </div>
+          <button onclick="saveDetailPin()" style="width:100%;padding:9px;background:var(--blue,#3B82F6);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">パスワードを更新</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 受講授業（ヘッダー直下） -->
     <div>
       <div class="section-title">📚 受講授業</div>
@@ -2182,7 +2208,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620c';
+const APP_VERSION = '20260620e';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -4055,7 +4081,58 @@ async function saveStudentAttributes() {
   }
 }
 
-// ===== 在籍管理（卒業・退塾＝論理削除 / 復籍）=====
+// ===== 生徒のログイン情報（パスワード確認・再設定）=====
+let detailPinRevealed = false;
+
+function toggleDetailPinReveal() {
+  if (!detailStudent) return;
+  const pinEl = document.getElementById('detail-login-pin');
+  const btn = document.getElementById('detail-login-pin-toggle');
+  detailPinRevealed = !detailPinRevealed;
+  if (detailPinRevealed) {
+    pinEl.textContent = detailStudent.pin || '（未設定）';
+    pinEl.style.letterSpacing = '3px';
+    btn.textContent = '隠す';
+  } else {
+    pinEl.textContent = '●●●●●';
+    pinEl.style.letterSpacing = '3px';
+    btn.textContent = '表示';
+  }
+}
+
+function genDetailPin() {
+  let p = '';
+  for (let i = 0; i < 5; i++) p += Math.floor(Math.random() * 10);
+  document.getElementById('detail-newpin').value = p;
+}
+
+async function saveDetailPin() {
+  if (!detailStudent) return;
+  const newPin = (document.getElementById('detail-newpin').value || '').trim();
+  if (!/^\d{5}$/.test(newPin)) {
+    showToast('5桁の数字で入力してください', 'error');
+    return;
+  }
+  if (!confirm(detailStudent.name + ' さんのパスワードを「' + newPin + '」に変更します。よろしいですか？')) return;
+  showLoading('更新中...');
+  try {
+    await sbPatch('students', 'id=eq.' + detailStudent.id, { pin: newPin });
+    detailStudent.pin = newPin;
+    // staffStudents 側も同期
+    const si = staffStudents.findIndex(x => x.id === detailStudent.id);
+    if (si >= 0) staffStudents[si].pin = newPin;
+    document.getElementById('detail-newpin').value = '';
+    // 表示中なら新しい値に更新
+    if (detailPinRevealed) document.getElementById('detail-login-pin').textContent = newPin;
+    hideLoading();
+    showToast('✅ パスワードを更新しました', 'success');
+  } catch(e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
+}
+
+
 // admin のみ表示。is_active=false で一覧から除外（データは保持）
 // inactive_reason: '卒業'＝ログイン可 / '退塾'＝ログイン不可
 function renderGraduateSection() {
@@ -4163,6 +4240,13 @@ async function openStudentDetail(idx, from) {
     document.getElementById('detail-month-count').textContent = monthCount + '日';
     document.getElementById('detail-year-count').textContent = yearCount + '日';
     document.getElementById('detail-gender').value = s.gender || '';
+    // ログイン情報（メール・パスワード）
+    document.getElementById('detail-login-email').textContent = s.email || '（未設定）';
+    detailPinRevealed = false;
+    document.getElementById('detail-login-pin').textContent = '●●●●●';
+    document.getElementById('detail-login-pin').style.letterSpacing = '3px';
+    document.getElementById('detail-login-pin-toggle').textContent = '表示';
+    document.getElementById('detail-newpin').value = '';
     setClubUI('detail', s.club);
     setBirthdayUI('detail', s.birthday);
     loadDetailCalendar();
