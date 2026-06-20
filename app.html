@@ -2174,7 +2174,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620b';
+const APP_VERSION = '20260620c';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -3721,12 +3721,14 @@ async function loadStaffHomeCalendar() {
     const lastDate = new Date(year, month + 1, 0).getDate();
     const lastISO = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(lastDate).padStart(2, '0');
 
-    const [sessions, staffList, events, staffBdays, studentBdays] = await Promise.all([
+    const [sessions, staffList, events, staffBdays, studentBdays, myReports, myTodos] = await Promise.all([
       sbGet('class_sessions', 'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO + '&select=class_master_id,period,start_time,end_time,session_date&order=session_date,period'),
       sbGet('staff', 'select=id,name'),
       sbGet('events', 'event_date=gte.' + firstISO + '&event_date=lte.' + lastISO + '&select=title,event_date,detail,color').catch(() => []),
       sbGet('staff', 'birthday=not.is.null&select=name,birthday').catch(() => []),
-      sbGet('students', 'birthday=not.is.null&select=name,birthday,school,grade').catch(() => [])
+      sbGet('students', 'birthday=not.is.null&select=name,birthday,school,grade').catch(() => []),
+      sbGet('staff_reports', 'staff_id=eq.' + currentStaff.id + '&report_date=gte.' + firstISO + '&report_date=lte.' + lastISO + '&select=report_date').catch(() => []),
+      sbGet('staff_todos', 'to_staff_id=eq.' + currentStaff.id + '&due_date=gte.' + firstISO + '&due_date=lte.' + lastISO + '&select=due_date,is_done').catch(() => [])
     ]);
 
     const staffNameMap = {};
@@ -3760,7 +3762,17 @@ async function loadStaffHomeCalendar() {
     staffCalBirthdays = {};
     (staffBdays || []).forEach(s => { if (s.birthday) (staffCalBirthdays[s.birthday.slice(5)] = staffCalBirthdays[s.birthday.slice(5)] || []).push({ name: s.name, type: 'staff' }); });
     (studentBdays || []).forEach(s => { if (s.birthday) (staffCalBirthdays[s.birthday.slice(5)] = staffCalBirthdays[s.birthday.slice(5)] || []).push({ name: s.name, type: 'student', school: s.school || '', grade: s.grade || '' }); });
-    staffCalReports = {};          // ホームでは報告書ステータスは出さない
+    // 自分の報告書を書いた日付セット（ホームカレンダーのドット用）
+    staffHomeMyReports = new Set((myReports || []).map(r => r.report_date));
+    // 自分のToDo締切がある日付（未完了が1件でもあれば true）
+    staffHomeTodoDue = {};
+    (myTodos || []).forEach(t => {
+      if (!t.due_date) return;
+      if (!staffHomeTodoDue[t.due_date]) staffHomeTodoDue[t.due_date] = { total: 0, open: 0 };
+      staffHomeTodoDue[t.due_date].total++;
+      if (!t.is_done) staffHomeTodoDue[t.due_date].open++;
+    });
+    staffCalReports = {};          // モーダル流用の報告書ステータスは出さない
     staffCalFilter = 'all';        // モーダル流用時は全件表示
 
     renderStaffHomeCalMonth(year, month);
@@ -3793,16 +3805,27 @@ function renderStaffHomeCalMonth(year, month) {
     const hasClass = sess.length > 0;
     const hasEvent = evs.length > 0;
     const hasBday = bdays.length > 0;
+    const todoInfo = staffHomeTodoDue[dateISO] || null;
+    const hasTodo = !!todoInfo;
+    const hasOpenTodo = !!(todoInfo && todoInfo.open > 0);
     const tappable = hasClass || hasEvent || hasBday;
 
     const titleParts = [];
     sess.forEach(s => titleParts.push((s.period ? s.period + '限 ' : '') + s.class_name + (s.teacher_name ? '（' + s.teacher_name + '）' : '')));
     evs.forEach(ev => titleParts.push('🎪 ' + ev.title));
     bdays.forEach(b => titleParts.push('🎂 ' + b.name));
+    if (hasTodo) titleParts.push('📋 ToDo締切 ' + todoInfo.total + '件' + (hasOpenTodo ? '（未完了' + todoInfo.open + '）' : '（完了）'));
     const title = titleParts.join(' / ').replace(/"/g, '&quot;');
 
-    const bg = hasClass ? 'var(--orange-l)' : (hasBday ? '#FCE9F0' : 'var(--surface2)');
-    const border = isToday ? 'border:2px solid var(--orange);' : (hasBday ? 'border:1.5px solid #E89BB8;' : '');
+    // 背景: ToDo締切（未完了）> 授業 > 誕生日 > ToDo締切（完了済み）> 通常
+    let bg;
+    if (hasOpenTodo) bg = '#E7F0FB';
+    else if (hasClass) bg = 'var(--orange-l)';
+    else if (hasBday) bg = '#FCE9F0';
+    else if (hasTodo) bg = 'var(--surface2)';
+    else bg = 'var(--surface2)';
+    const border = isToday ? 'border:2px solid var(--orange);'
+      : (hasOpenTodo ? 'border:1.5px solid #6FA8E0;' : (hasBday ? 'border:1.5px solid #E89BB8;' : ''));
     const cursor = tappable ? 'cursor:pointer;' : '';
     const onclick = tappable ? ' onclick="openStaffCalModal(\'' + dateISO + '\',true)"' : '';
 
@@ -3813,6 +3836,13 @@ function renderStaffHomeCalMonth(year, month) {
       marks += '<span style="position:absolute;top:2px;left:3px;width:6px;height:6px;border-radius:50%;background:' + dotColor + '"></span>';
     }
     if (hasClass) marks += '<span style="position:absolute;bottom:1px;left:3px;font-size:8px;font-weight:700;color:var(--orange-d)">' + sess.length + '</span>';
+    // 報告書ステータスのドット（右上）。書いた日=緑 / 過去で未記入=赤 / 未来は非表示
+    const wroteReport = staffHomeMyReports.has(dateISO);
+    if (wroteReport) {
+      marks += '<span title="報告書 記入済み" style="position:absolute;top:2px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--green)"></span>';
+    } else if (dateISO < todayISO) {
+      marks += '<span title="報告書 未記入" style="position:absolute;top:2px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--red)"></span>';
+    }
 
     html += '<div class="cal-day" title="' + title + '"' + onclick +
       ' style="position:relative;background:' + bg + ';' + cursor + border + '">' + d + marks + '</div>';
@@ -4449,13 +4479,15 @@ function renderDailyAttendance() {
     const isInRoom = !c.checkout_time;
     const sid = c.student_id;
     const sname = (s.name||'不明').replace(/'/g, '');
+    // staffStudents 内のインデックス（タップで生徒詳細を開くため）
+    const stIdx = staffStudents.findIndex(x => x.id === sid);
 
     const avatarStyle = 'width:32px;height:32px;border-radius:50%;flex-shrink:0';
     const avatar = s.photo_url
       ? '<div style="' + avatarStyle + ';background-image:url(' + s.photo_url + ');background-size:cover;background-position:center;cursor:zoom-in" onclick="event.stopPropagation();openPhotoModal(\'' + s.photo_url + '\',\'' + sname + '\')"></div>'
       : '<div style="' + avatarStyle + ';background:' + (isInRoom ? 'linear-gradient(135deg,var(--orange),var(--orange-d))' : 'var(--surface2)') + ';display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:' + (isInRoom ? 'white' : 'var(--muted)') + '">' + (s.name||'?')[0] + '</div>';
 
-    return '<div style="background:' + (isInRoom ? 'var(--orange-l)' : 'var(--surface)') + ';border:1px solid ' + (isInRoom ? 'var(--orange)' : 'var(--border)') + ';border-radius:var(--radius-sm);padding:10px 13px">' +
+    return '<div ' + (stIdx >= 0 ? 'onclick="openStudentDetail(' + stIdx + ', \'staff\')" ' : '') + 'style="background:' + (isInRoom ? 'var(--orange-l)' : 'var(--surface)') + ';border:1px solid ' + (isInRoom ? 'var(--orange)' : 'var(--border)') + ';border-radius:var(--radius-sm);padding:10px 13px' + (stIdx >= 0 ? ';cursor:pointer' : '') + '">' +
       '<div style="display:flex;align-items:center;gap:10px">' +
         avatar +
         '<div style="flex:1;min-width:0">' +
@@ -4473,8 +4505,8 @@ function renderDailyAttendance() {
         '</div>' +
       '</div>' +
       (isInRoom ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">' +
-        '<button data-sid="' + sid + '" data-sname="' + sname + '" onclick="staffForceCheckout(this.dataset.sid,this.dataset.sname,true)" style="padding:8px;background:linear-gradient(135deg,#3B6D11,#5A9E3C);border:none;border-radius:6px;color:white;font-size:11px;font-weight:700;cursor:pointer">✅ ポイントあり チェックアウト</button>' +
-        '<button data-sid="' + sid + '" data-sname="' + sname + '" onclick="staffForceCheckout(this.dataset.sid,this.dataset.sname,false)" style="padding:8px;background:#f5f0e8;border:1px solid #ddd;border-radius:6px;color:#888;font-size:11px;font-weight:700;cursor:pointer">🚫 ポイントなし チェックアウト</button>' +
+        '<button data-sid="' + sid + '" data-sname="' + sname + '" onclick="event.stopPropagation();staffForceCheckout(this.dataset.sid,this.dataset.sname,true)" style="padding:8px;background:linear-gradient(135deg,#3B6D11,#5A9E3C);border:none;border-radius:6px;color:white;font-size:11px;font-weight:700;cursor:pointer">✅ ポイントあり チェックアウト</button>' +
+        '<button data-sid="' + sid + '" data-sname="' + sname + '" onclick="event.stopPropagation();staffForceCheckout(this.dataset.sid,this.dataset.sname,false)" style="padding:8px;background:#f5f0e8;border:1px solid #ddd;border-radius:6px;color:#888;font-size:11px;font-weight:700;cursor:pointer">🚫 ポイントなし チェックアウト</button>' +
       '</div>' : '') +
     '</div>';
   }).join('');
@@ -9293,6 +9325,8 @@ let staffCalSessions = [];  // [{date, period, class_name, class_master_id, teac
 let staffCalEvents = {};    // dateISO -> [{title, detail, color}]
 let staffCalBirthdays = {}; // 'MM-DD' -> [{name, type:'staff'|'student'}]
 let staffCalReports = {};   // dateISO -> staff_reports レコード（自分の報告書/出席状況）
+let staffHomeMyReports = new Set();  // 自分が報告書を書いた日付(YYYY-MM-DD)の集合（ホームカレンダー用）
+let staffHomeTodoDue = {};            // dateISO -> {total, open} 自分のToDo締切（ホームカレンダー用）
 let staffCalModalDate = null;
 
 async function loadStaffCalendar() {
