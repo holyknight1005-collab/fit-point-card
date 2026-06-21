@@ -2329,7 +2329,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620v';
+const APP_VERSION = '20260620w';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -11991,6 +11991,89 @@ function updateAttSummary() {
 }
 
 // 保存：session_attendance に1行ずつ upsert（UNIQUE制約 + Prefer: resolution=merge-duplicates）
+// session_attendance への安全なupsert（重複キー409対策）
+// 1) 同一バッチ内の重複を後勝ちで除去
+// 2) on_conflict 明示で merge-duplicates
+// 3) period が NULL 等で merge できず重複エラーになった場合は、行ごとに GET→PATCH/INSERT でフォールバック
+// 戻り値: { ok:true } または { ok:false, status, detail }
+async function upsertSessionAttendance(rows) {
+  if (!rows || !rows.length) return { ok: true };
+  // 1) バッチ内重複除去（キー: class|date|period|student）
+  const seen = new Map();
+  rows.forEach(r => {
+    const key = r.class_master_id + '|' + r.session_date + '|' + (r.period == null ? '' : r.period) + '|' + r.student_id;
+    seen.set(key, r); // 後勝ち
+  });
+  const deduped = Array.from(seen.values());
+
+  // 2) on_conflict を明示して merge-duplicates
+  const url = 'https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/session_attendance' +
+    '?on_conflict=class_master_id,session_date,period,student_id';
+  let res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY,
+      'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates'
+    },
+    body: JSON.stringify(deduped)
+  });
+  if (res.ok) return { ok: true };
+
+  // 3) 23505（duplicate）ならフォールバック：行ごとに存在確認して PATCH か INSERT
+  let txt = '';
+  try { txt = await res.text(); } catch(e) {}
+  const isDup = res.status === 409 || /23505|duplicate key/i.test(txt);
+  if (!isDup) return { ok: false, status: res.status, detail: txt };
+
+  try {
+    for (const r of deduped) {
+      const periodFilter = (r.period == null) ? '&period=is.null' : '&period=eq.' + r.period;
+      const q = 'class_master_id=eq.' + r.class_master_id +
+        '&session_date=eq.' + r.session_date + periodFilter +
+        '&student_id=eq.' + r.student_id + '&select=id';
+      let existing = [];
+      try { existing = await sbGet('session_attendance', q) || []; } catch(e) { existing = []; }
+      if (existing.length) {
+        // 既存あり → PATCH（最初の1件。重複していれば全件同値で更新）
+        const patchBody = { status: r.status, note: r.note, updated_by: r.updated_by, updated_at: r.updated_at };
+        const pres = await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/session_attendance?id=eq.' + existing[0].id, {
+          method: 'PATCH',
+          headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
+          body: JSON.stringify(patchBody)
+        });
+        if (!pres.ok) { const t = await pres.text(); return { ok: false, status: pres.status, detail: t }; }
+      } else {
+        // 既存なし → INSERT
+        const ires = await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/session_attendance', {
+          method: 'POST',
+          headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
+          body: JSON.stringify(r)
+        });
+        if (!ires.ok) {
+          const t = await ires.text();
+          // INSERTも重複なら、競合直後にPATCHで救済
+          if (ires.status === 409 || /23505|duplicate key/i.test(t)) {
+            let ex2 = [];
+            try { ex2 = await sbGet('session_attendance', q) || []; } catch(e) {}
+            if (ex2.length) {
+              await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/session_attendance?id=eq.' + ex2[0].id, {
+                method: 'PATCH',
+                headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: r.status, note: r.note, updated_by: r.updated_by, updated_at: r.updated_at })
+              });
+              continue;
+            }
+          }
+          return { ok: false, status: ires.status, detail: t };
+        }
+      }
+    }
+    return { ok: true };
+  } catch(e) {
+    return { ok: false, status: 0, detail: String(e && e.message || e) };
+  }
+}
+
 async function saveAttendance() {
   if (!attSelectedClassId || !attSelectedSession || !attRosterRows.length) return;
   if (!confirm('この授業日の出欠を保存しますか？')) return;
@@ -12008,22 +12091,12 @@ async function saveAttendance() {
       updated_by: staffId,
       updated_at: nowIso
     }));
-    // UNIQUE(class_master_id,session_date,period,student_id) で upsert
-    const res = await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/session_attendance', {
-      method: 'POST',
-      headers: {
-        'apikey': SB_KEY,
-        'Authorization': 'Bearer ' + SB_KEY,
-        'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates'
-      },
-      body: JSON.stringify(rows)
-    });
+    // period が NULL でも安全な upsert（GET→PATCH/INSERTフォールバック）で保存
+    const result = await upsertSessionAttendance(rows);
     hideLoading();
-    if (!res.ok) {
-      const txt = await res.text();
-      showToast('保存に失敗しました（' + res.status + '）', 'error');
-      console.error('session_attendance保存エラー:', res.status, txt);
+    if (!result.ok) {
+      showToast('保存に失敗しました（' + (result.status || '') + '）', 'error');
+      console.error('session_attendance保存エラー:', result.status, result.detail);
       return;
     }
     showToast('出欠を保存しました（出席' + attRosterRows.filter(r=>r.status==='present').length + '・補習' + attRosterRows.filter(r=>r.status==='makeup').length + '・欠席' + attRosterRows.filter(r=>r.status==='absent').length + '）', 'success');
@@ -12513,22 +12586,15 @@ async function saveAttMatrix() {
         updated_at: nowIso
       };
     });
-    const res = await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/session_attendance', {
-      method: 'POST',
-      headers: {
-        'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY,
-        'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates'
-      },
-      body: JSON.stringify(rows)
-    });
+    // period が NULL の回は merge-duplicates の競合解決が効かない（NULL≠NULL）ため、
+    // 既存の安全な upsert（GET→PATCH/INSERTフォールバック）を使う
+    const result = await upsertSessionAttendance(rows);
     hideLoading();
-    if (!res.ok) {
-      const txt = await res.text();
-      showToast('保存に失敗しました（' + res.status + '）', 'error');
-      console.error('session_attendance(matrix)保存エラー:', res.status, txt);
+    if (!result.ok) {
+      showToast('保存に失敗しました（' + (result.status || '') + '）', 'error');
+      console.error('session_attendance(matrix)保存エラー:', result.status, result.detail);
       return;
     }
-    // 保存成功：dirty解除・auto解除
     dirtyKeys.forEach(ck => { attMatrix.cells[ck].dirty = false; attMatrix.cells[ck].auto = false; });
     renderAttMatrix();
     showToast(dirtyKeys.length + '件の出欠を保存しました', 'success');
@@ -13136,19 +13202,11 @@ async function saveCaMatrix() {
         updated_at: nowIso
       };
     });
-    const res = await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/session_attendance', {
-      method: 'POST',
-      headers: {
-        'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY,
-        'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates'
-      },
-      body: JSON.stringify(rows)
-    });
+    const result = await upsertSessionAttendance(rows);
     hideLoading();
-    if (!res.ok) {
-      const txt = await res.text();
-      showToast('保存に失敗しました（' + res.status + '）', 'error');
-      console.error('session_attendance(ca-matrix)保存エラー:', res.status, txt);
+    if (!result.ok) {
+      showToast('保存に失敗しました（' + (result.status || '') + '）', 'error');
+      console.error('session_attendance(ca-matrix)保存エラー:', result.status, result.detail);
       return;
     }
     dirtyKeys.forEach(ck => { caMatrix.cells[ck].dirty = false; caMatrix.cells[ck].auto = false; });
