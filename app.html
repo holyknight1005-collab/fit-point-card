@@ -503,6 +503,24 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       </div>
     </div>
 
+    <!-- 授業の出席一覧 -->
+    <div id="my-attendance-box" style="display:none">
+      <div class="section-title">📋 授業の出席</div>
+      <div class="card-box">
+        <!-- 期間切替 -->
+        <div style="display:flex;gap:6px;margin-bottom:12px">
+          <button class="myatt-period-btn active" data-p="month" onclick="setMyAttPeriod('month',this)" style="flex:1;padding:7px 0;border:1px solid var(--border);border-radius:8px;background:var(--orange-l);color:var(--orange-d);font-size:11px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">1ヶ月</button>
+          <button class="myatt-period-btn" data-p="term" onclick="setMyAttPeriod('term',this)" style="flex:1;padding:7px 0;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">3ヶ月</button>
+          <button class="myatt-period-btn" data-p="all" onclick="setMyAttPeriod('all',this)" style="flex:1;padding:7px 0;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">全期間</button>
+        </div>
+        <!-- 全体サマリー -->
+        <div id="myatt-summary" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px"></div>
+        <!-- 授業ごと -->
+        <div id="myatt-classes" style="display:flex;flex-direction:column;gap:10px"></div>
+        <div style="font-size:10px;color:var(--muted);margin-top:10px;line-height:1.5">※ 出席・欠席はスタッフの記録、または来塾の記録から自動判定されます。「予定」はこれからの授業です。</div>
+      </div>
+    </div>
+
     <!-- ビデオ補習の履歴 -->
     <div id="my-makeup-box" style="display:none">
       <div class="section-title">📺 ビデオ補習の記録</div>
@@ -2272,7 +2290,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620n';
+const APP_VERSION = '20260620o';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -2996,6 +3014,8 @@ function initStudentScreen() {
   loadUnifiedCalendar();
   loadStudentAnnouncements();
   loadStudentDashboard();
+  myAttPeriod = 'month';
+  loadMyAttendance();
   const today = getTodayJSTString();
   const btn = document.getElementById('checkin-btn');
   // まず3つの状態をすべてリセット（前回表示の残りによる二重表示を防ぐ）
@@ -10277,6 +10297,254 @@ async function loadUnifiedCalendar() {
 function changeUnifiedMonth(delta) {
   unifiedMonthOffset += delta;
   renderUnifiedMonth();
+}
+
+// ============================================================
+// 生徒ホーム：自分の授業の出席一覧
+// 授業ごとのまとめ（出席率＋日付リスト）＋全体サマリー
+// 期間：month(当月) / term(3ヶ月) / all。予定された全セッションを表示。
+// 出欠は session_attendance を優先し、未記録の過去回は来塾(checkins)から自動判定。
+// ============================================================
+let myAttPeriod = 'month'; // 'month' | 'term' | 'all'
+
+function myAttPeriodSince() {
+  if (myAttPeriod === 'all') return null;
+  const today = getTodayJST();
+  if (myAttPeriod === 'month') return today.slice(0, 7) + '-01';
+  const d = new Date(today + 'T00:00:00+09:00');
+  const s = new Date(d.getFullYear(), d.getMonth() - 2, 1); // 当月含む3ヶ月
+  return s.getFullYear() + '-' + String(s.getMonth() + 1).padStart(2, '0') + '-01';
+}
+
+function setMyAttPeriod(p, btn) {
+  myAttPeriod = p;
+  document.querySelectorAll('.myatt-period-btn').forEach(b => {
+    b.classList.remove('active');
+    b.style.background = 'var(--surface)';
+    b.style.color = 'var(--muted)';
+  });
+  if (btn) {
+    btn.classList.add('active');
+    btn.style.background = 'var(--orange-l)';
+    btn.style.color = 'var(--orange-d)';
+  }
+  loadMyAttendance();
+}
+
+async function loadMyAttendance() {
+  const box = document.getElementById('my-attendance-box');
+  if (!box || !currentStudent) return;
+  const classesEl = document.getElementById('myatt-classes');
+  const summaryEl = document.getElementById('myatt-summary');
+  // 期間ボタンの表示状態を myAttPeriod に同期
+  document.querySelectorAll('.myatt-period-btn').forEach(b => {
+    const on = b.getAttribute('data-p') === myAttPeriod;
+    b.classList.toggle('active', on);
+    b.style.background = on ? 'var(--orange-l)' : 'var(--surface)';
+    b.style.color = on ? 'var(--orange-d)' : 'var(--muted)';
+  });
+  try {
+    // 受講授業
+    const enrollments = await sbGet('class_enrollments',
+      'student_id=eq.' + currentStudent.id + '&select=class_master_id,class_master(id,name,subject)') || [];
+    if (!enrollments.length) {
+      box.style.display = 'none';
+      return;
+    }
+    box.style.display = 'block';
+    const classInfo = {};
+    enrollments.forEach(e => {
+      const c = e.class_master || {};
+      classInfo[e.class_master_id] = { id: e.class_master_id, name: c.name || '授業', subject: c.subject || '' };
+    });
+    const myClassIds = enrollments.map(e => e.class_master_id).filter(Boolean);
+    if (!myClassIds.length) { box.style.display = 'none'; return; }
+
+    const since = myAttPeriodSince();
+    const todayStr = getTodayJST();
+
+    // 予定された全セッション（未来も含む）
+    let sessQ = 'class_master_id=in.(' + myClassIds.join(',') +
+      ')&select=class_master_id,session_date,period,start_time,end_time&order=session_date,period';
+    if (since) sessQ += '&session_date=gte.' + since;
+    const sessions = await sbGet('class_sessions', sessQ) || [];
+
+    // 自分の出欠記録
+    let attQ = 'student_id=eq.' + currentStudent.id +
+      '&class_master_id=in.(' + myClassIds.join(',') +
+      ')&select=class_master_id,session_date,period,status,note';
+    if (since) attQ += '&session_date=gte.' + since;
+    const atts = await sbGet('session_attendance', attQ) || [];
+
+    // 自分の来塾（自動判定用）
+    let myCheckins = [];
+    if (sessions.length) {
+      const dates = sessions.map(s => s.session_date).filter(d => d <= todayStr);
+      if (dates.length) {
+        const minD = dates.reduce((a, b) => a < b ? a : b);
+        const maxD = dates.reduce((a, b) => a > b ? a : b);
+        myCheckins = await sbGet('checkins',
+          'student_id=eq.' + currentStudent.id + '&checkin_date=gte.' + minD +
+          '&checkin_date=lte.' + maxD + '&select=checkin_date,created_at,checkout_time') || [];
+      }
+    }
+    // ビデオ補習（出席扱い）
+    let makeupSet = new Set();
+    try {
+      let mkQ = 'student_id=eq.' + currentStudent.id +
+        '&class_master_id=in.(' + myClassIds.join(',') +
+        ')&status=in.(approved)&select=class_master_id,session_date';
+      const makeups = await sbGet('video_makeups', mkQ) || [];
+      makeups.forEach(m => makeupSet.add(m.class_master_id + '|' + m.session_date));
+    } catch (e) { /* テーブル未作成は無視 */ }
+
+    renderMyAttendance(sessions, classInfo, atts, myCheckins, makeupSet, todayStr);
+  } catch (e) {
+    classesEl.innerHTML = '<div style="font-size:12px;color:var(--red);padding:8px">出席データの読み込みに失敗しました。</div>';
+    summaryEl.innerHTML = '';
+  }
+}
+
+function renderMyAttendance(sessions, classInfo, atts, checkins, makeupSet, todayStr) {
+  const classesEl = document.getElementById('myatt-classes');
+  const summaryEl = document.getElementById('myatt-summary');
+
+  // 手動記録マップ: 'classId|date|period' -> {status,note}
+  const attMap = {};
+  atts.forEach(a => {
+    attMap[a.class_master_id + '|' + a.session_date + '|' + (a.period || '')] =
+      { status: a.status, note: a.note || '' };
+  });
+
+  // 来塾詳細: date -> [{inMs,outMs|null}]
+  const ciByDate = {};
+  checkins.forEach(c => {
+    if (!ciByDate[c.checkin_date]) ciByDate[c.checkin_date] = [];
+    const inMs = c.created_at ? new Date(c.created_at).getTime() : null;
+    const outMs = c.checkout_time ? new Date(c.checkout_time).getTime() : null;
+    if (inMs) ciByDate[c.checkin_date].push({ inMs, outMs });
+  });
+
+  // 1セッションの自分の状態を返す: 'present'|'absent'|'planned'
+  function statusOf(s) {
+    const isPast = s.session_date <= todayStr;
+    const k = s.class_master_id + '|' + s.session_date + '|' + (s.period || '');
+    if (attMap[k]) return attMap[k].status; // 手動記録優先
+    if (makeupSet.has(s.class_master_id + '|' + s.session_date)) return 'present'; // 補習承認
+    if (!isPast) return 'planned';
+    // 過去で未記録 → 来塾から自動判定
+    if (s.start_time && s.end_time) {
+      const startMs = jstTimeToMs(s.session_date, s.start_time);
+      const endMs = jstTimeToMs(s.session_date, s.end_time);
+      if (startMs != null && endMs != null && endMs > startMs) {
+        const segs = ciByDate[s.session_date] || [];
+        if (segs.length) {
+          const classDur = endMs - startMs;
+          let overlap = 0, inClassByInTime = false, hasAnyOut = false;
+          segs.forEach(seg => {
+            if (seg.inMs >= startMs && seg.inMs <= endMs) inClassByInTime = true;
+            if (seg.outMs != null) {
+              hasAnyOut = true;
+              const ov = Math.min(endMs, seg.outMs) - Math.max(startMs, seg.inMs);
+              if (ov > 0) overlap += ov;
+            }
+          });
+          const present = hasAnyOut ? (overlap >= classDur * 0.5) : inClassByInTime;
+          return present ? 'present' : 'absent';
+        }
+      }
+    }
+    return 'absent'; // 過去・記録も来塾もなし
+  }
+
+  // 授業ごとに集計
+  const byClass = {};
+  sessions.forEach(s => {
+    const cid = s.class_master_id;
+    if (!classInfo[cid]) return;
+    if (!byClass[cid]) byClass[cid] = { info: classInfo[cid], rows: [] };
+    byClass[cid].rows.push({ s: s, st: statusOf(s) });
+  });
+
+  // 全体集計（過去＝present/absentのみ。plannedは母数に含めない）
+  let totPresent = 0, totAbsent = 0, totPlanned = 0;
+  const periodLabel = { '1': '1限', '2': '2限', '3': '3限', '4': '4限', '5': '5限', '6': '6限' };
+  const stMeta = {
+    present: { bg: 'var(--green-d)', fg: '#fff', label: '出席' },
+    absent:  { bg: '#C75050', fg: '#fff', label: '欠席' },
+    planned: { bg: '#B8C4D0', fg: '#fff', label: '予定' }
+  };
+
+  const classCards = Object.values(byClass).map(cl => {
+    cl.rows.sort((a, b) => (a.s.session_date + (a.s.period || '')).localeCompare(b.s.session_date + (b.s.period || '')));
+    let p = 0, ab = 0, pl = 0;
+    cl.rows.forEach(r => {
+      if (r.st === 'present') p++;
+      else if (r.st === 'absent') ab++;
+      else pl++;
+    });
+    totPresent += p; totAbsent += ab; totPlanned += pl;
+    const recorded = p + ab;
+    const rate = recorded ? Math.round(p / recorded * 100) : null;
+    const subjTag = cl.info.subject ? '<span style="font-size:10px;color:var(--muted)">【' + escapeHtml(cl.info.subject) + '】</span> ' : '';
+    const rateBadge = rate != null
+      ? '<span style="font-size:11px;font-weight:700;color:' + (rate >= 80 ? 'var(--green-d)' : rate >= 50 ? 'var(--orange-d)' : '#C75050') + '">出席率 ' + rate + '%</span>'
+      : '<span style="font-size:11px;color:var(--muted)">記録なし</span>';
+
+    // 新しい順に日付リスト（直近12件まで表示、それ以上は折りたたみ風に件数表示）
+    const rowsDesc = cl.rows.slice().reverse();
+    const shown = rowsDesc.slice(0, 12);
+    const rowsHtml = shown.map(r => {
+      const m = stMeta[r.st];
+      const per = r.s.period ? periodLabel[String(r.s.period)] || (r.s.period + '限') : '';
+      const note = (attMap[r.s.class_master_id + '|' + r.s.session_date + '|' + (r.s.period || '')] || {}).note || '';
+      return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--bg)">' +
+        '<span style="font-size:11px;color:var(--text);width:74px;flex-shrink:0;font-family:DM Mono,monospace">' + fmtMyAttDate(r.s.session_date) + '</span>' +
+        '<span style="font-size:10px;color:var(--muted);width:30px;flex-shrink:0">' + per + '</span>' +
+        '<span style="flex:1"></span>' +
+        (note ? '<span style="font-size:10px;color:var(--muted);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(note) + '</span>' : '') +
+        '<span style="font-size:10px;font-weight:700;color:' + m.fg + ';background:' + m.bg + ';padding:2px 8px;border-radius:10px;flex-shrink:0">' + m.label + '</span>' +
+        '</div>';
+    }).join('');
+    const moreNote = cl.rows.length > 12
+      ? '<div style="font-size:10px;color:var(--muted);text-align:center;padding-top:6px">ほか ' + (cl.rows.length - 12) + ' 件</div>'
+      : '';
+
+    return '<div style="border:1px solid var(--border);border-radius:10px;padding:10px;background:var(--surface)">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">' +
+        '<div style="font-size:13px;font-weight:700;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + subjTag + escapeHtml(cl.info.name) + '</div>' +
+        rateBadge +
+      '</div>' +
+      '<div style="font-size:10px;color:var(--muted);margin-bottom:4px">出席 ' + p + ' ・ 欠席 ' + ab + (pl ? ' ・ 予定 ' + pl : '') + '</div>' +
+      rowsHtml + moreNote +
+      '</div>';
+  });
+
+  classesEl.innerHTML = classCards.length
+    ? classCards.join('')
+    : '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">この期間の授業はありません。</div>';
+
+  // 全体サマリー
+  const totRecorded = totPresent + totAbsent;
+  const totRate = totRecorded ? Math.round(totPresent / totRecorded * 100) : null;
+  summaryEl.innerHTML =
+    myAttSummaryCell(totRate != null ? totRate + '%' : '—', '出席率') +
+    myAttSummaryCell(String(totPresent), '出席') +
+    myAttSummaryCell(String(totAbsent), '欠席');
+}
+
+function myAttSummaryCell(val, label) {
+  return '<div style="background:var(--bg);border-radius:10px;padding:10px 4px;text-align:center">' +
+    '<div style="font-family:DM Mono,monospace;font-size:18px;font-weight:500;color:var(--text)">' + val + '</div>' +
+    '<div style="font-size:9px;color:var(--muted);margin-top:2px">' + label + '</div>' +
+    '</div>';
+}
+
+// 'YYYY-MM-DD' -> 'M/D(曜)'
+function fmtMyAttDate(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00+09:00');
+  const w = ['日', '月', '火', '水', '木', '金', '土'][d.getDay()];
+  return (d.getMonth() + 1) + '/' + d.getDate() + '(' + w + ')';
 }
 
 // 指定日の状態を判定して返す（背景色・タイトル・クリック可否・補習絡みフラグ）
