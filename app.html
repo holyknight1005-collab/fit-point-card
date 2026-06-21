@@ -2272,7 +2272,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620l';
+const APP_VERSION = '20260620m';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -2350,22 +2350,47 @@ async function sbGet(table, query) {
   return res.json();
 }
 
-async function sbPost(table, body) {
-  const res = await fetch(SB_URL + '/rest/v1/' + table, {
-    method: 'POST',
+// 書き込み系の共通リクエスト。
+// ネットワーク起因の失敗（電波瞬断・タイムアウト等）のときだけ自動リトライする。
+// サーバーが応答したエラー（RLS違反・重複キー・400系など）はリトライせず即throw。
+async function sbWrite(method, table, query, body) {
+  const url = SB_URL + '/rest/v1/' + table + (query ? '?' + query : '');
+  const opt = {
+    method: method,
     headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
     body: JSON.stringify(body)
-  });
-  if (!res.ok) throw new Error(await res.text());
+  };
+  const maxAttempts = 3;        // 初回 + 再試行2回
+  const waitMs = [600, 1500];   // リトライ前の待機（ミリ秒）
+  let lastErr;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // タイムアウト付き fetch（電波の悪い環境で固まらないように）
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12000);
+    try {
+      const res = await fetch(url, Object.assign({ signal: ctrl.signal }, opt));
+      clearTimeout(timer);
+      if (res.ok) return;
+      // サーバー応答あり = アプリ/権限側のエラー。リトライしても無駄なので即throw
+      throw new Error(await res.text());
+    } catch (e) {
+      clearTimeout(timer);
+      // fetch自体が失敗（ネットワーク断・中断・タイムアウト）の場合だけリトライ対象
+      const isNetwork = (e instanceof TypeError) || e.name === 'AbortError';
+      if (!isNetwork || attempt === maxAttempts - 1) throw e;
+      lastErr = e;
+      await new Promise(r => setTimeout(r, waitMs[attempt]));
+    }
+  }
+  throw lastErr;
+}
+
+async function sbPost(table, body) {
+  return sbWrite('POST', table, '', body);
 }
 
 async function sbPatch(table, query, body) {
-  const res = await fetch(SB_URL + '/rest/v1/' + table + '?' + query, {
-    method: 'PATCH',
-    headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) throw new Error(await res.text());
+  return sbWrite('PATCH', table, query, body);
 }
 
 async function sbDelete(table, query) {
