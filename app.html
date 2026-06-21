@@ -943,6 +943,15 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div id="detail-enrollments" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
       <button onclick="openEnrollmentEdit()" style="width:100%;padding:10px;background:var(--surface2);border:1.5px dashed var(--border);border-radius:8px;color:var(--muted);font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋ 受講授業を追加</button>
       <div id="enrollment-add-box" style="display:none;margin-top:8px">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <select class="form-select" id="enrollment-subj-sel" onchange="onEnrollFilterChange()" style="flex:1;font-size:13px"><option value="">科目すべて</option></select>
+          <select class="form-select" id="enrollment-grade-sel" onchange="onEnrollFilterChange()" style="flex:1;font-size:13px">
+            <option value="">全学年</option>
+            <option value="1">1年</option>
+            <option value="2">2年</option>
+            <option value="3">3年</option>
+          </select>
+        </div>
         <select class="form-select" id="enrollment-class-sel" style="margin-bottom:8px"><option value="">授業を選択してください</option></select>
         <div style="display:flex;gap:8px">
           <button onclick="addEnrollment()" style="flex:1;padding:10px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">追加</button>
@@ -2052,6 +2061,21 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <button onclick="addSessionRow()" style="width:100%;padding:10px;background:var(--surface2);border:1.5px dashed var(--border);border-radius:8px;color:var(--muted);font-size:13px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋ コマを追加</button>
         <button class="form-btn" onclick="previewSessions()" style="background:linear-gradient(135deg,var(--orange),var(--orange-d))">📋 プレビュー確認</button>
       </div>
+
+      <!-- 単発登録（テスト前などに特定日へ1回だけ追加） -->
+      <div class="add-points-form" style="margin-top:4px">
+        <div style="background:#EAF2FB;border:1px solid #9CC0E8;border-radius:8px;padding:10px">
+          <div style="font-size:12px;font-weight:700;color:#2D5FA6;margin-bottom:2px">単発登録（特定日に追加）</div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:8px">テスト前など、1回だけの授業日を足したいときに。日付を選んでコマを追加してください。</div>
+          <div><div class="form-label">日付</div>
+            <input class="form-input-sm" id="cs-spot-date" type="date"></div>
+        </div>
+        <div class="section-title" style="margin-top:4px">コマを追加</div>
+        <div id="cs-spot-rows" style="display:flex;flex-direction:column;gap:8px"></div>
+        <button onclick="addSpotSessionRow()" style="width:100%;padding:10px;background:var(--surface2);border:1.5px dashed var(--border);border-radius:8px;color:var(--muted);font-size:13px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋ コマを追加</button>
+        <button class="form-btn" onclick="previewSpotSessions()" style="background:linear-gradient(135deg,#2D5FA6,#1E4276)">📋 プレビュー確認</button>
+      </div>
+
       <div id="cs-preview" style="display:none">
         <div class="section-title">登録プレビュー</div>
         <div id="cs-preview-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
@@ -2290,7 +2314,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620p';
+const APP_VERSION = '20260620r';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -9358,6 +9382,7 @@ const SUBJ_COLORS = {'英語':'#2D5FA6','国語':'#8B2020','数学':'#7B2D8B','�
 let classMasterList = [];
 let sessionRows = [];
 let pendingSessions = [];
+let csClassOptsHtml = '<option value="">授業を選択</option>'; // 授業セレクトのHTMLキャッシュ
 
 async function loadClassMasterList() {
   // 自分の授業のみ（管理者は全部）
@@ -9455,6 +9480,11 @@ function initSessionDefaults() {
   document.getElementById('cs-rows').innerHTML = '';
   document.getElementById('cs-preview').style.display = 'none';
   addSessionRow();
+  // 単発登録：日付は今日、コマ1行
+  const spotDate = document.getElementById('cs-spot-date');
+  if (spotDate) spotDate.value = getTodayJST();
+  const spotRows = document.getElementById('cs-spot-rows');
+  if (spotRows) { spotRows.innerHTML = ''; addSpotSessionRow(); }
 }
 
 async function loadClassMasterSelect() {
@@ -9475,7 +9505,8 @@ async function loadClassMasterSelect() {
       '</optgroup>'
     ).join('');
 
-  // 全rowのセレクトを更新
+  csClassOptsHtml = optsHtml; // 単発row追加時に流用するためキャッシュ
+  // 全row（定期・単発の両方）のセレクトを更新
   document.querySelectorAll('.cs-class-sel').forEach(sel => {
     sel.innerHTML = optsHtml;
   });
@@ -9566,6 +9597,60 @@ function previewSessions() {
     '</div>';
   }).join('');
 
+  document.getElementById('cs-preview').style.display = 'block';
+  document.getElementById('cs-preview').scrollIntoView({behavior:'smooth'});
+  showToast(pendingSessions.length + '件のセッションを登録予定', 'info');
+}
+
+// ===== 単発登録（特定日に1回だけ追加） =====
+function addSpotSessionRow() {
+  const rowId = 'spotrow-' + Date.now();
+  const periodOpts = Object.entries(PERIODS).map(([p, t]) =>
+    '<option value="' + p + '">' + p + '限（' + t[0] + '〜' + t[1] + '）</option>'
+  ).join('');
+  const rowHtml = '<div id="' + rowId + '" style="display:flex;align-items:center;gap:6px;background:var(--surface2);border-radius:8px;padding:8px">' +
+    '<select class="form-select cs-class-sel" style="flex:2;font-size:12px">' + csClassOptsHtml + '</select>' +
+    '<select class="form-select cs-spot-period-sel" style="flex:1;font-size:12px">' + periodOpts + '</select>' +
+    '<button onclick="document.getElementById(\'' + rowId + '\').remove()" style="padding:6px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:12px;cursor:pointer;flex-shrink:0">×</button>' +
+  '</div>';
+  document.getElementById('cs-spot-rows').insertAdjacentHTML('beforeend', rowHtml);
+  // キャッシュ未取得（初回）なら授業セレクトを読み込む
+  if (csClassOptsHtml.indexOf('optgroup') === -1) loadClassMasterSelect();
+}
+
+function previewSpotSessions() {
+  const dateStr = document.getElementById('cs-spot-date').value;
+  if (!dateStr) { showToast('日付を選んでください', 'error'); return; }
+  const rows = document.querySelectorAll('#cs-spot-rows > div');
+  if (!rows.length) { showToast('コマを追加してください', 'error'); return; }
+
+  pendingSessions = [];
+  let valid = true;
+  rows.forEach(row => {
+    const classSel = row.querySelector('.cs-class-sel');
+    const periodSel = row.querySelector('.cs-spot-period-sel');
+    if (!classSel.value) { valid = false; return; }
+    const className = classSel.options[classSel.selectedIndex].dataset.name || classSel.options[classSel.selectedIndex].text;
+    const period = parseInt(periodSel.value);
+    const times = PERIODS[period];
+    pendingSessions.push({
+      class_master_id: classSel.value,
+      class_name: className,
+      session_date: dateStr,
+      period, start_time: times[0], end_time: times[1]
+    });
+  });
+  if (!valid) { showToast('授業を選択してください', 'error'); return; }
+
+  // プレビュー表示（定期登録と同じ見た目・同じ確定フローを使用）
+  const weekNames = ['日','月','火','水','木','金','土'];
+  const [py, pm, pd] = dateStr.split('-').map(Number);
+  const pDate = new Date(py, pm-1, pd);
+  document.getElementById('cs-preview-list').innerHTML =
+    '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px">' +
+      '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">' + pm + '/' + pd + '（' + weekNames[pDate.getDay()] + '）<span style="font-size:10px;color:#2D5FA6;margin-left:6px">単発</span></div>' +
+      pendingSessions.map(s => '<div style="font-size:11px;color:var(--muted)">　' + s.period + '限 ' + s.start_time + '〜' + s.end_time + '　' + s.class_name + '</div>').join('') +
+    '</div>';
   document.getElementById('cs-preview').style.display = 'block';
   document.getElementById('cs-preview').scrollIntoView({behavior:'smooth'});
   showToast(pendingSessions.length + '件のセッションを登録予定', 'info');
@@ -9664,19 +9749,56 @@ async function loadDetailEnrollments() {
   }).join('');
 }
 
+let enrollMasters = []; // 授業マスターのキャッシュ（絞り込み用）
+
 async function openEnrollmentEdit() {
   const box = document.getElementById('enrollment-add-box');
   box.style.display = 'block';
-  // 授業マスター一覧を読み込む
-  const masters = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject') || [];
-  const SUBJ_COLORS = {'英語':'#2D5FA6','国語':'#8B2020','数学':'#7B2D8B','理科':'#1A7340','社会':'#8B6020','その他':'#5A5A5A'};
+  // 授業マスター一覧を読み込む（grade_level も取得）
+  enrollMasters = await sbGet('class_master',
+    'is_active=eq.true&order=subject,name&select=id,name,subject,grade_level') || [];
+  // 科目ドロップダウンを構築（マスターに存在する科目のみ）
+  const subjects = [...new Set(enrollMasters.map(m => m.subject).filter(Boolean))];
+  document.getElementById('enrollment-subj-sel').innerHTML =
+    '<option value="">科目すべて</option>' +
+    subjects.map(s => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('');
+  // 学年は生徒の学年を初期選択（'1年'→'1'）。不明なら全学年。
+  const gradeSel = document.getElementById('enrollment-grade-sel');
+  const g = (detailStudent && detailStudent.grade ? String(detailStudent.grade) : '').replace('年', '');
+  gradeSel.value = ['1', '2', '3'].includes(g) ? g : '';
+  document.getElementById('enrollment-subj-sel').value = '';
+  renderEnrollClassOptions();
+}
+
+// 科目・学年の選択に応じて授業ドロップダウンを再構築
+function onEnrollFilterChange() {
+  renderEnrollClassOptions();
+}
+
+function renderEnrollClassOptions() {
+  const subj = document.getElementById('enrollment-subj-sel').value;
+  const grade = document.getElementById('enrollment-grade-sel').value; // '' | '1' | '2' | '3'
+  const filtered = enrollMasters.filter(m => {
+    if (subj && m.subject !== subj) return false;
+    if (grade) {
+      // grade_level は '1,2,3' のようなカンマ区切り。空欄（学年指定なし）は全学年に出す。
+      const levels = (m.grade_level || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (levels.length && !levels.includes(grade)) return false;
+    }
+    return true;
+  });
+  // 科目ごとにoptgroupでまとめる
   const subjGroups = {};
-  masters.forEach(m => { if (!subjGroups[m.subject]) subjGroups[m.subject] = []; subjGroups[m.subject].push(m); });
-  document.getElementById('enrollment-class-sel').innerHTML =
-    '<option value="">授業を選択してください</option>' +
-    Object.entries(subjGroups).map(([subj, list]) =>
-      '<optgroup label="── ' + subj + ' ──">' +
-      list.map(m => '<option value="' + m.id + '">' + m.name + '</option>').join('') +
+  filtered.forEach(m => { (subjGroups[m.subject || 'その他'] = subjGroups[m.subject || 'その他'] || []).push(m); });
+  const sel = document.getElementById('enrollment-class-sel');
+  if (!filtered.length) {
+    sel.innerHTML = '<option value="">該当する授業がありません</option>';
+    return;
+  }
+  sel.innerHTML = '<option value="">授業を選択してください</option>' +
+    Object.entries(subjGroups).map(([s, list]) =>
+      '<optgroup label="── ' + escapeHtml(s) + ' ──">' +
+      list.map(m => '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>').join('') +
       '</optgroup>'
     ).join('');
 }
