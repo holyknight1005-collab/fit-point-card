@@ -1843,6 +1843,10 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
           <div style="font-size:10px;color:var(--green-d);font-weight:700">出席</div>
           <div style="font-size:20px;font-weight:700;color:var(--green-d)" id="att-count-present">0</div>
         </div>
+        <div style="flex:1;background:#EDE7F8;border:1px solid #C3B2E6;border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:10px;color:#6B4FA0;font-weight:700">補習</div>
+          <div style="font-size:20px;font-weight:700;color:#6B4FA0" id="att-count-makeup">0</div>
+        </div>
         <div style="flex:1;background:var(--red-l);border:1px solid #F5BABA;border-radius:8px;padding:8px;text-align:center">
           <div style="font-size:10px;color:var(--red);font-weight:700">欠席</div>
           <div style="font-size:20px;font-weight:700;color:var(--red)" id="att-count-absent">0</div>
@@ -2325,7 +2329,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620t';
+const APP_VERSION = '20260620v';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -3971,6 +3975,19 @@ async function loadStaffHomeCalendar() {
     staffCalReports = {};          // モーダル流用の報告書ステータスは出さない
     staffCalFilter = 'all';        // モーダル流用時は全件表示
 
+    // 授業報告(class_reports)の有無セットを構築（記入漏れ色付け用）
+    staffCalReportSet = new Set();
+    try {
+      const reps = await sbGet('class_reports',
+        'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO +
+        '&select=class_master_id,session_date,theme,content,student_notes') || [];
+      reps.forEach(r => {
+        // 3項目すべて空なら「未記入」扱い（行だけ作られた場合の保険）
+        const filled = (r.theme && r.theme.trim()) || (r.content && r.content.trim()) || (r.student_notes && r.student_notes.trim());
+        if (filled) staffCalReportSet.add(r.class_master_id + '|' + r.session_date);
+      });
+    } catch(e) { /* テーブル未作成時は未記入扱い（色付けなし運用に倒す） */ }
+
     renderStaffHomeCalMonth(year, month);
   } catch(e) {
     grid.innerHTML = '<div style="grid-column:1/8;font-size:12px;color:var(--red);text-align:center;padding:12px">読み込みに失敗しました</div>';
@@ -4005,6 +4022,7 @@ function renderStaffHomeCalMonth(year, month) {
     const hasTodo = !!todoInfo;
     const hasOpenTodo = !!(todoInfo && todoInfo.open > 0);
     const tappable = hasClass || hasEvent || hasBday;
+    const reportMissing = staffCalReportMissingOn(dateISO);
 
     const titleParts = [];
     sess.forEach(s => titleParts.push((s.period ? s.period + '限 ' : '') + s.class_name + (s.teacher_name ? '（' + s.teacher_name + '）' : '')));
@@ -4013,15 +4031,17 @@ function renderStaffHomeCalMonth(year, month) {
     if (hasTodo) titleParts.push('📋 ToDo締切 ' + todoInfo.total + '件' + (hasOpenTodo ? '（未完了' + todoInfo.open + '）' : '（完了）'));
     const title = titleParts.join(' / ').replace(/"/g, '&quot;');
 
-    // 背景: ToDo締切（未完了）> 授業 > 誕生日 > ToDo締切（完了済み）> 通常
+    // 背景: 授業報告未記入（過去〜今日）> ToDo締切（未完了）> 授業 > 誕生日 > ToDo締切（完了済み）> 通常
     let bg;
-    if (hasOpenTodo) bg = '#E7F0FB';
+    if (reportMissing) bg = '#FDECEC';
+    else if (hasOpenTodo) bg = '#E7F0FB';
     else if (hasClass) bg = 'var(--orange-l)';
     else if (hasBday) bg = '#FCE9F0';
     else if (hasTodo) bg = 'var(--surface2)';
     else bg = 'var(--surface2)';
     const border = isToday ? 'border:2px solid var(--orange);'
-      : (hasOpenTodo ? 'border:1.5px solid #6FA8E0;' : (hasBday ? 'border:1.5px solid #E89BB8;' : ''));
+      : (reportMissing ? 'border:1.5px solid #E89B9B;'
+      : (hasOpenTodo ? 'border:1.5px solid #6FA8E0;' : (hasBday ? 'border:1.5px solid #E89BB8;' : '')));
     const cursor = tappable ? 'cursor:pointer;' : '';
     const onclick = tappable ? ' onclick="openStaffCalModal(\'' + dateISO + '\',true)"' : '';
 
@@ -4032,12 +4052,9 @@ function renderStaffHomeCalMonth(year, month) {
       marks += '<span style="position:absolute;top:2px;left:3px;width:6px;height:6px;border-radius:50%;background:' + dotColor + '"></span>';
     }
     if (hasClass) marks += '<span style="position:absolute;bottom:1px;left:3px;font-size:8px;font-weight:700;color:var(--orange-d)">' + sess.length + '</span>';
-    // 報告書ステータスのドット（右上）。書いた日=緑 / 過去で未記入=赤 / 未来は非表示
-    const wroteReport = staffHomeMyReports.has(dateISO);
-    if (wroteReport) {
-      marks += '<span title="報告書 記入済み" style="position:absolute;top:2px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--green)"></span>';
-    } else if (dateISO < todayISO) {
-      marks += '<span title="報告書 未記入" style="position:absolute;top:2px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--red)"></span>';
+    // 授業報告ステータス（右上）。自分の担当授業があり、過去〜今日で未記入なら赤ドット
+    if (reportMissing) {
+      marks += '<span title="授業報告 未記入" style="position:absolute;top:2px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--red)"></span>';
     }
 
     html += '<div class="cal-day" title="' + title + '"' + onclick +
@@ -7311,7 +7328,6 @@ function openHomeFeature(tab) {
 // ===== お気に入り / 全機能メニュー =====
 // 全機能カタログ（キー・絵文字・ラベル・起動関数）
 var FEATURE_CATALOG = [
-  { key:'report',        icon:'📝', label:'報告書',       action:function(){ openHomeFeature('report'); } },
   { key:'todo',          icon:'✅', label:'ToDo',         action:function(){ openHomeFeature('todo'); } },
   { key:'makeup',        icon:'📺', label:'補習',         action:function(){ openHomeFeature('makeup'); } },
   { key:'birthday',      icon:'🎂', label:'誕生日',       action:function(){ openHomeFeature('birthday'); } },
@@ -9928,6 +9944,7 @@ let staffCalBirthdays = {}; // 'MM-DD' -> [{name, type:'staff'|'student'}]
 let staffCalReports = {};   // dateISO -> staff_reports レコード（自分の報告書/出席状況）
 let staffHomeMyReports = new Set();  // 自分が報告書を書いた日付(YYYY-MM-DD)の集合（ホームカレンダー用）
 let staffHomeTodoDue = {};            // dateISO -> {total, open} 自分のToDo締切（ホームカレンダー用）
+let staffCalReportSet = new Set();    // 'classId|date' で class_reports が存在するセット（両カレンダー共用）
 let staffHomeCalShownYear = null, staffHomeCalShownMonth = null;  // ホームカレンダーが今表示中の年月
 let staffCalModalDate = null;
 
@@ -10008,6 +10025,18 @@ async function loadStaffCalendar() {
     staffCalReports = {};
     (myReports || []).forEach(r => { staffCalReports[r.report_date] = r; });
 
+    // 授業報告(class_reports)の有無セットを構築（記入漏れ色付け用）
+    staffCalReportSet = new Set();
+    try {
+      const reps = await sbGet('class_reports',
+        'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO +
+        '&select=class_master_id,session_date,theme,content,student_notes') || [];
+      reps.forEach(r => {
+        const filled = (r.theme && r.theme.trim()) || (r.content && r.content.trim()) || (r.student_notes && r.student_notes.trim());
+        if (filled) staffCalReportSet.add(r.class_master_id + '|' + r.session_date);
+      });
+    } catch(e) { /* テーブル未作成時は色付けなし */ }
+
     renderStaffCalMonth();
   } catch(e) {
     grid.innerHTML = '<div style="grid-column:1/8;font-size:12px;color:var(--red);text-align:center;padding:12px">読み込みに失敗しました</div>';
@@ -10035,6 +10064,18 @@ function staffCalSessionsOn(dateISO) {
   return staffCalSessions.filter(s => s.date === dateISO && (staffCalFilter === 'all' || s.mine));
 }
 
+// その日に「自分の担当授業があり、かつ class_reports が未記入」のものがあるか
+// 過去〜今日のみ対象（未来の授業日は対象外）
+function staffCalReportMissingOn(dateISO) {
+  const todayStr = getTodayJST();
+  if (dateISO > todayStr) return false;
+  // 自分担当の授業だけ
+  const mine = staffCalSessions.filter(s => s.date === dateISO && s.mine && s.class_master_id);
+  if (!mine.length) return false;
+  // 1つでも報告未記入があれば true
+  return mine.some(s => !staffCalReportSet.has(s.class_master_id + '|' + dateISO));
+}
+
 function renderStaffCalMonth() {
   const grid = document.getElementById('staffcal-grid');
   if (!grid) return;
@@ -10060,41 +10101,27 @@ function renderStaffCalMonth() {
     const sess = staffCalSessionsOn(dateISO);
     const evs = staffCalEvents[dateISO] || [];
     const bdays = staffCalBirthdays[md] || [];
-    const rec = staffCalReports[dateISO];
     const todayStr = todayISO;
     const isPast = dateISO < todayStr;
-    // 報告書・出席ステータス（自分の担当フィルタ時のみ表示）
-    const showReport = (staffCalFilter === 'mine');
-    let repDone = false, attDone = false, repLate = false, noClass = false, repMissing = false;
-    if (showReport && rec) {
-      noClass = !!rec.no_class;
-      if (!noClass) {
-        repDone = !!rec.memo; // メモ（報告書）があれば記録ありとみなす
-      }
-    } else if (showReport && !rec && isPast) {
-      repMissing = true; // 過去日で未入力
-    }
+    // 授業報告の未記入（自分の担当授業・過去〜今日のみ）。フィルタに依らず自分基準で表示
+    const reportMissing = staffCalReportMissingOn(dateISO);
 
     const hasClass = sess.length > 0;
     const hasEvent = evs.length > 0;
     const hasBday = bdays.length > 0;
-    const tappable = hasClass || hasEvent || hasBday || (showReport && (rec || isPast));
+    const tappable = hasClass || hasEvent || hasBday || reportMissing;
 
     const titleParts = [];
     sess.forEach(s => titleParts.push((s.period ? s.period + '限 ' : '') + s.class_name + (s.teacher_name ? '（' + s.teacher_name + '）' : '')));
     evs.forEach(ev => titleParts.push('🎪 ' + ev.title));
     bdays.forEach(b => titleParts.push('🎂 ' + b.name));
-    if (showReport) {
-      if (noClass) titleParts.push('休講');
-      if (repDone) titleParts.push(repLate ? '報告書(遅延)' : '報告書済');
-      if (attDone) titleParts.push('出席記入済');
-      if (repMissing) titleParts.push('報告書未入力');
-    }
+    if (reportMissing) titleParts.push('授業報告 未記入');
     const title = titleParts.join(' / ').replace(/"/g, '&quot;');
 
-    // 授業がある日は背景を薄オレンジに。誕生日のみの日は淡いピンクに
-    const bg = hasClass ? 'var(--orange-l)' : (hasBday ? '#FCE9F0' : 'var(--surface2)');
-    const border = isToday ? 'border:2px solid var(--orange);' : (hasBday && !hasClass ? 'border:1.5px solid #E89BB8;' : '');
+    // 授業がある日は背景を薄オレンジに。報告未記入は赤系を優先。誕生日のみの日は淡いピンク
+    const bg = reportMissing ? '#FDECEC' : (hasClass ? 'var(--orange-l)' : (hasBday ? '#FCE9F0' : 'var(--surface2)'));
+    const border = isToday ? 'border:2px solid var(--orange);'
+      : (reportMissing ? 'border:1.5px solid #E89B9B;' : (hasBday && !hasClass ? 'border:1.5px solid #E89BB8;' : ''));
     const cursor = tappable ? 'cursor:pointer;' : '';
     const onclick = tappable ? ' onclick="openStaffCalModal(\'' + dateISO + '\')"' : '';
 
@@ -10106,18 +10133,9 @@ function renderStaffCalMonth() {
     }
     // 授業件数バッジ（左下）
     if (hasClass) marks += '<span style="position:absolute;bottom:1px;left:3px;font-size:8px;font-weight:700;color:var(--orange-d)">' + sess.length + '</span>';
-    // 報告書・出席ドット（右下に集約。自分の担当時のみ）
-    if (showReport) {
-      let statusDots = '';
-      if (repDone) statusDots += '<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:' + (repLate ? '#2D5FA6' : 'var(--orange)') + '"></span>';
-      if (attDone) statusDots += '<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--green-d)"></span>';
-      if (statusDots) {
-        marks += '<span style="position:absolute;bottom:2px;right:3px;display:flex;gap:1px">' + statusDots + '</span>';
-      } else if (noClass) {
-        marks += '<span style="position:absolute;bottom:1px;right:3px;font-size:7px;color:var(--muted)">休</span>';
-      } else if (repMissing) {
-        marks += '<span style="position:absolute;bottom:1px;right:3px;font-size:8px;font-weight:700;color:var(--red)">!</span>';
-      }
+    // 授業報告 未記入マーク（右下）
+    if (reportMissing) {
+      marks += '<span style="position:absolute;bottom:1px;right:3px;font-size:8px;font-weight:700;color:var(--red)">!</span>';
     }
 
     html += '<div class="cal-day" title="' + title + '"' + onclick +
@@ -10142,13 +10160,27 @@ function openStaffCalModal(dateISO, simple) {
 
   // 授業（時限順）
   if (sess.length) {
+    const todayStr0 = getTodayJST();
+    const isPastOrToday = dateISO <= todayStr0;
     body += '<div><div style="font-size:12px;font-weight:700;color:var(--orange-d);margin-bottom:6px">📚 授業</div>';
     sess.slice().sort((a,b) => (a.period||0) - (b.period||0)).forEach(s => {
       const time = (s.start_time && s.end_time) ? (String(s.start_time).slice(0,5) + '〜' + String(s.end_time).slice(0,5)) : '';
       const mineBadge = s.mine ? '<span style="font-size:9px;background:var(--orange);color:#fff;padding:1px 6px;border-radius:10px;margin-left:6px">担当</span>' : '';
+      // 授業報告の状況（自分担当・過去〜今日のみ）
+      let repHtml = '';
+      if (s.mine && s.class_master_id && isPastOrToday) {
+        const has = staffCalReportSet.has(s.class_master_id + '|' + dateISO);
+        if (has) {
+          repHtml = '<div style="font-size:11px;color:var(--green-d);margin-top:4px">📝 授業報告 記入済み</div>';
+        } else {
+          repHtml = '<div style="margin-top:6px"><span style="font-size:11px;color:var(--red);font-weight:700">📝 授業報告 未記入</span>' +
+            '<button onclick="openClassAttendance(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period || '') + '\')" style="margin-left:8px;font-size:11px;font-weight:700;color:#fff;background:var(--orange);border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">入力する</button></div>';
+        }
+      }
       body += '<div style="background:' + (s.mine ? 'var(--orange-l)' : 'var(--surface)') + ';border:1px solid ' + (s.mine ? 'var(--orange)' : 'var(--border)') + ';border-radius:8px;padding:8px 10px;margin-bottom:6px">' +
         '<div style="font-size:13px;font-weight:700;color:var(--text)">' + (s.period ? s.period + '限 ' : '') + escapeHtml(s.class_name) + mineBadge + '</div>' +
         '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + (time ? time : '') + (s.teacher_name ? '　' + escapeHtml(s.teacher_name) + '先生' : '') + '</div>' +
+        repHtml +
       '</div>';
     });
     body += '</div>';
@@ -10613,26 +10645,30 @@ function renderMyAttendance(sessions, classInfo, atts, checkins, makeupSet, toda
     byClass[cid].rows.push({ s: s, st: statusOf(s) });
   });
 
-  // 全体集計（過去＝present/absentのみ。plannedは母数に含めない）
-  let totPresent = 0, totAbsent = 0, totPlanned = 0;
+  // 全体集計（過去＝present/makeup/absentのみ。plannedは母数に含めない）
+  let totPresent = 0, totMakeup = 0, totAbsent = 0, totPlanned = 0;
   const periodLabel = { '1': '1限', '2': '2限', '3': '3限', '4': '4限', '5': '5限', '6': '6限' };
   const stMeta = {
     present: { bg: 'var(--green-d)', fg: '#fff', label: '出席' },
+    makeup:  { bg: '#6B4FA0', fg: '#fff', label: '補習' },
     absent:  { bg: '#C75050', fg: '#fff', label: '欠席' },
     planned: { bg: '#B8C4D0', fg: '#fff', label: '予定' }
   };
 
   const classCards = Object.values(byClass).map(cl => {
     cl.rows.sort((a, b) => (a.s.session_date + (a.s.period || '')).localeCompare(b.s.session_date + (b.s.period || '')));
-    let p = 0, ab = 0, pl = 0;
+    let p = 0, mk = 0, ab = 0, pl = 0;
     cl.rows.forEach(r => {
       if (r.st === 'present') p++;
+      else if (r.st === 'makeup') mk++;
       else if (r.st === 'absent') ab++;
       else pl++;
     });
-    totPresent += p; totAbsent += ab; totPlanned += pl;
-    const recorded = p + ab;
-    const rate = recorded ? Math.round(p / recorded * 100) : null;
+    totPresent += p; totMakeup += mk; totAbsent += ab; totPlanned += pl;
+    // 出席率の分子は「出席＋補習」、母数は「出席＋補習＋欠席」
+    const attended = p + mk;
+    const recorded = attended + ab;
+    const rate = recorded ? Math.round(attended / recorded * 100) : null;
     const subjTag = cl.info.subject ? '<span style="font-size:10px;color:var(--muted)">【' + escapeHtml(cl.info.subject) + '】</span> ' : '';
     const rateBadge = rate != null
       ? '<span style="font-size:11px;font-weight:700;color:' + (rate >= 80 ? 'var(--green-d)' : rate >= 50 ? 'var(--orange-d)' : '#C75050') + '">出席率 ' + rate + '%</span>'
@@ -10658,7 +10694,7 @@ function renderMyAttendance(sessions, classInfo, atts, checkins, makeupSet, toda
       '<div onclick="toggleMyAttClass(this)" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px;cursor:pointer">' +
         '<div style="min-width:0;flex:1">' +
           '<div style="font-size:13px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + subjTag + escapeHtml(cl.info.name) + '</div>' +
-          '<div style="font-size:10px;color:var(--muted);margin-top:2px">出席 ' + p + ' ・ 欠席 ' + ab + (pl ? ' ・ 予定 ' + pl : '') + '</div>' +
+          '<div style="font-size:10px;color:var(--muted);margin-top:2px">出席 ' + p + (mk ? ' ・ 補習 ' + mk : '') + ' ・ 欠席 ' + ab + (pl ? ' ・ 予定 ' + pl : '') + '</div>' +
         '</div>' +
         rateBadge +
         '<span class="myatt-arrow" style="color:var(--muted);font-size:13px;flex-shrink:0;transition:transform .2s">▼</span>' +
@@ -10671,12 +10707,13 @@ function renderMyAttendance(sessions, classInfo, atts, checkins, makeupSet, toda
     ? classCards.join('')
     : '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">この期間の授業はありません。</div>';
 
-  // 全体サマリー
-  const totRecorded = totPresent + totAbsent;
-  const totRate = totRecorded ? Math.round(totPresent / totRecorded * 100) : null;
+  // 全体サマリー（出席率の分子＝出席＋補習）
+  const totAttended = totPresent + totMakeup;
+  const totRecorded = totAttended + totAbsent;
+  const totRate = totRecorded ? Math.round(totAttended / totRecorded * 100) : null;
   summaryEl.innerHTML =
     myAttSummaryCell(totRate != null ? totRate + '%' : '—', '出席率') +
-    myAttSummaryCell(String(totPresent), '出席') +
+    myAttSummaryCell(String(totPresent) + (totMakeup ? '+' + totMakeup : ''), totMakeup ? '出席+補習' : '出席') +
     myAttSummaryCell(String(totAbsent), '欠席');
 }
 
@@ -11628,6 +11665,9 @@ let attAllMasters = []; // 全授業 [{id,name,subject,grade_level}]
 
 // ホームの授業ボタンから：出席タブを開き、その授業・その日を自動選択して報告入力へ
 async function openClassAttendance(classId, date, period) {
+  // スタッフカレンダーのモーダルが開いていれば閉じる
+  const modal = document.getElementById('staffcal-modal');
+  if (modal && modal.style.display !== 'none') modal.style.display = 'none';
   openHomeFeature('attendance');     // attendanceタブを開く（initAttendanceTabが走る）
   // マスター読み込み完了を待ってから選択（initAttendanceTabは非同期）
   let tries = 0;
@@ -11835,20 +11875,32 @@ async function loadAttendanceRoster() {
     const savedMap = {};
     saved.forEach(r => { savedMap[r.student_id] = r; });
 
+    // 承認済みビデオ補習（この授業×この日）→ 初期値で「補習」に
+    let makeupSet = new Set();
+    try {
+      const makeups = await sbGet('video_makeups',
+        'class_master_id=eq.' + classId + '&session_date=eq.' + sdate +
+        '&status=eq.approved&student_id=in.(' + studentIds.join(',') + ')&select=student_id') || [];
+      makeups.forEach(m => makeupSet.add(m.student_id));
+    } catch(e) { /* テーブル未作成時は無視 */ }
+
     // staffStudents から生徒情報を引く（写真・学校・学年）。並びは学校→学年→名前
     attRosterRows = studentIds.map(sid => {
       const stu = staffStudents.find(s => s.id === sid) || { id: sid, name: '(不明な生徒)' };
       const inTime = checkinMap[sid] || null;
-      // 初期値：保存済みがあればそれ、なければ来塾していれば present、いなければ absent
+      // 初期値：保存済みがあればそれ、なければ承認済み補習なら makeup、来塾していれば present、いなければ absent
       let status, note;
       if (savedMap[sid]) {
         status = savedMap[sid].status;
         note = savedMap[sid].note || '';
+      } else if (makeupSet.has(sid)) {
+        status = 'makeup';
+        note = '';
       } else {
         status = inTime ? 'present' : 'absent';
         note = '';
       }
-      return { student: stu, status: status, note: note, checkinTime: inTime, noteOpen: !!note };
+      return { student: stu, status: status, note: note, checkinTime: inTime, noteOpen: !!note, isMakeup: makeupSet.has(sid) };
     }).sort((a,b) => {
       const sa = (a.student.school||'') + (a.student.grade||'') + (a.student.name||'');
       const sb = (b.student.school||'') + (b.student.grade||'') + (b.student.name||'');
@@ -11868,7 +11920,7 @@ function renderAttendanceRoster() {
   const el = document.getElementById('att-roster');
   el.innerHTML = attRosterRows.map((row, i) => {
     const s = row.student;
-    const present = row.status === 'present';
+    const st = row.status; // 'present' | 'makeup' | 'absent'
     // 来塾時刻表示（JST）
     let inLabel = '来塾未確認';
     if (row.checkinTime) {
@@ -11876,15 +11928,18 @@ function renderAttendanceRoster() {
       const jst = new Date(t.getTime() + 9*3600000);
       inLabel = '来塾' + String(jst.getUTCHours()).padStart(2,'0') + ':' + String(jst.getUTCMinutes()).padStart(2,'0');
     }
+    const makeupTag = row.isMakeup ? '<span style="font-size:9px;background:#E8E2F5;color:#6B4FA0;padding:1px 6px;border-radius:10px;margin-left:4px">📺 補習承認</span>' : '';
     const sub = [s.school, s.grade ? s.grade + '年' : '', inLabel].filter(Boolean).join(' ・ ');
     // アバター
     const avatar = s.photo_url
       ? '<div style="width:36px;height:36px;border-radius:50%;background-image:url(' + s.photo_url + ');background-size:cover;background-position:center;flex-shrink:0"></div>'
       : '<div style="width:36px;height:36px;border-radius:50%;background:var(--orange-l);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:var(--orange-d);flex-shrink:0">' + (s.name||'?').charAt(0) + '</div>';
-    const presentBtn = '<span onclick="setAttStatus(' + i + ',\'present\')" style="font-size:12px;font-weight:700;padding:6px 12px;border-radius:6px;cursor:pointer;' +
-      (present ? 'background:var(--green-l);color:var(--green-d);border:1px solid #A8D891' : 'background:var(--surface);color:var(--muted);border:1px solid var(--border)') + '">出席</span>';
-    const absentBtn = '<span onclick="setAttStatus(' + i + ',\'absent\')" style="font-size:12px;font-weight:700;padding:6px 12px;border-radius:6px;cursor:pointer;' +
-      (!present ? 'background:var(--red-l);color:var(--red);border:1px solid #F5BABA' : 'background:var(--surface);color:var(--muted);border:1px solid var(--border)') + '">欠席</span>';
+    const btn = (val, label, onSty) =>
+      '<span onclick="setAttStatus(' + i + ',\'' + val + '\')" style="font-size:12px;font-weight:700;padding:6px 10px;border-radius:6px;cursor:pointer;' +
+      (st === val ? onSty : 'background:var(--surface);color:var(--muted);border:1px solid var(--border)') + '">' + label + '</span>';
+    const presentBtn = btn('present', '出席', 'background:var(--green-l);color:var(--green-d);border:1px solid #A8D891');
+    const makeupBtn  = btn('makeup',  '補習', 'background:#EDE7F8;color:#6B4FA0;border:1px solid #C3B2E6');
+    const absentBtn  = btn('absent',  '欠席', 'background:var(--red-l);color:var(--red);border:1px solid #F5BABA');
     const noteBadge = row.note ? '<span style="font-size:9px;color:var(--orange-d)">●</span>' : '';
     const noteArea = row.noteOpen
       ? '<input type="text" value="' + (row.note||'').replace(/"/g,'&quot;') + '" oninput="setAttNote(' + i + ',this.value)" placeholder="メモ・欠席理由" style="width:100%;margin-top:8px;font-size:12px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box">'
@@ -11893,11 +11948,11 @@ function renderAttendanceRoster() {
       '<div style="display:flex;align-items:center;gap:10px">' +
         avatar +
         '<div style="flex:1;min-width:0">' +
-          '<div style="font-size:14px;font-weight:500;color:var(--text)">' + (s.name||'(不明)') + ' ' + noteBadge + '</div>' +
+          '<div style="font-size:14px;font-weight:500;color:var(--text)">' + (s.name||'(不明)') + ' ' + noteBadge + makeupTag + '</div>' +
           '<div style="font-size:11px;color:var(--muted)">' + sub + '</div>' +
         '</div>' +
-        '<div style="display:flex;gap:4px;flex-shrink:0">' + presentBtn + absentBtn + '</div>' +
       '</div>' +
+      '<div style="display:flex;gap:4px;margin-top:8px">' + presentBtn + makeupBtn + absentBtn + '</div>' +
       '<div style="margin-top:6px"><span onclick="toggleAttNote(' + i + ')" style="font-size:11px;color:var(--muted);cursor:pointer">📝 メモ' + (row.noteOpen ? ' ▲' : ' ▼') + '</span></div>' +
       noteArea +
     '</div>';
@@ -11923,10 +11978,16 @@ function setAttNote(i, val) {
 }
 function updateAttSummary() {
   const present = attRosterRows.filter(r => r.status === 'present').length;
-  const absent = attRosterRows.length - present;
-  document.getElementById('att-count-present').textContent = present;
-  document.getElementById('att-count-absent').textContent = absent;
-  document.getElementById('att-count-total').textContent = attRosterRows.length;
+  const makeup = attRosterRows.filter(r => r.status === 'makeup').length;
+  const absent = attRosterRows.filter(r => r.status === 'absent').length;
+  const pEl = document.getElementById('att-count-present');
+  const mEl = document.getElementById('att-count-makeup');
+  const aEl = document.getElementById('att-count-absent');
+  const tEl = document.getElementById('att-count-total');
+  if (pEl) pEl.textContent = present;
+  if (mEl) mEl.textContent = makeup;
+  if (aEl) aEl.textContent = absent;
+  if (tEl) tEl.textContent = attRosterRows.length;
 }
 
 // 保存：session_attendance に1行ずつ upsert（UNIQUE制約 + Prefer: resolution=merge-duplicates）
@@ -11965,7 +12026,7 @@ async function saveAttendance() {
       console.error('session_attendance保存エラー:', res.status, txt);
       return;
     }
-    showToast('出欠を保存しました（出席' + attRosterRows.filter(r=>r.status==='present').length + '・欠席' + attRosterRows.filter(r=>r.status==='absent').length + '）', 'success');
+    showToast('出欠を保存しました（出席' + attRosterRows.filter(r=>r.status==='present').length + '・補習' + attRosterRows.filter(r=>r.status==='makeup').length + '・欠席' + attRosterRows.filter(r=>r.status==='absent').length + '）', 'success');
   } catch(e) {
     hideLoading();
     showToast('エラー: ' + e.message, 'error');
@@ -12109,11 +12170,12 @@ async function exportAttendanceCsv() {
     });
     const todayStr = getTodayJST();
 
-    // 各セッションの出席/欠席を算出（手動記録優先、未記録の過去回は来塾から推定）
+    // 各セッションの状態を算出（手動記録優先、未記録の過去回は来塾から推定）
+    // 戻り値: 'present' | 'makeup' | 'absent' | 'planned'
     function statusFor(sid, s) {
       const k = s.session_date + '|' + (s.period||'') + '|' + sid;
-      if (attMap[k]) return attMap[k];
-      if (makeupByDate[s.session_date] && makeupByDate[s.session_date].has(sid)) return 'present';
+      if (attMap[k]) return attMap[k]; // 手動記録（present/makeup/absent）優先
+      if (makeupByDate[s.session_date] && makeupByDate[s.session_date].has(sid)) return 'makeup'; // 承認補習
       if (s.session_date > todayStr) return 'planned';
       if (s.start_time && s.end_time) {
         const startMs = jstTimeToMs(s.session_date, s.start_time);
@@ -12135,20 +12197,22 @@ async function exportAttendanceCsv() {
     }
 
     const weekNames = ['日','月','火','水','木','金','土'];
-    const header = ['授業名','日付','曜日','時限','出席','欠席','名簿人数','出席率(%)','ビデオ補習完了','授業テーマ','授業内容','生徒の様子'];
+    const header = ['授業名','日付','曜日','時限','出席','補習','欠席','名簿人数','出席率(%)','授業テーマ','授業内容','生徒の様子'];
     const lines = [header.map(csvCell).join(',')];
 
     sessions.forEach(s => {
-      let present = 0, absent = 0, planned = 0;
+      let present = 0, makeup = 0, absent = 0, planned = 0;
       studentIds.forEach(sid => {
         const st = statusFor(sid, s);
         if (st === 'present') present++;
+        else if (st === 'makeup') makeup++;
         else if (st === 'absent') absent++;
         else planned++;
       });
-      const recorded = present + absent;
-      const rate = recorded ? Math.round(present / recorded * 100) : '';
-      const makeupCount = makeupByDate[s.session_date] ? makeupByDate[s.session_date].size : 0;
+      // 出席率の分子＝出席＋補習、母数＝出席＋補習＋欠席
+      const attended = present + makeup;
+      const recorded = attended + absent;
+      const rate = recorded ? Math.round(attended / recorded * 100) : '';
       const rep = reportByDate[s.session_date] || {};
       const d = new Date(s.session_date + 'T00:00:00+09:00');
       const row = [
@@ -12156,9 +12220,8 @@ async function exportAttendanceCsv() {
         s.session_date,
         weekNames[d.getDay()],
         s.period ? (s.period + '限') : '',
-        present, absent, studentIds.length,
+        present, makeup, absent, studentIds.length,
         (s.session_date > todayStr && recorded === 0) ? '予定' : rate,
-        makeupCount,
         rep.theme || '', rep.content || '', rep.student_notes || ''
       ];
       lines.push(row.map(csvCell).join(','));
@@ -12321,11 +12384,12 @@ function attCellHtml(sid, k) {
     return '<td style="text-align:center;padding:5px;color:var(--border)">—</td>';
   }
   const present = cell.status === 'present';
+  const makeup = cell.status === 'makeup';
   let bg, col, mark;
-  if (cell.auto) { bg = '#E6F1FB'; col = '#185FA5'; }
-  else if (present) { bg = 'var(--green-l)'; col = 'var(--green-d)'; }
-  else { bg = 'var(--red-l)'; col = 'var(--red)'; }
-  mark = present ? '○' : '✕';
+  if (cell.auto) { bg = '#E6F1FB'; col = '#185FA5'; mark = present ? '○' : '✕'; }
+  else if (makeup) { bg = '#EDE7F8'; col = '#6B4FA0'; mark = '◐'; }
+  else if (present) { bg = 'var(--green-l)'; col = 'var(--green-d)'; mark = '○'; }
+  else { bg = 'var(--red-l)'; col = 'var(--red)'; mark = '✕'; }
   const dirtyDot = cell.dirty ? '<span style="position:absolute;top:1px;right:3px;font-size:8px;color:var(--orange-d)">●</span>' : '';
   return '<td style="text-align:center;padding:4px">' +
     '<span onclick="toggleAttCell(\'' + sid + '\',\'' + k + '\')" style="position:relative;display:inline-block;width:28px;height:28px;line-height:28px;border-radius:6px;background:' + bg + ';color:' + col + ';font-weight:700;cursor:pointer;font-size:14px">' + mark + dirtyDot + '</span>' +
@@ -12337,7 +12401,7 @@ function attRowRateHtml(sid) {
   attMatrix.sessKeys.forEach(k => {
     const c = attMatrix.cells[sid + '|' + k];
     if (!c) return;
-    n++; if (c.status === 'present') p++;
+    n++; if (c.status === 'present' || c.status === 'makeup') p++; // 補習も出席扱い
   });
   const rate = n ? Math.round(p / n * 100) : null;
   const col = rate === null ? 'var(--muted)' : (rate >= 80 ? 'var(--green-d)' : (rate >= 60 ? 'var(--orange-d)' : 'var(--red)'));
@@ -12736,7 +12800,7 @@ function renderClassAnalysis(sessions, studentIds, atts, checkins) {
     const m = attMap[k];
     if (!m) { sessRates.push(null); return; } // 未記入の回
     const ids = Object.keys(m);
-    const present = ids.filter(id => m[id].status === 'present').length;
+    const present = ids.filter(id => m[id].status === 'present' || m[id].status === 'makeup').length;
     sessRates.push(ids.length ? Math.round(present / ids.length * 100) : null);
   });
   const recordedSessions = sessKeys.filter(k => attMap[k]); // 出欠記入済みの回
@@ -12746,7 +12810,7 @@ function renderClassAnalysis(sessions, studentIds, atts, checkins) {
   let totP = 0, totN = 0;
   recordedSessions.forEach(k => {
     const m = attMap[k];
-    Object.keys(m).forEach(id => { totN++; if (m[id].status === 'present') totP++; });
+    Object.keys(m).forEach(id => { totN++; if (m[id].status === 'present' || m[id].status === 'makeup') totP++; });
   });
   const overallRate = totN ? Math.round(totP / totN * 100) : null;
 
@@ -12762,7 +12826,7 @@ function renderClassAnalysis(sessions, studentIds, atts, checkins) {
       const rec = attMap[k][sid];
       if (!rec) continue; // この生徒の記録がない回はスキップ
       n++;
-      if (rec.status === 'present') {
+      if (rec.status === 'present' || rec.status === 'makeup') {
         p++;
         streakBroken = true;
       } else {
