@@ -2314,7 +2314,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620r';
+const APP_VERSION = '20260620s';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -9382,7 +9382,9 @@ const SUBJ_COLORS = {'英語':'#2D5FA6','国語':'#8B2020','数学':'#7B2D8B','�
 let classMasterList = [];
 let sessionRows = [];
 let pendingSessions = [];
-let csClassOptsHtml = '<option value="">授業を選択</option>'; // 授業セレクトのHTMLキャッシュ
+let csClassOptsHtml = '<option value="">授業を選択</option>'; // 後方互換（未使用）
+let csMasters = [];   // 授業マスターのキャッシュ（grade_level含む）
+let csSubjects = [];  // マスターに実在する科目一覧
 
 async function loadClassMasterList() {
   // 自分の授業のみ（管理者は全部）
@@ -9488,28 +9490,63 @@ function initSessionDefaults() {
 }
 
 async function loadClassMasterSelect() {
-  query = 'is_active=eq.true&order=subject,name&select=id,name,subject';
+  query = 'is_active=eq.true&order=subject,name&select=id,name,subject,grade_level';
   if (currentStaff?.role !== 'admin') query += '&teacher_staff_id=eq.' + currentStaff.id;
-  const masters = await sbGet('class_master', query) || [];
-
-  const optsBySubj = {};
-  masters.forEach(m => {
-    if (!optsBySubj[m.subject]) optsBySubj[m.subject] = [];
-    optsBySubj[m.subject].push(m);
+  csMasters = await sbGet('class_master', query) || [];
+  // 科目セレクトの選択肢（マスターに実在する科目のみ）
+  csSubjects = [...new Set(csMasters.map(m => m.subject).filter(Boolean))];
+  // 既存の全row（定期・単発）の科目セレクトと授業セレクトを再構築
+  document.querySelectorAll('.cs-subj-sel').forEach(sel => {
+    const cur = sel.value;
+    sel.innerHTML = csSubjectOptsHtml();
+    sel.value = cur;
   });
+  document.querySelectorAll('.cs-row, .cs-spot-row').forEach(renderRowClassOptions);
+}
 
-  const optsHtml = '<option value="">授業を選択</option>' +
-    Object.entries(optsBySubj).map(([subj, list]) =>
-      '<optgroup label="── ' + subj + ' ──">' +
-      list.map(m => '<option value="' + m.id + '" data-name="' + m.name + '">' + m.name + '</option>').join('') +
+// 科目セレクトのoption HTML
+function csSubjectOptsHtml() {
+  return '<option value="">科目すべて</option>' +
+    csSubjects.map(s => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('');
+}
+
+// 1行（rowEl）内の科目・学年セレクトに応じて授業セレクトを絞り込み再構築
+function renderRowClassOptions(rowEl) {
+  const subjSel = rowEl.querySelector('.cs-subj-sel');
+  const gradeSel = rowEl.querySelector('.cs-grade-sel');
+  const classSel = rowEl.querySelector('.cs-class-sel');
+  if (!classSel) return;
+  const subj = subjSel ? subjSel.value : '';
+  const grade = gradeSel ? gradeSel.value : ''; // '' | '1' | '2' | '3'
+  const prev = classSel.value;
+  const filtered = csMasters.filter(m => {
+    if (subj && m.subject !== subj) return false;
+    if (grade) {
+      const levels = (m.grade_level || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (levels.length && !levels.includes(grade)) return false; // 学年指定なしは全学年に出す
+    }
+    return true;
+  });
+  if (!filtered.length) {
+    classSel.innerHTML = '<option value="">該当する授業がありません</option>';
+    return;
+  }
+  const bySubj = {};
+  filtered.forEach(m => { (bySubj[m.subject || 'その他'] = bySubj[m.subject || 'その他'] || []).push(m); });
+  classSel.innerHTML = '<option value="">授業を選択</option>' +
+    Object.entries(bySubj).map(([s, list]) =>
+      '<optgroup label="── ' + escapeHtml(s) + ' ──">' +
+      list.map(m => '<option value="' + m.id + '" data-name="' + escapeHtml(m.name) + '">' + escapeHtml(m.name) + '</option>').join('') +
       '</optgroup>'
     ).join('');
+  // 直前の選択が候補に残っていれば維持
+  if (prev && filtered.some(m => m.id === prev)) classSel.value = prev;
+}
 
-  csClassOptsHtml = optsHtml; // 単発row追加時に流用するためキャッシュ
-  // 全row（定期・単発の両方）のセレクトを更新
-  document.querySelectorAll('.cs-class-sel').forEach(sel => {
-    sel.innerHTML = optsHtml;
-  });
+// 絞りセレクト変更時（行要素を辿って再構築）
+function onCsRowFilterChange(selEl) {
+  const rowEl = selEl.closest('.cs-row, .cs-spot-row');
+  if (rowEl) renderRowClassOptions(rowEl);
 }
 
 function addSessionRow() {
@@ -9518,15 +9555,22 @@ function addSessionRow() {
     '<option value="' + p + '">' + p + '限（' + t[0] + '〜' + t[1] + '）</option>'
   ).join('');
 
-  const rowHtml = '<div id="' + rowId + '" style="display:flex;align-items:center;gap:6px;background:var(--surface2);border-radius:8px;padding:8px">' +
-    '<select class="form-select cs-class-sel" style="flex:2;font-size:12px"><option value="">授業を選択</option></select>' +
-    '<select class="form-select cs-period-sel" style="flex:1;font-size:12px">' + periodOpts + '</select>' +
-    '<button onclick="document.getElementById(\'' + rowId + '\').remove()" style="padding:6px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:12px;cursor:pointer;flex-shrink:0">×</button>' +
+  const rowHtml = '<div id="' + rowId + '" class="cs-row" style="background:var(--surface2);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px">' +
+    '<div style="display:flex;gap:6px">' +
+      '<select class="form-select cs-subj-sel" onchange="onCsRowFilterChange(this)" style="flex:1;font-size:12px">' + csSubjectOptsHtml() + '</select>' +
+      '<select class="form-select cs-grade-sel" onchange="onCsRowFilterChange(this)" style="flex:1;font-size:12px"><option value="">全学年</option><option value="1">1年</option><option value="2">2年</option><option value="3">3年</option></select>' +
+    '</div>' +
+    '<div style="display:flex;align-items:center;gap:6px">' +
+      '<select class="form-select cs-class-sel" style="flex:2;font-size:12px"><option value="">授業を選択</option></select>' +
+      '<select class="form-select cs-period-sel" style="flex:1;font-size:12px">' + periodOpts + '</select>' +
+      '<button onclick="document.getElementById(\'' + rowId + '\').remove()" style="padding:6px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:12px;cursor:pointer;flex-shrink:0">×</button>' +
+    '</div>' +
   '</div>';
 
   document.getElementById('cs-rows').insertAdjacentHTML('beforeend', rowHtml);
-  // 授業名セレクトを読み込む
-  loadClassMasterSelect();
+  // 授業マスター未取得なら読み込む（取得後に全rowの授業セレクトが再構築される）
+  if (!csMasters.length) loadClassMasterSelect();
+  else renderRowClassOptions(document.getElementById(rowId));
 }
 
 function previewSessions() {
@@ -9608,14 +9652,20 @@ function addSpotSessionRow() {
   const periodOpts = Object.entries(PERIODS).map(([p, t]) =>
     '<option value="' + p + '">' + p + '限（' + t[0] + '〜' + t[1] + '）</option>'
   ).join('');
-  const rowHtml = '<div id="' + rowId + '" style="display:flex;align-items:center;gap:6px;background:var(--surface2);border-radius:8px;padding:8px">' +
-    '<select class="form-select cs-class-sel" style="flex:2;font-size:12px">' + csClassOptsHtml + '</select>' +
-    '<select class="form-select cs-spot-period-sel" style="flex:1;font-size:12px">' + periodOpts + '</select>' +
-    '<button onclick="document.getElementById(\'' + rowId + '\').remove()" style="padding:6px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:12px;cursor:pointer;flex-shrink:0">×</button>' +
+  const rowHtml = '<div id="' + rowId + '" class="cs-spot-row" style="background:var(--surface2);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px">' +
+    '<div style="display:flex;gap:6px">' +
+      '<select class="form-select cs-subj-sel" onchange="onCsRowFilterChange(this)" style="flex:1;font-size:12px">' + csSubjectOptsHtml() + '</select>' +
+      '<select class="form-select cs-grade-sel" onchange="onCsRowFilterChange(this)" style="flex:1;font-size:12px"><option value="">全学年</option><option value="1">1年</option><option value="2">2年</option><option value="3">3年</option></select>' +
+    '</div>' +
+    '<div style="display:flex;align-items:center;gap:6px">' +
+      '<select class="form-select cs-class-sel" style="flex:2;font-size:12px"><option value="">授業を選択</option></select>' +
+      '<select class="form-select cs-spot-period-sel" style="flex:1;font-size:12px">' + periodOpts + '</select>' +
+      '<button onclick="document.getElementById(\'' + rowId + '\').remove()" style="padding:6px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:12px;cursor:pointer;flex-shrink:0">×</button>' +
+    '</div>' +
   '</div>';
   document.getElementById('cs-spot-rows').insertAdjacentHTML('beforeend', rowHtml);
-  // キャッシュ未取得（初回）なら授業セレクトを読み込む
-  if (csClassOptsHtml.indexOf('optgroup') === -1) loadClassMasterSelect();
+  if (!csMasters.length) loadClassMasterSelect();
+  else renderRowClassOptions(document.getElementById(rowId));
 }
 
 function previewSpotSessions() {
