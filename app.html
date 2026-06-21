@@ -849,6 +849,33 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
             </div>
           </div>
         </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div style="flex:1.4">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">学校</div>
+            <select class="form-select" id="detail-school" onchange="onSchoolChange('detail')" style="width:100%;font-size:13px">
+              <option value="">未設定</option>
+              <option value="松山東">松山東</option>
+              <option value="松山南">松山南</option>
+              <option value="松山北">松山北</option>
+              <option value="松山中央">松山中央</option>
+              <option value="松山西">松山西</option>
+              <option value="愛大附属">愛大附属</option>
+              <option value="済美">済美</option>
+              <option value="SSS">SSS</option>
+              <option value="その他">その他</option>
+            </select>
+          </div>
+          <div style="flex:1">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">学年</div>
+            <select class="form-select" id="detail-grade" style="width:100%;font-size:13px">
+              <option value="">未設定</option>
+              <option value="1年">1年</option>
+              <option value="2年">2年</option>
+              <option value="3年">3年</option>
+            </select>
+          </div>
+        </div>
+        <input type="text" class="form-select" id="detail-school-detail" placeholder="実際の高校名を入力" style="width:100%;font-size:13px;margin-bottom:8px;display:none">
         <div style="margin-bottom:8px">
           <div style="font-size:11px;color:var(--muted);margin-bottom:4px">部活</div>
           <select class="form-select" id="detail-club-cat" onchange="onClubCategoryChange('detail')" style="width:100%;font-size:13px;margin-bottom:6px">
@@ -2245,7 +2272,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620k';
+const APP_VERSION = '20260620l';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -2757,6 +2784,19 @@ const CLUB_LIST = {
 };
 
 // カテゴリ選択時に部活名リストを切り替え（prefix: 'my' or 'detail'）
+// 学校セレクト変更：SSS / その他 のとき実校名の自由入力欄を出す
+function onSchoolChange(prefix) {
+  const sch = document.getElementById(prefix + '-school').value;
+  const free = document.getElementById(prefix + '-school-detail');
+  if (!free) return;
+  if (sch === 'SSS' || sch === 'その他') {
+    free.style.display = 'block';
+  } else {
+    free.style.display = 'none';
+    free.value = '';
+  }
+}
+
 function onClubCategoryChange(prefix) {
   const cat = document.getElementById(prefix + '-club-cat').value;
   const nameSel = document.getElementById(prefix + '-club-name');
@@ -4099,18 +4139,28 @@ async function staffAddPoints() {
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
-// 生徒属性（性別・部活・誕生日）の保存（スタッフ側）
+// 生徒属性（学校・学年・性別・部活・誕生日）の保存（スタッフ側）
 async function saveStudentAttributes() {
   if (!detailStudent) return;
   const gender = document.getElementById('detail-gender').value;
   const club = getClubValue('detail');
   const birthday = getBirthdayValue('detail');
+  const school = document.getElementById('detail-school').value;
+  const grade = document.getElementById('detail-grade').value;
+  // SSS / その他 のときだけ実校名を保持。それ以外は空にする
+  let schoolDetail = '';
+  if (school === 'SSS' || school === 'その他') {
+    schoolDetail = document.getElementById('detail-school-detail').value.trim();
+  }
   showLoading('保存中...');
   try {
-    await sbPatch('students', 'id=eq.' + detailStudent.id, { gender: gender || null, club: club || null, birthday: birthday });
+    await sbPatch('students', 'id=eq.' + detailStudent.id, { gender: gender || null, club: club || null, birthday: birthday, school: school || null, grade: grade || null, school_detail: schoolDetail || null });
     detailStudent.gender = gender;
     detailStudent.club = club;
     detailStudent.birthday = birthday;
+    detailStudent.school = school;
+    detailStudent.grade = grade;
+    detailStudent.school_detail = schoolDetail;
     hideLoading();
     showToast('✅ 属性を保存しました', 'success');
   } catch(e) {
@@ -4285,6 +4335,10 @@ async function openStudentDetail(idx, from) {
     document.getElementById('detail-login-pin').style.letterSpacing = '3px';
     document.getElementById('detail-login-pin-toggle').textContent = '表示';
     document.getElementById('detail-newpin').value = '';
+    document.getElementById('detail-school').value = s.school || '';
+    document.getElementById('detail-grade').value = s.grade || '';
+    document.getElementById('detail-school-detail').value = s.school_detail || '';
+    onSchoolChange('detail');
     setClubUI('detail', s.club);
     setBirthdayUI('detail', s.birthday);
     loadDetailCalendar();
@@ -4354,11 +4408,19 @@ async function approveApplication(id, name, email, school, grade) {
 
   showLoading('承認中...');
   try {
+    // 申請レコードから実校名（school_detail）を取得（onclick引数を増やさず安全に拾う）
+    let schoolDetail = null;
+    try {
+      const appRows = await sbGet('student_applications', 'id=eq.' + id + '&select=school_detail');
+      if (appRows && appRows[0]) schoolDetail = appRows[0].school_detail || null;
+    } catch(_) { schoolDetail = null; }
+
     // studentsテーブルに追加
     await sbPost('students', {
       name, email, pin,
       student_no: pin,
       school, grade,
+      school_detail: schoolDetail,
       points: 0,
       streak: 0
     });
