@@ -1966,7 +1966,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <!-- マトリクス表ビュー -->
       <div id="att-matrix-view" style="display:none">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px">
-          <span style="font-size:11px;color:var(--muted);flex:1">セルをタップで出欠を切替、下の保存で確定。</span>
+          <span style="font-size:11px;color:var(--muted);flex:1">セルをタップで ○出席 → ✕欠席 → <span style="color:#6B4FA0;font-weight:700">◐補習</span> の順に切替、下の保存で確定。</span>
           <span onclick="toggleAttGroupBySchool()" id="att-groupbtn" style="font-size:11px;color:var(--orange-d);cursor:pointer;white-space:nowrap;border:1px solid var(--border);border-radius:6px;padding:4px 8px">🏫 学校別 ▢</span>
         </div>
         <div style="font-size:10px;color:#185FA5;margin-bottom:8px">🔵 青いセルは来塾記録からの自動推定（未保存）です。タップ・保存で正式記録になります。</div>
@@ -2066,7 +2066,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
           <span style="font-size:12px;font-weight:700;color:var(--text)">📋 出欠一覧表</span>
           <span onclick="toggleCaGroupBySchool()" id="ca-groupbtn" style="font-size:11px;color:var(--orange-d);cursor:pointer;white-space:nowrap;border:1px solid var(--border);border-radius:6px;padding:4px 8px">🏫 学校別 ▢</span>
         </div>
-        <div style="font-size:10px;color:#185FA5;margin-bottom:8px">セルをタップで出欠を切替、下の保存で確定。🔵青=来塾から自動推定（未保存）。</div>
+        <div style="font-size:10px;color:#185FA5;margin-bottom:8px">セルをタップで ○出席 → ✕欠席 → ◐補習 の順に切替、下の保存で確定。🔵青=来塾から自動推定（未保存）。</div>
         <div id="ca-matrix-wrap" style="overflow-x:auto;border:1px solid var(--border);border-radius:8px"></div>
         <button id="ca-matrix-save" onclick="saveCaMatrix()" style="display:none;width:100%;margin-top:12px;padding:12px;background:linear-gradient(135deg,#3B6D11,#5A9E3C);border:none;border-radius:8px;color:white;font-size:14px;font-weight:700;cursor:pointer">💾 変更を保存</button>
       </div>
@@ -2496,7 +2496,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620zp';
+const APP_VERSION = '20260620zq';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -13412,12 +13412,14 @@ function toggleAttCell(sid, k) {
   if (!attMatrix) return;
   const cellKey = sid + '|' + k;
   let cell = attMatrix.cells[cellKey];
+  // 状態サイクル: present → absent → makeup（補習）→ present
+  const nextStatus = { present: 'absent', absent: 'makeup', makeup: 'present' };
   if (!cell) {
     // 推定不可セル（時間未設定）→ タップで出席から手動作成
     cell = { status: 'present', auto: false, dirty: true };
     attMatrix.cells[cellKey] = cell;
   } else {
-    cell.status = cell.status === 'present' ? 'absent' : 'present';
+    cell.status = nextStatus[cell.status] || 'present';
     cell.auto = false;   // 手動操作したら自動フラグ解除
     cell.dirty = true;
   }
@@ -13954,11 +13956,12 @@ function caCellHtml(sid, k) {
   const cell = caMatrix.cells[sid + '|' + k];
   if (!cell) return '<td style="text-align:center;padding:5px;color:var(--border)">—</td>';
   const present = cell.status === 'present';
-  let bg, col;
-  if (cell.auto) { bg = '#E6F1FB'; col = '#185FA5'; }
-  else if (present) { bg = 'var(--green-l)'; col = 'var(--green-d)'; }
-  else { bg = 'var(--red-l)'; col = 'var(--red)'; }
-  const mark = present ? '○' : '✕';
+  const makeup = cell.status === 'makeup';
+  let bg, col, mark;
+  if (cell.auto) { bg = '#E6F1FB'; col = '#185FA5'; mark = present ? '○' : '✕'; }
+  else if (makeup) { bg = '#EDE7F8'; col = '#6B4FA0'; mark = '◐'; }
+  else if (present) { bg = 'var(--green-l)'; col = 'var(--green-d)'; mark = '○'; }
+  else { bg = 'var(--red-l)'; col = 'var(--red)'; mark = '✕'; }
   const dirtyDot = cell.dirty ? '<span style="position:absolute;top:1px;right:3px;font-size:8px;color:var(--orange-d)">●</span>' : '';
   return '<td style="text-align:center;padding:4px">' +
     '<span onclick="toggleCaCell(\'' + sid + '\',\'' + k + '\')" style="position:relative;display:inline-block;width:28px;height:28px;line-height:28px;border-radius:6px;background:' + bg + ';color:' + col + ';font-weight:700;cursor:pointer;font-size:14px">' + mark + dirtyDot + '</span></td>';
@@ -13969,7 +13972,7 @@ function caRowRateHtml(sid) {
   caMatrix.sessKeys.forEach(k => {
     const c = caMatrix.cells[sid + '|' + k];
     if (!c) return;
-    n++; if (c.status === 'present') p++;
+    n++; if (c.status === 'present' || c.status === 'makeup') p++; // 補習も出席扱い
   });
   const rate = n ? Math.round(p / n * 100) : null;
   const col = rate === null ? 'var(--muted)' : (rate >= 80 ? 'var(--green-d)' : (rate >= 60 ? 'var(--orange-d)' : 'var(--red)'));
@@ -14039,7 +14042,9 @@ function toggleCaCell(sid, k) {
   if (!caMatrix) return;
   const cell = caMatrix.cells[sid + '|' + k];
   if (!cell) return;
-  cell.status = cell.status === 'present' ? 'absent' : 'present';
+  // 状態サイクル: present → absent → makeup（補習）→ present
+  const nextStatus = { present: 'absent', absent: 'makeup', makeup: 'present' };
+  cell.status = nextStatus[cell.status] || 'present';
   cell.auto = false;
   cell.dirty = true;
   renderCaMatrix();
