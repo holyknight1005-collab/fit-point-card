@@ -129,6 +129,14 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 #staff-home-cal-grid .cal-items{margin-top:2px;display:flex;flex-direction:column;gap:1px;width:100%;min-width:0}
 #staff-home-cal-grid .cal-sess-name{font-size:8px;line-height:1.2;font-weight:600;color:#fff;background:#E8923A;border-radius:3px;padding:0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #staff-home-cal-grid .cal-ev-name{font-size:8px;line-height:1.2;font-weight:600;color:#fff;border-radius:3px;padding:0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 帯（期間）予定：セルの左右パディング(3px)とグリッド間隔(3px)を打ち消してセル端まで伸ばし、隣のセルと連続して見せる */
+#staff-home-cal-grid .cal-band{font-size:8px;line-height:1.25;font-weight:600;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 4px;margin-left:-3px;margin-right:-3px}
+#staff-home-cal-grid .cal-band-start{margin-left:0;border-top-left-radius:4px;border-bottom-left-radius:4px;padding-left:4px}
+#staff-home-cal-grid .cal-band-end{margin-right:0;border-top-right-radius:4px;border-bottom-right-radius:4px}
+#staff-home-cal-grid .cal-band-single{margin-left:0;margin-right:0;border-radius:4px;padding-left:4px}
+/* 週頭(日曜)・週末(土曜)で帯を折り返し：JS が cal-band-wkstart / cal-band-wkend を付与 */
+#staff-home-cal-grid .cal-band-wkstart{margin-left:0;border-top-left-radius:4px;border-bottom-left-radius:4px;padding-left:4px}
+#staff-home-cal-grid .cal-band-wkend{margin-right:0;border-top-right-radius:4px;border-bottom-right-radius:4px}
 #staff-home-cal-grid .cal-more{font-size:7.5px;line-height:1.2;color:var(--muted);text-align:left;padding-left:3px}
 /* 誕生日絵文字はセル右上に固定（縦積みの内容と重ねない） */
 #staff-home-cal-grid .cal-bday-mark{top:1px !important;right:1px !important;bottom:auto !important;font-size:11px !important}
@@ -362,6 +370,8 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <input class="form-input-sm" id="calreg-title" type="text" placeholder="例：夏期講習スタート / 三者面談" style="margin-bottom:10px">
     <div class="form-label">日付</div>
     <input class="form-input-sm" id="calreg-date" type="date" style="margin-bottom:10px">
+    <div class="form-label">終了日（任意・複数日にまたがる帯にする場合）</div>
+    <input class="form-input-sm" id="calreg-end-date" type="date" style="margin-bottom:10px">
     <div class="form-label">詳細（任意）</div>
     <input class="form-input-sm" id="calreg-detail" type="text" placeholder="例：10:00集合・教室A" style="margin-bottom:10px">
     <div class="form-label">色</div>
@@ -2486,7 +2496,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620zo';
+const APP_VERSION = '20260620zp';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -4274,6 +4284,45 @@ function isEventVisibleTo(ev, viewer) {
   return false;
 }
 
+// 日付文字列(YYYY-MM-DD)を1日進める
+function nextDateStr(iso) {
+  const p = iso.split('-').map(Number);
+  const d = new Date(p[0], p[1] - 1, p[2] + 1);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// イベント配列を「日付ISO -> [セグメント]」マップに展開する。
+// 単発: その日に1件。帯(end_dateあり): 各日にセグメント（pos: 'start'|'mid'|'end'|'single'）を入れる。
+// monthFirst/monthLast を渡すと、その月の範囲だけにクリップする（前後月にはみ出す帯の描画用）。
+function buildEventDayMap(events, monthFirst, monthLast) {
+  const map = {};
+  (events || []).forEach(ev => {
+    const start = ev.event_date;
+    const end = ev.end_date && ev.end_date > start ? ev.end_date : null;
+    if (!end) {
+      (map[start] = map[start] || []).push(Object.assign({}, ev, { band: false, pos: 'single' }));
+      return;
+    }
+    // 帯：start〜end の各日にセグメント
+    let cur = start;
+    let guard = 0;
+    while (cur <= end && guard < 400) {
+      guard++;
+      const inMonth = (!monthFirst || cur >= monthFirst) && (!monthLast || cur <= monthLast);
+      if (inMonth) {
+        let pos;
+        if (cur === start && cur === end) pos = 'single';
+        else if (cur === start) pos = 'start';
+        else if (cur === end) pos = 'end';
+        else pos = 'mid';
+        (map[cur] = map[cur] || []).push(Object.assign({}, ev, { band: true, pos: pos }));
+      }
+      cur = nextDateStr(cur);
+    }
+  });
+  return map;
+}
+
 function changeStaffHomeCalMonth(delta) {
   staffHomeCalMonthOffset += delta;
   loadStaffHomeCalendar();
@@ -4311,7 +4360,7 @@ async function loadStaffHomeCalendar() {
     const [sessions, staffList, events, staffBdays, studentBdays, myReports, myTodos, monthCheckins] = await Promise.all([
       sbGet('class_sessions', 'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO + '&select=class_master_id,period,start_time,end_time,session_date&order=session_date,period'),
       sbGet('staff', 'select=id,name'),
-      sbGet('events', 'event_date=gte.' + firstISO + '&event_date=lte.' + lastISO + '&select=title,event_date,detail,color,scope,target_schools,target_grades,target_ids,created_by').catch(() => []),
+      sbGet('events', 'event_date=lte.' + lastISO + '&or=(end_date.gte.' + firstISO + ',and(end_date.is.null,event_date.gte.' + firstISO + '))&select=title,event_date,end_date,detail,color,scope,target_schools,target_grades,target_ids,created_by').catch(() => []),
       sbGet('staff', 'birthday=not.is.null&select=name,birthday').catch(() => []),
       sbGet('students', 'birthday=not.is.null&select=name,birthday,school,grade').catch(() => []),
       sbGet('staff_reports', 'staff_id=eq.' + currentStaff.id + '&report_date=gte.' + firstISO + '&report_date=lte.' + lastISO + '&select=report_date').catch(() => []),
@@ -4362,7 +4411,8 @@ async function loadStaffHomeCalendar() {
     staffCalEvents = {};
     {
       const viewer = { kind: 'staff', id: currentStaff ? currentStaff.id : null };
-      (events || []).filter(ev => isEventVisibleTo(ev, viewer)).forEach(ev => { (staffCalEvents[ev.event_date] = staffCalEvents[ev.event_date] || []).push(ev); });
+      const visible = (events || []).filter(ev => isEventVisibleTo(ev, viewer));
+      staffCalEvents = buildEventDayMap(visible, firstISO, lastISO);
     }
     staffCalBirthdays = {};
     (staffBdays || []).forEach(s => { if (s.birthday) (staffCalBirthdays[s.birthday.slice(5)] = staffCalBirthdays[s.birthday.slice(5)] || []).push({ name: s.name, type: 'staff' }); });
@@ -4480,7 +4530,13 @@ function renderStaffHomeCalMonth(year, month) {
       const label = (tm ? tm + ' ' : '') + s.class_name;
       items.push({ kind: 'sess', label: label, color: s.color || '#E8923A' });
     });
-    evs.forEach(ev => {
+    // 帯は先に（上に）、単発イベントは後に
+    const bandEvs = evs.filter(ev => ev.band);
+    const singleEvs = evs.filter(ev => !ev.band);
+    bandEvs.forEach(ev => {
+      items.push({ kind: 'band', label: ev.title || '', color: ev.color || '#F5A623', pos: ev.pos });
+    });
+    singleEvs.forEach(ev => {
       items.push({ kind: 'ev', label: ev.title || '', color: ev.color || '#F5A623' });
     });
 
@@ -4492,6 +4548,15 @@ function renderStaffHomeCalMonth(year, month) {
         const safe = (it.label || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         if (it.kind === 'sess') {
           itemsHtml += '<span class="cal-sess-name" style="background:' + it.color + '" title="' + safe + '">' + safe + '</span>';
+        } else if (it.kind === 'band') {
+          // 帯：開始日/単日のみタイトル表示。中間・終了日は色バーのみで連続して見せる
+          const showText = (it.pos === 'start' || it.pos === 'single');
+          let posCls = ' cal-band-' + (it.pos || 'mid');
+          // 週頭(日)・週末(土)は折り返し位置なので角を丸める
+          const dow = new Date(year, month, d).getDay();
+          if (dow === 0) posCls += ' cal-band-wkstart';
+          if (dow === 6) posCls += ' cal-band-wkend';
+          itemsHtml += '<span class="cal-band' + posCls + '" style="background:' + it.color + '" title="' + safe + '">' + (showText ? safe : '&nbsp;') + '</span>';
         } else {
           itemsHtml += '<span class="cal-ev-name" style="background:' + it.color + '" title="' + safe + '">' + safe + '</span>';
         }
@@ -8795,6 +8860,7 @@ async function openCalendarReg() {
   document.getElementById('calreg-title').value = '';
   document.getElementById('calreg-date').value = getTodayJST();
   document.getElementById('calreg-detail').value = '';
+  const endEl = document.getElementById('calreg-end-date'); if (endEl) endEl.value = '';
   document.getElementById('calreg-target-search').value = '';
   document.querySelectorAll('.calreg-scope-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('calreg-sg-panel').style.display = 'none';
@@ -8930,12 +8996,15 @@ async function submitCalendarReg() {
   if (!calRegScope) { showToast('配信先を選んでください', 'error'); return; }
   const title = document.getElementById('calreg-title').value.trim();
   const date = document.getElementById('calreg-date').value;
+  const endDate = (document.getElementById('calreg-end-date') || {}).value || '';
   const detail = document.getElementById('calreg-detail').value.trim();
   if (!title) { showToast('タイトルを入力してください', 'error'); return; }
   if (!date) { showToast('日付を選んでください', 'error'); return; }
+  if (endDate && endDate < date) { showToast('終了日は開始日以降にしてください', 'error'); return; }
 
   const data = {
     title: title, event_date: date, detail: detail || null,
+    end_date: (endDate && endDate !== date) ? endDate : null,
     color: calRegColor, scope: calRegScope,
     created_by: currentStaff ? currentStaff.id : null
   };
@@ -8985,7 +9054,7 @@ async function loadCalRegList() {
   el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:6px">読み込み中...</div>';
   const todayISO = getTodayJST();
   try {
-    const events = await sbGet('events', 'event_date=gte.' + todayISO + '&select=id,title,event_date,detail,color,scope,target_schools,target_grades,target_ids,created_by&order=event_date&limit=60') || [];
+    const events = await sbGet('events', 'event_date=gte.' + todayISO + '&select=id,title,event_date,end_date,detail,color,scope,target_schools,target_grades,target_ids,created_by&order=event_date&limit=60') || [];
     // 個人の予定は本人のものだけ表示
     const myId = currentStaff ? currentStaff.id : null;
     const visible = events.filter(ev => (ev.scope !== 'personal') || (ev.created_by === myId));
@@ -8996,7 +9065,7 @@ async function loadCalRegList() {
     el.innerHTML = visible.map(ev =>
       '<div style="display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--border);border-left:4px solid ' + (ev.color || '#F5A623') + ';border-radius:8px;padding:8px 10px">' +
       '<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(ev.title) + '</div>' +
-      '<div style="font-size:10px;color:var(--muted)">' + ev.event_date.replace(/-/g, '/') + (ev.detail ? '・' + escapeHtml(ev.detail) : '') + '</div>' +
+      '<div style="font-size:10px;color:var(--muted)">' + ev.event_date.replace(/-/g, '/') + (ev.end_date && ev.end_date > ev.event_date ? ' 〜 ' + ev.end_date.replace(/-/g, '/') : '') + (ev.detail ? '・' + escapeHtml(ev.detail) : '') + '</div>' +
       '<div style="font-size:10px;color:var(--orange-d);margin-top:2px">' + calRegScopeLabel(ev) + '</div></div>' +
       '<button onclick="deleteCalRegEvent(\'' + ev.id + '\')" style="background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;line-height:1">🗑</button>' +
       '</div>'
@@ -10750,7 +10819,7 @@ async function loadStaffCalendar() {
     const [sessions, staffList, events, staffBdays, studentBdays, myReports] = await Promise.all([
       sbGet('class_sessions', 'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO + '&select=class_master_id,period,start_time,end_time,session_date&order=session_date,period'),
       sbGet('staff', 'select=id,name'),
-      sbGet('events', 'event_date=gte.' + firstISO + '&event_date=lte.' + lastISO + '&select=title,event_date,detail,color,scope,target_schools,target_grades,target_ids,created_by').catch(() => []),
+      sbGet('events', 'event_date=lte.' + lastISO + '&or=(end_date.gte.' + firstISO + ',and(end_date.is.null,event_date.gte.' + firstISO + '))&select=title,event_date,end_date,detail,color,scope,target_schools,target_grades,target_ids,created_by').catch(() => []),
       sbGet('staff', 'birthday=not.is.null&select=name,birthday').catch(() => []),
       sbGet('students', 'birthday=not.is.null&select=name,birthday,school,grade').catch(() => []),
       (currentStaff ? sbGet('staff_reports', 'staff_id=eq.' + currentStaff.id + '&report_date=gte.' + firstISO + '&report_date=lte.' + lastISO).catch(() => []) : Promise.resolve([]))
@@ -10790,9 +10859,8 @@ async function loadStaffCalendar() {
     staffCalEvents = {};
     {
       const viewer = { kind: 'staff', id: currentStaff ? currentStaff.id : null };
-      (events || []).filter(ev => isEventVisibleTo(ev, viewer)).forEach(ev => {
-        (staffCalEvents[ev.event_date] = staffCalEvents[ev.event_date] || []).push(ev);
-      });
+      const visible = (events || []).filter(ev => isEventVisibleTo(ev, viewer));
+      staffCalEvents = buildEventDayMap(visible, firstISO, lastISO);
     }
 
     // 誕生日（MM-DD で照合。年2000センチネル）
@@ -11231,16 +11299,20 @@ async function loadUnifiedCalendar() {
   // --- イベント ---
   unifiedEvents = {};
   try {
-    const events = await sbGet('events', 'select=title,event_date,detail,color,scope,target_schools,target_grades,target_ids,created_by&order=event_date') || [];
+    const events = await sbGet('events', 'select=title,event_date,end_date,detail,color,scope,target_schools,target_grades,target_ids,created_by&order=event_date') || [];
     const viewer = {
       kind: 'student',
       id: currentStudent ? currentStudent.id : null,
       school: currentStudent ? (currentStudent.school || '') : '',
       grade: currentStudent ? (currentStudent.grade || '') : ''
     };
-    events.filter(ev => isEventVisibleTo(ev, viewer)).forEach(ev => {
-      if (!unifiedEvents[ev.event_date]) unifiedEvents[ev.event_date] = [];
-      unifiedEvents[ev.event_date].push({ title: ev.title, detail: ev.detail || '', color: ev.color || '#F5A623' });
+    const visible = events.filter(ev => isEventVisibleTo(ev, viewer));
+    const dayMap = buildEventDayMap(visible);
+    Object.keys(dayMap).forEach(dateISO => {
+      unifiedEvents[dateISO] = dayMap[dateISO].map(ev => ({
+        title: ev.title, detail: ev.detail || '', color: ev.color || '#F5A623',
+        band: !!ev.band, pos: ev.pos
+      }));
     });
   } catch(e) { /* events未作成時は無視 */ }
 
