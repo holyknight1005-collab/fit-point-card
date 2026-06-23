@@ -744,9 +744,10 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
           <div id="staff-home-cal-month" style="font-size:14px;font-weight:700;color:var(--text)"></div>
           <button onclick="changeStaffHomeCalMonth(1)" class="page-btn" style="padding:4px 10px">›</button>
         </div>
-        <div style="display:flex;gap:6px;justify-content:center;margin-bottom:10px">
+        <div style="display:flex;gap:6px;justify-content:center;align-items:center;margin-bottom:10px;flex-wrap:wrap">
           <button id="cal-filter-mine" onclick="setHomeCalFilter('mine')" class="cal-filter-btn" style="padding:5px 14px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">自分の授業</button>
           <button id="cal-filter-all" onclick="setHomeCalFilter('all')" class="cal-filter-btn" style="padding:5px 14px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">全体</button>
+          <button onclick="exportMyCalendarICS()" title="自分の担当授業と自分向けイベントをカレンダーアプリに取り込めます" style="padding:5px 12px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1.5px solid var(--border);background:var(--surface);color:var(--text)">📤 カレンダー出力</button>
         </div>
         <div class="calendar-grid" id="staff-home-cal-grid"></div>
         <div style="display:flex;gap:10px;justify-content:center;margin-top:10px;flex-wrap:wrap">
@@ -2496,7 +2497,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620zq';
+const APP_VERSION = '20260620zs';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -4323,6 +4324,127 @@ function buildEventDayMap(events, monthFirst, monthLast) {
   return map;
 }
 
+// ===== カレンダー出力（ICS / iCalendar）=====
+// 自分の担当授業＋自分向けイベントを .ics として書き出し、Apple/Googleカレンダーに取り込めるようにする
+function icsEscape(s) {
+  return String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+}
+function icsDateOnly(iso) { return iso.replace(/-/g, ''); } // YYYYMMDD
+function icsDateTimeLocal(iso, hhmm) {
+  // iso=YYYY-MM-DD, hhmm='HH:MM' → 'YYYYMMDDTHHMMSS'（TZID=Asia/Tokyo 前提）
+  return iso.replace(/-/g, '') + 'T' + hhmm.replace(':', '') + '00';
+}
+function icsUid(parts) {
+  // 決定的UID：同じ予定は同じUID（取り込み直しで重複しにくい）
+  return 'fitjuku-' + parts.join('-').replace(/[^a-zA-Z0-9_-]/g, '') + '@fit-juku';
+}
+function icsFoldLine(line) {
+  // 75オクテット超は折り返し（簡易：72文字で分割し継続行は先頭スペース）
+  if (line.length <= 72) return line;
+  let out = '', rest = line;
+  while (rest.length > 72) { out += rest.slice(0, 72) + '\r\n '; rest = rest.slice(72); }
+  return out + rest;
+}
+
+async function exportMyCalendarICS() {
+  if (!currentStaff) { showToast('スタッフでログインしてください', 'error'); return; }
+  showLoading('カレンダーを書き出し中...');
+  try {
+    const todayISO = getTodayJST();
+    // 今日から90日後まで
+    const start = new Date();
+    const endD = new Date(); endD.setDate(endD.getDate() + 90);
+    const toISO = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    const endISO = toISO(endD);
+
+    // 自分の担当授業を取得（class_master で teacher_staff_id=自分 → その授業の session）
+    const myClasses = await sbGet('class_master', 'teacher_staff_id=eq.' + currentStaff.id + '&select=id,name') || [];
+    const classMap = {}; myClasses.forEach(c => { classMap[c.id] = c.name; });
+    let sessions = [];
+    if (myClasses.length) {
+      const ids = myClasses.map(c => c.id);
+      sessions = await sbGet('class_sessions',
+        'class_master_id=in.(' + ids.join(',') + ')&session_date=gte.' + todayISO + '&session_date=lte.' + endISO +
+        '&select=class_master_id,session_date,period,start_time,end_time&order=session_date,period') || [];
+    }
+
+    // イベント取得（自分に見えるもの。期間でゆるく絞る）
+    const rawEvents = await sbGet('events',
+      'event_date=lte.' + endISO + '&or=(end_date.gte.' + todayISO + ',and(end_date.is.null,event_date.gte.' + todayISO + '))' +
+      '&select=title,event_date,end_date,detail,color,scope,target_schools,target_grades,target_ids,created_by') || [];
+    const viewer = { kind: 'staff', id: currentStaff.id };
+    const myEvents = (rawEvents || []).filter(ev => isEventVisibleTo(ev, viewer));
+
+    // VEVENT 構築
+    const lines = [];
+    lines.push('BEGIN:VCALENDAR');
+    lines.push('VERSION:2.0');
+    lines.push('PRODID:-//fit juku//calendar export//JA');
+    lines.push('CALSCALE:GREGORIAN');
+    lines.push('METHOD:PUBLISH');
+    lines.push('X-WR-CALNAME:fit塾（' + (currentStaff.name || '') + '）');
+    lines.push('X-WR-TIMEZONE:Asia/Tokyo');
+
+    const dtstamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+
+    // 授業 → 時刻付きVEVENT
+    sessions.forEach(s => {
+      const name = classMap[s.class_master_id] || '授業';
+      const per = s.period;
+      let st = s.start_time ? s.start_time.slice(0,5) : (per && PERIODS[per] ? PERIODS[per][0] : null);
+      let et = s.end_time ? s.end_time.slice(0,5) : (per && PERIODS[per] ? PERIODS[per][1] : null);
+      lines.push('BEGIN:VEVENT');
+      lines.push('UID:' + icsUid(['sess', s.class_master_id, s.session_date, per || '0']));
+      lines.push('DTSTAMP:' + dtstamp);
+      if (st && et) {
+        lines.push('DTSTART;TZID=Asia/Tokyo:' + icsDateTimeLocal(s.session_date, st));
+        lines.push('DTEND;TZID=Asia/Tokyo:' + icsDateTimeLocal(s.session_date, et));
+      } else {
+        // 時刻不明 → 終日
+        lines.push('DTSTART;VALUE=DATE:' + icsDateOnly(s.session_date));
+        lines.push('DTEND;VALUE=DATE:' + icsDateOnly(nextDateStr(s.session_date)));
+      }
+      lines.push(icsFoldLine('SUMMARY:' + icsEscape((per ? per + '限 ' : '') + name)));
+      lines.push('END:VEVENT');
+    });
+
+    // イベント → 終日 or 帯VEVENT
+    myEvents.forEach((ev, i) => {
+      const end = ev.end_date && ev.end_date > ev.event_date ? ev.end_date : null;
+      lines.push('BEGIN:VEVENT');
+      lines.push('UID:' + icsUid(['ev', ev.event_date, end || ev.event_date, String(i)]));
+      lines.push('DTSTAMP:' + dtstamp);
+      lines.push('DTSTART;VALUE=DATE:' + icsDateOnly(ev.event_date));
+      // 終日イベントのDTENDは「翌日」を指す（iCal仕様）。帯は終了日の翌日。
+      lines.push('DTEND;VALUE=DATE:' + icsDateOnly(nextDateStr(end || ev.event_date)));
+      lines.push(icsFoldLine('SUMMARY:' + icsEscape(ev.title || '予定')));
+      if (ev.detail) lines.push(icsFoldLine('DESCRIPTION:' + icsEscape(ev.detail)));
+      lines.push('END:VEVENT');
+    });
+
+    lines.push('END:VCALENDAR');
+    const icsText = lines.join('\r\n');
+
+    // ダウンロード
+    const blob = new Blob([icsText], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'fit-juku-' + (currentStaff.staff_id || 'calendar') + '-' + todayISO + '.ics';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    hideLoading();
+    const total = sessions.length + myEvents.length;
+    showToast('📤 ' + total + '件を書き出しました（授業' + sessions.length + '・予定' + myEvents.length + '）', 'success');
+  } catch(e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
+}
+
 function changeStaffHomeCalMonth(delta) {
   staffHomeCalMonthOffset += delta;
   loadStaffHomeCalendar();
@@ -4484,7 +4606,7 @@ function renderStaffHomeCalMonth(year, month) {
     const todoInfo = staffHomeTodoDue[dateISO] || null;
     const hasTodo = !!todoInfo;
     const hasOpenTodo = !!(todoInfo && todoInfo.open > 0);
-    const tappable = hasClass || hasEvent || hasBday;
+    const tappable = true;  // 全日タップ可（空の日もモーダルから予定追加できる）
     const reportMissing = staffCalReportMissingOn(dateISO);
 
     const titleParts = [];
@@ -8849,7 +8971,7 @@ let calRegStaffList = [];          // スタッフ一覧キャッシュ
 const CALREG_SCHOOLS = ['松山東','松山南','松山北','松山中央','松山西','愛大附属','済美','SSS','その他'];
 let calRegColor = '#F5A623';
 
-async function openCalendarReg() {
+async function openCalendarReg(presetDate, presetScope) {
   document.getElementById('calreg-modal').style.display = 'flex';
   // リセット
   calRegScope = null;
@@ -8858,7 +8980,7 @@ async function openCalendarReg() {
   calRegTargetType = 'student';
   calRegColor = '#F5A623';
   document.getElementById('calreg-title').value = '';
-  document.getElementById('calreg-date').value = getTodayJST();
+  document.getElementById('calreg-date').value = presetDate || getTodayJST();
   document.getElementById('calreg-detail').value = '';
   const endEl = document.getElementById('calreg-end-date'); if (endEl) endEl.value = '';
   document.getElementById('calreg-target-search').value = '';
@@ -8868,6 +8990,8 @@ async function openCalendarReg() {
   renderCalRegColorRow();
   renderCalRegSchoolRow();
   renderCalRegGradeRow();
+  // 日付クリックからの追加なら、デフォルトの配信先を選択しておく（個人の予定が多い想定）
+  if (presetScope) setCalRegScope(presetScope);
   // 生徒・スタッフを先読み
   if (!staffStudents.length) {
     try { staffStudents = await sbGet('students', 'select=*&order=school,grade,name') || []; } catch(e) {}
@@ -10964,7 +11088,7 @@ function renderStaffCalMonth() {
     const hasClass = sess.length > 0;
     const hasEvent = evs.length > 0;
     const hasBday = bdays.length > 0;
-    const tappable = hasClass || hasEvent || hasBday || reportMissing;
+    const tappable = true;  // 全日タップ可（空の日もモーダルから予定追加できる）
 
     const titleParts = [];
     sess.forEach(s => titleParts.push((s.period ? s.period + '限 ' : '') + s.class_name + (s.teacher_name ? '（' + s.teacher_name + '）' : '')));
@@ -11096,9 +11220,20 @@ function openStaffCalModal(dateISO, simple) {
     }
   }
 
-  if (!body) body = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">予定はありません</div>';
+  // 予定が何もない日は案内を先に
+  if (!body) body = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">この日の予定はまだありません</div>';
+
+  // この日に予定を追加（カレンダーアプリ風：日付クリック→追加）
+  body += '<button onclick="addEventFromCalModal(\'' + dateISO + '\')" style="width:100%;margin-top:4px;padding:11px;font-size:13px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1.5px dashed var(--orange);border-radius:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">＋ この日に予定を追加</button>';
+
   document.getElementById('staffcal-modal-body').innerHTML = body;
   document.getElementById('staffcal-modal').style.display = 'flex';
+}
+
+// 日付モーダル → カレンダー登録（その日付を初期値に、個人の予定をデフォルト選択）
+function addEventFromCalModal(dateISO) {
+  closeStaffCalModal();
+  openCalendarReg(dateISO, 'personal');
 }
 
 function closeStaffCalModal() {
