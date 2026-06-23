@@ -331,6 +331,21 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
   </div>
 </div>
 
+<div id="enroll-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <div style="font-size:16px;font-weight:700;color:#1A4D80">👥 受講生を登録</div>
+      <button onclick="closeEnrollModal()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="enroll-class-name" style="font-size:12px;color:var(--muted);margin-bottom:12px"></div>
+
+    <input class="form-input-sm" type="text" id="enroll-search" placeholder="🔍 名前で検索" oninput="renderEnrollList()" style="margin-bottom:8px">
+    <div id="enroll-school-filter" class="filter-bar" style="margin-bottom:8px"></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">タップで受講登録/解除。✓が現在の受講生です。</div>
+    <div id="enroll-list" style="display:flex;flex-direction:column;gap:5px;max-height:46vh;overflow-y:auto"></div>
+  </div>
+</div>
+
 <div id="time-picker-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:340px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -2267,6 +2282,19 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
           <input class="form-input-sm" id="cm-name" type="text" placeholder="例：J北1年数学"></div>
         <div><div class="form-label">教科</div>
           <select class="form-select" id="cm-subject"><option value="英語">英語</option><option value="国語">国語</option><option value="数学">数学</option><option value="理科">理科</option><option value="社会">社会</option><option value="その他">その他</option></select></div>
+        <div style="display:flex;gap:8px">
+          <div style="flex:1"><div class="form-label">区分</div>
+            <select class="form-select" id="cm-category">
+              <option value="normal">📘 通常</option>
+              <option value="summer">☀️ 夏期講習</option>
+              <option value="winter">⛄ 冬期講習</option>
+              <option value="spring">🌸 春期講習</option>
+              <option value="common_test">🎯 共通テスト対策</option>
+              <option value="other">📚 その他講習</option>
+            </select></div>
+          <div style="width:120px"><div class="form-label">年度（任意）</div>
+            <input class="form-input-sm" id="cm-school-year" type="number" inputmode="numeric" placeholder="例 2026"></div>
+        </div>
         <div><div class="form-label">対象学年（複数選択可・混在講座は全部チェック）</div>
           <div style="display:flex;gap:14px;padding:4px 2px">
             <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" class="cm-grade-chk" value="1" style="width:16px;height:16px">1年</label>
@@ -2552,7 +2580,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620zv';
+const APP_VERSION = '20260620zw';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -10361,6 +10389,29 @@ function closePhotoModal() {
 const PERIODS = {1:['10:20','11:50'],2:['12:30','14:00'],3:['14:20','15:50'],4:['16:10','17:40'],5:['18:00','19:30'],6:['19:50','21:20']};
 const SUBJ_COLORS = {'英語':'#2D5FA6','国語':'#8B2020','数学':'#7B2D8B','理科':'#1A7340','社会':'#8B6020','その他':'#5A5A5A'};
 // 授業ラベル用の色パレット（スタッフが授業ごとに選択）
+// 授業区分（時期別講習）の定義
+const CLASS_CATEGORIES = [
+  { key: 'normal',      label: '通常',         icon: '📘' },
+  { key: 'summer',      label: '夏期講習',     icon: '☀️' },
+  { key: 'winter',      label: '冬期講習',     icon: '⛄' },
+  { key: 'spring',      label: '春期講習',     icon: '🌸' },
+  { key: 'common_test', label: '共通テスト対策', icon: '🎯' },
+  { key: 'other',       label: 'その他講習',   icon: '📚' }
+];
+function classCategoryMeta(key) {
+  return CLASS_CATEGORIES.find(c => c.key === (key || 'normal')) || CLASS_CATEGORIES[0];
+}
+// 区分バッジHTML（通常かつ年度なしは表示しない）
+function classCategoryBadge(cm) {
+  const cat = cm.category || 'normal';
+  if (cat === 'normal' && !cm.school_year) return '';
+  const meta = classCategoryMeta(cat);
+  const yr = cm.school_year ? cm.school_year + '年度 ' : '';
+  if (cat === 'normal') {
+    return '<span style="font-size:10px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);padding:1px 7px;border-radius:10px;margin-left:6px">' + yr + '</span>';
+  }
+  return '<span style="font-size:10px;background:#EAF3FB;color:#1A4D80;border:1px solid #6FA8E0;padding:1px 7px;border-radius:10px;margin-left:6px">' + meta.icon + ' ' + yr + meta.label + '</span>';
+}
 const CLASS_COLOR_PALETTE = [
   { name: 'オレンジ', value: '#E8923A' },
   { name: 'レッド',   value: '#D6453C' },
@@ -10410,13 +10461,14 @@ async function loadClassMasterList() {
       const gradeBadge = (c.grade_level && c.grade_level.trim())
         ? '<span style="font-size:10px;background:var(--orange-l);color:var(--orange-d);border:1px solid var(--orange);padding:1px 7px;border-radius:10px;margin-left:6px">' + c.grade_level.split(',').filter(Boolean).map(g => g + '年').join('・') + '</span>'
         : '<span style="font-size:10px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);padding:1px 7px;border-radius:10px;margin-left:6px">学年なし</span>';
-      return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:4px">' +
+      return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:4px;flex-wrap:wrap">' +
         '<span style="flex:0 0 auto;width:14px;height:14px;border-radius:4px;background:' + classColorOf(c) + ';border:1px solid rgba(0,0,0,0.1)"></span>' +
-        '<div style="flex:1"><div style="font-size:13px;font-weight:500;color:var(--text)">' + c.name + gradeBadge + '</div>' +
+        '<div style="flex:1;min-width:120px"><div style="font-size:13px;font-weight:500;color:var(--text)">' + c.name + classCategoryBadge(c) + gradeBadge + '</div>' +
         '<div style="font-size:10px;color:var(--muted)">' + (c.staff?.name || '担当未設定') + '</div></div>' +
-        '<button onclick="openClassColorPicker(\'' + c.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">色設定</button>' +
-        '<button onclick="setClassGrade(\'' + c.id + '\',\'' + (c.grade_level||'') + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">学年設定</button>' +
-        '<button onclick="setClassTeacher(\'' + c.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">担当設定</button>' +
+        '<button onclick="openEnrollStudents(\'' + c.id + '\')" style="padding:3px 8px;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:6px;color:#1A4D80;font-size:10px;font-weight:700;cursor:pointer">👥 受講生</button>' +
+        '<button onclick="openClassColorPicker(\'' + c.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">色</button>' +
+        '<button onclick="setClassGrade(\'' + c.id + '\',\'' + (c.grade_level||'') + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">学年</button>' +
+        '<button onclick="setClassTeacher(\'' + c.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">担当</button>' +
         '<button onclick="deleteClassMaster(\'' + c.id + '\')" style="padding:3px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">削除</button>' +
       '</div>';
     }).join('') +
@@ -10424,18 +10476,107 @@ async function loadClassMasterList() {
   ).join('');
 }
 
+// ===== 授業から受講生を一括登録 =====
+let enrollModalClassId = null;
+let enrollCurrentSet = new Set();   // 現在この授業を受講している student_id
+let enrollIdMap = {};               // student_id -> enrollment_id（解除用）
+let enrollSchoolFilter = '全員';
+
+async function openEnrollStudents(classId) {
+  enrollModalClassId = classId;
+  const cm = (classMasterList || []).find(c => c.id === classId);
+  document.getElementById('enroll-class-name').textContent = cm ? (cm.name + ' の受講生') : '';
+  document.getElementById('enroll-search').value = '';
+  enrollSchoolFilter = '全員';
+  document.getElementById('enroll-modal').style.display = 'flex';
+  document.getElementById('enroll-list').innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">読み込み中...</div>';
+  // 生徒一覧
+  if (!staffStudents.length) {
+    try { staffStudents = await sbGet('students', 'select=*&order=school,grade,name') || []; } catch(e) {}
+  }
+  // 現在の受講生
+  enrollCurrentSet = new Set(); enrollIdMap = {};
+  try {
+    const rows = await sbGet('class_enrollments', 'class_master_id=eq.' + classId + '&select=id,student_id') || [];
+    rows.forEach(r => { enrollCurrentSet.add(r.student_id); enrollIdMap[r.student_id] = r.id; });
+  } catch(e) {}
+  renderEnrollSchoolFilter();
+  renderEnrollList();
+}
+
+function closeEnrollModal() {
+  document.getElementById('enroll-modal').style.display = 'none';
+}
+
+function renderEnrollSchoolFilter() {
+  const bar = document.getElementById('enroll-school-filter');
+  if (!bar) return;
+  bar.innerHTML = POINT_PICKER_SCHOOLS.map(sc =>
+    '<button onclick="setEnrollSchool(\'' + sc + '\')" style="padding:4px 10px;font-size:11px;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;border:1.5px solid ' + (enrollSchoolFilter === sc ? 'var(--orange)' : 'var(--border)') + ';background:' + (enrollSchoolFilter === sc ? 'var(--orange)' : 'var(--surface)') + ';color:' + (enrollSchoolFilter === sc ? '#fff' : 'var(--muted)') + '">' + sc + '</button>'
+  ).join('');
+}
+function setEnrollSchool(sc) {
+  enrollSchoolFilter = sc;
+  renderEnrollSchoolFilter();
+  renderEnrollList();
+}
+
+function renderEnrollList() {
+  const list = document.getElementById('enroll-list');
+  if (!list) return;
+  const kw = (document.getElementById('enroll-search').value || '').trim().toLowerCase();
+  const filtered = (staffStudents || []).filter(s => {
+    if (s.is_active === false) return false;
+    if (enrollSchoolFilter !== '全員' && (s.school || '') !== enrollSchoolFilter) return false;
+    if (kw && !(s.name || '').toLowerCase().includes(kw)) return false;
+    return true;
+  });
+  if (!filtered.length) { list.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">該当なし</div>'; return; }
+  list.innerHTML = filtered.map(s => {
+    const on = enrollCurrentSet.has(s.id);
+    const sub = [s.grade ? s.grade + '年' : '', s.school || ''].filter(Boolean).join(' ');
+    return '<button type="button" onclick="toggleEnroll(\'' + s.id + '\')" ' +
+      'style="display:flex;align-items:center;justify-content:space-between;padding:8px 11px;border:1.5px solid ' + (on ? 'var(--orange)' : 'var(--border)') + ';' +
+      'background:' + (on ? 'var(--orange-l)' : 'var(--surface)') + ';border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;text-align:left">' +
+      '<span style="font-size:13px;color:var(--text)">' + escapeHtml(s.name) + '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + escapeHtml(sub) + '</span></span>' +
+      '<span style="font-size:14px;font-weight:700;color:' + (on ? 'var(--orange-d)' : 'var(--muted)') + '">' + (on ? '✓ 受講中' : '＋') + '</span></button>';
+  }).join('');
+}
+
+async function toggleEnroll(studentId) {
+  if (!enrollModalClassId) return;
+  const on = enrollCurrentSet.has(studentId);
+  try {
+    if (on) {
+      // 解除（class_master_id + student_id で特定してDELETE）
+      await sbDelete('class_enrollments', 'class_master_id=eq.' + enrollModalClassId + '&student_id=eq.' + studentId);
+      enrollCurrentSet.delete(studentId);
+    } else {
+      // 登録（INSERT）
+      await sbPost('class_enrollments', { class_master_id: enrollModalClassId, student_id: studentId });
+      enrollCurrentSet.add(studentId);
+    }
+    renderEnrollList();
+  } catch(e) { showToast('エラー: ' + e.message, 'error'); }
+}
+
 async function createClassMaster() {
   const name = document.getElementById('cm-name').value.trim();
   const subject = document.getElementById('cm-subject').value;
   if (!name) { showToast('授業名を入力してください', 'error'); return; }
   const grades = [...document.querySelectorAll('.cm-grade-chk:checked')].map(c => c.value);
+  const category = document.getElementById('cm-category').value || 'normal';
+  const yrRaw = document.getElementById('cm-school-year').value;
+  const schoolYear = yrRaw ? parseInt(yrRaw) : null;
   showLoading('登録中...');
   try {
-    const data = { name, subject, grade_level: grades.join(',') };
+    const data = { name, subject, grade_level: grades.join(','), category, school_year: schoolYear };
     if (currentStaff?.role !== 'admin') data.teacher_staff_id = currentStaff.id;
     await sbPost('class_master', data);
     hideLoading();
     document.getElementById('cm-name').value = '';
+    document.getElementById('cm-school-year').value = '';
+    document.getElementById('cm-category').value = 'normal';
     document.querySelectorAll('.cm-grade-chk').forEach(c => c.checked = false);
     showToast('✅ 授業を登録しました', 'success');
     loadClassMasterList();
@@ -11387,14 +11528,18 @@ function openCourseSessionModal() {
     if (!list || !list.length) {
       sel.innerHTML = '<option value="">（授業がありません。先に授業マスター管理で作成）</option>';
     } else {
-      sel.innerHTML = list.map(c => '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>').join('');
+      sel.innerHTML = list.map(c => {
+        const cat = c.category && c.category !== 'normal' ? classCategoryMeta(c.category).label + ' ' : '';
+        const yr = c.school_year ? c.school_year + ' ' : '';
+        return '<option value="' + c.id + '">' + escapeHtml(yr + cat + c.name) + '</option>';
+      }).join('');
     }
   };
   if (typeof classMasterList !== 'undefined' && classMasterList && classMasterList.length) {
     fill(classMasterList);
   } else {
     sel.innerHTML = '<option value="">読み込み中...</option>';
-    sbGet('class_master', 'select=id,name&order=name').then(fill).catch(() => fill([]));
+    sbGet('class_master', 'select=id,name,category,school_year&order=school_year.desc,name').then(fill).catch(() => fill([]));
   }
   // 各日の時間を初期化（未設定日はデフォルト=一括時間）
   const dates = [...courseSelectedDates].sort();
