@@ -346,6 +346,17 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
   </div>
 </div>
 
+<div id="unfilled-report-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-size:16px;font-weight:700;color:var(--orange-d)">📝 未記入の報告書</div>
+      <button onclick="closeUnfilledReports()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">過去〜今日のあなたの担当授業のうち、報告書が未記入のものです。タップすると出席・報告画面が開きます。</div>
+    <div id="unfilled-report-list" style="display:flex;flex-direction:column;gap:6px;max-height:60vh;overflow-y:auto"></div>
+  </div>
+</div>
+
 <div id="time-picker-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:340px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -2581,7 +2592,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260620zx';
+const APP_VERSION = '20260620zy';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -4124,13 +4135,52 @@ async function loadTodayTasks() {
   const limitDate = new Date(_t.getFullYear(), _t.getMonth(), _t.getDate() + 3);
   const limitISO = limitDate.getFullYear() + '-' + String(limitDate.getMonth()+1).padStart(2,'0') + '-' + String(limitDate.getDate()).padStart(2,'0');
   try {
-    // 並行取得：本日の自分の報告書 / 自分宛の未完了ToDo / 本日の授業 / 講師名マップ
-    const [myReport, myTodos, todaySessions, staffList] = await Promise.all([
-      sbGet('staff_reports', 'staff_id=eq.' + currentStaff.id + '&report_date=eq.' + today + '&select=id'),
+    // 自分の担当授業ID（class_master.teacher_staff_id=自分）
+    const myClasses = await sbGet('class_master', 'teacher_staff_id=eq.' + currentStaff.id + '&select=id,name') || [];
+    const myClassIds = myClasses.map(c => c.id);
+    const myClassNameMap = {};
+    myClasses.forEach(c => { myClassNameMap[c.id] = c.name; });
+
+    // 並行取得：自分宛の未完了ToDo / 本日の授業 / 講師名マップ /
+    //           自分の担当授業の過去〜今日のセッション / 既存の class_reports
+    const [myTodos, todaySessions, staffList, mySessionsAll, myReportsAll] = await Promise.all([
       sbGet('staff_todos', 'to_staff_id=eq.' + currentStaff.id + '&is_done=eq.false&select=id,due_date'),
       sbGet('class_sessions', 'session_date=eq.' + today + '&select=class_master_id,period,start_time,end_time&order=period'),
-      sbGet('staff', 'select=id,name')
+      sbGet('staff', 'select=id,name'),
+      myClassIds.length
+        ? sbGet('class_sessions', 'class_master_id=in.(' + myClassIds.join(',') + ')&session_date=lte.' + today + '&select=class_master_id,session_date,period&order=session_date.desc')
+        : Promise.resolve([]),
+      myClassIds.length
+        ? sbGet('class_reports', 'class_master_id=in.(' + myClassIds.join(',') + ')&session_date=lte.' + today + '&select=class_master_id,session_date,theme,content,student_notes')
+        : Promise.resolve([])
     ]);
+
+    // 記入済み report の Set（'classId|date'）
+    const filledSet = new Set();
+    (myReportsAll || []).forEach(r => {
+      const filled = (r.theme && r.theme.trim()) || (r.content && r.content.trim()) || (r.student_notes && r.student_notes.trim());
+      if (filled) filledSet.add(r.class_master_id + '|' + r.session_date);
+    });
+    // 未記入セッション一覧（重複セッションは class|date|period で一意化）
+    const seenSession = new Set();
+    const unfilledReports = [];
+    (mySessionsAll || []).forEach(s => {
+      const k = s.class_master_id + '|' + s.session_date + '|' + (s.period || '');
+      if (seenSession.has(k)) return;
+      seenSession.add(k);
+      if (!filledSet.has(s.class_master_id + '|' + s.session_date)) {
+        unfilledReports.push({
+          class_master_id: s.class_master_id,
+          session_date: s.session_date,
+          period: s.period,
+          name: myClassNameMap[s.class_master_id] || '授業'
+        });
+      }
+    });
+    unfilledReports.sort((a, b) => (b.session_date < a.session_date ? -1 : b.session_date > a.session_date ? 1 : (a.period || 0) - (b.period || 0)));
+    // モーダル表示用にグローバル保持
+    window._unfilledReports = unfilledReports;
+    const unfilledReportCount = unfilledReports.length;
 
     // 講師名マップ（staff.id -> name）
     const staffNameMap = {};
@@ -4146,9 +4196,6 @@ async function loadTodayTasks() {
         cms.forEach(cm => { teacherByClass[cm.id] = cm; });
       } catch(e) { /* 担当情報が引けなくても授業名は表示する */ }
     }
-
-    // 報告書：本日分が未記入か
-    const reportDone = (myReport && myReport.length > 0);
 
     // ToDo：3日以内（today〜today+3日）に締切のもの。期限切れ（today より前）も含めて対象
     const todos = myTodos || [];
@@ -4180,11 +4227,11 @@ async function loadTodayTasks() {
       });
     }
 
-    // 報告書タスク
-    if (reportDone) {
-      items.push(taskRow('📝', '今日の報告書', '記入済み', true, "openTaskReport()"));
+    // 報告書タスク（過去〜今日の未記入件数）
+    if (unfilledReportCount === 0) {
+      items.push(taskRow('📝', '報告書', '未記入なし', true, "openTaskReport()"));
     } else {
-      items.push(taskRow('📝', '今日の報告書', '未記入', false, "openTaskReport()"));
+      items.push(taskRow('📝', '報告書', '未記入 ' + unfilledReportCount + '件', false, "openUnfilledReports()", unfilledReportCount > 0));
     }
 
     // ToDoタスク（3日以内の締切）
@@ -4202,7 +4249,7 @@ async function loadTodayTasks() {
     if (countEl) {
       const parts = [];
       if (sessions.length > 0) parts.push('授業' + sessions.length + '件');
-      if (!reportDone) parts.push('報告書未記入');
+      if (unfilledReportCount > 0) parts.push('報告書' + unfilledReportCount + '件');
       if (dueCount > 0) parts.push('ToDo' + dueCount + '件' + (overdueCount > 0 ? '⚠' : ''));
       countEl.textContent = parts.length ? parts.join('・') : 'ToDo0件';
       // 期限切れToDoがあれば赤く強調
@@ -4217,8 +4264,8 @@ async function loadTodayTasks() {
       }
     }
 
-    // すべて完了か（報告書済み＆3日以内ToDoなし）
-    if (reportDone && dueCount === 0) {
+    // すべて完了か（報告書未記入なし＆3日以内ToDoなし）
+    if (unfilledReportCount === 0 && dueCount === 0) {
       doneTag.style.display = 'inline-block';
     } else {
       doneTag.style.display = 'none';
@@ -4894,6 +4941,34 @@ function openTaskReport() {
 }
 function openTaskTodo() {
   openHomeFeature('todo');
+}
+
+// 未記入報告書一覧モーダル
+function openUnfilledReports() {
+  const list = window._unfilledReports || [];
+  const el = document.getElementById('unfilled-report-list');
+  if (el) {
+    if (!list.length) {
+      el.innerHTML = '<div style="font-size:13px;color:var(--muted);text-align:center;padding:16px">未記入の報告書はありません 🎉</div>';
+    } else {
+      el.innerHTML = list.map(r => {
+        const periodLabel = r.period ? (r.period + '限') : '';
+        const dateLabel = r.session_date.slice(5).replace('-', '/');
+        const oc = "closeUnfilledReports();openClassAttendance('" + r.class_master_id + "','" + r.session_date + "','" + (r.period || '') + "')";
+        return '<div onclick="' + oc + '" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">' +
+          '<span style="font-size:12px;font-weight:700;color:var(--orange-d);min-width:42px">' + dateLabel + '</span>' +
+          '<span style="flex:1;font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(r.name) + (periodLabel ? ' <span style="font-size:11px;color:var(--muted)">' + periodLabel + '</span>' : '') + '</span>' +
+          '<span style="font-size:12px;color:var(--muted)">›</span>' +
+        '</div>';
+      }).join('');
+    }
+  }
+  const m = document.getElementById('unfilled-report-modal');
+  if (m) m.style.display = 'flex';
+}
+function closeUnfilledReports() {
+  const m = document.getElementById('unfilled-report-modal');
+  if (m) m.style.display = 'none';
 }
 
 // ===== ポイント付与・使用の生徒ピッカー（検索＋学校絞り込み） =====
