@@ -2396,6 +2396,29 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         </div>
       </div>
 
+      <div id="sm-admin-perms" style="display:none">
+        <div class="section-title" style="margin-top:8px">🔐 スタッフ権限設定（生徒分析・売上）</div>
+        <div class="card-box">
+          <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px">
+            各スタッフが生徒分析タブで見られる項目と、対象の学校範囲を設定します。未設定のスタッフは何も見られません（管理者は常に全部見られます）。
+          </div>
+          <div><div class="form-label">スタッフを選択</div>
+            <select class="form-select" id="perm-staff-select" onchange="loadStaffPermEditor()"><option value="">選択してください</option></select>
+          </div>
+          <div id="perm-editor" style="margin-top:12px;display:none">
+            <div class="form-label" style="margin-top:4px">閲覧できる項目</div>
+            <div id="perm-items" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>
+            <div class="form-label">対象の学校範囲</div>
+            <div style="display:flex;gap:8px;margin-bottom:8px">
+              <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="perm-scope" value="all" onchange="onPermScopeChange()"> 全校</label>
+              <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="perm-scope" value="select" onchange="onPermScopeChange()"> 特定校のみ</label>
+            </div>
+            <div id="perm-school-list" style="display:none;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
+            <button class="form-btn" onclick="saveStaffPerm()">💾 この内容で保存</button>
+          </div>
+        </div>
+      </div>
+
     </div>
 
 
@@ -2706,7 +2729,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260623q';
+const APP_VERSION = '20260623u';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -7508,9 +7531,12 @@ function openStaffManage(tab) {
     'quizstatus':'小テスト状況', 'appusage':'教科アプリ', 'classanalysis':'授業分析', 'studentanalysis':'生徒分析', 'rostercheck':'名簿照合', 'revenue':'売上', 'settings':'設定'
   };
   document.getElementById('manage-header-title').textContent = titles[tab] || '管理';
-  // 売上タブは admin のみ表示
+  // 売上タブは admin または revenue 権限を持つスタッフに表示
   const revTab = document.getElementById('manage-tab-revenue');
-  if (revTab) revTab.style.display = (currentStaff && currentStaff.role === 'admin') ? '' : 'none';
+  if (revTab) {
+    const canRev = (currentStaff && currentStaff.role === 'admin') || (saMyPerms && saMyPerms.perms && saMyPerms.perms.revenue === true);
+    revTab.style.display = canRev ? '' : 'none';
+  }
   // タブボタンを探してアクティブ表示（onclick属性で一致させる）
   let btn = null;
   document.querySelectorAll('#screen-staff-manage .manage-tab-btn').forEach(b => {
@@ -8545,6 +8571,7 @@ async function doStaffLogin() {
     }
 
     currentStaff = staff;
+    loadMyPermissions();
     hideLoading();
     document.getElementById('staff-id-input').value = '';
     document.getElementById('staff-pin-input').value = '';
@@ -9432,12 +9459,16 @@ function loadSettingsTab() {
     adminSection.style.display = 'block';
     adminMonitor.style.display = 'block';
     if (adminPromote) { adminPromote.style.display = 'block'; loadPromotePreview(); }
+    const permSec = document.getElementById('sm-admin-perms');
+    if (permSec) { permSec.style.display = 'block'; initStaffPermUI(); }
     loadStaffList();
     loadMonitorStaffSelect();
   } else {
     adminSection.style.display = 'none';
     adminMonitor.style.display = 'none';
     if (adminPromote) adminPromote.style.display = 'none';
+    const permSec = document.getElementById('sm-admin-perms');
+    if (permSec) permSec.style.display = 'none';
   }
 }
 
@@ -14684,8 +14715,146 @@ function saBar(label, count, total, color) {
     + '</div></div>';
 }
 
+// 最大値ベースのバー＋補足テキスト（科目延べ・講師講座数など）
+function saBarWithExtra(label, count, max, color, extra) {
+  const w = max > 0 ? Math.round(count / max * 1000) / 10 : 0;
+  return '<div style="margin-bottom:6px">'
+    + '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text);margin-bottom:2px">'
+    + '<span>' + escapeHtml(label) + '</span>'
+    + '<span style="color:var(--muted)">' + count + '人 ' + (extra ? '<span style="color:#999">' + escapeHtml(extra) + '</span>' : '') + '</span>'
+    + '</div>'
+    + '<div style="height:8px;background:#EEE;border-radius:4px;overflow:hidden">'
+    + '<div style="height:100%;width:' + w + '%;background:' + color + ';border-radius:4px"></div>'
+    + '</div></div>';
+}
+
 let saViewMode = 'bar';
 let saData = null;
+
+// 生徒分析の制御項目定義（将来ここに追記すれば管理UI・判定の両方に反映される）
+const ANALYSIS_ITEMS = [
+  { key: 'gender',       label: '男女比' },
+  { key: 'school_grade', label: '学校・学年の人数' },
+  { key: 'course_track', label: '文理比率' },
+  { key: 'aspiration',   label: '受験科目' },
+  { key: 'subject',      label: '受講科目・科目数' },
+  { key: 'class',        label: '講座別の受講人数' },
+  { key: 'teacher',      label: '担当講師分析' },
+  { key: 'revenue',      label: '売上' }
+];
+
+// 現在のスタッフの権限（{perms:{}, school_scope:'all'|[]}）。ログイン後に読み込む。
+let saMyPerms = null;
+
+async function loadMyPermissions() {
+  saMyPerms = null;
+  if (!currentStaff) return;
+  if (currentStaff.role === 'admin') { saMyPerms = { admin: true }; return; }
+  try {
+    const rows = await sbGet('staff_permissions', 'staff_id=eq.' + encodeURIComponent(currentStaff.staff_id) + '&select=perms,school_scope') || [];
+    if (rows.length) {
+      saMyPerms = { perms: rows[0].perms || {}, school_scope: rows[0].school_scope || 'all' };
+    } else {
+      saMyPerms = { perms: {}, school_scope: 'all' }; // 未設定＝全項目OFF
+    }
+  } catch (e) {
+    saMyPerms = { perms: {}, school_scope: 'all' };
+  }
+}
+
+// 項目が見られるか
+function saCanView(key) {
+  if (currentStaff && currentStaff.role === 'admin') return true;
+  if (!saMyPerms) return false;
+  if (saMyPerms.admin) return true;
+  return !!(saMyPerms.perms && saMyPerms.perms[key] === true);
+}
+
+// ===== スタッフ権限設定（admin専用UI）=====
+let permEditTarget = null; // 編集中スタッフ {staff_id, name}
+
+async function initStaffPermUI() {
+  const sel = document.getElementById('perm-staff-select');
+  if (!sel) return;
+  document.getElementById('perm-editor').style.display = 'none';
+  try {
+    const staffs = await sbGet('staff', 'is_active=eq.true&select=staff_id,name,role&order=staff_id') || [];
+    sel.innerHTML = '<option value="">選択してください</option>'
+      + staffs.filter(s => s.role !== 'admin').map(s =>
+        '<option value="' + escapeHtml(s.staff_id) + '">' + escapeHtml(s.staff_id + '：' + s.name) + '</option>').join('');
+  } catch (e) {}
+}
+
+async function loadStaffPermEditor() {
+  const sel = document.getElementById('perm-staff-select');
+  const sid = sel.value;
+  const editor = document.getElementById('perm-editor');
+  if (!sid) { editor.style.display = 'none'; return; }
+  permEditTarget = sid;
+
+  // 既存の権限を読む
+  let perms = {}, scope = 'all';
+  try {
+    const rows = await sbGet('staff_permissions', 'staff_id=eq.' + encodeURIComponent(sid) + '&select=perms,school_scope') || [];
+    if (rows.length) { perms = rows[0].perms || {}; scope = rows[0].school_scope || 'all'; }
+  } catch (e) {}
+
+  // 項目チェックボックス
+  const itemsBox = document.getElementById('perm-items');
+  itemsBox.innerHTML = ANALYSIS_ITEMS.map(it =>
+    '<label style="font-size:13px;display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 8px;background:var(--surface2);border-radius:6px">'
+    + '<input type="checkbox" class="perm-item-cb" value="' + it.key + '"' + (perms[it.key] === true ? ' checked' : '') + '> ' + escapeHtml(it.label) + '</label>'
+  ).join('');
+
+  // スコープ
+  const isAll = (scope === 'all' || !Array.isArray(scope));
+  document.querySelector('input[name="perm-scope"][value="all"]').checked = isAll;
+  document.querySelector('input[name="perm-scope"][value="select"]').checked = !isAll;
+  const schoolList = document.getElementById('perm-school-list');
+  const selectedSchools = Array.isArray(scope) ? scope : [];
+  schoolList.innerHTML = SA_SCHOOLS.map(sc =>
+    '<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;border:1px solid var(--border);border-radius:6px;padding:4px 8px">'
+    + '<input type="checkbox" class="perm-school-cb" value="' + escapeHtml(sc) + '"' + (selectedSchools.includes(sc) ? ' checked' : '') + '> ' + escapeHtml(sc) + '</label>'
+  ).join('');
+  schoolList.style.display = isAll ? 'none' : 'flex';
+
+  editor.style.display = 'block';
+}
+
+function onPermScopeChange() {
+  const sel = document.querySelector('input[name="perm-scope"]:checked');
+  const schoolList = document.getElementById('perm-school-list');
+  schoolList.style.display = (sel && sel.value === 'select') ? 'flex' : 'none';
+}
+
+async function saveStaffPerm() {
+  if (!permEditTarget) return;
+  const perms = {};
+  document.querySelectorAll('.perm-item-cb').forEach(cb => { perms[cb.value] = cb.checked; });
+  const scopeMode = document.querySelector('input[name="perm-scope"]:checked');
+  let school_scope = 'all';
+  if (scopeMode && scopeMode.value === 'select') {
+    const sel = [];
+    document.querySelectorAll('.perm-school-cb:checked').forEach(cb => sel.push(cb.value));
+    school_scope = sel;
+  }
+  showLoading('保存中...');
+  try {
+    // upsert：既存があればPATCH、なければPOST
+    const existing = await sbGet('staff_permissions', 'staff_id=eq.' + encodeURIComponent(permEditTarget) + '&select=staff_id') || [];
+    const payload = { perms: perms, school_scope: school_scope, updated_at: new Date().toISOString() };
+    if (existing.length) {
+      await sbPatch('staff_permissions', 'staff_id=eq.' + encodeURIComponent(permEditTarget), payload);
+    } else {
+      await sbPost('staff_permissions', Object.assign({ staff_id: permEditTarget }, payload));
+    }
+    hideLoading();
+    showToast('✅ 権限を保存しました', 'success');
+  } catch (e) {
+    hideLoading();
+    showToast('保存エラー: ' + e.message + '（staff_permissions テーブル未作成の可能性）', 'error');
+  }
+}
 
 function setSaMode(mode, el) {
   saViewMode = mode;
@@ -14708,6 +14877,7 @@ async function loadStudentAnalysis() {
     b.style.color = active ? '#fff' : 'var(--text)';
   });
   body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div>';
+  await loadMyPermissions();
   const includeInactive = document.getElementById('sa-include-inactive') && document.getElementById('sa-include-inactive').checked;
   let q = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason';
   if (!includeInactive) q += '&is_active=eq.true';
@@ -14715,11 +14885,11 @@ async function loadStudentAnalysis() {
   // 除外生徒（デモ等）は卒業含む表示でも常に弾く
   studentsRaw = studentsRaw.filter(s => s.inactive_reason !== '除外');
 
-  // 受講科目（class_enrollments × class_master.subject）
+  // 受講科目（class_enrollments × class_master）
   const studentIdSet = new Set(studentsRaw.map(s => s.id));
   let enrolls = [];
   try {
-    enrolls = await sbGet('class_enrollments', 'select=student_id,class_master(subject)') || [];
+    enrolls = await sbGet('class_enrollments', 'select=student_id,class_master_id,class_master(subject,name,teacher_staff_id)') || [];
   } catch (e) { enrolls = []; }
   enrolls = enrolls.filter(e => studentIdSet.has(e.student_id));
   const studentSubjects = {};
@@ -14764,7 +14934,23 @@ async function loadStudentAnalysis() {
     return;
   }
 
-  saData = { students: students, total: total, studentSubjects: studentSubjects, appN: studentsRaw.length, rosterOnlyN: rosterOnlyN };
+  // 講師名マップ（teacher_staff_id -> 名前）
+  const teacherMap = {};
+  try {
+    const teacherIds = [...new Set(enrolls.map(e => e.class_master && e.class_master.teacher_staff_id).filter(Boolean))];
+    if (teacherIds.length) {
+      const staffRows = await sbGet('staff', 'id=in.(' + teacherIds.join(',') + ')&select=id,name') || [];
+      staffRows.forEach(st => { teacherMap[st.id] = st.name; });
+    }
+  } catch (e) {}
+
+  // 担当校スコープ（個人が見える項目=志望校・受講・講座・講師にのみ後で適用）
+  let scopeSchools = null; // null=全校
+  if (saMyPerms && !saMyPerms.admin && Array.isArray(saMyPerms.school_scope)) {
+    scopeSchools = saMyPerms.school_scope;
+  }
+
+  saData = { students: students, total: total, studentSubjects: studentSubjects, appN: studentsRaw.length, rosterOnlyN: rosterOnlyN, enrolls: enrolls, teacherMap: teacherMap, scopeSchools: scopeSchools };
   saRender();
 }
 
@@ -14780,6 +14966,11 @@ function saRender() {
 // ============ 棒グラフモード（従来の全部入り） ============
 function saRenderBar() {
   const students = saData.students, total = saData.total, studentSubjects = saData.studentSubjects;
+  // 個人が見える項目（志望校・受講・講座・講師）に使う、担当校スコープ適用済みの生徒集合
+  const scopeSchools = saData.scopeSchools;
+  const scopedStudents = scopeSchools ? students.filter(s => scopeSchools.includes(s.school)) : students;
+  const scopedIdSet = new Set(scopedStudents.map(s => s.id));
+  const scopeNote = scopeSchools ? '<div style="font-size:10px;color:#C77F2E;margin-bottom:6px">※あなたの担当校（' + scopeSchools.map(escapeHtml).join('・') + '）の生徒のみ集計しています。</div>' : '';
   let html = '';
 
   // ---- 全体サマリー ----
@@ -14805,7 +14996,14 @@ function saRenderBar() {
     html += '<div style="margin-bottom:10px"></div>';
   }
 
+  // 学校リスト（複数セクションで共用するため先に算出）
+  const schoolOrder = SA_SCHOOLS.filter(sc => students.some(s => s.school === sc));
+  const otherSchools = [...schoolSet].filter(sc => !SA_SCHOOLS.includes(sc));
+  const allSchoolsForTable = [...schoolOrder, ...otherSchools];
+  const noSchoolN = students.filter(s => !s.school).length;
+
   // ---- 男女比（全体） ----
+  if (saCanView('gender')) {
   html += saSectionTitle('👥 男女比（全体）');
   html += '<div style="margin-bottom:18px">'
     + saBar('男子', maleN, total, '#3B82C4')
@@ -14823,10 +15021,6 @@ function saRenderBar() {
     + '<th style="padding:6px 8px;text-align:right">未設定</th>'
     + '<th style="padding:6px 8px;text-align:right">計</th>'
     + '</tr></thead><tbody>';
-  const schoolOrder = SA_SCHOOLS.filter(sc => students.some(s => s.school === sc));
-  const otherSchools = [...schoolSet].filter(sc => !SA_SCHOOLS.includes(sc));
-  const allSchoolsForTable = [...schoolOrder, ...otherSchools];
-  const noSchoolN = students.filter(s => !s.school).length;
   allSchoolsForTable.forEach(sc => {
     const grp = students.filter(s => s.school === sc);
     const m = grp.filter(s => s.gender === '男').length;
@@ -14853,8 +15047,10 @@ function saRenderBar() {
     + '<td style="padding:6px 8px;text-align:right">' + genderUnsetN + '</td>'
     + '<td style="padding:6px 8px;text-align:right">' + total + '</td></tr>';
   html += '</tbody></table></div>';
+  } // end gender
 
   // ---- 学校×学年 人数表 ----
+  if (saCanView('school_grade')) {
   html += saSectionTitle('📋 学校×学年 人数表');
   html += '<div style="overflow-x:auto;margin-bottom:18px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
     + '<thead><tr style="background:var(--orange-l)">'
@@ -14888,8 +15084,10 @@ function saRenderBar() {
   if (hasKosotsu) html += '<td style="padding:6px 8px;text-align:right">' + otherGradeTotal + '</td>';
   html += '<td style="padding:6px 8px;text-align:right">' + total + '</td></tr>';
   html += '</tbody></table></div>';
+  } // end school_grade
 
   // ---- 文理比率 ----
+  if (saCanView('course_track')) {
   html += saSectionTitle('📚 文理比率（全体）');
   html += '<div style="margin-bottom:14px">'
     + saBar('文系', bunkeiN, total, '#C77F2E')
@@ -14921,30 +15119,12 @@ function saRenderBar() {
       + '</tr>';
   });
   html += '</tbody></table></div>';
+  } // end course_track
 
-  // ---- 志望校・希望科目 ----
-  const univCounts = {};
-  students.forEach(s => {
-    [s.univ1, s.univ2, s.univ3].forEach(u => {
-      if (u && u.trim()) { const k = u.trim(); univCounts[k] = (univCounts[k] || 0) + 1; }
-    });
-  });
-  const univRank = Object.entries(univCounts).sort((a, b) => b[1] - a[1]);
-  html += saSectionTitle('🎯 志望校ランキング');
-  if (univRank.length) {
-    html += '<div style="margin-bottom:8px;font-size:10px;color:var(--muted)">第1〜第3志望すべてを集計（延べ人数）</div>';
-    html += '<div style="margin-bottom:18px">';
-    const univMax = univRank[0][1];
-    univRank.slice(0, 15).forEach(([name, n]) => {
-      html += saBar(name, n, univMax, '#7B5BA0');
-    });
-    html += '</div>';
-  } else {
-    html += '<div style="color:var(--muted);font-size:12px;margin-bottom:18px;padding:12px;background:#FAFAF8;border-radius:8px">まだ志望校データがありません。（生徒が志望校を入力すると集計されます）</div>';
-  }
-
+  // ---- 受験科目（担当校スコープ適用）----
+  if (saCanView('aspiration')) {
   const subjCounts = {};
-  students.forEach(s => {
+  scopedStudents.forEach(s => {
     if (!s.desired_subjects) return;
     String(s.desired_subjects).split(/[,、\s]+/).forEach(sub => {
       const k = sub.trim();
@@ -14952,19 +15132,22 @@ function saRenderBar() {
     });
   });
   const subjRank = Object.entries(subjCounts).sort((a, b) => b[1] - a[1]);
-  html += saSectionTitle('✏️ 希望科目別 人数');
+  html += saSectionTitle('✏️ 受験科目別 人数');
+  html += scopeNote;
   if (subjRank.length) {
     const subjMax = subjRank[0][1];
     html += '<div style="margin-bottom:18px">';
     subjRank.forEach(([name, n]) => html += saBar(name, n, subjMax, '#3B6D11'));
     html += '</div>';
   } else {
-    html += '<div style="color:var(--muted);font-size:12px;margin-bottom:8px;padding:12px;background:#FAFAF8;border-radius:8px">まだ希望科目データがありません。</div>';
+    html += '<div style="color:var(--muted);font-size:12px;margin-bottom:8px;padding:12px;background:#FAFAF8;border-radius:8px">まだ受験科目データがありません。</div>';
   }
+  } // end aspiration
 
-  // ---- 受講科目・科目数（アプリ登録者のみが母数。名簿のみの子は科目データ無し）----
-  const appStudents = students.filter(s => s._src === 'app');
+  // ---- 受講科目・科目数（アプリ登録者のみが母数。担当校スコープ適用）----
+  const appStudents = students.filter(s => s._src === 'app' && scopedIdSet.has(s.id));
   const appTotal = appStudents.length;
+  const studentIdSetForBar = new Set(appStudents.map(s => s.id));
   const subjBing = {};
   Object.values(studentSubjects).forEach(set => {
     set.forEach(subj => { subjBing[subj] = (subjBing[subj] || 0) + 1; });
@@ -14979,7 +15162,9 @@ function saRenderBar() {
   const avgSubj = appTotal ? Math.round(totalSubjSum / appTotal * 10) / 10 : 0;
   const enrolledN = appStudents.filter(s => studentSubjects[s.id] && studentSubjects[s.id].size > 0).length;
 
+  if (saCanView('subject')) {
   html += saSectionTitle('📘 受講科目・科目数');
+  html += scopeNote;
   if (saData.rosterOnlyN > 0) {
     html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">※この集計はアプリ登録者（' + appTotal + '人）のみが対象です。</div>';
   }
@@ -14989,14 +15174,26 @@ function saRenderBar() {
     + saSummaryCard('延べ科目', totalSubjSum + '科目', '#185FA5')
     + '</div>';
 
-  html += '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:8px">科目別の受講人数（科目内の複数講座は1人扱い）</div>';
+  html += '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">科目別の受講人数</div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">実人数＝その科目を1つでも受講している人数／延べ＝講座ごとに数えた受講数（同じ科目を2講座取れば2）</div>';
+  // 科目別の延べ人数（講座単位で全部カウント）
+  const subjGross = {};
+  (saData.enrolls || []).forEach(e => {
+    const st = e.student_id;
+    if (!studentIdSetForBar.has(st)) return;
+    const subj = e.class_master && e.class_master.subject ? e.class_master.subject : 'その他';
+    subjGross[subj] = (subjGross[subj] || 0) + 1;
+  });
   const SUBJ_ORDER = ['英語', '国語', '数学', '理科', '社会', 'その他'];
   const subjList = [...new Set([...SUBJ_ORDER.filter(s => subjBing[s]), ...Object.keys(subjBing)])];
   if (subjList.length) {
     const subjMax = Math.max(...Object.values(subjBing));
     html += '<div style="margin-bottom:14px">';
     subjList.forEach(subj => {
-      html += saBar(subj, subjBing[subj] || 0, subjMax, SA_SUBJ_COLOR[subj] || '#7F8C8D');
+      const real = subjBing[subj] || 0;
+      const gross = subjGross[subj] || 0;
+      const extra = gross > real ? '（延べ ' + gross + '）' : '';
+      html += saBarWithExtra(subj, real, subjMax, SA_SUBJ_COLOR[subj] || '#7F8C8D', extra);
     });
     html += '</div>';
   } else {
@@ -15013,6 +15210,66 @@ function saRenderBar() {
     html += saBar(label, countDist[n], distMax, color);
   });
   html += '</div>';
+  } // end subject
+
+  // ---- 講座（授業）ごとの受講人数 ----
+  if (saCanView('class')) {
+  const byClass = {};   // class_master_id -> {name, subject, teacher_staff_id, n}
+  (saData.enrolls || []).forEach(e => {
+    if (!studentIdSetForBar.has(e.student_id)) return;
+    const cm = e.class_master || {};
+    const cid = e.class_master_id || (cm.name || '不明');
+    if (!byClass[cid]) byClass[cid] = { name: cm.name || '（名称未設定）', subject: cm.subject || 'その他', teacher: cm.teacher_staff_id || null, n: 0 };
+    byClass[cid].n++;
+  });
+  const classList = Object.values(byClass).sort((a, b) => b.n - a.n);
+  if (classList.length) {
+    html += saSectionTitle('🏫 講座ごとの受講人数');
+    const classMax = Math.max(...classList.map(c => c.n));
+    html += '<div style="margin-bottom:18px">';
+    classList.forEach(c => {
+      const label = c.name + '（' + c.subject + '）';
+      html += saBar(label, c.n, classMax, SA_SUBJ_COLOR[c.subject] || '#7F8C8D');
+    });
+    html += '</div>';
+  }
+  } // end class
+
+  // ---- 担当講師ごとの受講人数（延べ・講座単位／常に全校で集計＝スコープ外）----
+  if (saCanView('teacher')) {
+  const allAppIdSet = new Set(students.filter(s => s._src === 'app').map(s => s.id));
+  const byTeacher = {};   // teacher_staff_id -> n
+  const teacherClasses = {}; // teacher_staff_id -> Set(class_master_id) 担当講座数
+  (saData.enrolls || []).forEach(e => {
+    if (!allAppIdSet.has(e.student_id)) return;
+    const cm = e.class_master || {};
+    const tid = cm.teacher_staff_id || null;
+    const key = tid || '__none__';
+    byTeacher[key] = (byTeacher[key] || 0) + 1;
+    if (!teacherClasses[key]) teacherClasses[key] = new Set();
+    teacherClasses[key].add(e.class_master_id);
+  });
+  const teacherList = Object.entries(byTeacher).sort((a, b) => b[1] - a[1]);
+  if (teacherList.length) {
+    html += saSectionTitle('👨‍🏫 担当講師ごとの受講人数');
+    html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">全校で集計。講座単位の延べ受講数（1人が同じ講師の2講座を取れば2）。括弧内は担当講座数。</div>';
+    const tMax = Math.max(...teacherList.map(t => t[1]));
+    html += '<div style="margin-bottom:8px">';
+    teacherList.forEach(([key, n]) => {
+      const name = key === '__none__' ? '（担当未設定）' : (saData.teacherMap[key] || ('講師ID:' + key));
+      const clsN = teacherClasses[key] ? teacherClasses[key].size : 0;
+      html += saBarWithExtra(name, n, tMax, '#5B7BA0', '（' + clsN + '講座）');
+    });
+    html += '</div>';
+  }
+  } // end teacher
+
+  // どの項目も見られない場合
+  const sawAny = ANALYSIS_ITEMS.some(it => saCanView(it.key));
+  if (!sawAny) {
+    html += '<div style="text-align:center;color:var(--muted);padding:30px 16px;font-size:13px;background:#FAFAF8;border-radius:10px">'
+      + '🔒 表示できる分析項目がありません。<br><span style="font-size:11px">閲覧権限は管理者が設定します。</span></div>';
+  }
 
   return html;
 }
@@ -15059,22 +15316,27 @@ function saPieSvg(segments) {
 
 function saRenderPie() {
   const students = saData.students, total = saData.total, studentSubjects = saData.studentSubjects;
+  const scopeSchools = saData.scopeSchools;
+  const scopedStudents = scopeSchools ? students.filter(s => scopeSchools.includes(s.school)) : students;
   let html = '';
 
   const maleN = students.filter(s => s.gender === '男').length;
   const femaleN = students.filter(s => s.gender === '女').length;
   const genderUnsetN = total - maleN - femaleN;
+  if (saCanView('gender')) {
   html += saSectionTitle('👥 男女比');
   html += saPieSvg([
     { label: '男子', value: maleN, color: '#3B82C4' },
     { label: '女子', value: femaleN, color: '#E07BA0' },
     { label: '未設定', value: genderUnsetN, color: '#BBB' }
   ]);
+  }
 
   const bunkeiN = students.filter(s => s.course_track === '文系').length;
   const rikeiN = students.filter(s => s.course_track === '理系').length;
   const miteiN = students.filter(s => s.course_track === '未定').length;
   const trackUnsetN = total - bunkeiN - rikeiN - miteiN;
+  if (saCanView('course_track')) {
   html += saSectionTitle('📚 文理比率');
   html += saPieSvg([
     { label: '文系', value: bunkeiN, color: '#C77F2E' },
@@ -15082,7 +15344,10 @@ function saRenderPie() {
     { label: '未定', value: miteiN, color: '#7BA05B' },
     { label: '未設定', value: trackUnsetN, color: '#BBB' }
   ]);
+  }
 
+  const palette = ['#E8923A', '#3B82C4', '#27AE60', '#8E44AD', '#C0392B', '#16A085', '#E67E22', '#2C3E50', '#95A5A6'];
+  if (saCanView('school_grade')) {
   html += saSectionTitle('🎓 学年比');
   const gradeSegs = SA_GRADES.map((g, i) => ({
     label: g, value: students.filter(s => s.grade === g).length,
@@ -15094,7 +15359,6 @@ function saRenderPie() {
   if (noGradeN) gradeSegs.push({ label: '未設定', value: noGradeN, color: '#BBB' });
   html += saPieSvg(gradeSegs);
 
-  const palette = ['#E8923A', '#3B82C4', '#27AE60', '#8E44AD', '#C0392B', '#16A085', '#E67E22', '#2C3E50', '#95A5A6'];
   html += saSectionTitle('🏫 学校比');
   const schoolSegs = [];
   const allSchools = [...SA_SCHOOLS.filter(sc => students.some(s => s.school === sc))];
@@ -15105,9 +15369,11 @@ function saRenderPie() {
   const noSchoolN = students.filter(s => !s.school).length;
   if (noSchoolN) schoolSegs.push({ label: '未設定', value: noSchoolN, color: '#BBB' });
   html += saPieSvg(schoolSegs);
+  }
 
+  if (saCanView('subject')) {
   const countDist = {};
-  students.forEach(s => {
+  scopedStudents.forEach(s => {
     const n = studentSubjects[s.id] ? studentSubjects[s.id].size : 0;
     countDist[n] = (countDist[n] || 0) + 1;
   });
@@ -15118,12 +15384,19 @@ function saRenderPie() {
     color: n === 0 ? '#BBB' : palette[i % palette.length]
   }));
   html += saPieSvg(distSegs);
+  }
 
+  if (!ANALYSIS_ITEMS.some(it => saCanView(it.key))) {
+    html += '<div style="text-align:center;color:var(--muted);padding:30px 16px;font-size:13px;background:#FAFAF8;border-radius:10px">🔒 表示できる分析項目がありません。</div>';
+  }
   return html;
 }
 
 // ============ 学校比較モード ============
 function saRenderSchool() {
+  if (!saCanView('school_grade')) {
+    return '<div style="text-align:center;color:var(--muted);padding:30px 16px;font-size:13px;background:#FAFAF8;border-radius:10px">🔒 学校比較を表示する権限がありません。</div>';
+  }
   const students = saData.students, studentSubjects = saData.studentSubjects;
   const schoolSet = new Set(students.map(s => s.school).filter(Boolean));
   const schoolOrder = SA_SCHOOLS.filter(sc => students.some(s => s.school === sc));
@@ -15483,8 +15756,9 @@ function revenueYen(n) {
 async function loadRevenue() {
   const body = document.getElementById('revenue-body');
   if (!body) return;
-  if (!currentStaff || currentStaff.role !== 'admin') {
-    body.innerHTML = saRosterMsg('売上は管理者のみ閲覧できます。', 'var(--muted)');
+  await loadMyPermissions();
+  if (!saCanView('revenue')) {
+    body.innerHTML = saRosterMsg('売上を閲覧する権限がありません。管理者にお問い合わせください。', 'var(--muted)');
     return;
   }
   body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div>';
