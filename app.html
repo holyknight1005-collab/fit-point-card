@@ -1830,6 +1830,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <button onclick="switchManageTab('classanalysis',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📊 授業分析</button>
       <button onclick="switchManageTab('studentanalysis',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📈 生徒分析</button>
       <button onclick="switchManageTab('rostercheck',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📋 名簿照合</button>
+      <button id="manage-tab-revenue" onclick="switchManageTab('revenue',this)" class="tab-btn manage-tab-btn" style="display:none;flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">💰 売上</button>
       <button onclick="switchManageTab('settings',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">⚙️ 設定</button>
       <button onclick="switchManageTab('mission',this)" class="tab-btn manage-tab-btn" style="display:none;flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🎯 ミッション</button>
       <button onclick="switchManageTab('quiz',this)" class="tab-btn manage-tab-btn" style="display:none;flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📝 テスト</button>
@@ -2284,6 +2285,14 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div id="roster-list-area"></div>
     </div>
 
+    <!-- 売上タブ（admin専用） -->
+    <div id="smcontent-revenue" style="display:none">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">
+        各生徒の受講科目数から月間売上を見積もります。科目数は受講科目のユニーク数（同じ科目の複数講座は1つ）で数えます。アプリ登録済みの生徒が対象です。
+      </div>
+      <div id="revenue-body"><div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div></div>
+    </div>
+
     <!-- 設定タブ -->
     <div id="smcontent-settings" style="display:none">
 
@@ -2697,7 +2706,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260623n';
+const APP_VERSION = '20260623q';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -2958,6 +2967,7 @@ function renderStudentList() {
   sbGet('checkins', 'checkin_date=eq.' + todayISO + '&select=student_id').then(todayCheckins => {
     const todayIds = new Set((todayCheckins || []).map(c => c.student_id));
     const filtered = staffStudents.filter(s => {
+      if (s.inactive_reason === '除外') return false; // 除外生徒は在籍・退塾者どちらの一覧でも完全に隠す
       const activeOK = showGraduated ? (s.is_active === false) : (s.is_active !== false);
       const schoolOK = filterSchool === '全員' || s.school === filterSchool;
       const gradeOK  = filterGrade === '全学年' || s.grade === filterGrade;
@@ -5542,9 +5552,13 @@ function renderGraduateSection() {
   if (isActive) {
     box.innerHTML =
       '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">卒業・退塾した生徒は一覧から非表示になります。データは保持され、いつでも復籍できます。<br>🎓 卒業：本人はログイン可能のまま<br>🚪 退塾：本人はログイン不可になります</div>' +
-      '<div style="display:flex;gap:8px">' +
+      '<div style="display:flex;gap:8px;margin-bottom:10px">' +
         '<button onclick="deactivateStudent(\'卒業\')" style="flex:1;padding:11px;background:var(--surface2);border:1.5px solid var(--orange);border-radius:8px;color:var(--orange-d);font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🎓 卒業</button>' +
         '<button onclick="deactivateStudent(\'退塾\')" style="flex:1;padding:11px;background:var(--surface2);border:1.5px solid #e57373;border-radius:8px;color:#d32f2f;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🚪 退塾</button>' +
+      '</div>' +
+      '<div style="border-top:1px dashed var(--border);padding-top:10px">' +
+        '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">🚫 除外：デモ・テスト用の生徒を、一覧・集計・出欠・チェックインなど<b>すべてから完全に隠します</b>。退塾者一覧にも出ません。データは消えず、いつでも解除できます。</div>' +
+        '<button onclick="deactivateStudent(\'除外\')" style="width:100%;padding:11px;background:var(--surface2);border:1.5px solid #9E9E9E;border-radius:8px;color:#555;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🚫 集計から除外（管理者）</button>' +
       '</div>';
   } else {
     const reason = detailStudent.inactive_reason || '卒塾';
@@ -5553,17 +5567,29 @@ function renderGraduateSection() {
       const dt = new Date(detailStudent.inactive_at);
       info = '（' + dt.getFullYear() + '/' + (dt.getMonth() + 1) + '/' + dt.getDate() + '）';
     }
-    box.innerHTML =
-      '<div style="font-size:12px;color:var(--orange-d);font-weight:700;margin-bottom:10px">この生徒は' + reason + '済みです' + info + '。一覧には表示されません。' + (reason === '退塾' ? '<br>本人はログインできません。' : '<br>本人はログイン可能です。') + '</div>' +
-      '<button onclick="reactivateStudent()" style="width:100%;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🔄 復籍させる（一覧に戻す）</button>';
+    if (reason === '除外') {
+      box.innerHTML =
+        '<div style="font-size:12px;color:#555;font-weight:700;margin-bottom:10px">🚫 この生徒は除外中です' + info + '。<br>一覧・集計・出欠・チェックインなどすべてから隠れており、退塾者一覧にも表示されません。データは保持されています。</div>' +
+        '<button onclick="reactivateStudent()" style="width:100%;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🔄 除外を解除する（一覧に戻す）</button>';
+    } else {
+      box.innerHTML =
+        '<div style="font-size:12px;color:var(--orange-d);font-weight:700;margin-bottom:10px">この生徒は' + reason + '済みです' + info + '。一覧には表示されません。' + (reason === '退塾' ? '<br>本人はログインできません。' : '<br>本人はログイン可能です。') + '</div>' +
+        '<button onclick="reactivateStudent()" style="width:100%;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🔄 復籍させる（一覧に戻す）</button>';
+    }
   }
 }
 
 async function deactivateStudent(reason) {
   if (!detailStudent) return;
   if (!currentStaff || currentStaff.role !== 'admin') { showToast('管理者のみ操作できます', 'error'); return; }
-  const extra = reason === '退塾' ? '\n※退塾にすると本人はログインできなくなります。' : '\n※卒業の場合、本人は引き続きログインできます。';
-  if (!confirm(detailStudent.name + 'さんを「' + reason + '」扱いにします。\n\n生徒一覧から非表示になりますが、データは保持され、いつでも復籍できます。' + extra + '\n\nよろしいですか？')) return;
+  let confirmMsg;
+  if (reason === '除外') {
+    confirmMsg = detailStudent.name + 'さんを「除外」にします。\n\nデモ・テスト用として、一覧・集計・出欠・チェックインなどすべてから完全に隠します。退塾者一覧にも表示されません。\nデータは保持され、いつでも解除できます。\n\nよろしいですか？';
+  } else {
+    const extra = reason === '退塾' ? '\n※退塾にすると本人はログインできなくなります。' : '\n※卒業の場合、本人は引き続きログインできます。';
+    confirmMsg = detailStudent.name + 'さんを「' + reason + '」扱いにします。\n\n生徒一覧から非表示になりますが、データは保持され、いつでも復籍できます。' + extra + '\n\nよろしいですか？';
+  }
+  if (!confirm(confirmMsg)) return;
   showLoading('処理中...');
   try {
     const nowIso = new Date().toISOString();
@@ -5572,7 +5598,8 @@ async function deactivateStudent(reason) {
     detailStudent.inactive_at = nowIso;
     detailStudent.inactive_reason = reason;
     hideLoading();
-    showToast((reason === '卒業' ? '🎓' : '🚪') + ' ' + reason + '扱いにしました', 'success');
+    const icon = reason === '卒業' ? '🎓' : (reason === '除外' ? '🚫' : '🚪');
+    showToast(icon + ' ' + reason + (reason === '除外' ? 'しました' : '扱いにしました'), 'success');
     renderGraduateSection();
   } catch(e) {
     hideLoading();
@@ -7478,9 +7505,12 @@ function openStaffManage(tab) {
     'report':'報告書', 'todo':'ToDo', 'yesterday':'昨日の来塾', 'makeup':'補習',
     'student-view':'生徒画面', 'birthday':'誕生日', 'calendar':'予定表',
     'alert':'アラート', 'announce':'お知らせ', 'attendance':'授業出欠',
-    'quizstatus':'小テスト状況', 'appusage':'教科アプリ', 'classanalysis':'授業分析', 'studentanalysis':'生徒分析', 'rostercheck':'名簿照合', 'settings':'設定'
+    'quizstatus':'小テスト状況', 'appusage':'教科アプリ', 'classanalysis':'授業分析', 'studentanalysis':'生徒分析', 'rostercheck':'名簿照合', 'revenue':'売上', 'settings':'設定'
   };
   document.getElementById('manage-header-title').textContent = titles[tab] || '管理';
+  // 売上タブは admin のみ表示
+  const revTab = document.getElementById('manage-tab-revenue');
+  if (revTab) revTab.style.display = (currentStaff && currentStaff.role === 'admin') ? '' : 'none';
   // タブボタンを探してアクティブ表示（onclick属性で一致させる）
   let btn = null;
   document.querySelectorAll('#screen-staff-manage .manage-tab-btn').forEach(b => {
@@ -14576,7 +14606,7 @@ function switchManageTab(tab, el) {
   // manage-* 系（授業管理など）
   const manageTabs = ['class-master','class-session','check-item','mission','quiz'];
   // smcontent-* 系（小メニューから統合したタブ）
-  const menuTabs = ['report','todo','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck'];
+  const menuTabs = ['report','todo','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','revenue'];
   manageTabs.forEach(t => {
     const el2 = document.getElementById('manage-' + t);
     if (el2) el2.style.display = 'none';
@@ -14623,6 +14653,7 @@ function switchManageTab(tab, el) {
   if (tab === 'classanalysis') initClassAnalysis();
   if (tab === 'studentanalysis') { saViewMode = 'bar'; loadStudentAnalysis(); }
   if (tab === 'rostercheck') initRosterCheck();
+  if (tab === 'revenue') loadRevenue();
   if (tab === 'settings') loadSettingsTab();
 }
 
@@ -14678,18 +14709,14 @@ async function loadStudentAnalysis() {
   });
   body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div>';
   const includeInactive = document.getElementById('sa-include-inactive') && document.getElementById('sa-include-inactive').checked;
-  let q = 'select=id,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active';
+  let q = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason';
   if (!includeInactive) q += '&is_active=eq.true';
-  const students = await sbGet('students', q) || [];
-  const total = students.length;
-  if (!total) {
-    saData = null;
-    body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">該当する生徒がいません。</div>';
-    return;
-  }
+  let studentsRaw = await sbGet('students', q) || [];
+  // 除外生徒（デモ等）は卒業含む表示でも常に弾く
+  studentsRaw = studentsRaw.filter(s => s.inactive_reason !== '除外');
 
   // 受講科目（class_enrollments × class_master.subject）
-  const studentIdSet = new Set(students.map(s => s.id));
+  const studentIdSet = new Set(studentsRaw.map(s => s.id));
   let enrolls = [];
   try {
     enrolls = await sbGet('class_enrollments', 'select=student_id,class_master(subject)') || [];
@@ -14702,7 +14729,42 @@ async function loadStudentAnalysis() {
     studentSubjects[e.student_id].add(subj);
   });
 
-  saData = { students: students, total: total, studentSubjects: studentSubjects };
+  // 名簿台帳（roster）を取得し、students に居ない子を「名簿のみ（未登録）」として母数に加える
+  // 登録済みの子は students 側（本人入力）を優先するので roster からは取り込まない
+  let rosterRows = [];
+  try {
+    rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,gender,course_track,club') || [];
+  } catch (e) { rosterRows = []; }
+  const appKeySet = new Set();
+  const appNameSet = new Set();
+  studentsRaw.forEach(s => {
+    appKeySet.add(rosterKey(s.name, s.school));
+    appNameSet.add(normalizeName(s.name));
+  });
+
+  // 統合母数を作る。students は本人入力（正）、roster未登録分は暫定値
+  const students = studentsRaw.map(s => Object.assign({}, s, { _src: 'app' }));
+  let rosterOnlyN = 0;
+  rosterRows.forEach(r => {
+    // 氏名＋学校一致＝登録済み。氏名のみ一致も「登録済みの可能性高い」として母数二重計上を避けスキップ
+    if (appKeySet.has(rosterKey(r.name, r.school)) || appNameSet.has(normalizeName(r.name))) return;
+    students.push({
+      id: 'roster:' + normalizeName(r.name) + ':' + (r.school || ''),
+      name: r.name, gender: r.gender || '', school: r.school || '', grade: r.grade || '',
+      course_track: r.course_track || '', univ1: '', univ2: '', univ3: '', desired_subjects: '',
+      is_active: true, _src: 'roster'
+    });
+    rosterOnlyN++;
+  });
+
+  const total = students.length;
+  if (!total) {
+    saData = null;
+    body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">該当する生徒がいません。名簿CSVを取り込むか、生徒のアプリ登録をお待ちください。</div>';
+    return;
+  }
+
+  saData = { students: students, total: total, studentSubjects: studentSubjects, appN: studentsRaw.length, rosterOnlyN: rosterOnlyN };
   saRender();
 }
 
@@ -14730,11 +14792,18 @@ function saRenderBar() {
   const trackUnsetN = total - bunkeiN - rikeiN - miteiN;
   const schoolSet = new Set(students.map(s => s.school).filter(Boolean));
 
-  html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:18px">'
-    + saSummaryCard('在籍数', total + '人', 'var(--orange-d)')
+  html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px">'
+    + saSummaryCard('在籍数（合計）', total + '人', 'var(--orange-d)')
     + saSummaryCard('学校数', schoolSet.size + '校', '#185FA5')
     + saSummaryCard('情報未入力', (genderUnsetN || trackUnsetN ? '⚠️' : '✓') + (genderUnsetN + trackUnsetN > 0 ? ' あり' : ' なし'), (genderUnsetN + trackUnsetN > 0 ? '#C0392B' : '#3B6D11'))
     + '</div>';
+  if (saData.rosterOnlyN > 0) {
+    html += '<div style="font-size:11px;color:var(--muted);background:#FAFAF8;border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:18px">'
+      + '内訳：アプリ登録 <b style="color:#3B6D11">' + saData.appN + '人</b> ＋ 名簿のみ（アプリ未登録）<b style="color:#C77F2E">' + saData.rosterOnlyN + '人</b>'
+      + '<br><span style="font-size:10px">※名簿のみの子は受講科目データが無いため、科目集計には含まれません。</span></div>';
+  } else {
+    html += '<div style="margin-bottom:10px"></div>';
+  }
 
   // ---- 男女比（全体） ----
   html += saSectionTitle('👥 男女比（全体）');
@@ -14893,22 +14962,27 @@ function saRenderBar() {
     html += '<div style="color:var(--muted);font-size:12px;margin-bottom:8px;padding:12px;background:#FAFAF8;border-radius:8px">まだ希望科目データがありません。</div>';
   }
 
-  // ---- 受講科目・科目数 ----
+  // ---- 受講科目・科目数（アプリ登録者のみが母数。名簿のみの子は科目データ無し）----
+  const appStudents = students.filter(s => s._src === 'app');
+  const appTotal = appStudents.length;
   const subjBing = {};
   Object.values(studentSubjects).forEach(set => {
     set.forEach(subj => { subjBing[subj] = (subjBing[subj] || 0) + 1; });
   });
   const countDist = {};
-  students.forEach(s => {
+  appStudents.forEach(s => {
     const n = studentSubjects[s.id] ? studentSubjects[s.id].size : 0;
     countDist[n] = (countDist[n] || 0) + 1;
   });
   let totalSubjSum = 0;
-  students.forEach(s => { totalSubjSum += (studentSubjects[s.id] ? studentSubjects[s.id].size : 0); });
-  const avgSubj = total ? Math.round(totalSubjSum / total * 10) / 10 : 0;
-  const enrolledN = students.filter(s => studentSubjects[s.id] && studentSubjects[s.id].size > 0).length;
+  appStudents.forEach(s => { totalSubjSum += (studentSubjects[s.id] ? studentSubjects[s.id].size : 0); });
+  const avgSubj = appTotal ? Math.round(totalSubjSum / appTotal * 10) / 10 : 0;
+  const enrolledN = appStudents.filter(s => studentSubjects[s.id] && studentSubjects[s.id].size > 0).length;
 
   html += saSectionTitle('📘 受講科目・科目数');
+  if (saData.rosterOnlyN > 0) {
+    html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">※この集計はアプリ登録者（' + appTotal + '人）のみが対象です。</div>';
+  }
   html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">'
     + saSummaryCard('受講中の生徒', enrolledN + '人', '#3B6D11')
     + saSummaryCard('平均科目数', avgSubj + '科目', 'var(--orange-d)')
@@ -15076,8 +15150,9 @@ function saRenderSchool() {
     const b = grp.filter(s => s.course_track === '文系').length;
     const r = grp.filter(s => s.course_track === '理系').length;
     let subjSum = 0;
-    grp.forEach(s => { subjSum += (studentSubjects[s.id] ? studentSubjects[s.id].size : 0); });
-    const avg = grp.length ? Math.round(subjSum / grp.length * 10) / 10 : 0;
+    const grpApp = grp.filter(s => s._src === 'app');
+    grpApp.forEach(s => { subjSum += (studentSubjects[s.id] ? studentSubjects[s.id].size : 0); });
+    const avg = grpApp.length ? Math.round(subjSum / grpApp.length * 10) / 10 : 0;
     html += '<tr style="border-bottom:1px solid var(--border)">'
       + '<td style="padding:6px 8px;white-space:nowrap;font-weight:700">' + escapeHtml(sc) + '</td>'
       + '<td style="padding:6px 8px;text-align:right;font-weight:700">' + grp.length + '</td>'
@@ -15369,6 +15444,155 @@ async function loadRosterList() {
 function saRosterMsg(text, color) {
   return '<div style="font-size:12px;color:' + color + ';padding:12px;background:#FAFAF8;border-radius:8px">' + escapeHtml(text) + '</div>';
 }
+
+
+// ============================================================
+// 売上管理（revenue）admin専用
+// 各生徒の受講科目数 → subject_prices の料金で月間売上を見積もる
+// 科目数 = class_master.subject のユニーク数。アプリ登録者が対象。
+// ============================================================
+const REVENUE_FALLBACK_PRICES = { 1: 18000, 2: 30000, 3: 36000, 4: 40000, 5: 44000 };
+
+// 科目数→料金（料金表に無い数は、最大定義からの線形外挿 or フォールバック）
+function revenuePriceFor(count, priceMap) {
+  if (count <= 0) return 0;
+  if (priceMap[count] != null) return priceMap[count];
+  // 料金表に無い科目数：定義済みの最大科目数の料金 + 超過分×(最後の刻み)
+  const keys = Object.keys(priceMap).map(Number).sort((a, b) => a - b);
+  if (!keys.length) {
+    // 料金表が空ならフォールバック
+    if (REVENUE_FALLBACK_PRICES[count] != null) return REVENUE_FALLBACK_PRICES[count];
+    const fk = Object.keys(REVENUE_FALLBACK_PRICES).map(Number).sort((a, b) => a - b);
+    const maxK = fk[fk.length - 1];
+    const step = REVENUE_FALLBACK_PRICES[maxK] - REVENUE_FALLBACK_PRICES[maxK - 1] || 4000;
+    return REVENUE_FALLBACK_PRICES[maxK] + (count - maxK) * step;
+  }
+  const maxK = keys[keys.length - 1];
+  if (count > maxK) {
+    const step = keys.length >= 2 ? (priceMap[maxK] - priceMap[keys[keys.length - 2]]) : 4000;
+    return priceMap[maxK] + (count - maxK) * step;
+  }
+  // count < 最小定義（通常1以上なので来ないが念のため最小料金）
+  return priceMap[keys[0]] || 0;
+}
+
+function revenueYen(n) {
+  return '¥' + (n || 0).toLocaleString('ja-JP');
+}
+
+async function loadRevenue() {
+  const body = document.getElementById('revenue-body');
+  if (!body) return;
+  if (!currentStaff || currentStaff.role !== 'admin') {
+    body.innerHTML = saRosterMsg('売上は管理者のみ閲覧できます。', 'var(--muted)');
+    return;
+  }
+  body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div>';
+
+  // 料金表
+  let priceMap = {};
+  try {
+    const rows = await sbGet('subject_prices', 'select=subject_count,price&order=subject_count') || [];
+    rows.forEach(r => { priceMap[r.subject_count] = r.price; });
+  } catch (e) { priceMap = {}; }
+  const usingFallback = Object.keys(priceMap).length === 0;
+  if (usingFallback) priceMap = Object.assign({}, REVENUE_FALLBACK_PRICES);
+
+  // アプリ登録の在籍生徒（除外は弾く）
+  let students = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade,inactive_reason') || [];
+  students = students.filter(s => s.inactive_reason !== '除外');
+
+  // 受講科目
+  const idSet = new Set(students.map(s => s.id));
+  let enrolls = [];
+  try {
+    enrolls = await sbGet('class_enrollments', 'select=student_id,class_master(subject)') || [];
+  } catch (e) { enrolls = []; }
+  enrolls = enrolls.filter(e => idSet.has(e.student_id));
+  const subjOf = {};
+  enrolls.forEach(e => {
+    const subj = e.class_master && e.class_master.subject ? e.class_master.subject : 'その他';
+    if (!subjOf[e.student_id]) subjOf[e.student_id] = new Set();
+    subjOf[e.student_id].add(subj);
+  });
+
+  // 生徒ごとに科目数→料金
+  const perStudent = students.map(s => {
+    const cnt = subjOf[s.id] ? subjOf[s.id].size : 0;
+    return { name: s.name, school: s.school || '', grade: s.grade || '', count: cnt, price: revenuePriceFor(cnt, priceMap) };
+  });
+  const totalRevenue = perStudent.reduce((a, p) => a + p.price, 0);
+  const payingN = perStudent.filter(p => p.count > 0).length;
+  const zeroN = perStudent.length - payingN;
+
+  // 科目数ごとの集計
+  const byCount = {};
+  perStudent.forEach(p => {
+    if (!byCount[p.count]) byCount[p.count] = { n: 0, sum: 0 };
+    byCount[p.count].n++;
+    byCount[p.count].sum += p.price;
+  });
+
+  let html = '';
+
+  // サマリー
+  html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">'
+    + saSummaryCard('月間売上見込み', revenueYen(totalRevenue), 'var(--orange-d)')
+    + saSummaryCard('課金対象', payingN + '人', '#3B6D11')
+    + saSummaryCard('未受講', zeroN + '人', zeroN ? '#C77F2E' : '#3B6D11')
+    + '</div>';
+
+  if (usingFallback) {
+    html += '<div style="font-size:11px;color:#C0392B;background:#FDECEA;border:1px solid #F5B7B1;border-radius:8px;padding:8px 10px;margin-bottom:14px">'
+      + '⚠️ 料金表テーブル（subject_prices）が読めません。create_subject_prices.sql を実行してください。今は暫定の既定料金で計算しています。</div>';
+  }
+
+  // 科目数別の内訳
+  html += saSectionTitle('📊 科目数別の内訳');
+  html += '<div style="overflow-x:auto;margin-bottom:18px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+    + '<thead><tr style="background:var(--orange-l)">'
+    + '<th style="padding:6px 8px;text-align:left">科目数</th>'
+    + '<th style="padding:6px 8px;text-align:right">単価</th>'
+    + '<th style="padding:6px 8px;text-align:right">人数</th>'
+    + '<th style="padding:6px 8px;text-align:right">小計</th>'
+    + '</tr></thead><tbody>';
+  Object.keys(byCount).map(Number).sort((a, b) => a - b).forEach(cnt => {
+    const row = byCount[cnt];
+    const unit = cnt > 0 ? revenuePriceFor(cnt, priceMap) : 0;
+    html += '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td style="padding:6px 8px">' + (cnt === 0 ? '未受講' : cnt + '科目') + '</td>'
+      + '<td style="padding:6px 8px;text-align:right;color:var(--muted)">' + (cnt === 0 ? '—' : revenueYen(unit)) + '</td>'
+      + '<td style="padding:6px 8px;text-align:right">' + row.n + '</td>'
+      + '<td style="padding:6px 8px;text-align:right;font-weight:700">' + revenueYen(row.sum) + '</td>'
+      + '</tr>';
+  });
+  html += '<tr style="background:var(--orange-l);font-weight:700">'
+    + '<td style="padding:6px 8px">合計</td>'
+    + '<td style="padding:6px 8px"></td>'
+    + '<td style="padding:6px 8px;text-align:right">' + perStudent.length + '</td>'
+    + '<td style="padding:6px 8px;text-align:right">' + revenueYen(totalRevenue) + '</td>'
+    + '</tr>';
+  html += '</tbody></table></div>';
+
+  // 現在の料金表
+  html += saSectionTitle('💴 現在の料金表');
+  html += '<div style="overflow-x:auto;margin-bottom:8px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+    + '<thead><tr style="background:var(--orange-l)">'
+    + '<th style="padding:6px 8px;text-align:left">科目数</th>'
+    + '<th style="padding:6px 8px;text-align:right">月額</th>'
+    + '</tr></thead><tbody>';
+  Object.keys(priceMap).map(Number).sort((a, b) => a - b).forEach(c => {
+    html += '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td style="padding:6px 8px">' + c + '科目</td>'
+      + '<td style="padding:6px 8px;text-align:right">' + revenueYen(priceMap[c]) + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">※料金表に無い科目数は、最後の刻み幅で外挿して計算します。料金の編集機能は次のバージョンで追加予定です。</div>';
+
+  body.innerHTML = html;
+}
+
 
 
 
