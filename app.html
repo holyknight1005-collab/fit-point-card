@@ -2257,24 +2257,31 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
           <input type="checkbox" id="sa-include-inactive" onchange="loadStudentAnalysis()" style="cursor:pointer"> 卒業・退塾も含む
         </label>
       </div>
+      <div id="sa-mode-tabs" style="display:flex;gap:6px;margin-bottom:14px">
+        <button onclick="setSaMode('bar',this)" class="sa-mode-btn" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--orange-d);color:#fff;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📊 棒グラフ</button>
+        <button onclick="setSaMode('pie',this)" class="sa-mode-btn" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🥧 円グラフ</button>
+        <button onclick="setSaMode('school',this)" class="sa-mode-btn" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🏫 学校比較</button>
+      </div>
       <div id="sa-body"><div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div></div>
     </div>
 
     <!-- 名簿照合タブ -->
     <div id="smcontent-rostercheck" style="display:none">
       <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">
-        手元の名簿（CSV）を読み込むと、アプリに登録済みの生徒と突き合わせて、<b>未登録の生徒</b>を炙り出します。読み取り専用で、登録内容は一切変更しません。
+        名簿（CSV）を読み込むと<b>名簿台帳に保存</b>され、いつでも一覧で見られます。各行にアプリ登録の有無を自動表示します。名簿は集計の母数に使え、アプリ未登録の子もカウントされます（登録した子はアプリの入力が優先）。
       </div>
       <div style="background:#EAF2FB;border:1px solid #9CC0E8;border-radius:8px;padding:10px;margin-bottom:12px">
         <div style="font-size:12px;font-weight:700;color:#2D5FA6;margin-bottom:6px">① CSVテンプレートを取得</div>
-        <div style="font-size:10px;color:#456;margin-bottom:8px;line-height:1.5">列は「氏名 / 学校 / 学年」。氏名のみ必須、学校・学年は入れると照合精度が上がります。</div>
+        <div style="font-size:10px;color:#456;margin-bottom:8px;line-height:1.5">列は「氏名 / 学校 / 学年 / 性別 / 文理 / 部活 / 備考」。氏名のみ必須、他は任意（入れると集計・照合が充実）。</div>
         <button onclick="downloadRosterTemplate()" style="width:100%;padding:9px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:8px;color:white;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">⬇️ テンプレートCSVをダウンロード</button>
       </div>
       <div style="background:#FAFAF8;border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:12px">
-        <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px">② 記入した名簿CSVを読み込む</div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px">② 名簿CSVを読み込んで保存</div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5">同じ氏名＋学校の行は上書き更新、新しい行は追加されます（重複は作りません）。</div>
         <input type="file" id="roster-csv-input" accept=".csv,text/csv" onchange="onRosterCsvSelected(event)" style="font-size:12px;width:100%">
       </div>
-      <div id="roster-result"></div>
+      <div id="roster-import-summary"></div>
+      <div id="roster-list-area"></div>
     </div>
 
     <!-- 設定タブ -->
@@ -2690,7 +2697,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260623l';
+const APP_VERSION = '20260623n';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -7471,7 +7478,7 @@ function openStaffManage(tab) {
     'report':'報告書', 'todo':'ToDo', 'yesterday':'昨日の来塾', 'makeup':'補習',
     'student-view':'生徒画面', 'birthday':'誕生日', 'calendar':'予定表',
     'alert':'アラート', 'announce':'お知らせ', 'attendance':'授業出欠',
-    'quizstatus':'小テスト状況', 'appusage':'教科アプリ', 'classanalysis':'授業分析', 'settings':'設定'
+    'quizstatus':'小テスト状況', 'appusage':'教科アプリ', 'classanalysis':'授業分析', 'studentanalysis':'生徒分析', 'rostercheck':'名簿照合', 'settings':'設定'
   };
   document.getElementById('manage-header-title').textContent = titles[tab] || '管理';
   // タブボタンを探してアクティブ表示（onclick属性で一致させる）
@@ -8548,6 +8555,8 @@ var FEATURE_CATALOG = [
   { key:'quizstatus',    icon:'📝', label:'小テスト状況', action:function(){ openHomeFeature('quizstatus'); } },
   { key:'appusage',      icon:'📊', label:'教科アプリ',   action:function(){ openHomeFeature('appusage'); } },
   { key:'classanalysis', icon:'📈', label:'授業分析',     action:function(){ openHomeFeature('classanalysis'); } },
+  { key:'studentanalysis', icon:'📈', label:'生徒分析',   action:function(){ openHomeFeature('studentanalysis'); } },
+  { key:'rostercheck',   icon:'📋', label:'名簿照合',     action:function(){ openHomeFeature('rostercheck'); } },
   { key:'shortcuts',     icon:'🔗', label:'ショートカット', action:function(){ openShortcuts(); } },
   { key:'settings',      icon:'⚙️', label:'設定',         action:function(){ openHomeFeature('settings'); } }
 ];
@@ -14612,7 +14621,7 @@ function switchManageTab(tab, el) {
   if (tab === 'quizstatus') loadQuizStatusClasses();
   if (tab === 'appusage') loadAppUsage();
   if (tab === 'classanalysis') initClassAnalysis();
-  if (tab === 'studentanalysis') loadStudentAnalysis();
+  if (tab === 'studentanalysis') { saViewMode = 'bar'; loadStudentAnalysis(); }
   if (tab === 'rostercheck') initRosterCheck();
   if (tab === 'settings') loadSettingsTab();
 }
@@ -14626,6 +14635,7 @@ function switchManageTab(tab, el) {
 // ============================================================
 const SA_SCHOOLS = ['松山東','松山南','松山北','松山中央','松山西','愛大附属','済美','SSS','その他'];
 const SA_GRADES = ['1年','2年','3年'];
+const SA_SUBJ_COLOR = { '英語': '#C0392B', '国語': '#8E44AD', '数学': '#2980B9', '理科': '#27AE60', '社会': '#E67E22', 'その他': '#7F8C8D' };
 
 function saPct(n, total) {
   if (!total) return 0;
@@ -14643,9 +14653,29 @@ function saBar(label, count, total, color) {
     + '</div></div>';
 }
 
+let saViewMode = 'bar';
+let saData = null;
+
+function setSaMode(mode, el) {
+  saViewMode = mode;
+  document.querySelectorAll('#sa-mode-tabs .sa-mode-btn').forEach(b => {
+    b.style.background = 'var(--surface)';
+    b.style.color = 'var(--text)';
+  });
+  if (el) { el.style.background = 'var(--orange-d)'; el.style.color = '#fff'; }
+  saRender();
+}
+
 async function loadStudentAnalysis() {
   const body = document.getElementById('sa-body');
   if (!body) return;
+  // モードボタンの見た目を現在のsaViewModeに同期
+  document.querySelectorAll('#sa-mode-tabs .sa-mode-btn').forEach(b => {
+    const oc = b.getAttribute('onclick') || '';
+    const active = oc.indexOf("'" + saViewMode + "'") !== -1;
+    b.style.background = active ? 'var(--orange-d)' : 'var(--surface)';
+    b.style.color = active ? '#fff' : 'var(--text)';
+  });
   body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div>';
   const includeInactive = document.getElementById('sa-include-inactive') && document.getElementById('sa-include-inactive').checked;
   let q = 'select=id,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active';
@@ -14653,10 +14683,41 @@ async function loadStudentAnalysis() {
   const students = await sbGet('students', q) || [];
   const total = students.length;
   if (!total) {
+    saData = null;
     body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">該当する生徒がいません。</div>';
     return;
   }
 
+  // 受講科目（class_enrollments × class_master.subject）
+  const studentIdSet = new Set(students.map(s => s.id));
+  let enrolls = [];
+  try {
+    enrolls = await sbGet('class_enrollments', 'select=student_id,class_master(subject)') || [];
+  } catch (e) { enrolls = []; }
+  enrolls = enrolls.filter(e => studentIdSet.has(e.student_id));
+  const studentSubjects = {};
+  enrolls.forEach(e => {
+    const subj = e.class_master && e.class_master.subject ? e.class_master.subject : 'その他';
+    if (!studentSubjects[e.student_id]) studentSubjects[e.student_id] = new Set();
+    studentSubjects[e.student_id].add(subj);
+  });
+
+  saData = { students: students, total: total, studentSubjects: studentSubjects };
+  saRender();
+}
+
+// モードに応じて描画
+function saRender() {
+  const body = document.getElementById('sa-body');
+  if (!body || !saData) return;
+  if (saViewMode === 'pie') { body.innerHTML = saRenderPie(); return; }
+  if (saViewMode === 'school') { body.innerHTML = saRenderSchool(); return; }
+  body.innerHTML = saRenderBar();
+}
+
+// ============ 棒グラフモード（従来の全部入り） ============
+function saRenderBar() {
+  const students = saData.students, total = saData.total, studentSubjects = saData.studentSubjects;
   let html = '';
 
   // ---- 全体サマリー ----
@@ -14832,26 +14893,12 @@ async function loadStudentAnalysis() {
     html += '<div style="color:var(--muted);font-size:12px;margin-bottom:8px;padding:12px;background:#FAFAF8;border-radius:8px">まだ希望科目データがありません。</div>';
   }
 
-  // ---- 受講科目・科目数（class_enrollments × class_master.subject）----
-  const studentIdSet = new Set(students.map(s => s.id));
-  let enrolls = [];
-  try {
-    enrolls = await sbGet('class_enrollments', 'select=student_id,class_master(subject)') || [];
-  } catch (e) { enrolls = []; }
-  enrolls = enrolls.filter(e => studentIdSet.has(e.student_id));
-
-  const subjBing = {};                 // 科目別の受講人数（生徒単位）
-  const studentSubjects = {};          // student_id -> Set(科目)
-  enrolls.forEach(e => {
-    const subj = e.class_master && e.class_master.subject ? e.class_master.subject : 'その他';
-    if (!studentSubjects[e.student_id]) studentSubjects[e.student_id] = new Set();
-    studentSubjects[e.student_id].add(subj);
-  });
+  // ---- 受講科目・科目数 ----
+  const subjBing = {};
   Object.values(studentSubjects).forEach(set => {
     set.forEach(subj => { subjBing[subj] = (subjBing[subj] || 0) + 1; });
   });
-
-  const countDist = {};   // 科目数 -> 人数
+  const countDist = {};
   students.forEach(s => {
     const n = studentSubjects[s.id] ? studentSubjects[s.id].size : 0;
     countDist[n] = (countDist[n] || 0) + 1;
@@ -14873,10 +14920,9 @@ async function loadStudentAnalysis() {
   const subjList = [...new Set([...SUBJ_ORDER.filter(s => subjBing[s]), ...Object.keys(subjBing)])];
   if (subjList.length) {
     const subjMax = Math.max(...Object.values(subjBing));
-    const SUBJ_COLOR = { '英語': '#C0392B', '国語': '#8E44AD', '数学': '#2980B9', '理科': '#27AE60', '社会': '#E67E22', 'その他': '#7F8C8D' };
     html += '<div style="margin-bottom:14px">';
     subjList.forEach(subj => {
-      html += saBar(subj, subjBing[subj] || 0, subjMax, SUBJ_COLOR[subj] || '#7F8C8D');
+      html += saBar(subj, subjBing[subj] || 0, subjMax, SA_SUBJ_COLOR[subj] || '#7F8C8D');
     });
     html += '</div>';
   } else {
@@ -14894,7 +14940,186 @@ async function loadStudentAnalysis() {
   });
   html += '</div>';
 
-  body.innerHTML = html;
+  return html;
+}
+
+// ============ 円グラフモード ============
+function saPieSvg(segments) {
+  const totalV = segments.reduce((a, s) => a + s.value, 0);
+  if (!totalV) return '<div style="color:var(--muted);font-size:12px;padding:12px">データなし</div>';
+  const cx = 80, cy = 80, r = 64, rIn = 38;
+  let acc = 0, paths = '';
+  segments.forEach(seg => {
+    if (seg.value <= 0) return;
+    const frac = seg.value / totalV;
+    const a0 = acc * 2 * Math.PI - Math.PI / 2;
+    acc += frac;
+    const a1 = acc * 2 * Math.PI - Math.PI / 2;
+    const large = frac > 0.5 ? 1 : 0;
+    const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+    const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+    const xi1 = cx + rIn * Math.cos(a1), yi1 = cy + rIn * Math.sin(a1);
+    const xi0 = cx + rIn * Math.cos(a0), yi0 = cy + rIn * Math.sin(a0);
+    if (frac >= 0.999) {
+      paths += '<circle cx="' + cx + '" cy="' + cy + '" r="' + ((r + rIn) / 2) + '" fill="none" stroke="' + seg.color + '" stroke-width="' + (r - rIn) + '"/>';
+    } else {
+      paths += '<path d="M' + x0 + ' ' + y0 + ' A' + r + ' ' + r + ' 0 ' + large + ' 1 ' + x1 + ' ' + y1
+        + ' L' + xi1 + ' ' + yi1 + ' A' + rIn + ' ' + rIn + ' 0 ' + large + ' 0 ' + xi0 + ' ' + yi0 + ' Z" fill="' + seg.color + '"/>';
+    }
+  });
+  let legend = '<div style="display:flex;flex-direction:column;gap:4px;justify-content:center">';
+  segments.forEach(seg => {
+    if (seg.value <= 0) return;
+    const pct = Math.round(seg.value / totalV * 1000) / 10;
+    legend += '<div style="display:flex;align-items:center;gap:6px;font-size:11px">'
+      + '<span style="width:12px;height:12px;border-radius:3px;background:' + seg.color + ';flex:0 0 auto"></span>'
+      + '<span style="color:var(--text)">' + escapeHtml(seg.label) + '</span>'
+      + '<span style="color:var(--muted)">' + seg.value + '人 (' + pct + '%)</span></div>';
+  });
+  legend += '</div>';
+  return '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:18px">'
+    + '<svg width="160" height="160" viewBox="0 0 160 160" style="flex:0 0 auto">' + paths
+    + '<text x="80" y="86" text-anchor="middle" font-size="18" font-weight="700" fill="var(--text)">' + totalV + '</text></svg>'
+    + legend + '</div>';
+}
+
+function saRenderPie() {
+  const students = saData.students, total = saData.total, studentSubjects = saData.studentSubjects;
+  let html = '';
+
+  const maleN = students.filter(s => s.gender === '男').length;
+  const femaleN = students.filter(s => s.gender === '女').length;
+  const genderUnsetN = total - maleN - femaleN;
+  html += saSectionTitle('👥 男女比');
+  html += saPieSvg([
+    { label: '男子', value: maleN, color: '#3B82C4' },
+    { label: '女子', value: femaleN, color: '#E07BA0' },
+    { label: '未設定', value: genderUnsetN, color: '#BBB' }
+  ]);
+
+  const bunkeiN = students.filter(s => s.course_track === '文系').length;
+  const rikeiN = students.filter(s => s.course_track === '理系').length;
+  const miteiN = students.filter(s => s.course_track === '未定').length;
+  const trackUnsetN = total - bunkeiN - rikeiN - miteiN;
+  html += saSectionTitle('📚 文理比率');
+  html += saPieSvg([
+    { label: '文系', value: bunkeiN, color: '#C77F2E' },
+    { label: '理系', value: rikeiN, color: '#3B82C4' },
+    { label: '未定', value: miteiN, color: '#7BA05B' },
+    { label: '未設定', value: trackUnsetN, color: '#BBB' }
+  ]);
+
+  html += saSectionTitle('🎓 学年比');
+  const gradeSegs = SA_GRADES.map((g, i) => ({
+    label: g, value: students.filter(s => s.grade === g).length,
+    color: ['#E8923A', '#3B82C4', '#7B5BA0'][i]
+  }));
+  const otherGradeN = students.filter(s => s.grade && !SA_GRADES.includes(s.grade)).length;
+  const noGradeN = students.filter(s => !s.grade).length;
+  if (otherGradeN) gradeSegs.push({ label: 'その他', value: otherGradeN, color: '#5A9E3C' });
+  if (noGradeN) gradeSegs.push({ label: '未設定', value: noGradeN, color: '#BBB' });
+  html += saPieSvg(gradeSegs);
+
+  const palette = ['#E8923A', '#3B82C4', '#27AE60', '#8E44AD', '#C0392B', '#16A085', '#E67E22', '#2C3E50', '#95A5A6'];
+  html += saSectionTitle('🏫 学校比');
+  const schoolSegs = [];
+  const allSchools = [...SA_SCHOOLS.filter(sc => students.some(s => s.school === sc))];
+  const otherSc = [...new Set(students.map(s => s.school).filter(sc => sc && !SA_SCHOOLS.includes(sc)))];
+  [...allSchools, ...otherSc].forEach((sc, i) => {
+    schoolSegs.push({ label: sc, value: students.filter(s => s.school === sc).length, color: palette[i % palette.length] });
+  });
+  const noSchoolN = students.filter(s => !s.school).length;
+  if (noSchoolN) schoolSegs.push({ label: '未設定', value: noSchoolN, color: '#BBB' });
+  html += saPieSvg(schoolSegs);
+
+  const countDist = {};
+  students.forEach(s => {
+    const n = studentSubjects[s.id] ? studentSubjects[s.id].size : 0;
+    countDist[n] = (countDist[n] || 0) + 1;
+  });
+  html += saSectionTitle('📘 科目数の分布');
+  const distSegs = Object.keys(countDist).map(Number).sort((a, b) => a - b).map((n, i) => ({
+    label: n === 0 ? '未受講' : n + '科目',
+    value: countDist[n],
+    color: n === 0 ? '#BBB' : palette[i % palette.length]
+  }));
+  html += saPieSvg(distSegs);
+
+  return html;
+}
+
+// ============ 学校比較モード ============
+function saRenderSchool() {
+  const students = saData.students, studentSubjects = saData.studentSubjects;
+  const schoolSet = new Set(students.map(s => s.school).filter(Boolean));
+  const schoolOrder = SA_SCHOOLS.filter(sc => students.some(s => s.school === sc));
+  const otherSchools = [...schoolSet].filter(sc => !SA_SCHOOLS.includes(sc));
+  const allSchools = [...schoolOrder, ...otherSchools];
+  if (!allSchools.length) return saRosterMsg('学校が登録された生徒がいません。', 'var(--muted)');
+
+  let html = saSectionTitle('🏫 学校別 総合比較');
+  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:10px">各学校の人数・男女・文理・平均科目数を横並びで比較します。</div>';
+  html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+    + '<thead><tr style="background:var(--orange-l)">'
+    + '<th style="padding:6px 8px;text-align:left;white-space:nowrap">学校</th>'
+    + '<th style="padding:6px 8px;text-align:right">人数</th>'
+    + '<th style="padding:6px 8px;text-align:right">男</th>'
+    + '<th style="padding:6px 8px;text-align:right">女</th>'
+    + '<th style="padding:6px 8px;text-align:right">文</th>'
+    + '<th style="padding:6px 8px;text-align:right">理</th>'
+    + '<th style="padding:6px 8px;text-align:right">平均科目</th>'
+    + '</tr></thead><tbody>';
+  allSchools.forEach(sc => {
+    const grp = students.filter(s => s.school === sc);
+    const m = grp.filter(s => s.gender === '男').length;
+    const f = grp.filter(s => s.gender === '女').length;
+    const b = grp.filter(s => s.course_track === '文系').length;
+    const r = grp.filter(s => s.course_track === '理系').length;
+    let subjSum = 0;
+    grp.forEach(s => { subjSum += (studentSubjects[s.id] ? studentSubjects[s.id].size : 0); });
+    const avg = grp.length ? Math.round(subjSum / grp.length * 10) / 10 : 0;
+    html += '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td style="padding:6px 8px;white-space:nowrap;font-weight:700">' + escapeHtml(sc) + '</td>'
+      + '<td style="padding:6px 8px;text-align:right;font-weight:700">' + grp.length + '</td>'
+      + '<td style="padding:6px 8px;text-align:right;color:#3B82C4">' + (m || '') + '</td>'
+      + '<td style="padding:6px 8px;text-align:right;color:#E07BA0">' + (f || '') + '</td>'
+      + '<td style="padding:6px 8px;text-align:right;color:#C77F2E">' + (b || '') + '</td>'
+      + '<td style="padding:6px 8px;text-align:right;color:#3B82C4">' + (r || '') + '</td>'
+      + '<td style="padding:6px 8px;text-align:right">' + avg + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table></div>';
+
+  html += '<div style="margin-top:18px"></div>';
+  html += saSectionTitle('📊 学校別 人数');
+  const schoolMax = Math.max(...allSchools.map(sc => students.filter(s => s.school === sc).length));
+  const palette = ['#E8923A', '#3B82C4', '#27AE60', '#8E44AD', '#C0392B', '#16A085', '#E67E22', '#2C3E50', '#95A5A6'];
+  html += '<div style="margin-bottom:8px">';
+  allSchools.forEach((sc, i) => {
+    html += saBar(sc, students.filter(s => s.school === sc).length, schoolMax, palette[i % palette.length]);
+  });
+  html += '</div>';
+
+  html += '<div style="margin-top:18px"></div>';
+  html += saSectionTitle('📋 学校×学年');
+  html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+    + '<thead><tr style="background:var(--orange-l)">'
+    + '<th style="padding:6px 8px;text-align:left;white-space:nowrap">学校</th>';
+  SA_GRADES.forEach(g => html += '<th style="padding:6px 8px;text-align:right">' + g + '</th>');
+  html += '<th style="padding:6px 8px;text-align:right">計</th></tr></thead><tbody>';
+  allSchools.forEach(sc => {
+    const grp = students.filter(s => s.school === sc);
+    html += '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td style="padding:6px 8px;white-space:nowrap">' + escapeHtml(sc) + '</td>';
+    SA_GRADES.forEach(g => {
+      const n = grp.filter(s => s.grade === g).length;
+      html += '<td style="padding:6px 8px;text-align:right">' + (n || '') + '</td>';
+    });
+    html += '<td style="padding:6px 8px;text-align:right;font-weight:700">' + grp.length + '</td></tr>';
+  });
+  html += '</tbody></table></div>';
+
+  return html;
 }
 
 function saSummaryCard(label, value, color) {
@@ -14910,24 +15135,26 @@ function saSectionTitle(t) {
 
 
 // ============================================================
-// 名簿照合（rostercheck）
-// CSV名簿 と students を氏名で突き合わせ、未登録/名簿外を炙り出す
-// 読み取り専用・SQL不要
+// 名簿台帳（rostercheck）
+// CSVを roster テーブルに保存し、students と氏名＋学校で照合して
+// アプリ登録の有無を一覧表示する。集計は students 側を優先参照。
+// studentsには書き込まない（本番データを汚さない）。
 // ============================================================
 function initRosterCheck() {
   const inp = document.getElementById('roster-csv-input');
   if (inp) inp.value = '';
-  const res = document.getElementById('roster-result');
-  if (res) res.innerHTML = '';
+  const sum = document.getElementById('roster-import-summary');
+  if (sum) sum.innerHTML = '';
+  loadRosterList();
 }
 
-// CSVテンプレート（氏名/学校/学年）のダウンロード
+// CSVテンプレート（氏名/学校/学年/性別/文理/部活/備考）
 function downloadRosterTemplate() {
   const lines = [
-    ['氏名', '学校', '学年'],
-    ['山田 太郎', '松山東', '1年'],
-    ['佐藤 花子', '松山南', '2年'],
-    ['', '', '']
+    ['氏名', '学校', '学年', '性別', '文理', '部活', '備考'],
+    ['山田 太郎', '松山東', '1年', '男', '理系', '野球部', ''],
+    ['佐藤 花子', '松山南', '2年', '女', '文系', '吹奏楽部', ''],
+    ['', '', '', '', '', '', '']
   ];
   const csv = '\uFEFF' + lines.map(r => r.map(csvCell).join(',')).join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -14948,6 +15175,14 @@ function normalizeName(s) {
     .replace(/[\s\u3000]+/g, '')
     .trim()
     .toLowerCase();
+}
+// 学校の正規化（照合キー用）
+function normalizeSchool(s) {
+  return String(s == null ? '' : s).replace(/[\s\u3000]+/g, '').trim().toLowerCase();
+}
+// 氏名＋学校の複合キー
+function rosterKey(name, school) {
+  return normalizeName(name) + '|' + normalizeSchool(school);
 }
 
 // 簡易CSVパーサ（ダブルクォート対応・改行/カンマ込みセル対応）
@@ -14973,125 +15208,166 @@ function parseCsv(text) {
   return rows;
 }
 
+// CSV読み込み → roster テーブルへ upsert（氏名＋学校で既存判定）
 async function onRosterCsvSelected(event) {
   const file = event.target.files && event.target.files[0];
   if (!file) return;
-  const res = document.getElementById('roster-result');
-  res.innerHTML = '<div style="text-align:center;color:var(--muted);padding:20px;font-size:13px">照合中…</div>';
+  const sum = document.getElementById('roster-import-summary');
+  sum.innerHTML = '<div style="text-align:center;color:var(--muted);padding:16px;font-size:13px">取り込み中…</div>';
   try {
     const text = await file.text();
     const rows = parseCsv(text);
-    if (!rows.length) { res.innerHTML = saRosterMsg('CSVが空です。', '#C0392B'); return; }
+    if (!rows.length) { sum.innerHTML = saRosterMsg('CSVが空です。', '#C0392B'); return; }
 
-    // ヘッダ判定（1行目に「氏名」「名前」等が含まれればヘッダとみなしスキップ）
+    // ヘッダ判定＋列マッピング
     let startIdx = 0;
     const head = rows[0].map(c => String(c).trim());
-    let nameCol = 0, schoolCol = 1, gradeCol = 2;
+    let col = { name: 0, school: 1, grade: 2, gender: 3, track: 4, club: 5, note: 6 };
     const headerHit = head.some(h => /氏名|名前|name/i.test(h));
     if (headerHit) {
       startIdx = 1;
       head.forEach((h, idx) => {
-        if (/氏名|名前|name/i.test(h)) nameCol = idx;
-        else if (/学校|school/i.test(h)) schoolCol = idx;
-        else if (/学年|grade/i.test(h)) gradeCol = idx;
+        if (/氏名|名前|name/i.test(h)) col.name = idx;
+        else if (/学校|school/i.test(h)) col.school = idx;
+        else if (/学年|grade/i.test(h)) col.grade = idx;
+        else if (/性別|gender|男女/i.test(h)) col.gender = idx;
+        else if (/文理|course/i.test(h)) col.track = idx;
+        else if (/部活|club/i.test(h)) col.club = idx;
+        else if (/備考|メモ|note/i.test(h)) col.note = idx;
       });
     }
 
-    // 名簿側を組み立て（氏名空はスキップ）
-    const roster = [];
+    // 取込行を組み立て（氏名空はスキップ）
+    const incoming = [];
     for (let i = startIdx; i < rows.length; i++) {
       const r = rows[i];
-      const rawName = (r[nameCol] || '').trim();
+      const rawName = (r[col.name] || '').trim();
       if (!rawName) continue;
-      roster.push({
+      const school = (r[col.school] || '').trim();
+      incoming.push({
         name: rawName,
-        school: (r[schoolCol] || '').trim(),
-        grade: (r[gradeCol] || '').trim(),
-        key: normalizeName(rawName)
+        name_norm: normalizeName(rawName),
+        school: school,
+        grade: (r[col.grade] || '').trim(),
+        gender: (r[col.gender] || '').trim(),
+        course_track: (r[col.track] || '').trim(),
+        club: (r[col.club] || '').trim(),
+        note: (r[col.note] || '').trim(),
+        _key: rosterKey(rawName, school)
       });
     }
-    if (!roster.length) { res.innerHTML = saRosterMsg('名簿に有効な氏名がありませんでした。氏名の列を確認してください。', '#C0392B'); return; }
+    if (!incoming.length) { sum.innerHTML = saRosterMsg('名簿に有効な氏名がありませんでした。氏名の列を確認してください。', '#C0392B'); return; }
 
-    // アプリ登録済み生徒（在籍のみ）
-    const students = await sbGet('students', 'is_active=eq.true&select=name,school,grade') || [];
-    const appByKey = new Map();
-    students.forEach(s => {
-      const k = normalizeName(s.name);
-      if (!appByKey.has(k)) appByKey.set(k, []);
-      appByKey.get(k).push(s);
-    });
-    const matchedAppKeys = new Set();
+    // 既存 roster を取得して氏名＋学校で突合
+    const existing = await sbGet('roster', 'select=id,name,school') || [];
+    const existKey = new Map();
+    existing.forEach(e => existKey.set(rosterKey(e.name, e.school), e.id));
 
-    // 名簿側を3分類
-    const registered = [], unregistered = [];
-    roster.forEach(r => {
-      if (appByKey.has(r.key)) {
-        registered.push(r);
-        matchedAppKeys.add(r.key);
+    let added = 0, updated = 0;
+    for (const row of incoming) {
+      const payload = {
+        name: row.name, name_norm: row.name_norm, school: row.school, grade: row.grade,
+        gender: row.gender, course_track: row.course_track, club: row.club, note: row.note,
+        is_active: true, updated_at: new Date().toISOString()
+      };
+      const exId = existKey.get(row._key);
+      if (exId) {
+        await sbPatch('roster', 'id=eq.' + exId, payload);
+        updated++;
       } else {
-        unregistered.push(r);
+        await sbPost('roster', payload);
+        added++;
       }
-    });
-    // アプリにいるが名簿にない
-    const notInRoster = students.filter(s => !matchedAppKeys.has(normalizeName(s.name)));
-
-    let html = '';
-    // サマリーカード
-    html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0">'
-      + saSummaryCard('名簿の人数', roster.length + '人', 'var(--orange-d)')
-      + saSummaryCard('登録済み', registered.length + '人', '#3B6D11')
-      + saSummaryCard('未登録', unregistered.length + '人', unregistered.length ? '#C0392B' : '#3B6D11')
-      + '</div>';
-
-    // ⚠️ 未登録（最重要）
-    html += saSectionTitle('⚠️ 未登録（名簿にいてアプリに無い）');
-    if (unregistered.length) {
-      html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">この生徒たちにアプリ登録を促してください。</div>';
-      html += saRosterTable(unregistered, true);
-    } else {
-      html += saRosterMsg('✅ 名簿の全員がアプリに登録済みです。', '#3B6D11');
     }
 
-    // ❓ 名簿外（アプリにいて名簿に無い）
-    html += '<div style="margin-top:18px"></div>';
-    html += saSectionTitle('❓ 名簿外（アプリにいて名簿に無い）');
-    if (notInRoster.length) {
-      html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">退塾漏れ・氏名の表記ゆれ・名簿の記入漏れの可能性があります。</div>';
-      html += saRosterTable(notInRoster.map(s => ({ name: s.name, school: s.school || '', grade: s.grade || '' })), true);
-    } else {
-      html += saRosterMsg('アプリ側の在籍生徒は全員、名簿に含まれています。', 'var(--muted)');
-    }
-
-    // ✅ 登録済み（折りたたみ）
-    html += '<div style="margin-top:18px"></div>';
-    html += '<details><summary style="cursor:pointer;font-size:13px;font-weight:700;color:var(--text);padding:6px 0">✅ 登録済み一覧（' + registered.length + '人）</summary>'
-      + '<div style="margin-top:8px">' + (registered.length ? saRosterTable(registered, false) : saRosterMsg('なし', 'var(--muted)')) + '</div></details>';
-
-    res.innerHTML = html;
+    sum.innerHTML = '<div style="background:#EAF7EA;border:1px solid #9CD49C;border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px;color:#256025">'
+      + '✅ 取り込み完了：新規 <b>' + added + '</b> 件、更新 <b>' + updated + '</b> 件</div>';
+    const inp = document.getElementById('roster-csv-input');
+    if (inp) inp.value = '';
+    showToast('✅ 名簿台帳に保存しました', 'success');
+    loadRosterList();
   } catch (e) {
-    res.innerHTML = saRosterMsg('読み込みエラー: ' + e.message, '#C0392B');
+    sum.innerHTML = saRosterMsg('取り込みエラー: ' + e.message + '（roster テーブルが未作成の場合は create_roster.sql を実行してください）', '#C0392B');
   }
+}
+
+// 名簿台帳の一覧表示（DBから読み込み＋students照合）
+async function loadRosterList() {
+  const area = document.getElementById('roster-list-area');
+  if (!area) return;
+  area.innerHTML = '<div style="text-align:center;color:var(--muted);padding:20px;font-size:13px">読み込み中…</div>';
+  let roster = [];
+  try {
+    roster = await sbGet('roster', 'is_active=eq.true&order=school,grade,name&select=*') || [];
+  } catch (e) {
+    area.innerHTML = saRosterMsg('名簿台帳テーブルがまだありません。create_roster.sql を Supabase で実行してください。', 'var(--muted)');
+    return;
+  }
+  if (!roster.length) {
+    area.innerHTML = saRosterMsg('まだ名簿が登録されていません。上のCSV取込で名簿を読み込んでください。', 'var(--muted)');
+    return;
+  }
+
+  // アプリ登録（students 在籍）と氏名＋学校で照合
+  const students = await sbGet('students', 'is_active=eq.true&select=name,school') || [];
+  const appKeys = new Set();
+  const appNameOnly = new Set();
+  students.forEach(s => {
+    appKeys.add(rosterKey(s.name, s.school));
+    appNameOnly.add(normalizeName(s.name));
+  });
+
+  let registered = 0, unregistered = 0;
+  roster.forEach(r => {
+    // 氏名＋学校で一致＝確実な登録済み。氏名のみ一致＝学校違い（要確認）
+    if (appKeys.has(rosterKey(r.name, r.school))) { r._status = 'ok'; registered++; }
+    else if (appNameOnly.has(normalizeName(r.name))) { r._status = 'name_only'; unregistered++; }
+    else { r._status = 'none'; unregistered++; }
+  });
+
+  let html = '';
+  html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0">'
+    + saSummaryCard('名簿の人数', roster.length + '人', 'var(--orange-d)')
+    + saSummaryCard('アプリ登録済', registered + '人', '#3B6D11')
+    + saSummaryCard('未登録', unregistered + '人', unregistered ? '#C0392B' : '#3B6D11')
+    + '</div>';
+
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+    + saSectionTitle('📒 名簿台帳一覧')
+    + '</div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">✅=アプリ登録済（氏名＋学校一致）／⚠️=未登録／❓=氏名は一致するが学校が違う（表記ゆれ・転校の可能性）</div>';
+
+  html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+    + '<thead><tr style="background:var(--orange-l)">'
+    + '<th style="padding:6px 6px;text-align:center;white-space:nowrap">登録</th>'
+    + '<th style="padding:6px 8px;text-align:left;white-space:nowrap">氏名</th>'
+    + '<th style="padding:6px 8px;text-align:left;white-space:nowrap">学校</th>'
+    + '<th style="padding:6px 6px;text-align:center">学年</th>'
+    + '<th style="padding:6px 6px;text-align:center">性別</th>'
+    + '<th style="padding:6px 6px;text-align:center">文理</th>'
+    + '<th style="padding:6px 8px;text-align:left">部活</th>'
+    + '</tr></thead><tbody>';
+  roster.forEach(r => {
+    const badge = r._status === 'ok' ? '<span style="color:#3B6D11;font-weight:700">✅</span>'
+      : r._status === 'name_only' ? '<span style="color:#C77F2E;font-weight:700" title="氏名は一致するが学校が違う">❓</span>'
+      : '<span style="color:#C0392B;font-weight:700">⚠️</span>';
+    html += '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td style="padding:6px 6px;text-align:center">' + badge + '</td>'
+      + '<td style="padding:6px 8px;white-space:nowrap;font-weight:600">' + escapeHtml(r.name) + '</td>'
+      + '<td style="padding:6px 8px;color:var(--muted);white-space:nowrap">' + escapeHtml(r.school || '—') + '</td>'
+      + '<td style="padding:6px 6px;text-align:center;color:var(--muted)">' + escapeHtml(r.grade || '—') + '</td>'
+      + '<td style="padding:6px 6px;text-align:center;color:var(--muted)">' + escapeHtml(r.gender || '—') + '</td>'
+      + '<td style="padding:6px 6px;text-align:center;color:var(--muted)">' + escapeHtml(r.course_track || '—') + '</td>'
+      + '<td style="padding:6px 8px;color:var(--muted)">' + escapeHtml(r.club || '—') + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table></div>';
+
+  area.innerHTML = html;
 }
 
 function saRosterMsg(text, color) {
   return '<div style="font-size:12px;color:' + color + ';padding:12px;background:#FAFAF8;border-radius:8px">' + escapeHtml(text) + '</div>';
-}
-function saRosterTable(list, highlight) {
-  let h = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
-    + '<thead><tr style="background:var(--orange-l)">'
-    + '<th style="padding:6px 8px;text-align:left">氏名</th>'
-    + '<th style="padding:6px 8px;text-align:left">学校</th>'
-    + '<th style="padding:6px 8px;text-align:left">学年</th>'
-    + '</tr></thead><tbody>';
-  list.forEach(r => {
-    h += '<tr style="border-bottom:1px solid var(--border)">'
-      + '<td style="padding:6px 8px' + (highlight ? ';font-weight:700' : '') + '">' + escapeHtml(r.name) + '</td>'
-      + '<td style="padding:6px 8px;color:var(--muted)">' + escapeHtml(r.school || '—') + '</td>'
-      + '<td style="padding:6px 8px;color:var(--muted)">' + escapeHtml(r.grade || '—') + '</td>'
-      + '</tr>';
-  });
-  h += '</tbody></table></div>';
-  return h;
 }
 
 
