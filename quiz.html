@@ -155,6 +155,10 @@
 
     <!-- 作成 -->
     <div id="stafftab-create" style="display:none">
+      <div id="cr-edit-banner" style="display:none;background:var(--green-l);border:1.5px solid var(--green);border-radius:10px;padding:10px 12px;margin-bottom:12px;align-items:center;justify-content:space-between;gap:10px">
+        <div style="font-size:13px;font-weight:700;color:var(--green-d)">✏️ 編集中：<span id="cr-edit-name"></span></div>
+        <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px" onclick="resetCreateForm(true)">新規作成に戻る</button>
+      </div>
       <div class="card">
         <div class="sec-title">小テストを作成</div>
         <label class="field-label">テスト名</label>
@@ -187,7 +191,7 @@
         <button class="btn btn-ghost" style="flex:1;border-style:dashed" onclick="addQuestion('number')">＋ 数値問題</button>
         <button class="btn btn-ghost" style="flex:1;border-style:dashed" onclick="addQuestion('choice')">＋ 6択問題</button>
       </div>
-      <button class="btn btn-primary btn-block" onclick="saveQuizSet()">💾 テストを保存</button>
+      <button class="btn btn-primary btn-block" id="cr-save-btn" onclick="saveQuizSet()">💾 テストを保存</button>
     </div>
 
     <!-- 集計 -->
@@ -225,6 +229,10 @@ async function sbPost(table, body, prefer){
 async function sbPatch(table, query, body){
   const res = await fetch(SB_URL+'/rest/v1/'+table+'?'+query, {method:'PATCH',headers:Object.assign({}, SB_HDR, {'Prefer':'return=minimal'}),body:JSON.stringify(body)});
   if(!res.ok){ const t=await res.text(); throw new Error(table+' PATCH '+res.status+' '+t); }
+}
+async function sbDelete(table, query){
+  const res = await fetch(SB_URL+'/rest/v1/'+table+'?'+query, {method:'DELETE',headers:Object.assign({}, SB_HDR, {'Prefer':'return=minimal'})});
+  if(!res.ok){ const t=await res.text(); throw new Error(table+' DELETE '+res.status+' '+t); }
 }
 
 // ============================================================
@@ -433,6 +441,7 @@ function staffTab(tab){
     document.getElementById('rtab-'+t).classList.toggle('active', t===tab);
   });
   if(tab==='list') loadStaffSets();
+  if(tab==='create' && crEditSetId===null) resetCreateForm(false);
   if(tab==='stats') loadAssignSelectForStats();
 }
 
@@ -440,6 +449,59 @@ function staffTab(tab){
 // スタッフ：問題作成フォーム
 // ============================================================
 let crQuestions = []; // [{type, text, answer, choices:[]}]
+let crEditSetId = null; // 編集中のテストID（nullなら新規作成）
+
+// 作成フォームをリセット（新規モードに戻す）
+function resetCreateForm(toCreateTab){
+  crEditSetId = null;
+  crQuestions = [];
+  document.getElementById('cr-title').value = '';
+  document.getElementById('cr-subject').value = '数学';
+  const jsonEl = document.getElementById('cr-json'); if(jsonEl) jsonEl.value = '';
+  document.getElementById('cr-edit-banner').style.display = 'none';
+  document.getElementById('cr-save-btn').textContent = '💾 テストを保存';
+  renderCrQuestions();
+  if(toCreateTab) staffTab('create');
+}
+
+// 既存テストを編集モードで読み込む
+async function editSet(setId){
+  showLoading('読み込み中...');
+  try{
+    const [sets, qs] = await Promise.all([
+      sbGet('mini_quiz_sets','id=eq.'+setId+'&select=*'),
+      sbGet('mini_quiz_questions','quiz_set_id=eq.'+setId+'&order=q_order&select=*')
+    ]);
+    if(!sets.length){ hideLoading(); showToast('テストが見つかりません','error'); return; }
+    const s = sets[0];
+    crEditSetId = setId;
+    crQuestions = qs.map(q=>{
+      if(q.q_type==='choice'){
+        let ch = Array.isArray(q.choices) ? q.choices.slice() : [];
+        // 正解を先頭にして6つに整える（作成フォームの仕様に合わせる）
+        ch = [q.answer].concat(ch.filter(c=>c!==q.answer));
+        while(ch.length<6) ch.push('');
+        ch = ch.slice(0,6);
+        return {type:'choice', text:String(q.text), answer:String(q.answer), choices:ch};
+      }
+      return {type:'number', text:String(q.text), answer:String(q.answer), choices:null};
+    });
+    // フォームに反映
+    document.getElementById('cr-title').value = s.title || '';
+    document.getElementById('cr-subject').value = s.subject || 'その他';
+    document.getElementById('cr-edit-name').textContent = s.title || '';
+    document.getElementById('cr-edit-banner').style.display = 'flex';
+    document.getElementById('cr-save-btn').textContent = '💾 変更を保存';
+    renderCrQuestions();
+    // タブ切替（loadStaffSetsを走らせず直接表示）
+    ['list','create','stats'].forEach(t=>{
+      document.getElementById('stafftab-'+t).style.display = (t==='create')?'block':'none';
+      document.getElementById('rtab-'+t).classList.toggle('active', t==='create');
+    });
+    hideLoading();
+    window.scrollTo(0,0);
+  }catch(e){ hideLoading(); showToast('読み込みエラー: '+e.message,'error'); }
+}
 
 function addQuestion(type){
   if(type==='choice'){
@@ -548,6 +610,21 @@ async function saveQuizSet(){
   }
   showLoading('保存中...');
   try{
+    if(crEditSetId){
+      // 編集モード：set を更新 → 既存問題を全削除 → 全INSERT（全置換）
+      await sbPatch('mini_quiz_sets','id=eq.'+crEditSetId,{ title:title, subject:subject });
+      await sbDelete('mini_quiz_questions','quiz_set_id=eq.'+crEditSetId);
+      const rows = valid.map((q,idx)=>({
+        quiz_set_id:crEditSetId, q_order:idx, q_type:q.type, text:q.text, answer:q.answer,
+        choices: q.type==='choice' ? q.choices.filter(c=>c && c.trim()) : null
+      }));
+      await sbPost('mini_quiz_questions', rows, 'return=minimal');
+      hideLoading();
+      resetCreateForm(false);
+      showToast('変更を保存しました', 'success');
+      staffTab('list');
+      return;
+    }
     const set = await sbPost('mini_quiz_sets', { title:title, subject:subject, created_by:staffId });
     const setId = Array.isArray(set)?set[0].id:set.id;
     const rows = valid.map((q,idx)=>({
@@ -607,7 +684,8 @@ async function loadStaffSets(){
             '<div class="muted" style="font-weight:600;margin-top:3px">'+esc(s.subject||'')+' ・ '+(cntMap[s.id]||0)+'問</div>'+
           '</div>'+
           '<div class="set-actions">'+
-            '<button class="mini-btn" onclick="renameSet(\''+s.id+'\',\''+esc(s.title).replace(/\'/g,"\\\\'")+'\')">✏️ 名前変更</button>'+
+            '<button class="mini-btn" onclick="editSet(\''+s.id+'\')">✏️ 編集</button>'+
+            '<button class="mini-btn" onclick="renameSet(\''+s.id+'\',\''+esc(s.title).replace(/\'/g,"\\\\'")+'\')">📝 名前変更</button>'+
             '<button class="mini-btn" onclick="duplicateSet(\''+s.id+'\')">📑 複製</button>'+
           '</div>'+
         '</div>'+
