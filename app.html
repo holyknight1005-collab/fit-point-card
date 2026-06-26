@@ -2259,6 +2259,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         </label>
       </div>
       <div id="sa-flow-report"></div>
+      <div id="sa-trend-report"></div>
       <div id="sa-mode-tabs" style="display:flex;gap:6px;margin-bottom:14px">
         <button onclick="setSaMode('bar',this)" class="sa-mode-btn" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--orange-d);color:#fff;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📊 棒グラフ</button>
         <button onclick="setSaMode('pie',this)" class="sa-mode-btn" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🥧 円グラフ</button>
@@ -2731,7 +2732,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626e';
+const APP_VERSION = '20260626f';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -15261,6 +15262,211 @@ async function saveFlowEnrollDate(studentId) {
   }
 }
 
+// ===== 📈 人数推移グラフ（admin限定・過去12ヶ月）=====
+// 在籍人数／新規入塾／退塾の月次推移。履歴テーブルが無いので入塾基準日・退塾発効日から逆算。
+// 折れ線⇔棒グラフ切替。色：在籍#2D6CB6 / 入塾#5A9E3C / 退塾#C0392B。
+var trendChartMode = 'line'; // 'line' | 'bar'
+var trendData = null;        // 集計済みデータをキャッシュ（モード切替で再フェッチしない）
+
+function setTrendMode(mode) {
+  trendChartMode = mode;
+  drawEnrollmentTrend();
+}
+
+async function renderEnrollmentTrend() {
+  const wrap = document.getElementById('sa-trend-report');
+  if (!wrap) return;
+  const canSee = (currentStaff && currentStaff.role === 'admin');
+  if (!canSee) { wrap.innerHTML = ''; return; }
+
+  wrap.innerHTML = '<div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;background:var(--surface)"><div style="text-align:center;color:var(--muted);font-size:12px">推移を集計中…</div></div>';
+
+  // 全生徒（除外以外）の入塾基準日・退塾発効日を集める。enroll_date/withdraw_reason 未作成でも落ちないよう二段。
+  let stu = [];
+  try {
+    try {
+      stu = await sbGet('students', 'select=id,name,school,created_at,enroll_date,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+    } catch (e0) {
+      stu = await sbGet('students', 'select=id,name,school,created_at,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+    }
+  } catch (e) {
+    wrap.innerHTML = '<div style="border:1px solid #E8B4B4;border-radius:10px;padding:14px;margin-bottom:14px;background:#FDF2F2;color:#A04040;font-size:12px">推移グラフの取得に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
+    return;
+  }
+  stu = stu.filter(s => s.inactive_reason !== '除外');
+
+  // roster（アプリ未登録分）を氏名＋学校でstudents優先・二重計上防止して合算
+  let rosterPersons = [];
+  try {
+    const rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,enroll_date,withdraw_date,status') || [];
+    const allStu = await sbGet('students', 'select=name,school') || [];
+    const stuKeys = new Set(); const stuNames = new Set();
+    allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
+    rosterRows.forEach(r => {
+      if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
+      const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+      rosterPersons.push({
+        _enroll: r.enroll_date || null,
+        _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null
+      });
+    });
+  } catch (e) { rosterPersons = []; }
+
+  // 各人の入塾基準日（YYYY-MM-DD）と退塾発効日（確定のみ）を正規化
+  const persons = [];
+  stu.forEach(s => {
+    let enroll = s.enroll_date || (s.created_at ? toJSTDateStr(new Date(s.created_at)) : null);
+    let withdraw = (s.withdraw_status === '確定' && s.withdraw_effective_date) ? s.withdraw_effective_date : null;
+    persons.push({ enroll: enroll, withdraw: withdraw });
+  });
+  rosterPersons.forEach(r => { persons.push({ enroll: r._enroll, withdraw: r._withdraw }); });
+
+  // 過去12ヶ月の月末スナップショット
+  const todayStr = getTodayJST();
+  const [ty, tm] = todayStr.split('-').map(n => parseInt(n, 10));
+  const months = []; // { label, ym, lastDay }
+  for (let i = 11; i >= 0; i--) {
+    // 今月を含め過去12ヶ月。基準は今日の年月。
+    let y = ty, m = tm - i;
+    while (m <= 0) { m += 12; y -= 1; }
+    const lastDay = toJSTDateStr(new Date(y, m, 0)); // その月の末日（JST安全）
+    months.push({ y: y, m: m, label: (m) + '月', ym: y + '-' + String(m).padStart(2, '0'), lastDay: lastDay });
+  }
+
+  const enrolled = [], joined = [], left = [];
+  months.forEach(mo => {
+    const mEnd = mo.lastDay;
+    const ymPrefix = mo.ym; // 'YYYY-MM'
+    let en = 0, jo = 0, le = 0;
+    persons.forEach(p => {
+      // 在籍 = 入塾日≤月末 かつ（退塾日なし or 月末<退塾日）
+      if (p.enroll && p.enroll <= mEnd && (!p.withdraw || mEnd < p.withdraw)) en++;
+      // 新規入塾 = その月に入塾日
+      if (p.enroll && p.enroll.slice(0, 7) === ymPrefix) jo++;
+      // 退塾 = その月に退塾発効日
+      if (p.withdraw && p.withdraw.slice(0, 7) === ymPrefix) le++;
+    });
+    enrolled.push(en); joined.push(jo); left.push(le);
+  });
+
+  trendData = { months: months, enrolled: enrolled, joined: joined, left: left };
+  drawEnrollmentTrend();
+}
+
+function drawEnrollmentTrend() {
+  const wrap = document.getElementById('sa-trend-report');
+  if (!wrap || !trendData) return;
+  const d = trendData;
+
+  const btn = (mode, label) =>
+    '<button onclick="setTrendMode(\'' + mode + '\')" style="flex:1;padding:7px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+    (trendChartMode === mode ? 'var(--orange-d);color:#fff' : 'var(--surface);color:var(--text)') + '">' + label + '</button>';
+
+  const legend =
+    '<div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center;margin:4px 0 10px;font-size:11px">' +
+      '<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:3px;background:#2D6CB6;display:inline-block"></span>在籍人数</span>' +
+      '<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:3px;background:#5A9E3C;display:inline-block"></span>新規入塾</span>' +
+      '<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:3px;background:#C0392B;display:inline-block"></span>退塾</span>' +
+    '</div>';
+
+  const svg = trendChartMode === 'line' ? trendLineSvg(d) : trendBarSvg(d);
+
+  wrap.innerHTML =
+    '<div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;background:#fff">' +
+      '<div style="font-size:13px;font-weight:800;color:var(--text);margin-bottom:10px">📈 人数推移（過去12ヶ月）</div>' +
+      '<div style="display:flex;gap:6px;margin-bottom:8px">' + btn('line', '📉 折れ線') + btn('bar', '📊 棒グラフ') + '</div>' +
+      legend +
+      '<div style="width:100%;overflow-x:auto">' + svg + '</div>' +
+    '</div>';
+}
+
+// 在籍は値が大きいので左軸（主軸）、入塾/退塾は右軸（別スケール）で重畳。
+function trendBounds(d) {
+  const maxEnroll = Math.max(1, ...d.enrolled);
+  const maxFlow = Math.max(1, ...d.joined, ...d.left);
+  return { maxEnroll: maxEnroll, maxFlow: maxFlow };
+}
+
+function trendLineSvg(d) {
+  const W = 680, H = 280, padL = 40, padR = 40, padT = 16, padB = 36;
+  const n = d.months.length;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const { maxEnroll, maxFlow } = trendBounds(d);
+  const xAt = (i) => padL + (n <= 1 ? plotW / 2 : (plotW * i) / (n - 1));
+  const yEnroll = (v) => padT + plotH - (plotH * v) / maxEnroll;
+  const yFlow = (v) => padT + plotH - (plotH * v) / maxFlow;
+
+  let g = '';
+  // 横グリッド（在籍軸 5分割）
+  for (let k = 0; k <= 4; k++) {
+    const val = Math.round((maxEnroll * k) / 4);
+    const y = padT + plotH - (plotH * k) / 4;
+    g += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="#EEE" stroke-width="1"/>';
+    g += '<text x="' + (padL - 6) + '" y="' + (y + 3) + '" font-size="9" fill="#2D6CB6" text-anchor="end">' + val + '</text>';
+  }
+  // 右軸ラベル（フロー軸）
+  for (let k = 0; k <= 4; k++) {
+    const val = Math.round((maxFlow * k) / 4);
+    const y = padT + plotH - (plotH * k) / 4;
+    g += '<text x="' + (W - padR + 6) + '" y="' + (y + 3) + '" font-size="9" fill="#C0392B" text-anchor="start">' + val + '</text>';
+  }
+  // X軸ラベル
+  d.months.forEach((mo, i) => {
+    g += '<text x="' + xAt(i) + '" y="' + (H - padB + 16) + '" font-size="9" fill="var(--muted)" text-anchor="middle">' + mo.label + '</text>';
+  });
+
+  const polyline = (vals, yFn, color) => {
+    const pts = vals.map((v, i) => xAt(i) + ',' + yFn(v)).join(' ');
+    let s = '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="2.5" stroke-linejoin="round"/>';
+    vals.forEach((v, i) => { s += '<circle cx="' + xAt(i) + '" cy="' + yFn(v) + '" r="3" fill="' + color + '"/>'; });
+    return s;
+  };
+  g += polyline(d.enrolled, yEnroll, '#2D6CB6');
+  g += polyline(d.joined, yFlow, '#5A9E3C');
+  g += polyline(d.left, yFlow, '#C0392B');
+
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;min-width:560px;height:auto" role="img">' + g + '</svg>';
+}
+
+function trendBarSvg(d) {
+  const W = 680, H = 280, padL = 40, padR = 40, padT = 16, padB = 36;
+  const n = d.months.length;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const { maxEnroll, maxFlow } = trendBounds(d);
+  const slot = plotW / n;
+  const yEnroll = (v) => (plotH * v) / maxEnroll;
+  const yFlow = (v) => (plotH * v) / maxFlow;
+  const baseY = padT + plotH;
+
+  let g = '';
+  for (let k = 0; k <= 4; k++) {
+    const val = Math.round((maxEnroll * k) / 4);
+    const y = padT + plotH - (plotH * k) / 4;
+    g += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="#EEE" stroke-width="1"/>';
+    g += '<text x="' + (padL - 6) + '" y="' + (y + 3) + '" font-size="9" fill="#2D6CB6" text-anchor="end">' + val + '</text>';
+  }
+  for (let k = 0; k <= 4; k++) {
+    const val = Math.round((maxFlow * k) / 4);
+    const y = padT + plotH - (plotH * k) / 4;
+    g += '<text x="' + (W - padR + 6) + '" y="' + (y + 3) + '" font-size="9" fill="#C0392B" text-anchor="start">' + val + '</text>';
+  }
+  // 各月：在籍（太・背景）＋ 入塾/退塾（細・前面）の3本グループ
+  const bw = Math.min(slot * 0.22, 14);
+  d.months.forEach((mo, i) => {
+    const cx = padL + slot * i + slot / 2;
+    const hE = yEnroll(d.enrolled[i]);
+    const hJ = yFlow(d.joined[i]);
+    const hL = yFlow(d.left[i]);
+    g += '<rect x="' + (cx - bw * 1.5 - 2) + '" y="' + (baseY - hE) + '" width="' + bw + '" height="' + hE + '" rx="2" fill="#2D6CB6"/>';
+    g += '<rect x="' + (cx - bw / 2) + '" y="' + (baseY - hJ) + '" width="' + bw + '" height="' + hJ + '" rx="2" fill="#5A9E3C"/>';
+    g += '<rect x="' + (cx + bw / 2 + 2) + '" y="' + (baseY - hL) + '" width="' + bw + '" height="' + hL + '" rx="2" fill="#C0392B"/>';
+    g += '<text x="' + cx + '" y="' + (H - padB + 16) + '" font-size="9" fill="var(--muted)" text-anchor="middle">' + mo.label + '</text>';
+  });
+
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;min-width:560px;height:auto" role="img">' + g + '</svg>';
+}
+
+
 async function loadStudentAnalysis() {
   const body = document.getElementById('sa-body');
   if (!body) return;
@@ -15274,6 +15480,7 @@ async function loadStudentAnalysis() {
   body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div>';
   await loadMyPermissions();
   renderEnrollmentFlow();
+  renderEnrollmentTrend();
   const includeInactive = document.getElementById('sa-include-inactive') && document.getElementById('sa-include-inactive').checked;
   let q = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason,withdraw_status,withdraw_effective_date';
   if (!includeInactive) q += '&is_active=eq.true';
