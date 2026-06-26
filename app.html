@@ -2731,7 +2731,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626d';
+const APP_VERSION = '20260626e';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -15025,10 +15025,19 @@ async function renderEnrollmentFlow() {
   try {
     // 入塾＝students の入塾日（enroll_date 優先、なければ created_at）が直近30日（除外は弾く）。
     // enroll_date が created_at と乖離しうるため、サーバ側 created_at フィルタは使わず全件取得してクライアントで基準日判定。
-    inRows = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,inactive_reason&order=created_at.desc') || [];
+    try {
+      inRows = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,inactive_reason&order=created_at.desc') || [];
+    } catch (e0) {
+      inRows = await sbGet('students', 'select=id,name,school,grade,created_at,inactive_reason&order=created_at.desc') || [];
+    }
     inRows = inRows.filter(s => s.inactive_reason !== '除外');
-    // 退塾確定（発効日ベース）。確定済みの生徒を全部取り、発効日で期間判定。
-    const conf = await sbGet('students', 'select=id,name,school,grade,withdraw_status,withdraw_requested_at,withdraw_effective_date,inactive_reason&withdraw_status=eq.確定&order=withdraw_effective_date.desc') || [];
+    // 退塾確定（発効日ベース）。確定済みの生徒を全部取り、発効日で期間判定。退塾理由も取得（未作成カラムならフォールバック）。
+    let conf;
+    try {
+      conf = await sbGet('students', 'select=id,name,school,grade,withdraw_status,withdraw_requested_at,withdraw_effective_date,withdraw_reason,inactive_reason&withdraw_status=eq.確定&order=withdraw_effective_date.desc') || [];
+    } catch (e1) {
+      conf = await sbGet('students', 'select=id,name,school,grade,withdraw_status,withdraw_requested_at,withdraw_effective_date,inactive_reason&withdraw_status=eq.確定&order=withdraw_effective_date.desc') || [];
+    }
     confRows = conf.filter(s => s.inactive_reason !== '除外');
     // 退塾申し出中（相談中・まだ確定でない）
     const pend = await sbGet('students', 'select=id,name,school,grade,withdraw_status,withdraw_requested_at,withdraw_effective_date,inactive_reason&withdraw_status=eq.申し出&order=withdraw_requested_at.desc') || [];
@@ -15080,6 +15089,12 @@ async function renderEnrollmentFlow() {
   const out30 = confRows.filter(s => s.withdraw_effective_date && s.withdraw_effective_date >= day30 && s.withdraw_effective_date <= todayStr).concat(rOut30);
   // 退塾予定（確定だが発効日がまだ未来）＝近々抜ける
   const upcoming = confRows.filter(s => s.withdraw_effective_date && s.withdraw_effective_date > todayStr);
+  // 退塾済み（確定・発効日が今日以前）＝在籍外。全期間。年単位で並べる。
+  const withdrawn = confRows.filter(s => s.withdraw_effective_date && s.withdraw_effective_date <= todayStr)
+    .sort((a, b) => (b.withdraw_effective_date || '').localeCompare(a.withdraw_effective_date || ''));
+  // 入塾日未登録（アプリ登録済みで enroll_date が空・除外と退塾済み以外＝現役の在籍系）。入力を促す対象。
+  const withdrawnIds = new Set(confRows.filter(s => s.withdraw_effective_date && s.withdraw_effective_date <= todayStr).map(s => s.id));
+  const noEnrollDate = inRows.filter(s => !s.enroll_date && !withdrawnIds.has(s.id));
   const net7 = in7.length - out7.length;
   const net30 = in30.length - out30.length;
 
@@ -15102,17 +15117,88 @@ async function renderEnrollmentFlow() {
   const fmtDate = (d) => d ? d.slice(5).replace('-', '/') : '';
   const inDateLabel = (s) => s.enroll_date ? fmtDate(s.enroll_date) : (s.created_at ? fmtIso(s.created_at) : '');
   const outDateLabel = (s) => s.withdraw_effective_date ? fmtDate(s.withdraw_effective_date) : fmtDate(s.withdraw_date);
+
+  // 1行（名前＋学校学年＋右に日付ラベル）
+  const oneRow = (s, labelFn, color) =>
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">' +
+      '<div><span style="font-weight:700;color:' + color + '">' + escapeHtml(s.name || '') + '</span>' +
+      (s._roster ? '<span style="font-size:9px;color:#999;margin-left:4px">名簿</span>' : '') +
+      '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(s.grade) : '') + '</span></div>' +
+      '<div style="color:var(--muted);font-size:11px">' + labelFn(s) + '</div>' +
+    '</div>';
   const nameRows = (rows, labelFn, color) => {
     if (!rows.length) return '<div style="font-size:11px;color:var(--muted);padding:4px 0">該当なし</div>';
-    return rows.map(s =>
-      '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">' +
-        '<div><span style="font-weight:700;color:' + color + '">' + escapeHtml(s.name || '') + '</span>' +
-        (s._roster ? '<span style="font-size:9px;color:#999;margin-left:4px">名簿</span>' : '') +
-        '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(s.grade) : '') + '</span></div>' +
-        '<div style="color:var(--muted);font-size:11px">' + labelFn(s) + '</div>' +
-      '</div>'
-    ).join('');
+    return rows.map(s => oneRow(s, labelFn, color)).join('');
   };
+
+  // アコーディオン・セクション（タップで開閉）。openByDefault=true で初期展開。
+  const sectionAcc = (id, titleHtml, countN, bodyHtml, accent, openByDefault) => {
+    const open = !!openByDefault;
+    return '<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden;background:#fff">' +
+      '<div onclick="toggleFlowSection(\'' + id + '\')" style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;cursor:pointer;background:' + accent + '">' +
+        '<div style="font-size:12px;font-weight:700;color:var(--text)">' + titleHtml + ' <span style="color:var(--muted)">（' + countN + '人）</span></div>' +
+        '<div id="' + id + '-caret" style="font-size:11px;color:var(--muted);transform:rotate(' + (open ? '90' : '0') + 'deg);transition:transform .15s">▶</div>' +
+      '</div>' +
+      '<div id="' + id + '-body" style="display:' + (open ? 'block' : 'none') + ';padding:6px 12px 10px">' + bodyHtml + '</div>' +
+    '</div>';
+  };
+
+  // 退塾済み：年単位でグルーピング。各行に退塾理由の入力欄（タップ展開ではなく常時表示・コンパクト）。
+  const withdrawnByYear = {};
+  withdrawn.forEach(s => {
+    const y = (s.withdraw_effective_date || '----').slice(0, 4);
+    (withdrawnByYear[y] = withdrawnByYear[y] || []).push(s);
+  });
+  const wYears = Object.keys(withdrawnByYear).sort((a, b) => b.localeCompare(a));
+  const withdrawnRow = (s) => {
+    const reason = s.withdraw_reason || '';
+    return '<div style="padding:6px 0;border-bottom:1px solid var(--border)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-bottom:4px">' +
+        '<div><span style="font-weight:700;color:#C0392B">' + escapeHtml(s.name || '') + '</span>' +
+        '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(s.grade) : '') + '</span></div>' +
+        '<div style="color:var(--muted);font-size:11px">' + fmtDate(s.withdraw_effective_date) + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;align-items:center">' +
+        '<input type="text" id="wreason-' + s.id + '" value="' + escapeHtml(reason) + '" placeholder="退塾理由（任意）" style="flex:1;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-family:inherit;color:var(--text);background:#fff">' +
+        '<button onclick="saveWithdrawReason(\'' + s.id + '\')" style="padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">保存</button>' +
+      '</div>' +
+    '</div>';
+  };
+  let withdrawnBody = '';
+  if (!withdrawn.length) {
+    withdrawnBody = '<div style="font-size:11px;color:var(--muted);padding:4px 0">該当なし</div>';
+  } else {
+    wYears.forEach(y => {
+      const list = withdrawnByYear[y];
+      withdrawnBody += '<div style="font-size:11px;font-weight:700;color:#2D5FA6;margin:8px 0 4px;border-bottom:1px solid #E0E0E0;padding-bottom:2px">' + y + '年（' + list.length + '人）</div>';
+      withdrawnBody += list.map(withdrawnRow).join('');
+    });
+  }
+
+  // 入塾日未登録：入力を促す。各行に日付入力＋保存（増減レポート内で直接入れられるように）。
+  const noEnrollRow = (s) =>
+    '<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">' +
+      '<div style="flex:1;min-width:0;font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+        '<span style="font-weight:700">' + escapeHtml(s.name || '') + '</span>' +
+        '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(s.grade) : '') + '</span>' +
+      '</div>' +
+      '<input type="date" id="flow-enroll-' + s.id + '" style="font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;font-family:inherit;color:var(--text);background:#fff">' +
+      '<button onclick="saveFlowEnrollDate(\'' + s.id + '\')" style="padding:5px 9px;background:linear-gradient(135deg,#5A9E3C,#3E7A28);border:none;border-radius:6px;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">保存</button>' +
+    '</div>';
+  const noEnrollBody = noEnrollDate.length
+    ? '<div style="font-size:10px;color:#C77F2E;margin-bottom:6px">⚠️ 入塾日が未登録です。正しい増減集計のため入力してください（未入力はアプリ承認日で代用中）。</div>' + noEnrollDate.map(noEnrollRow).join('')
+    : '<div style="font-size:11px;color:#3B6D11;padding:4px 0">✅ 全員の入塾日が登録済みです</div>';
+
+  // 入塾セクション本体
+  const inBody = nameRows(in30, inDateLabel, 'var(--green-d)');
+  // 退塾予定＋申し出中の本体
+  const upcomingBody =
+    '<div style="font-size:11px;font-weight:700;color:#C0392B;margin-bottom:2px">⏳ 退塾予定・確定済（発効前 ' + upcoming.length + '人）</div>' +
+    '<div style="font-size:9px;color:var(--muted);margin-bottom:4px">月末で在籍外になります（まだ退塾カウントには含めません）</div>' +
+    nameRows(upcoming, outDateLabel, '#C0392B') +
+    '<div style="font-size:11px;font-weight:700;color:#B8860B;margin:10px 0 2px">📝 退塾申し出中・相談中（' + pendRows.length + '人）</div>' +
+    '<div style="font-size:9px;color:var(--muted);margin-bottom:4px">まだ確定していません（在籍・月謝は継続）</div>' +
+    nameRows(pendRows, (s) => fmtDate(s.withdraw_requested_at), '#B8860B');
 
   wrap.innerHTML =
     '<div style="border:1px solid var(--orange);border-radius:10px;padding:14px;margin-bottom:14px;background:linear-gradient(135deg,#FFF8F0,#FFFDFA)">' +
@@ -15124,32 +15210,55 @@ async function renderEnrollmentFlow() {
         periodCard('🗓️ 直近7日', in7.length, out7.length, net7) +
         periodCard('🗓️ 直近30日', in30.length, out30.length, net30) +
       '</div>' +
-      '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
-        '<div style="flex:1;min-width:150px">' +
-          '<div style="font-size:11px;font-weight:700;color:var(--green-d);margin-bottom:4px">🟢 入塾（直近30日 ' + in30.length + '人）</div>' +
-          nameRows(in30, inDateLabel, 'var(--green-d)') +
-        '</div>' +
-        '<div style="flex:1;min-width:150px">' +
-          '<div style="font-size:11px;font-weight:700;color:#C0392B;margin-bottom:4px">🔴 退塾（直近30日 ' + out30.length + '人）</div>' +
-          nameRows(out30, outDateLabel, '#C0392B') +
-        '</div>' +
-      '</div>' +
-      // 退塾予定（確定・発効前）と申し出中（相談中）を別枠で表示
-      ((upcoming.length || pendRows.length) ?
-        '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;border-top:1px dashed var(--border);padding-top:10px">' +
-          '<div style="flex:1;min-width:150px">' +
-            '<div style="font-size:11px;font-weight:700;color:#C0392B;margin-bottom:4px">⏳ 退塾予定・確定済（' + upcoming.length + '人）</div>' +
-            '<div style="font-size:9px;color:var(--muted);margin-bottom:2px">月末で在籍外になります（まだカウントには含めません）</div>' +
-            nameRows(upcoming, outDateLabel, '#C0392B') +
-          '</div>' +
-          '<div style="flex:1;min-width:150px">' +
-            '<div style="font-size:11px;font-weight:700;color:#B8860B;margin-bottom:4px">📝 退塾申し出中・相談中（' + pendRows.length + '人）</div>' +
-            '<div style="font-size:9px;color:var(--muted);margin-bottom:2px">まだ確定していません（在籍・月謝は継続）</div>' +
-            nameRows(pendRows, (s)=>fmtDate(s.withdraw_requested_at), '#B8860B') +
-          '</div>' +
-        '</div>' : '') +
+      // アコーディオン4セクション
+      sectionAcc('flow-in', '🟢 入塾（直近30日）', in30.length, inBody, '#F1F8EE', true) +
+      sectionAcc('flow-upcoming', '⏳ 退塾予定・申し出中', upcoming.length + pendRows.length, upcomingBody, '#FBF3E6', false) +
+      sectionAcc('flow-withdrawn', '🔴 退塾済み（全期間）', withdrawn.length, withdrawnBody, '#FBECEC', false) +
+      sectionAcc('flow-noenroll', '📅 入塾日 未登録', noEnrollDate.length, noEnrollBody, '#EEF3FA', false) +
       '<div style="font-size:10px;color:var(--muted);margin-top:10px;line-height:1.5">※入塾＝入塾日（未設定の生徒はアプリ承認日 created_at で代用）、退塾＝確定した退塾の在籍最終日（月末）で集計。アプリ未登録の子は名簿台帳（roster）の入塾日・退塾日も合算（「名簿」表記、氏名一致でアプリ側を優先し二重計上を防止）。申し出中・発効前の確定は退塾にまだ含めません。卒業・除外は対象外。直近7日／30日はローリング。管理者のみ表示。</div>' +
     '</div>';
+
+  // 退塾済み行の日付入力に初期値をセット（input type=date は value 属性に直接入れると一部端末で崩れるため JS で設定）
+  noEnrollDate.forEach(s => { const el = document.getElementById('flow-enroll-' + s.id); if (el) el.value = ''; });
+}
+
+// 増減レポートのアコーディオン開閉
+function toggleFlowSection(id) {
+  const body = document.getElementById(id + '-body');
+  const caret = document.getElementById(id + '-caret');
+  if (!body) return;
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'block';
+  if (caret) caret.style.transform = 'rotate(' + (open ? '0' : '90') + 'deg)';
+}
+
+// 退塾理由を保存
+async function saveWithdrawReason(studentId) {
+  const inp = document.getElementById('wreason-' + studentId);
+  if (!inp) return;
+  const val = (inp.value || '').trim() || null;
+  try {
+    await sbPatch('students', 'id=eq.' + encodeURIComponent(studentId), { withdraw_reason: val });
+    showToast('✅ 退塾理由を保存しました', 'success');
+  } catch (e) {
+    showToast('保存に失敗しました（withdraw_reason 未作成の可能性：add_withdraw_reason.sql）', 'error');
+  }
+}
+
+// 増減レポート内から入塾日を保存（未登録セクション用）
+async function saveFlowEnrollDate(studentId) {
+  const inp = document.getElementById('flow-enroll-' + studentId);
+  if (!inp) return;
+  const raw = (inp.value || '').trim();
+  if (!raw) { showToast('日付を入力してください', 'error'); return; }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) { showToast('日付の形式が不正です', 'error'); return; }
+  try {
+    await sbPatch('students', 'id=eq.' + encodeURIComponent(studentId), { enroll_date: raw });
+    showToast('✅ 入塾日を保存しました（' + raw + '）', 'success');
+    renderEnrollmentFlow(); // 未登録リストから消えるよう再描画
+  } catch (e) {
+    showToast('保存に失敗しました（enroll_date 未作成の可能性：add_students_enroll_date.sql）', 'error');
+  }
 }
 
 async function loadStudentAnalysis() {
