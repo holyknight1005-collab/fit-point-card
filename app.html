@@ -2742,7 +2742,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626i';
+const APP_VERSION = '20260626j';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -15162,8 +15162,8 @@ async function renderEnrollmentFlow() {
 
   let inRows = [], confRows = [], pendRows = [], allActive = [];
   try {
-    // 入塾＝students の入塾日（enroll_date 優先、なければ created_at）が直近30日（除外は弾く）。
-    // enroll_date が created_at と乖離しうるため、サーバ側 created_at フィルタは使わず全件取得してクライアントで基準日判定。
+    // 入塾＝students の入塾日（enroll_date）が直近30日（除外は弾く）。アプリ登録日(created_at)は使わない。
+    // 全件取得してクライアントで基準日判定（enroll_date 未入力者は入塾としてカウントしない）。
     try {
       inRows = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,inactive_reason&order=created_at.desc') || [];
     } catch (e0) {
@@ -15208,12 +15208,11 @@ async function renderEnrollmentFlow() {
     });
   } catch (e) { rosterIn = []; rosterOut = []; }
 
-  // 入塾：基準日（enroll_date 優先、なければ created_at の JST日付）で期間判定（students）＋ roster.enroll_date（未登録分）
-  // 入塾基準日を 'YYYY-MM-DD' で返す
+  // 入塾：基準日は enroll_date（入塾日）のみ。アプリ登録日(created_at)は入塾日と一致しないため使わない。
+  // enroll_date が空の生徒は入塾としてカウントしない（入力後に反映）。
   const inDayOf = (s) => {
-    if (s.enroll_date) return s.enroll_date;            // 実際の入塾日が最優先
-    if (s.created_at) return toJSTDateStr(new Date(s.created_at)); // フォールバック：アプリ登録日
-    return null;
+    if (s.enroll_date) return s.enroll_date;            // 実際の入塾日のみ
+    return null;                                        // 未入力はカウントしない
   };
   const stuIn7 = inRows.filter(s => { const d = inDayOf(s); return d && d >= day7 && d <= todayStr; });
   const stuIn30 = inRows.filter(s => { const d = inDayOf(s); return d && d >= day30 && d <= todayStr; });
@@ -15251,10 +15250,9 @@ async function renderEnrollmentFlow() {
       '</div>' +
     '</div>';
 
-  // 名前リスト。入塾=enroll_date 優先・なければ created_at(ISO) or roster.enroll_date(date)、退塾=withdraw_effective_date or withdraw_date。
-  const fmtIso = (iso) => { if (!iso) return ''; const dt = new Date(iso); return toJSTDateStr(dt).slice(5).replace('-', '/'); };
+  // 名前リスト。入塾=enroll_date（または roster.enroll_date）、退塾=withdraw_effective_date or withdraw_date。
   const fmtDate = (d) => d ? d.slice(5).replace('-', '/') : '';
-  const inDateLabel = (s) => s.enroll_date ? fmtDate(s.enroll_date) : (s.created_at ? fmtIso(s.created_at) : '');
+  const inDateLabel = (s) => fmtDate(s.enroll_date);
   const outDateLabel = (s) => s.withdraw_effective_date ? fmtDate(s.withdraw_effective_date) : fmtDate(s.withdraw_date);
 
   // 1行（名前＋学校学年＋右に日付ラベル）
@@ -15451,10 +15449,12 @@ async function renderEnrollmentTrend() {
   } catch (e) { rosterPersons = []; }
 
   // 各人の入塾基準日（YYYY-MM-DD）と退塾発効日（確定のみ）を正規化
+  // 入塾基準は enroll_date（入塾日）のみ。アプリ登録日(created_at)は入塾日と一致しないため使わない。
   const persons = [];
   stu.forEach(s => {
-    let enroll = s.enroll_date || (s.created_at ? toJSTDateStr(new Date(s.created_at)) : null);
+    let enroll = s.enroll_date || null;  // 入塾日未入力の生徒は推移に含めない
     let withdraw = (s.withdraw_status === '確定' && s.withdraw_effective_date) ? s.withdraw_effective_date : null;
+    if (!enroll && !withdraw) return;    // 入塾日も退塾日も無ければスキップ
     persons.push({ enroll: enroll, withdraw: withdraw });
   });
   rosterPersons.forEach(r => { persons.push({ enroll: r._enroll, withdraw: r._withdraw }); });
