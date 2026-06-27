@@ -354,6 +354,16 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
   </div>
 </div>
 
+<div id="forgot-checkout-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:680;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);border-radius:16px;padding:24px 20px;max-width:380px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,0.25);text-align:center">
+    <div style="font-size:40px;margin-bottom:8px">⚠️</div>
+    <div style="font-size:17px;font-weight:700;color:var(--orange);margin-bottom:12px">チェックアウトのし忘れがありました</div>
+    <div id="forgot-checkout-msg" style="font-size:13px;color:var(--text);line-height:1.7;margin-bottom:16px"></div>
+    <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:18px">次回からは帰るときに必ずチェックアウトボタンを押してください。押し忘れると、その日の在室ポイントは付きません。</div>
+    <button onclick="closeForgotCheckout()" style="width:100%;background:var(--orange);color:#fff;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:700;cursor:pointer">確認しました</button>
+  </div>
+</div>
+
 <div id="enroll-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -2260,10 +2270,10 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       </div>
       <div id="sa-flow-report"></div>
       <div id="sa-trend-report"></div>
-      <div id="sa-mode-tabs" style="display:flex;gap:6px;margin-bottom:14px">
-        <button onclick="setSaMode('bar',this)" class="sa-mode-btn" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--orange-d);color:#fff;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📊 棒グラフ</button>
-        <button onclick="setSaMode('pie',this)" class="sa-mode-btn" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🥧 円グラフ</button>
-        <button onclick="setSaMode('school',this)" class="sa-mode-btn" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🏫 学校比較</button>
+      <div id="sa-item-tabs" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
+      <div id="sa-charttype-tabs" style="display:flex;gap:6px;margin-bottom:14px">
+        <button onclick="setSaChartType('bar',this)" class="sa-ct-btn" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--orange-d);color:#fff;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📊 棒グラフ</button>
+        <button onclick="setSaChartType('pie',this)" class="sa-ct-btn" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🥧 円グラフ</button>
       </div>
       <div id="sa-body"><div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div></div>
     </div>
@@ -2732,7 +2742,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626f';
+const APP_VERSION = '20260626i';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -3502,8 +3512,8 @@ async function updateLoginStreak() {
     } else {
       streak = 1;                // 間が空いた or 初回 → リセットして今日からスタート
     }
-    // === ログインボーナス：連続日数に応じて付与（1日目+1…上限+5）===
-    const bonus = Math.min(streak, 5);
+    // === ログインボーナス：連続日数に応じて付与（1日目+1…上限+3）===
+    const bonus = Math.min(streak, 3);
     let newPoints = currentStudent.points;
     try {
       newPoints = (currentStudent.points || 0) + bonus;
@@ -3627,6 +3637,7 @@ function initStudentScreen() {
   loadTodayClasses();
   loadQuizNotice();
   setTimeout(updateHomeCheckBadge, 1200);
+  setTimeout(checkForgotCheckout, 600);
 }
 
 function startGPS() {
@@ -4264,6 +4275,78 @@ async function closeTodayCheckinsAt2140() {
     console.log('当日の未チェックアウト ' + open.length + '件を21:40・ポイントなしで締めました');
     return open.length;
   } catch(e) { console.error('当日自動締め処理エラー:', e); return 0; }
+}
+
+// ===== 生徒側：自分のチェックアウトし忘れを検出して締める＋ポップアップ =====
+// 生徒がアプリを開いたとき（initStudentScreen）に呼ぶ。対象は次のいずれか：
+//  ・前日以前で checkout_time が未設定の自分のチェックイン（日付をまたいだ押し忘れ）
+//  ・当日で、現在が 21:40（JST）を過ぎていて checkout_time が未設定のもの
+// 検出したら 21:40・stay_minutes=0 で締め（滞在ポイントは付かない＝失効）、
+// 失効した日付をポップアップで本人に知らせる。スタッフ端末の起動に依存しない。
+async function checkForgotCheckout() {
+  if (!currentStudent) return;
+  try {
+    const today = getTodayJST();
+    // 自分の未チェックアウト行をまとめて取得（日付つき）
+    const rows = await sbGet('checkins',
+      'student_id=eq.' + currentStudent.id + '&checkout_time=is.null&select=id,checkin_date&order=checkin_date.asc&limit=200');
+    if (!rows || !rows.length) return;
+
+    // 当日が締め対象になるのは「現在が21:40を過ぎている」場合のみ
+    const nowJST = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const nowMin = nowJST.getUTCHours() * 60 + nowJST.getUTCMinutes();
+    const past2140Today = nowMin >= AUTO_CLOSE_HH * 60 + AUTO_CLOSE_MM;
+
+    const hh = String(AUTO_CLOSE_HH).padStart(2,'0'), mm = String(AUTO_CLOSE_MM).padStart(2,'0');
+    const targets = rows.filter(r => r.checkin_date < today || (r.checkin_date === today && past2140Today));
+    if (!targets.length) return;
+
+    const closedDates = [];
+    for (const row of targets) {
+      // その日の 21:40（JST）を退室時刻として締める（stay_minutes=0＝ポイントなし）
+      const closeTime = new Date(row.checkin_date + 'T' + hh + ':' + mm + ':00+09:00').toISOString();
+      try {
+        await sbPatch('checkins', 'id=eq.' + row.id, { checkout_time: closeTime, stay_minutes: 0 });
+        if (!closedDates.includes(row.checkin_date)) closedDates.push(row.checkin_date);
+      } catch(e) { console.error('生徒側 押し忘れ締めエラー:', e); }
+    }
+    if (!closedDates.length) return;
+
+    // 当日分を締めたら、ローカルのチェックイン状態も解除（在室表示の残りを防ぐ）
+    if (closedDates.includes(today)) {
+      localStorage.removeItem('fit_checkin_start');
+      localStorage.removeItem('fit_checkin_student_id');
+      if (typeof checkinElapsedInterval !== 'undefined' && checkinElapsedInterval) { clearInterval(checkinElapsedInterval); checkinElapsedInterval = null; }
+      if (typeof stopForceCheckoutPolling === 'function') stopForceCheckoutPolling();
+      const ab = document.getElementById('checkin-active-box'); if (ab) ab.style.display = 'none';
+      const db = document.getElementById('checkout-done-box'); if (db) db.style.display = 'none';
+      // 在室ボックスを消した代わりにチェックインボタンを表示（画面の空白を防ぐ）
+      const cb = document.getElementById('checkin-btn');
+      if (cb) { cb.style.display = 'block'; cb.disabled = true; cb.innerHTML = '✅ チェックイン<span class="btn-sub">自習室で押してポイントゲット！</span>'; }
+    }
+
+    // ポップアップ表示
+    showForgotCheckout(closedDates);
+  } catch(e) { console.error('checkForgotCheckout エラー:', e); }
+}
+
+// 失効ポップアップを表示する（日付を整形して本文に入れる）
+function showForgotCheckout(dates) {
+  const modal = document.getElementById('forgot-checkout-modal');
+  const msg = document.getElementById('forgot-checkout-msg');
+  if (!modal || !msg) return;
+  const labels = dates.map(d => {
+    const p = d.split('-'); // YYYY-MM-DD
+    return p.length === 3 ? (Number(p[1]) + '月' + Number(p[2]) + '日') : d;
+  });
+  const dateText = labels.join('、');
+  msg.innerHTML = '<b>' + escapeHtml(dateText) + '</b> のチェックアウトを押し忘れていたため、自動でチェックアウトしました。<br>この日の在室ポイントは付いていません（失効）。';
+  modal.style.display = 'flex';
+}
+
+function closeForgotCheckout() {
+  const modal = document.getElementById('forgot-checkout-modal');
+  if (modal) modal.style.display = 'none';
 }
 
 // スタッフホーム表示中、5分ごとに当日21:40締めをチェックするポーリング。
@@ -14802,7 +14885,7 @@ function switchManageTab(tab, el) {
   if (tab === 'quizstatus') loadQuizStatusClasses();
   if (tab === 'appusage') loadAppUsage();
   if (tab === 'classanalysis') initClassAnalysis();
-  if (tab === 'studentanalysis') { saViewMode = 'bar'; loadStudentAnalysis(); }
+  if (tab === 'studentanalysis') { saItem = null; saChartType = 'bar'; loadStudentAnalysis(); }
   if (tab === 'rostercheck') initRosterCheck();
   if (tab === 'revenue') loadRevenue();
   if (tab === 'settings') loadSettingsTab();
@@ -14850,6 +14933,8 @@ function saBarWithExtra(label, count, max, color, extra) {
 
 let saViewMode = 'bar';
 let saData = null;
+let saItem = null;        // 現在選択中の分析項目key（gender/school_grade/...）
+let saChartType = 'bar';  // 全体内訳の表示形式（'bar'|'pie'）
 
 // 生徒分析の制御項目定義（将来ここに追記すれば管理UI・判定の両方に反映される）
 const ANALYSIS_ITEMS = [
@@ -14976,14 +15061,67 @@ async function saveStaffPerm() {
   }
 }
 
-function setSaMode(mode, el) {
-  saViewMode = mode;
-  document.querySelectorAll('#sa-mode-tabs .sa-mode-btn').forEach(b => {
-    b.style.background = 'var(--surface)';
-    b.style.color = 'var(--text)';
-  });
-  if (el) { el.style.background = 'var(--orange-d)'; el.style.color = '#fff'; }
+// 分析項目のトグル表示用ラベル（絵文字つき）。順序はANALYSIS_ITEMS準拠。
+const SA_ITEM_LABEL = {
+  gender: '👥 男女比',
+  school_grade: '📋 学校・学年',
+  course_track: '📚 文理比率',
+  aspiration: '✏️ 受験科目',
+  subject: '📘 受講科目',
+  class: '🏫 講座別',
+  teacher: '👨‍🏫 担当講師'
+};
+// 円グラフが意味を持つ項目（全体内訳が割合表示できるもの）
+const SA_PIE_OK = { gender: true, school_grade: true, course_track: true };
+
+// 項目トグルバーを描画（閲覧可能な項目のみ）。saItem未設定なら先頭を選択。
+function renderSaItemTabs() {
+  const bar = document.getElementById('sa-item-tabs');
+  if (!bar) return;
+  const viewable = Object.keys(SA_ITEM_LABEL).filter(k => saCanView(k));
+  if (!viewable.length) { bar.innerHTML = ''; return; }
+  if (!saItem || !viewable.includes(saItem)) saItem = viewable[0];
+  bar.innerHTML = viewable.map(k => {
+    const active = k === saItem;
+    return '<button onclick="setSaItem(\'' + k + '\')" '
+      + 'style="padding:7px 11px;font-size:12px;font-weight:700;border:1px solid ' + (active ? 'var(--orange-d)' : 'var(--border)') + ';'
+      + 'border-radius:8px;background:' + (active ? 'var(--orange-d)' : 'var(--surface)') + ';color:' + (active ? '#fff' : 'var(--text)') + ';'
+      + 'cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">' + SA_ITEM_LABEL[k] + '</button>';
+  }).join('');
+  // 円グラフトグルの有効/無効を選択項目に合わせる
+  syncChartTypeTabs();
+}
+
+function setSaItem(key) {
+  saItem = key;
+  renderSaItemTabs();
   saRender();
+}
+
+function setSaChartType(type, el) {
+  saChartType = type;
+  syncChartTypeTabs();
+  saRender();
+}
+
+// 棒/円トグルの見た目を同期。円が無意味な項目では円ボタンを無効化。
+function syncChartTypeTabs() {
+  const wrap = document.getElementById('sa-charttype-tabs');
+  if (!wrap) return;
+  const pieOk = !!SA_PIE_OK[saItem];
+  if (!pieOk && saChartType === 'pie') saChartType = 'bar';
+  wrap.querySelectorAll('.sa-ct-btn').forEach(b => {
+    const oc = b.getAttribute('onclick') || '';
+    const isPie = oc.indexOf("'pie'") !== -1;
+    const active = (isPie && saChartType === 'pie') || (!isPie && saChartType === 'bar');
+    if (isPie && !pieOk) {
+      b.style.background = '#F0EDE8'; b.style.color = '#BBB'; b.style.cursor = 'not-allowed'; b.disabled = true;
+    } else {
+      b.disabled = false; b.style.cursor = 'pointer';
+      b.style.background = active ? 'var(--orange-d)' : 'var(--surface)';
+      b.style.color = active ? '#fff' : 'var(--text)';
+    }
+  });
 }
 
 // ===== 集計用の在籍判定 =====
@@ -15470,13 +15608,6 @@ function trendBarSvg(d) {
 async function loadStudentAnalysis() {
   const body = document.getElementById('sa-body');
   if (!body) return;
-  // モードボタンの見た目を現在のsaViewModeに同期
-  document.querySelectorAll('#sa-mode-tabs .sa-mode-btn').forEach(b => {
-    const oc = b.getAttribute('onclick') || '';
-    const active = oc.indexOf("'" + saViewMode + "'") !== -1;
-    b.style.background = active ? 'var(--orange-d)' : 'var(--surface)';
-    b.style.color = active ? '#fff' : 'var(--text)';
-  });
   body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div>';
   await loadMyPermissions();
   renderEnrollmentFlow();
@@ -15559,16 +15690,373 @@ async function loadStudentAnalysis() {
   saRender();
 }
 
-// モードに応じて描画
+// モードに応じて描画（新方式：選択中の1項目だけを表示）
 function saRender() {
   const body = document.getElementById('sa-body');
   if (!body || !saData) return;
-  if (saViewMode === 'pie') { body.innerHTML = saRenderPie(); return; }
-  if (saViewMode === 'school') { body.innerHTML = saRenderSchool(); return; }
-  body.innerHTML = saRenderBar();
+  renderSaItemTabs();
+  const viewable = Object.keys(SA_ITEM_LABEL).filter(k => saCanView(k));
+  if (!viewable.length) {
+    body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px 16px;font-size:13px;background:#FAFAF8;border-radius:10px">'
+      + '🔒 表示できる分析項目がありません。<br><span style="font-size:11px">閲覧権限は管理者が設定します。</span></div>';
+    return;
+  }
+  body.innerHTML = saRenderItem(saItem);
 }
 
-// ============ 棒グラフモード（従来の全部入り） ============
+// 左:数字／右:グラフ の2分割ブロック（モバイルは縦積みにフォールバック）
+function saSplitBlock(numbersHtml, chartHtml) {
+  return '<div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;margin-bottom:18px">'
+    + '<div style="flex:1 1 200px;min-width:180px">' + numbersHtml + '</div>'
+    + '<div style="flex:1 1 200px;min-width:180px;display:flex;justify-content:center;align-items:flex-start">' + chartHtml + '</div>'
+    + '</div>';
+}
+
+// 内訳リスト（左カラム用の数字表示）。rows = [{label,count,color}]
+function saNumberList(rows, total) {
+  let h = '<div style="display:flex;flex-direction:column;gap:8px">';
+  rows.forEach(r => {
+    const pct = saPct(r.count, total);
+    h += '<div style="display:flex;align-items:center;gap:8px">'
+      + '<span style="width:12px;height:12px;border-radius:3px;background:' + r.color + ';flex:0 0 auto"></span>'
+      + '<span style="font-size:14px;color:var(--text);flex:1">' + escapeHtml(r.label) + '</span>'
+      + '<span style="font-size:16px;font-weight:700;color:var(--text)">' + r.count + '人</span>'
+      + '<span style="font-size:12px;color:var(--muted);width:48px;text-align:right">(' + pct + '%)</span>'
+      + '</div>';
+  });
+  h += '</div>';
+  return h;
+}
+
+// 全体内訳を「左:数字／右:グラフ」で表示。segs=[{label,value,color}]
+// saChartType に応じて右カラムを棒バーまたは円グラフにする。
+function saBreakdownSplit(segs, total) {
+  const rows = segs.map(s => ({ label: s.label, count: s.value, color: s.color }));
+  const numbers = saNumberList(rows, total);
+  let chart;
+  if (saChartType === 'pie' && SA_PIE_OK[saItem]) {
+    chart = saPieSvg(segs.map(s => ({ label: s.label, value: s.value, color: s.color })));
+  } else {
+    let b = '<div style="width:100%">';
+    segs.forEach(s => { b += saBar(s.label, s.value, total, s.color); });
+    b += '</div>';
+    chart = b;
+  }
+  return saSplitBlock(numbers, chart);
+}
+
+// 選択中の1項目を描画する。共通の前処理を行い、項目ごとに分岐。
+function saRenderItem(key) {
+  const students = saData.students, total = saData.total, studentSubjects = saData.studentSubjects;
+  const scopeSchools = saData.scopeSchools;
+  const scopedStudents = scopeSchools ? students.filter(s => scopeSchools.includes(s.school)) : students;
+  const scopedIdSet = new Set(scopedStudents.map(s => s.id));
+  const scopeNote = scopeSchools ? '<div style="font-size:10px;color:#C77F2E;margin-bottom:6px">※あなたの担当校（' + scopeSchools.map(escapeHtml).join('・') + '）の生徒のみ集計しています。</div>' : '';
+
+  // 学校リスト（テーブル共用）
+  const schoolSet = new Set(students.map(s => s.school).filter(Boolean));
+  const schoolOrder = SA_SCHOOLS.filter(sc => students.some(s => s.school === sc));
+  const otherSchools = [...schoolSet].filter(sc => !SA_SCHOOLS.includes(sc));
+  const allSchoolsForTable = [...schoolOrder, ...otherSchools];
+  const noSchoolN = students.filter(s => !s.school).length;
+
+  let html = '';
+
+  // ===== 男女比 =====
+  if (key === 'gender') {
+    const maleN = students.filter(s => s.gender === '男').length;
+    const femaleN = students.filter(s => s.gender === '女').length;
+    const genderUnsetN = total - maleN - femaleN;
+    html += saSectionTitle('👥 男女比（全体）');
+    const segs = [
+      { label: '男子', value: maleN, color: '#3B82C4' },
+      { label: '女子', value: femaleN, color: '#E07BA0' }
+    ];
+    if (genderUnsetN) segs.push({ label: '未設定', value: genderUnsetN, color: '#BBB' });
+    html += saBreakdownSplit(segs, total);
+
+    html += saSectionTitle('🏫 男女比（学校別）');
+    html += '<div style="overflow-x:auto;margin-bottom:18px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+      + '<thead><tr style="background:var(--orange-l)">'
+      + '<th style="padding:6px 8px;text-align:left;white-space:nowrap">学校</th>'
+      + '<th style="padding:6px 8px;text-align:right">男</th>'
+      + '<th style="padding:6px 8px;text-align:right">女</th>'
+      + '<th style="padding:6px 8px;text-align:right">未設定</th>'
+      + '<th style="padding:6px 8px;text-align:right">計</th>'
+      + '</tr></thead><tbody>';
+    allSchoolsForTable.forEach(sc => {
+      const grp = students.filter(s => s.school === sc);
+      const m = grp.filter(s => s.gender === '男').length;
+      const f = grp.filter(s => s.gender === '女').length;
+      const u = grp.length - m - f;
+      html += '<tr style="border-bottom:1px solid var(--border)">'
+        + '<td style="padding:6px 8px;white-space:nowrap">' + escapeHtml(sc) + '</td>'
+        + '<td style="padding:6px 8px;text-align:right">' + m + '</td>'
+        + '<td style="padding:6px 8px;text-align:right">' + f + '</td>'
+        + '<td style="padding:6px 8px;text-align:right;color:var(--muted)">' + (u || '') + '</td>'
+        + '<td style="padding:6px 8px;text-align:right;font-weight:700">' + grp.length + '</td>'
+        + '</tr>';
+    });
+    if (noSchoolN) {
+      html += '<tr style="border-bottom:1px solid var(--border);color:var(--muted)">'
+        + '<td style="padding:6px 8px">未設定</td>'
+        + '<td colspan="3" style="padding:6px 8px;text-align:right">—</td>'
+        + '<td style="padding:6px 8px;text-align:right;font-weight:700">' + noSchoolN + '</td></tr>';
+    }
+    html += '<tr style="background:var(--orange-l);font-weight:700">'
+      + '<td style="padding:6px 8px">合計</td>'
+      + '<td style="padding:6px 8px;text-align:right">' + maleN + '</td>'
+      + '<td style="padding:6px 8px;text-align:right">' + femaleN + '</td>'
+      + '<td style="padding:6px 8px;text-align:right">' + genderUnsetN + '</td>'
+      + '<td style="padding:6px 8px;text-align:right">' + total + '</td></tr>';
+    html += '</tbody></table></div>';
+    return html;
+  }
+
+  // ===== 学校・学年 =====
+  if (key === 'school_grade') {
+    // 学年比（全体内訳：棒/円）
+    const gradeSegs = SA_GRADES.map((g, i) => ({
+      label: g, value: students.filter(s => s.grade === g).length, color: ['#E8923A', '#3B82C4', '#7B5BA0'][i]
+    }));
+    const otherGradeN = students.filter(s => s.grade && !SA_GRADES.includes(s.grade)).length;
+    const noGradeN = students.filter(s => !s.grade).length;
+    if (otherGradeN) gradeSegs.push({ label: 'その他', value: otherGradeN, color: '#5A9E3C' });
+    if (noGradeN) gradeSegs.push({ label: '未設定', value: noGradeN, color: '#BBB' });
+    html += saSectionTitle('🎓 学年比（全体）');
+    html += saBreakdownSplit(gradeSegs, total);
+
+    // 学校×学年 人数表
+    html += saSectionTitle('📋 学校×学年 人数表');
+    html += '<div style="overflow-x:auto;margin-bottom:18px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+      + '<thead><tr style="background:var(--orange-l)">'
+      + '<th style="padding:6px 8px;text-align:left;white-space:nowrap">学校</th>';
+    SA_GRADES.forEach(g => html += '<th style="padding:6px 8px;text-align:right">' + g + '</th>');
+    const hasKosotsu = students.some(s => s.grade && !SA_GRADES.includes(s.grade));
+    if (hasKosotsu) html += '<th style="padding:6px 8px;text-align:right">その他</th>';
+    html += '<th style="padding:6px 8px;text-align:right">計</th></tr></thead><tbody>';
+    const gradeTotals = {}; SA_GRADES.forEach(g => gradeTotals[g] = 0);
+    let otherGradeTotal = 0;
+    allSchoolsForTable.forEach(sc => {
+      const grp = students.filter(s => s.school === sc);
+      html += '<tr style="border-bottom:1px solid var(--border)">'
+        + '<td style="padding:6px 8px;white-space:nowrap">' + escapeHtml(sc) + '</td>';
+      SA_GRADES.forEach(g => {
+        const n = grp.filter(s => s.grade === g).length; gradeTotals[g] += n;
+        html += '<td style="padding:6px 8px;text-align:right">' + (n || '') + '</td>';
+      });
+      if (hasKosotsu) {
+        const n = grp.filter(s => s.grade && !SA_GRADES.includes(s.grade)).length; otherGradeTotal += n;
+        html += '<td style="padding:6px 8px;text-align:right">' + (n || '') + '</td>';
+      }
+      html += '<td style="padding:6px 8px;text-align:right;font-weight:700">' + grp.length + '</td></tr>';
+    });
+    html += '<tr style="background:var(--orange-l);font-weight:700"><td style="padding:6px 8px">合計</td>';
+    SA_GRADES.forEach(g => html += '<td style="padding:6px 8px;text-align:right">' + gradeTotals[g] + '</td>');
+    if (hasKosotsu) html += '<td style="padding:6px 8px;text-align:right">' + otherGradeTotal + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right">' + total + '</td></tr>';
+    html += '</tbody></table></div>';
+    return html;
+  }
+
+  // ===== 文理比率 =====
+  if (key === 'course_track') {
+    const bunkeiN = students.filter(s => s.course_track === '文系').length;
+    const rikeiN = students.filter(s => s.course_track === '理系').length;
+    const miteiN = students.filter(s => s.course_track === '未定').length;
+    const trackUnsetN = total - bunkeiN - rikeiN - miteiN;
+    html += saSectionTitle('📚 文理比率（全体）');
+    const segs = [
+      { label: '文系', value: bunkeiN, color: '#C77F2E' },
+      { label: '理系', value: rikeiN, color: '#3B82C4' }
+    ];
+    if (miteiN) segs.push({ label: '未定', value: miteiN, color: '#7BA05B' });
+    if (trackUnsetN) segs.push({ label: '未設定', value: trackUnsetN, color: '#BBB' });
+    html += saBreakdownSplit(segs, total);
+
+    html += saSectionTitle('🏫 文理（学校別）');
+    html += '<div style="overflow-x:auto;margin-bottom:18px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+      + '<thead><tr style="background:var(--orange-l)">'
+      + '<th style="padding:6px 8px;text-align:left;white-space:nowrap">学校</th>'
+      + '<th style="padding:6px 8px;text-align:right">文系</th>'
+      + '<th style="padding:6px 8px;text-align:right">理系</th>'
+      + '<th style="padding:6px 8px;text-align:right">未定</th>'
+      + '<th style="padding:6px 8px;text-align:right">未設定</th>'
+      + '</tr></thead><tbody>';
+    allSchoolsForTable.forEach(sc => {
+      const grp = students.filter(s => s.school === sc);
+      const b = grp.filter(s => s.course_track === '文系').length;
+      const r = grp.filter(s => s.course_track === '理系').length;
+      const mt = grp.filter(s => s.course_track === '未定').length;
+      const us = grp.length - b - r - mt;
+      html += '<tr style="border-bottom:1px solid var(--border)">'
+        + '<td style="padding:6px 8px;white-space:nowrap">' + escapeHtml(sc) + '</td>'
+        + '<td style="padding:6px 8px;text-align:right">' + (b || '') + '</td>'
+        + '<td style="padding:6px 8px;text-align:right">' + (r || '') + '</td>'
+        + '<td style="padding:6px 8px;text-align:right;color:var(--muted)">' + (mt || '') + '</td>'
+        + '<td style="padding:6px 8px;text-align:right;color:var(--muted)">' + (us || '') + '</td>'
+        + '</tr>';
+    });
+    html += '</tbody></table></div>';
+    return html;
+  }
+
+  // ===== 受験科目 =====
+  if (key === 'aspiration') {
+    const subjCounts = {};
+    scopedStudents.forEach(s => {
+      if (!s.desired_subjects) return;
+      String(s.desired_subjects).split(/[,、\s]+/).forEach(sub => {
+        const k = sub.trim(); if (k) subjCounts[k] = (subjCounts[k] || 0) + 1;
+      });
+    });
+    const subjRank = Object.entries(subjCounts).sort((a, b) => b[1] - a[1]);
+    html += saSectionTitle('✏️ 受験科目別 人数');
+    html += scopeNote;
+    if (subjRank.length) {
+      const subjMax = subjRank[0][1];
+      html += '<div style="margin-bottom:18px">';
+      subjRank.forEach(([name, n]) => html += saBar(name, n, subjMax, '#3B6D11'));
+      html += '</div>';
+    } else {
+      html += '<div style="color:var(--muted);font-size:12px;margin-bottom:8px;padding:12px;background:#FAFAF8;border-radius:8px">まだ受験科目データがありません。</div>';
+    }
+    return html;
+  }
+
+  // ===== 受講科目・科目数 =====
+  if (key === 'subject') {
+    const appStudents = students.filter(s => s._src === 'app' && scopedIdSet.has(s.id));
+    const appTotal = appStudents.length;
+    const studentIdSetForBar = new Set(appStudents.map(s => s.id));
+    const subjBing = {};
+    Object.keys(studentSubjects).forEach(id => {
+      if (!studentIdSetForBar.has(id)) return;
+      studentSubjects[id].forEach(subj => { subjBing[subj] = (subjBing[subj] || 0) + 1; });
+    });
+    const countDist = {};
+    appStudents.forEach(s => {
+      const n = studentSubjects[s.id] ? studentSubjects[s.id].size : 0;
+      countDist[n] = (countDist[n] || 0) + 1;
+    });
+    let totalSubjSum = 0;
+    appStudents.forEach(s => { totalSubjSum += (studentSubjects[s.id] ? studentSubjects[s.id].size : 0); });
+    const avgSubj = appTotal ? Math.round(totalSubjSum / appTotal * 10) / 10 : 0;
+    const enrolledN = appStudents.filter(s => studentSubjects[s.id] && studentSubjects[s.id].size > 0).length;
+
+    html += saSectionTitle('📘 受講科目・科目数');
+    html += scopeNote;
+    if (saData.rosterOnlyN > 0) {
+      html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">※この集計はアプリ登録者（' + appTotal + '人）のみが対象です。</div>';
+    }
+    html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">'
+      + saSummaryCard('受講中の生徒', enrolledN + '人', '#3B6D11')
+      + saSummaryCard('平均科目数', avgSubj + '科目', 'var(--orange-d)')
+      + saSummaryCard('延べ科目', totalSubjSum + '科目', '#185FA5')
+      + '</div>';
+    html += '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">科目別の受講人数</div>';
+    html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">実人数＝その科目を1つでも受講している人数／延べ＝講座ごとに数えた受講数（同じ科目を2講座取れば2）</div>';
+    const subjGross = {};
+    (saData.enrolls || []).forEach(e => {
+      const st = e.student_id;
+      if (!studentIdSetForBar.has(st)) return;
+      const subj = e.class_master && e.class_master.subject ? e.class_master.subject : 'その他';
+      subjGross[subj] = (subjGross[subj] || 0) + 1;
+    });
+    const SUBJ_ORDER = ['英語', '国語', '数学', '理科', '社会', 'その他'];
+    const subjList = [...new Set([...SUBJ_ORDER.filter(s => subjBing[s]), ...Object.keys(subjBing)])];
+    if (subjList.length) {
+      const subjMax = Math.max(...Object.values(subjBing));
+      html += '<div style="margin-bottom:14px">';
+      subjList.forEach(subj => {
+        const real = subjBing[subj] || 0;
+        const gross = subjGross[subj] || 0;
+        const extra = gross > real ? '（延べ ' + gross + '）' : '';
+        html += saBarWithExtra(subj, real, subjMax, SA_SUBJ_COLOR[subj] || '#7F8C8D', extra);
+      });
+      html += '</div>';
+    } else {
+      html += saRosterMsg('まだ受講登録がありません。', 'var(--muted)');
+    }
+    html += '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:8px">科目数ごとの生徒数</div>';
+    const distKeys = Object.keys(countDist).map(Number).sort((a, b) => a - b);
+    if (distKeys.length) {
+      const distMax = Math.max(...Object.values(countDist));
+      html += '<div style="margin-bottom:8px">';
+      distKeys.forEach(n => {
+        const label = n === 0 ? '未受講（0科目）' : n + '科目';
+        const color = n === 0 ? '#BBB' : '#5A9E3C';
+        html += saBar(label, countDist[n], distMax, color);
+      });
+      html += '</div>';
+    }
+    return html;
+  }
+
+  // ===== 講座別の受講人数 =====
+  if (key === 'class') {
+    const appStudents = students.filter(s => s._src === 'app' && scopedIdSet.has(s.id));
+    const studentIdSetForBar = new Set(appStudents.map(s => s.id));
+    const byClass = {};
+    (saData.enrolls || []).forEach(e => {
+      if (!studentIdSetForBar.has(e.student_id)) return;
+      const cm = e.class_master || {};
+      const cid = e.class_master_id || (cm.name || '不明');
+      if (!byClass[cid]) byClass[cid] = { name: cm.name || '（名称未設定）', subject: cm.subject || 'その他', n: 0 };
+      byClass[cid].n++;
+    });
+    const classList = Object.values(byClass).sort((a, b) => b.n - a.n);
+    html += saSectionTitle('🏫 講座ごとの受講人数');
+    if (classList.length) {
+      const classMax = Math.max(...classList.map(c => c.n));
+      html += '<div style="margin-bottom:18px">';
+      classList.forEach(c => {
+        const label = c.name + '（' + c.subject + '）';
+        html += saBar(label, c.n, classMax, SA_SUBJ_COLOR[c.subject] || '#7F8C8D');
+      });
+      html += '</div>';
+    } else {
+      html += saRosterMsg('まだ受講登録がありません。', 'var(--muted)');
+    }
+    return html;
+  }
+
+  // ===== 担当講師分析 =====
+  if (key === 'teacher') {
+    const allAppIdSet = new Set(students.filter(s => s._src === 'app').map(s => s.id));
+    const byTeacher = {};
+    const teacherClasses = {};
+    (saData.enrolls || []).forEach(e => {
+      if (!allAppIdSet.has(e.student_id)) return;
+      const cm = e.class_master || {};
+      const tid = cm.teacher_staff_id || null;
+      const key2 = tid || '__none__';
+      byTeacher[key2] = (byTeacher[key2] || 0) + 1;
+      if (!teacherClasses[key2]) teacherClasses[key2] = new Set();
+      teacherClasses[key2].add(e.class_master_id);
+    });
+    const teacherList = Object.entries(byTeacher).sort((a, b) => b[1] - a[1]);
+    html += saSectionTitle('👨‍🏫 担当講師ごとの受講人数');
+    html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">全校で集計。講座単位の延べ受講数（1人が同じ講師の2講座を取れば2）。括弧内は担当講座数。</div>';
+    if (teacherList.length) {
+      const tMax = Math.max(...teacherList.map(t => t[1]));
+      html += '<div style="margin-bottom:8px">';
+      teacherList.forEach(([key2, n]) => {
+        const name = key2 === '__none__' ? '（担当未設定）' : (saData.teacherMap[key2] || ('講師ID:' + key2));
+        const clsN = teacherClasses[key2] ? teacherClasses[key2].size : 0;
+        html += saBarWithExtra(name, n, tMax, '#5B7BA0', '（' + clsN + '講座）');
+      });
+      html += '</div>';
+    } else {
+      html += saRosterMsg('まだ受講登録がありません。', 'var(--muted)');
+    }
+    return html;
+  }
+
+  return '<div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">項目を選んでください。</div>';
+}
+
+// ============ 棒グラフモード（従来の全部入り：旧方式・現在は未使用） ============
 function saRenderBar() {
   const students = saData.students, total = saData.total, studentSubjects = saData.studentSubjects;
   // 個人が見える項目（志望校・受講・講座・講師）に使う、担当校スコープ適用済みの生徒集合
