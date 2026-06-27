@@ -2742,7 +2742,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626j';
+const APP_VERSION = '20260626k';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -14931,10 +14931,25 @@ function saBarWithExtra(label, count, max, color, extra) {
     + '</div></div>';
 }
 
+// 母数(total)に対する割合つきバー＋補足テキスト（受講科目の割合表示用）
+function saBarPctExtra(label, count, total, color, extra) {
+  const pct = saPct(count, total);
+  return '<div style="margin-bottom:6px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:baseline;font-size:14px;color:var(--text);margin-bottom:3px">'
+    + '<span>' + escapeHtml(label) + '</span>'
+    + '<span style="color:var(--text);font-weight:700;font-size:16px">' + count + '人 '
+    + '<span style="color:var(--muted);font-weight:400;font-size:12px">(' + pct + '%)' + (extra ? ' ' + escapeHtml(extra) : '') + '</span></span>'
+    + '</div>'
+    + '<div style="height:5px;background:#EEE;border-radius:3px;overflow:hidden">'
+    + '<div style="height:100%;width:' + pct + '%;background:' + color + ';border-radius:3px"></div>'
+    + '</div></div>';
+}
+
 let saViewMode = 'bar';
 let saData = null;
 let saItem = null;        // 現在選択中の分析項目key（gender/school_grade/...）
 let saChartType = 'bar';  // 全体内訳の表示形式（'bar'|'pie'）
+let saAspirationData = {}; // 受験科目の展開用：rowId -> 生徒名リスト
 
 // 生徒分析の制御項目定義（将来ここに追記すれば管理UI・判定の両方に反映される）
 const ANALYSIS_ITEMS = [
@@ -15063,8 +15078,8 @@ async function saveStaffPerm() {
 
 // 分析項目のトグル表示用ラベル（絵文字つき）。順序はANALYSIS_ITEMS準拠。
 const SA_ITEM_LABEL = {
-  gender: '👥 男女比',
   school_grade: '📋 学校・学年',
+  gender: '👥 男女比',
   course_track: '📚 文理比率',
   aspiration: '✏️ 受験科目',
   subject: '📘 受講科目',
@@ -15096,6 +15111,16 @@ function setSaItem(key) {
   saItem = key;
   renderSaItemTabs();
   saRender();
+}
+
+// 受験科目：科目行をタップして生徒名リストを開閉
+function toggleAspirationSubj(rowId) {
+  const body = document.getElementById(rowId + '-body');
+  const arw = document.getElementById(rowId + '-arw');
+  if (!body) return;
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'block';
+  if (arw) arw.textContent = open ? '▼' : '▲';
 }
 
 function setSaChartType(type, el) {
@@ -15903,20 +15928,37 @@ function saRenderItem(key) {
 
   // ===== 受験科目 =====
   if (key === 'aspiration') {
-    const subjCounts = {};
+    // 科目→生徒名リストを作る（対象抽出が目的なので割合・グラフは出さない）
+    const subjStudents = {}; // subject -> [name...]
     scopedStudents.forEach(s => {
       if (!s.desired_subjects) return;
       String(s.desired_subjects).split(/[,、\s]+/).forEach(sub => {
-        const k = sub.trim(); if (k) subjCounts[k] = (subjCounts[k] || 0) + 1;
+        const k = sub.trim(); if (!k) return;
+        if (!subjStudents[k]) subjStudents[k] = [];
+        const label = (s.name || '(不明)') + (s.school ? '（' + s.school + (s.grade ? ' ' + s.grade : '') + '）' : '');
+        subjStudents[k].push(label);
       });
     });
-    const subjRank = Object.entries(subjCounts).sort((a, b) => b[1] - a[1]);
+    const subjRank = Object.entries(subjStudents).sort((a, b) => b[1].length - a[1].length);
     html += saSectionTitle('✏️ 受験科目別 人数');
     html += scopeNote;
+    html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">科目をタップすると、その科目を受験する生徒の一覧が開きます。</div>';
     if (subjRank.length) {
-      const subjMax = subjRank[0][1];
+      saAspirationData = {}; // 展開用にグローバル保持
       html += '<div style="margin-bottom:18px">';
-      subjRank.forEach(([name, n]) => html += saBar(name, n, subjMax, '#3B6D11'));
+      subjRank.forEach(([name, list], idx) => {
+        const rowId = 'asp-' + idx;
+        saAspirationData[rowId] = list;
+        html += '<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:6px;overflow:hidden;background:#fff">'
+          + '<div onclick="toggleAspirationSubj(\'' + rowId + '\')" style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;cursor:pointer">'
+          + '<span style="font-size:14px;font-weight:700;color:var(--text)">' + escapeHtml(name) + '</span>'
+          + '<span style="font-size:14px;color:#3B6D11;font-weight:700">' + list.length + '人 <span id="' + rowId + '-arw" style="color:var(--muted);font-size:11px">▼</span></span>'
+          + '</div>'
+          + '<div id="' + rowId + '-body" style="display:none;padding:4px 12px 10px;border-top:1px solid var(--border)">'
+          + list.map(n => '<div style="font-size:12px;color:var(--text);padding:4px 0;border-bottom:1px solid #F0EDE8">' + escapeHtml(n) + '</div>').join('')
+          + '</div>'
+          + '</div>';
+      });
       html += '</div>';
     } else {
       html += '<div style="color:var(--muted);font-size:12px;margin-bottom:8px;padding:12px;background:#FAFAF8;border-radius:8px">まだ受験科目データがありません。</div>';
@@ -15955,7 +15997,7 @@ function saRenderItem(key) {
       + saSummaryCard('延べ科目', totalSubjSum + '科目', '#185FA5')
       + '</div>';
     html += '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">科目別の受講人数</div>';
-    html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">実人数＝その科目を1つでも受講している人数／延べ＝講座ごとに数えた受講数（同じ科目を2講座取れば2）</div>';
+    html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">割合＝受講者（' + appTotal + '人）に対する実人数の割合／延べ＝講座ごとに数えた受講数（同じ科目を2講座取れば2）</div>';
     const subjGross = {};
     (saData.enrolls || []).forEach(e => {
       const st = e.student_id;
@@ -15966,13 +16008,13 @@ function saRenderItem(key) {
     const SUBJ_ORDER = ['英語', '国語', '数学', '理科', '社会', 'その他'];
     const subjList = [...new Set([...SUBJ_ORDER.filter(s => subjBing[s]), ...Object.keys(subjBing)])];
     if (subjList.length) {
-      const subjMax = Math.max(...Object.values(subjBing));
       html += '<div style="margin-bottom:14px">';
       subjList.forEach(subj => {
         const real = subjBing[subj] || 0;
         const gross = subjGross[subj] || 0;
         const extra = gross > real ? '（延べ ' + gross + '）' : '';
-        html += saBarWithExtra(subj, real, subjMax, SA_SUBJ_COLOR[subj] || '#7F8C8D', extra);
+        // 受講者数(appTotal)に対する割合つきバー＋延べの補足
+        html += saBarPctExtra(subj, real, appTotal, SA_SUBJ_COLOR[subj] || '#7F8C8D', extra);
       });
       html += '</div>';
     } else {
@@ -16026,25 +16068,30 @@ function saRenderItem(key) {
     const allAppIdSet = new Set(students.filter(s => s._src === 'app').map(s => s.id));
     const byTeacher = {};
     const teacherClasses = {};
+    let grandTotal = 0; // 全受講数（割合の母数）
     (saData.enrolls || []).forEach(e => {
       if (!allAppIdSet.has(e.student_id)) return;
       const cm = e.class_master || {};
-      const tid = cm.teacher_staff_id || null;
-      const key2 = tid || '__none__';
+      const subj = cm.subject || '';
+      // 英語は交代制のため、講師に関わらず「英語部」へまとめる
+      const key2 = (subj === '英語') ? '__english__' : (cm.teacher_staff_id || '__none__');
       byTeacher[key2] = (byTeacher[key2] || 0) + 1;
       if (!teacherClasses[key2]) teacherClasses[key2] = new Set();
       teacherClasses[key2].add(e.class_master_id);
+      grandTotal++;
     });
     const teacherList = Object.entries(byTeacher).sort((a, b) => b[1] - a[1]);
     html += saSectionTitle('👨‍🏫 担当講師ごとの受講人数');
-    html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">全校で集計。講座単位の延べ受講数（1人が同じ講師の2講座を取れば2）。括弧内は担当講座数。</div>';
+    html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">全校で集計。講座単位の延べ受講数（1人が同じ講師の2講座を取れば2）。割合は全受講数（' + grandTotal + '）に対する各講師の担当割合。括弧内は担当講座数。英語は交代制のため「英語部」にまとめています。</div>';
     if (teacherList.length) {
-      const tMax = Math.max(...teacherList.map(t => t[1]));
       html += '<div style="margin-bottom:8px">';
       teacherList.forEach(([key2, n]) => {
-        const name = key2 === '__none__' ? '（担当未設定）' : (saData.teacherMap[key2] || ('講師ID:' + key2));
+        let name;
+        if (key2 === '__english__') name = '英語部';
+        else if (key2 === '__none__') name = '（担当未設定）';
+        else name = saData.teacherMap[key2] || ('講師ID:' + key2);
         const clsN = teacherClasses[key2] ? teacherClasses[key2].size : 0;
-        html += saBarWithExtra(name, n, tMax, '#5B7BA0', '（' + clsN + '講座）');
+        html += saBarPctExtra(name, n, grandTotal, '#5B7BA0', '（' + clsN + '講座）');
       });
       html += '</div>';
     } else {
