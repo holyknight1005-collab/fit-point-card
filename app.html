@@ -1324,6 +1324,11 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <div>
       <div class="section-title">🧑‍🎓 属性</div>
       <div class="card-box">
+        <div style="margin-bottom:8px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">氏名</div>
+          <input type="text" class="form-select" id="detail-name" placeholder="氏名" style="width:100%;font-size:13px">
+          <div style="font-size:10px;color:var(--muted);margin-top:3px">名簿（CSV）と表記が違うと照合できません。名簿の氏名に合わせると人数集計が正しくなります。</div>
+        </div>
         <div style="display:flex;gap:8px;margin-bottom:8px">
           <div style="flex:1">
             <div style="font-size:11px;color:var(--muted);margin-bottom:4px">性別</div>
@@ -2947,7 +2952,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zs';
+const APP_VERSION = '20260626zu';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -5806,6 +5811,9 @@ async function staffAddPoints() {
 // 生徒属性（学校・学年・性別・部活・誕生日）の保存（スタッフ側）
 async function saveStudentAttributes() {
   if (!detailStudent) return;
+  const nameEl = document.getElementById('detail-name');
+  const name = nameEl ? nameEl.value.trim() : (detailStudent.name || '');
+  if (!name) { showToast('氏名を入力してください', 'error'); return; }
   const gender = document.getElementById('detail-gender').value;
   const club = getClubValue('detail');
   const birthday = getBirthdayValue('detail');
@@ -5818,13 +5826,16 @@ async function saveStudentAttributes() {
   }
   showLoading('保存中...');
   try {
-    await sbPatch('students', 'id=eq.' + detailStudent.id, { gender: gender || null, club: club || null, birthday: birthday, school: school || null, grade: grade || null, school_detail: schoolDetail || null });
+    await sbPatch('students', 'id=eq.' + detailStudent.id, { name: name, gender: gender || null, club: club || null, birthday: birthday, school: school || null, grade: grade || null, school_detail: schoolDetail || null });
+    detailStudent.name = name;
     detailStudent.gender = gender;
     detailStudent.club = club;
     detailStudent.birthday = birthday;
     detailStudent.school = school;
     detailStudent.grade = grade;
     detailStudent.school_detail = schoolDetail;
+    const hdr = document.getElementById('detail-name-header');
+    if (hdr) hdr.textContent = name;
     hideLoading();
     showToast('✅ 属性を保存しました', 'success');
   } catch(e) {
@@ -6129,6 +6140,7 @@ async function openStudentDetail(idx, from) {
     const april = new Date(aprilYear, 3, 1);
     const yearCount = detailCheckins.filter(d => new Date(d) >= april).length;
     document.getElementById('detail-name-header').textContent = s.name;
+    var dn = document.getElementById('detail-name'); if (dn) dn.value = s.name || '';
     document.getElementById('detail-avatar').textContent = s.name[0];
     // 写真があれば表示
     if (s.photo_url) {
@@ -16717,17 +16729,24 @@ async function loadExecDashboard() {
 
   // --- 在籍・入塾・退塾の集計（renderEnrollmentTrend と同じ基準。enroll_date / 退塾発効日ベース）---
   let persons = [];
+  let currentEnrolled = 0;   // 現在在籍（入塾日に関係なく今いる在籍。学校×学年人数表と同基準）
+  let missingEnrollDate = 0; // 在籍中だが入塾日が未入力の人数
+  const todayStrForCount = getTodayJST();
   try {
     let stu = [];
     try {
-      stu = await sbGet('students', 'select=id,enroll_date,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+      stu = await sbGet('students', 'select=id,enroll_date,is_active,inactive_reason,withdraw_status,withdraw_effective_date') || [];
     } catch (e0) {
-      stu = await sbGet('students', 'select=id,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+      stu = await sbGet('students', 'select=id,is_active,inactive_reason,withdraw_status,withdraw_effective_date') || [];
     }
     stu = stu.filter(s => s.inactive_reason !== '除外');
     stu.forEach(s => {
       const enroll = s.enroll_date || null;
       const withdraw = (s.withdraw_status === '確定' && s.withdraw_effective_date) ? s.withdraw_effective_date : null;
+      // 現在在籍判定（人数表と同じ：is_active かつ 退塾発効日を過ぎていない）
+      let enrolledNowFlag = (s.is_active !== false);
+      if (enrolledNowFlag && withdraw && todayStrForCount > withdraw) enrolledNowFlag = false;
+      if (enrolledNowFlag) { currentEnrolled++; if (!enroll) missingEnrollDate++; }
       if (!enroll && !withdraw) return;
       persons.push({ enroll: enroll, withdraw: withdraw });
     });
@@ -16740,6 +16759,10 @@ async function loadExecDashboard() {
       rosterRows.forEach(r => {
         if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
         const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+        // 現在在籍判定（roster分）
+        let rEnrolledNow = true;
+        if (isOut) { rEnrolledNow = r.withdraw_date ? !(todayStrForCount > r.withdraw_date) : false; }
+        if (rEnrolledNow) { currentEnrolled++; if (!r.enroll_date) missingEnrollDate++; }
         persons.push({ enroll: r.enroll_date || null, withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null });
       });
     } catch (e) { /* roster無しは無視 */ }
@@ -16785,7 +16808,8 @@ async function loadExecDashboard() {
     cur: cur, prev: prev, yoy: yoy,
     enrolledNow: enrolledNow, enrolledPrev: enrolledPrev, enrolledYoY: enrolledYoY,
     joinedNow: joinedNow, leftNow: leftNow,
-    todayCount: todayCount
+    todayCount: todayCount,
+    currentEnrolled: currentEnrolled, missingEnrollDate: missingEnrollDate
   });
 }
 
@@ -16826,6 +16850,12 @@ function renderExecDashboard(d) {
     + '<div>' + diffBadge(d.enrolledNow, d.enrolledYoY, '昨年同月比') + '</div>';
   const enrolledCard = card(d.cur.y + '年' + d.cur.m + '月の在籍', d.enrolledNow + '<span style="font-size:13px;color:var(--muted)">名</span>', enrolledSub, '#2D6CB6', "openHomeFeature('studentanalysis')");
 
+  // 現在在籍カード（入塾日に関係なく今いる在籍。学校×学年人数表と一致）
+  const curEnrSub = (d.missingEnrollDate > 0)
+    ? '<span style="font-size:11px;color:#C0392B;font-weight:700">⚠️ 入塾日 未入力 ' + d.missingEnrollDate + '名</span>'
+    : '<span style="font-size:11px;color:#1E8449">入塾日すべて入力済</span>';
+  const currentCard = card('現在の在籍（実数）', (d.currentEnrolled == null ? '—' : d.currentEnrolled) + '<span style="font-size:13px;color:var(--muted)">名</span>', curEnrSub, '#1A6E8E', "openHomeFeature('studentanalysis')");
+
   // 入塾・退塾カード
   const flowSub = '<span style="font-size:11px;color:var(--muted)">今月</span>';
   const joinCard = card('今月の新規入塾', d.joinedNow + '<span style="font-size:13px;color:var(--muted)">名</span>', flowSub, '#5A9E3C', "openHomeFeature('prospects')");
@@ -16843,9 +16873,9 @@ function renderExecDashboard(d) {
     + '</div>'
     + '<div id="exec-dash-body" style="display:' + (execDashOpen ? 'block' : 'none') + '">'
     +   '<div style="display:flex;flex-wrap:wrap;gap:10px">'
-    +     enrolledCard + joinCard + leftCard + todayCard
+    +     enrolledCard + currentCard + joinCard + leftCard + todayCard
     +   '</div>'
-    +   '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※ 在籍・入塾・退塾は入塾日／退塾発効日を基準に集計。カードをタップすると詳細タブが開きます。</div>'
+    +   '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※「○月の在籍」は入塾日／退塾発効日を基準にした集計（前月比・推移用）。「現在の在籍（実数）」は入塾日に関係なく今いる在籍数で、学校×学年人数表と一致します。入塾日が未入力の在籍生がいると2つの数に差が出ます。カードをタップすると詳細タブが開きます。</div>'
     + '</div>'
     + '</div>';
 }
