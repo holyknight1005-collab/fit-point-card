@@ -2947,7 +2947,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zn';
+const APP_VERSION = '20260626zo';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -18071,16 +18071,26 @@ function downloadRosterTemplate() {
 // CSVの日付文字列を 'YYYY-MM-DD' に正規化。空や不正は null。
 // 受理: 2026-04-10 / 2026/4/10 / 2026.4.10 など。
 function normalizeCsvDate(s) {
+  const r = parseCsvDateStrict(s);
+  return r.ok ? r.value : null;
+}
+
+// 厳密パース：空→{ok:true, empty:true, value:null}／実在日→{ok:true, value:'YYYY-MM-DD'}／
+// 不正（形式違い・実在しない日）→{ok:false, raw}
+// 実在しない日（4/31・2/30 等）は ok:false で弾く。
+function parseCsvDateStrict(s) {
   s = String(s == null ? '' : s).trim();
-  if (!s) return null;
+  if (!s) return { ok: true, empty: true, value: null };
   const m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})$/);
-  if (!m) return null;
-  const y = m[1];
-  const mo = String(parseInt(m[2], 10)).padStart(2, '0');
-  const d = String(parseInt(m[3], 10)).padStart(2, '0');
-  if (parseInt(mo, 10) < 1 || parseInt(mo, 10) > 12) return null;
-  if (parseInt(d, 10) < 1 || parseInt(d, 10) > 31) return null;
-  return y + '-' + mo + '-' + d;
+  if (!m) return { ok: false, raw: s };
+  const y = parseInt(m[1], 10), mo = parseInt(m[2], 10), d = parseInt(m[3], 10);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return { ok: false, raw: s };
+  // 実在日チェック：new Date(y,mo-1,d) が同じ y/mo/d を返すか（UTCずれ回避のためローカル構築）
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) {
+    return { ok: false, raw: s };
+  }
+  return { ok: true, value: y + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0') };
 }
 
 // 氏名の正規化（表記ゆれ吸収）：全角/半角スペース除去・トリム・小文字化
@@ -18171,15 +18181,28 @@ async function onRosterCsvSelected(event) {
       });
     }
 
-    // 取込行を組み立て（氏名空はスキップ）
+    // 取込行を組み立て（氏名空はスキップ）。日付の不正（実在しない日・形式違い）は収集して中止。
     const incoming = [];
+    const dateErrors = [];
     for (let i = startIdx; i < rows.length; i++) {
       const r = rows[i];
       const rawName = (r[col.name] || '').trim();
       if (!rawName) continue;
       const school = (r[col.school] || '').trim();
-      const enrollD = col.enroll >= 0 ? normalizeCsvDate((r[col.enroll] || '').trim()) : null;
-      const withdrawD = col.withdraw >= 0 ? normalizeCsvDate((r[col.withdraw] || '').trim()) : null;
+      const lineNo = i + 1; // CSV上の行番号（1始まり。ヘッダ含む）
+
+      let enrollD = null, withdrawD = null;
+      if (col.enroll >= 0) {
+        const er = parseCsvDateStrict((r[col.enroll] || '').trim());
+        if (!er.ok) dateErrors.push({ line: lineNo, name: rawName, col: '入塾日', raw: er.raw });
+        else enrollD = er.value;
+      }
+      if (col.withdraw >= 0) {
+        const wr = parseCsvDateStrict((r[col.withdraw] || '').trim());
+        if (!wr.ok) dateErrors.push({ line: lineNo, name: rawName, col: '退塾日', raw: wr.raw });
+        else withdrawD = wr.value;
+      }
+
       let status = col.status >= 0 ? (r[col.status] || '').trim() : '';
       // 状態の正規化：空欄や「在籍中」等は在籍、「退塾/退塾/退会」は退塾
       if (/退塾|退塾|退会|stop|withdraw|left/i.test(status)) status = '退塾';
@@ -18201,6 +18224,30 @@ async function onRosterCsvSelected(event) {
         _key: rosterKey(rawName, school)
       });
     }
+
+    // 日付不正があれば取り込みを中止し、該当行を一覧で知らせる（1件もDBへ書かない）
+    if (dateErrors.length) {
+      const shown = dateErrors.slice(0, 20);
+      let list = shown.map(e =>
+        '<div style="padding:3px 0;border-bottom:1px dashed #E8C4C4">'
+        + '<b>' + e.line + '行目</b>　' + escapeHtml(e.name) + '　'
+        + '<span style="color:#A04040">' + escapeHtml(e.col) + '「' + escapeHtml(e.raw) + '」</span>'
+        + '</div>'
+      ).join('');
+      if (dateErrors.length > shown.length) {
+        list += '<div style="padding:3px 0;color:#A04040">…ほか ' + (dateErrors.length - shown.length) + ' 件</div>';
+      }
+      sum.innerHTML = '<div style="background:#FDF2F2;border:1px solid #E8B4B4;border-radius:8px;padding:12px;margin-bottom:12px">'
+        + '<div style="font-size:13px;font-weight:700;color:#A04040;margin-bottom:6px">⚠️ 日付に誤りがあるため取り込みを中止しました（' + dateErrors.length + '件）</div>'
+        + '<div style="font-size:11px;color:#8A5A5A;line-height:1.6;margin-bottom:8px">実在しない日付や形式の違う日付があります（例：4月31日は存在しません）。下の行を修正してから、もう一度取り込んでください。<br>※この時点では名簿は1件も変更されていません。</div>'
+        + '<div style="font-size:12px;color:var(--text)">' + list + '</div>'
+        + '</div>';
+      const inp0 = document.getElementById('roster-csv-input');
+      if (inp0) inp0.value = '';
+      showToast('日付の誤りで中止しました（' + dateErrors.length + '件）', 'error');
+      return;
+    }
+
     if (!incoming.length) { sum.innerHTML = saRosterMsg('名簿に有効な氏名がありませんでした。氏名の列を確認してください。', '#C0392B'); return; }
 
     // 既存 roster を取得して氏名＋学校で突合
