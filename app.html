@@ -2947,7 +2947,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zr';
+const APP_VERSION = '20260626zs';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -18307,6 +18307,7 @@ async function onRosterCsvSelected(event) {
 // 名簿照合：フィルタ状態とキャッシュ
 let rcRosterCache = [];      // 分類済みroster（_status/_withdrawn/_reflect付き）
 let rcStuByKey = new Map();  // 氏名＋学校 -> student
+let rcStuAll = [];           // アプリ生（除外以外）全件：照合ニアミス検出用
 let rcDupWarnings = [];      // アプリ生の同姓同名
 let rcFilter = { school: '全校', grade: '全学年' };
 
@@ -18374,6 +18375,7 @@ async function loadRosterList() {
 
   rcRosterCache = roster;
   rcStuByKey = stuByKey;
+  rcStuAll = students.filter(s => s.inactive_reason !== '除外');
   rcDupWarnings = dupWarnings;
   rcFilter = { school: '全校', grade: '全学年' };
   renderRosterList();
@@ -18383,6 +18385,46 @@ async function loadRosterList() {
 function setRosterFilter(type, val) {
   rcFilter[type] = val;
   renderRosterList();
+}
+
+// 簡易レーベンシュタイン距離（氏名の近さ判定用。短い文字列なので素朴実装でOK）
+function rcEditDistance(a, b) {
+  a = String(a || ''); b = String(b || '');
+  const m = a.length, n = b.length;
+  if (!m) return n; if (!n) return m;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i].concat(new Array(n).fill(0)));
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[m][n];
+}
+
+// roster行rに対し、students側の「惜しい候補」を探す。
+//  - 学校違いの完全氏名一致（転校・学校表記ゆれ）
+//  - 氏名がごく近い（編集距離1以下、または空白除去で一致）
+// 戻り値：候補の説明文配列（最大2件）
+function rcFindNearMiss(r) {
+  const rn = normalizeName(r.name);
+  const rk = rosterKey(r.name, r.school);
+  const hints = [];
+  for (const s of rcStuAll) {
+    const sk = rosterKey(s.name, s.school);
+    if (sk === rk) continue; // 完全一致は別扱い（ここには来ない想定）
+    const sn = normalizeName(s.name);
+    const sameNameDiffSchool = (sn === rn) && (normalizeSchool(s.school) !== normalizeSchool(r.school));
+    const closeName = (sn !== rn) && (rcEditDistance(sn, rn) <= 1) && Math.abs(sn.length - rn.length) <= 1;
+    if (sameNameDiffSchool) {
+      hints.push('アプリ生「' + s.name + '（' + (s.school || '学校未設定') + '）」と氏名一致・学校違い');
+    } else if (closeName) {
+      hints.push('アプリ生「' + s.name + '（' + (s.school || '学校未設定') + '）」と氏名が酷似（表記ゆれの可能性）');
+    }
+    if (hints.length >= 2) break;
+  }
+  return hints;
 }
 
 // 分類済みキャッシュ＋現在のフィルタで描画
@@ -18492,6 +18534,14 @@ function renderRosterList() {
       : r._status === 'name_only' ? '<span style="color:#C77F2E;font-weight:700" title="氏名は一致するが学校が違う">❓</span>'
       : '<span style="color:#C0392B;font-weight:700">⚠️</span>';
     const subjLabel = r.subjects ? escapeHtml(parseSubjectsStr(r.subjects).join('・')) : '—';
+    // ⚠️/❓（未登録扱い）の行は、students側に惜しい候補がないか探して表示（アプリ登録済みなのに未登録になる原因の特定用）
+    let nameExtra = '';
+    if (r._status !== 'ok') {
+      const hints = rcFindNearMiss(r);
+      if (hints.length) {
+        nameExtra = '<div style="font-size:10px;color:#A0631E;font-weight:400;margin-top:2px;white-space:normal">🔎 ' + escapeHtml(hints.join(' / ')) + '</div>';
+      }
+    }
     let actionCell;
     if (r._status === 'ok') {
       const stu = stuByKey.get(rosterKey(r.name, r.school));
@@ -18515,7 +18565,7 @@ function renderRosterList() {
       : '<span style="font-size:10px;background:#FDECEC;color:#C0392B;padding:1px 7px;border-radius:8px;white-space:nowrap">退塾</span>';
     html += '<tr style="border-bottom:1px solid var(--border)' + (r._withdrawn ? ';opacity:0.55' : '') + '">'
       + '<td style="padding:6px 6px;text-align:center">' + badge + '</td>'
-      + '<td style="padding:6px 8px;white-space:nowrap;font-weight:600">' + escapeHtml(r.name) + '</td>'
+      + '<td style="padding:6px 8px;white-space:nowrap;font-weight:600">' + escapeHtml(r.name) + nameExtra + '</td>'
       + '<td style="padding:6px 8px;color:var(--muted);white-space:nowrap">' + escapeHtml(r.school || '—') + '</td>'
       + '<td style="padding:6px 6px;text-align:center;color:var(--muted)">' + escapeHtml(r.grade || '—') + '</td>'
       + '<td style="padding:6px 6px;text-align:center;color:var(--muted)">' + escapeHtml(r.gender || '—') + '</td>'
