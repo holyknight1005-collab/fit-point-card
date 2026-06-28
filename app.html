@@ -2947,7 +2947,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zq';
+const APP_VERSION = '20260626zr';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -18304,6 +18304,12 @@ async function onRosterCsvSelected(event) {
 }
 
 // 名簿台帳の一覧表示（DBから読み込み＋students照合）
+// 名簿照合：フィルタ状態とキャッシュ
+let rcRosterCache = [];      // 分類済みroster（_status/_withdrawn/_reflect付き）
+let rcStuByKey = new Map();  // 氏名＋学校 -> student
+let rcDupWarnings = [];      // アプリ生の同姓同名
+let rcFilter = { school: '全校', grade: '全学年' };
+
 async function loadRosterList() {
   const area = document.getElementById('roster-list-area');
   if (!area) return;
@@ -18340,29 +18346,19 @@ async function loadRosterList() {
     return true;
   };
 
-  // 各名簿行の「集計上の扱い」を、生徒分析の母数ロジックと完全に一致させて判定。
-  //  reflect='count'  → 集計の母数に反映される（students にいない・在籍）
-  //  reflect='dup'    → students 側にいるとみなしスキップ（氏名＋学校 or 氏名のみ一致）
-  //  reflect='out'    → 退塾発効日を過ぎ集計外
-  let registered = 0, unregistered = 0, activeN = 0, withdrawnN = 0;
-  let reflectCount = 0, reflectDup = 0, reflectOut = 0;
+  // 各名簿行の「集計上の扱い」を、生徒分析の母数ロジックと完全に一致させて判定（全件基準）。
   roster.forEach(r => {
-    // バッジ（登録済み/未登録/学校違い）
-    if (appKeys.has(rosterKey(r.name, r.school))) { r._status = 'ok'; registered++; }
-    else if (appNameOnly.has(normalizeName(r.name))) { r._status = 'name_only'; unregistered++; }
-    else { r._status = 'none'; unregistered++; }
-    // 在籍/退塾
+    if (appKeys.has(rosterKey(r.name, r.school))) r._status = 'ok';
+    else if (appNameOnly.has(normalizeName(r.name))) r._status = 'name_only';
+    else r._status = 'none';
     r._withdrawn = rosterWithdrawn(r);
-    if (r._withdrawn) withdrawnN++; else activeN++;
-    // 集計反映の判定（生徒分析と同基準）
     const isDup = appKeys.has(rosterKey(r.name, r.school)) || appNameOnly.has(normalizeName(r.name));
-    if (isDup) { r._reflect = 'dup'; reflectDup++; }
-    else if (r._withdrawn) { r._reflect = 'out'; reflectOut++; }
-    else { r._reflect = 'count'; reflectCount++; }
+    if (isDup) r._reflect = 'dup';
+    else if (r._withdrawn) r._reflect = 'out';
+    else r._reflect = 'count';
   });
 
-  // ---- students 側の重複・表記ゆれ検出（ずれの洗い出し）----
-  // (a) 同姓同名（正規化氏名が2件以上）, (b) 氏名一致だが学校が違う組
+  // ---- students 側の同姓同名検出（ずれの洗い出し）----
   const nameGroups = {};
   students.forEach(s => {
     if (s.inactive_reason === '除外') return;
@@ -18376,19 +18372,82 @@ async function loadRosterList() {
     dupWarnings.push({ name: g[0].name, count: g.length, schools: schools });
   });
 
+  rcRosterCache = roster;
+  rcStuByKey = stuByKey;
+  rcDupWarnings = dupWarnings;
+  rcFilter = { school: '全校', grade: '全学年' };
+  renderRosterList();
+}
+
+// フィルタ切替
+function setRosterFilter(type, val) {
+  rcFilter[type] = val;
+  renderRosterList();
+}
+
+// 分類済みキャッシュ＋現在のフィルタで描画
+function renderRosterList() {
+  const area = document.getElementById('roster-list-area');
+  if (!area) return;
+  const roster = rcRosterCache;
+  const stuByKey = rcStuByKey;
+  const dupWarnings = rcDupWarnings;
+
+  // フィルタ用の学校・学年候補（名簿に実在するもの）
+  const schoolsInData = SA_SCHOOLS.filter(sc => roster.some(r => r.school === sc));
+  const otherSchools = [...new Set(roster.map(r => r.school).filter(sc => sc && !SA_SCHOOLS.includes(sc)))];
+  const schoolBtns = schoolsInData.concat(otherSchools);
+  const gradesInData = SA_GRADES.filter(g => roster.some(r => r.grade === g));
+
+  // フィルタ適用
+  const filtered = roster.filter(r => {
+    if (rcFilter.school !== '全校' && r.school !== rcFilter.school) return false;
+    if (rcFilter.grade !== '全学年' && r.grade !== rcFilter.grade) return false;
+    return true;
+  });
+
+  // フィルタ後の反映内訳
+  let reflectCount = 0, reflectDup = 0, reflectOut = 0;
+  filtered.forEach(r => {
+    if (r._reflect === 'count') reflectCount++;
+    else if (r._reflect === 'dup') reflectDup++;
+    else reflectOut++;
+  });
+
+  const scopeLabel = (rcFilter.school === '全校' ? '全校' : rcFilter.school)
+    + '／' + (rcFilter.grade === '全学年' ? '全学年' : rcFilter.grade);
+
   let html = '';
-  // 集計反映の内訳（生徒分析の母数と一致）
-  html += '<div style="background:#F3F8F1;border:1px solid #BFD8B3;border-radius:8px;padding:10px;margin:14px 0">'
-    + '<div style="font-size:12px;font-weight:700;color:#2E6B1E;margin-bottom:8px">📊 生徒分析の母数に反映される名簿</div>'
+
+  // フィルタボタン（学校）
+  html += '<div style="margin:12px 0 4px;font-size:11px;font-weight:700;color:var(--muted)">🏫 学校で絞り込み</div>';
+  html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">';
+  html += '<button class="filter-btn' + (rcFilter.school === '全校' ? ' active' : '') + '" onclick="setRosterFilter(\'school\',\'全校\')">全校</button>';
+  schoolBtns.forEach(sc => {
+    html += '<button class="filter-btn' + (rcFilter.school === sc ? ' active' : '') + '" onclick="setRosterFilter(\'school\',\'' + escapeHtml(sc).replace(/'/g, "\\'") + '\')">' + escapeHtml(sc) + '</button>';
+  });
+  html += '</div>';
+  // フィルタボタン（学年）
+  html += '<div style="margin:8px 0 4px;font-size:11px;font-weight:700;color:var(--muted)">🎓 学年で絞り込み</div>';
+  html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">';
+  html += '<button class="filter-btn' + (rcFilter.grade === '全学年' ? ' active' : '') + '" onclick="setRosterFilter(\'grade\',\'全学年\')">全学年</button>';
+  gradesInData.forEach(g => {
+    html += '<button class="filter-btn' + (rcFilter.grade === g ? ' active' : '') + '" onclick="setRosterFilter(\'grade\',\'' + g + '\')">' + escapeHtml(g) + '</button>';
+  });
+  html += '</div>';
+
+  // 集計反映の内訳（フィルタ連動）
+  html += '<div style="background:#F3F8F1;border:1px solid #BFD8B3;border-radius:8px;padding:10px;margin:4px 0 14px">'
+    + '<div style="font-size:12px;font-weight:700;color:#2E6B1E;margin-bottom:8px">📊 生徒分析の母数に反映される名簿（' + escapeHtml(scopeLabel) + '）</div>'
     + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">'
     + saSummaryCard('集計に反映', reflectCount + '人', '#2E6B1E')
     + saSummaryCard('除外（アプリ生と重複）', reflectDup + '人', '#C77F2E')
     + saSummaryCard('退塾（集計外）', reflectOut + '人', reflectOut ? '#C0392B' : '#3B6D11')
     + '</div>'
-    + '<div style="font-size:10px;color:#4A6B3E;line-height:1.5;margin-top:8px">名簿 ' + roster.length + ' 件のうち、<b>「集計に反映」' + reflectCount + ' 件</b>だけが生徒分析の名簿のみ生として母数に加算されます。<br>「除外」＝氏名（＋学校）がアプリ生と一致するため二重計上を避けてスキップ。「退塾」＝退塾発効日を過ぎたため集計外。</div>'
+    + '<div style="font-size:10px;color:#4A6B3E;line-height:1.5;margin-top:8px">この絞り込みでは名簿 ' + filtered.length + ' 件のうち、<b>「集計に反映」' + reflectCount + ' 件</b>が生徒分析の名簿のみ生として母数に加算されます。<br>「除外」＝氏名（＋学校）がアプリ生と一致するためスキップ。「退塾」＝退塾発効日を過ぎたため集計外。</div>'
     + '</div>';
 
-  // students 側の同姓同名・学校違いの警告（ずれの原因になりやすい）
+  // students 側の同姓同名警告（全体・フィルタ非依存）
   if (dupWarnings.length) {
     let warnList = dupWarnings.slice(0, 15).map(w =>
       '<div style="padding:3px 0;border-bottom:1px dashed #E8C4C4">'
@@ -18397,16 +18456,22 @@ async function loadRosterList() {
     ).join('');
     if (dupWarnings.length > 15) warnList += '<div style="padding:3px 0;color:#A04040">…ほか ' + (dupWarnings.length - 15) + ' 名</div>';
     html += '<div style="background:#FDF6F0;border:1px solid #E8C9A0;border-radius:8px;padding:10px;margin-bottom:14px">'
-      + '<div style="font-size:12px;font-weight:700;color:#A0631E;margin-bottom:6px">⚠️ アプリ生に同姓同名があります（' + dupWarnings.length + '名）</div>'
+      + '<div style="font-size:12px;font-weight:700;color:#A0631E;margin-bottom:6px">⚠️ アプリ生に同姓同名があります（' + dupWarnings.length + '名・全校）</div>'
       + '<div style="font-size:10px;color:#8A6A3E;line-height:1.6;margin-bottom:8px">同姓同名がいると、名簿照合が「氏名のみ一致」で誤ってスキップ／重複する場合があります。学校違いは転校・表記ゆれの可能性も。人数ずれの原因になりやすい箇所です。</div>'
       + '<div style="font-size:12px;color:var(--text)">' + warnList + '</div>'
       + '</div>';
   }
 
   html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-    + saSectionTitle('📒 名簿台帳一覧')
+    + saSectionTitle('📒 名簿台帳一覧（' + filtered.length + '件）')
     + '</div>';
   html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">✅=アプリ登録済（氏名＋学校一致）／⚠️=未登録／❓=氏名は一致するが学校が違う（表記ゆれ・転校の可能性）<br>「反映」列＝この名簿が生徒分析の母数に入るか（反映／除外＝重複／退塾）。</div>';
+
+  if (!filtered.length) {
+    html += saRosterMsg('この絞り込みに該当する名簿がありません。', 'var(--muted)');
+    area.innerHTML = html;
+    return;
+  }
 
   html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
     + '<thead><tr style="background:var(--orange-l)">'
@@ -18422,15 +18487,11 @@ async function loadRosterList() {
     + '<th style="padding:6px 6px;text-align:center;white-space:nowrap">反映</th>'
     + '<th style="padding:6px 6px;text-align:center;white-space:nowrap">操作</th>'
     + '</tr></thead><tbody>';
-  roster.forEach(r => {
+  filtered.forEach(r => {
     const badge = r._status === 'ok' ? '<span style="color:#3B6D11;font-weight:700">✅</span>'
       : r._status === 'name_only' ? '<span style="color:#C77F2E;font-weight:700" title="氏名は一致するが学校が違う">❓</span>'
       : '<span style="color:#C0392B;font-weight:700">⚠️</span>';
     const subjLabel = r.subjects ? escapeHtml(parseSubjectsStr(r.subjects).join('・')) : '—';
-    // 操作セル：
-    //  - 未登録(none)：名簿生登録ボタン
-    //  - 登録済み(ok)：その生徒が名簿生(roster_only)なら「講座編集」、アプリ生なら「登録済」表示
-    //  - 学校違い(name_only)：誤登録防止のため無効
     let actionCell;
     if (r._status === 'ok') {
       const stu = stuByKey.get(rosterKey(r.name, r.school));
