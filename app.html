@@ -2947,7 +2947,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zo';
+const APP_VERSION = '20260626zp';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16885,8 +16885,12 @@ async function loadStudentAnalysis() {
   // 登録済みの子は students 側（本人入力）を優先するので roster からは取り込まない
   let rosterRows = [];
   try {
-    rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,gender,course_track,club') || [];
-  } catch (e) { rosterRows = []; }
+    rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,gender,course_track,club,withdraw_date,status') || [];
+  } catch (e) {
+    // 旧スキーマ（status等が無い）フォールバック
+    try { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,gender,course_track,club') || []; }
+    catch (e2) { rosterRows = []; }
+  }
   const appKeySet = new Set();
   const appNameSet = new Set();
   studentsRaw.forEach(s => {
@@ -16894,12 +16898,24 @@ async function loadStudentAnalysis() {
     appNameSet.add(normalizeName(s.name));
   });
 
+  // roster の退塾判定：students の isEnrolledNow と揃える。
+  //   退塾発効日(withdraw_date)を過ぎていれば在籍外。status='退塾' で発効日が無い場合も在籍外。
+  const todayJST = getTodayJST();
+  const rosterEnrolledNow = (r) => {
+    const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+    if (!isOut) return true;
+    if (r.withdraw_date) return !(todayJST > r.withdraw_date); // 発効日を過ぎたら在籍外
+    return false; // 退塾だが日付なし＝在籍外
+  };
+
   // 統合母数を作る。students は本人入力（正）、roster未登録分は暫定値
   const students = studentsRaw.map(s => Object.assign({}, s, { _src: 'app' }));
   let rosterOnlyN = 0;
   rosterRows.forEach(r => {
     // 氏名＋学校一致＝登録済み。氏名のみ一致も「登録済みの可能性高い」として母数二重計上を避けスキップ
     if (appKeySet.has(rosterKey(r.name, r.school)) || appNameSet.has(normalizeName(r.name))) return;
+    // 「卒業・退塾も含む」OFF のときは、退塾発効日を過ぎた名簿のみ生を母数から外す
+    if (!includeInactive && !rosterEnrolledNow(r)) return;
     students.push({
       id: 'roster:' + normalizeName(r.name) + ':' + (r.school || ''),
       name: r.name, gender: r.gender || '', school: r.school || '', grade: r.grade || '',
@@ -18316,18 +18332,30 @@ async function loadRosterList() {
   });
 
   let registered = 0, unregistered = 0;
+  let activeN = 0, withdrawnN = 0;
+  const todayJST = getTodayJST();
   roster.forEach(r => {
     // 氏名＋学校で一致＝確実な登録済み。氏名のみ一致＝学校違い（要確認）
     if (appKeys.has(rosterKey(r.name, r.school))) { r._status = 'ok'; registered++; }
     else if (appNameOnly.has(normalizeName(r.name))) { r._status = 'name_only'; unregistered++; }
     else { r._status = 'none'; unregistered++; }
+    // 在籍/退塾（集計母数と同じ基準：退塾発効日を過ぎたら退塾。status=退塾で日付無しも退塾）
+    const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+    let withdrawn = false;
+    if (isOut) {
+      if (r.withdraw_date) withdrawn = (todayJST > r.withdraw_date);
+      else withdrawn = true;
+    }
+    r._withdrawn = withdrawn;
+    if (withdrawn) withdrawnN++; else activeN++;
   });
 
   let html = '';
-  html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0">'
+  html += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:14px 0">'
     + saSummaryCard('名簿の人数', roster.length + '人', 'var(--orange-d)')
+    + saSummaryCard('うち在籍（集計対象）', activeN + '人', '#3B6D11')
+    + saSummaryCard('うち退塾（集計外）', withdrawnN + '人', withdrawnN ? '#C0392B' : '#3B6D11')
     + saSummaryCard('アプリ登録済', registered + '人', '#3B6D11')
-    + saSummaryCard('未登録', unregistered + '人', unregistered ? '#C0392B' : '#3B6D11')
     + '</div>';
 
   html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
@@ -18345,6 +18373,7 @@ async function loadRosterList() {
     + '<th style="padding:6px 6px;text-align:center">文理</th>'
     + '<th style="padding:6px 8px;text-align:left">部活</th>'
     + '<th style="padding:6px 8px;text-align:left;white-space:nowrap">受講科目</th>'
+    + '<th style="padding:6px 6px;text-align:center;white-space:nowrap">状態</th>'
     + '<th style="padding:6px 6px;text-align:center;white-space:nowrap">操作</th>'
     + '</tr></thead><tbody>';
   roster.forEach(r => {
@@ -18369,7 +18398,10 @@ async function loadRosterList() {
     } else {
       actionCell = '<button onclick="registerRosterStudent(\'' + r.id + '\')" style="padding:5px 8px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:6px;color:#fff;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">＋名簿生登録</button>';
     }
-    html += '<tr style="border-bottom:1px solid var(--border)">'
+    const stateCell = r._withdrawn
+      ? '<span style="font-size:10px;background:#FDECEC;color:#C0392B;padding:1px 7px;border-radius:8px;white-space:nowrap">退塾</span>'
+      : '<span style="font-size:10px;background:#EAF3EA;color:#3B6D11;padding:1px 7px;border-radius:8px;white-space:nowrap">在籍</span>';
+    html += '<tr style="border-bottom:1px solid var(--border)' + (r._withdrawn ? ';opacity:0.55' : '') + '">'
       + '<td style="padding:6px 6px;text-align:center">' + badge + '</td>'
       + '<td style="padding:6px 8px;white-space:nowrap;font-weight:600">' + escapeHtml(r.name) + '</td>'
       + '<td style="padding:6px 8px;color:var(--muted);white-space:nowrap">' + escapeHtml(r.school || '—') + '</td>'
@@ -18378,6 +18410,7 @@ async function loadRosterList() {
       + '<td style="padding:6px 6px;text-align:center;color:var(--muted)">' + escapeHtml(r.course_track || '—') + '</td>'
       + '<td style="padding:6px 8px;color:var(--muted)">' + escapeHtml(r.club || '—') + '</td>'
       + '<td style="padding:6px 8px;color:var(--muted);white-space:nowrap">' + subjLabel + '</td>'
+      + '<td style="padding:6px 6px;text-align:center">' + stateCell + '</td>'
       + '<td style="padding:6px 6px;text-align:center">' + actionCell + '</td>'
       + '</tr>';
   });
