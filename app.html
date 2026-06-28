@@ -2437,6 +2437,11 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <div style="font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5">同じ氏名＋学校の行は上書き更新、新しい行は追加されます（重複は作りません）。</div>
         <input type="file" id="roster-csv-input" accept=".csv,text/csv" onchange="onRosterCsvSelected(event)" style="font-size:12px;width:100%">
       </div>
+      <div style="background:#FDF6F6;border:1px solid #E8C4C4;border-radius:8px;padding:10px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:#A04040;margin-bottom:6px">③ 試し取り込みのやり直し</div>
+        <div style="font-size:10px;color:#8A5A5A;margin-bottom:8px;line-height:1.5">未登録（⚠️・❓）の名簿だけをまとめて消去します。<b>名簿生・アプリ登録済み（✅）の子は消えません</b>。消した名簿はデータベースには残るため、復旧が必要なときは管理者にご相談ください。</div>
+        <button onclick="resetUnregisteredRoster()" style="width:100%;padding:9px;background:#fff;border:1.5px solid #C0392B;border-radius:8px;color:#C0392B;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🗑 未登録の名簿をリセット</button>
+      </div>
       <div id="roster-import-summary"></div>
       <div id="enroll-date-editor" style="margin-bottom:12px"></div>
       <div id="roster-list-area"></div>
@@ -2942,7 +2947,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zm';
+const APP_VERSION = '20260626zn';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -18336,6 +18341,46 @@ async function loadRosterList() {
 
 function saRosterMsg(text, color) {
   return '<div style="font-size:12px;color:' + color + ';padding:12px;background:#FAFAF8;border-radius:8px">' + escapeHtml(text) + '</div>';
+}
+
+// ===== 未登録の名簿を一括リセット（論理削除 is_active=false）=====
+// students に存在しない（＝名簿生・アプリ生として未登録の）roster 行だけを is_active=false に。
+// 登録済み（氏名＋学校一致＝✅）は対象外。物理削除はせずDBには残す。
+async function resetUnregisteredRoster() {
+  let roster = [], students = [];
+  try {
+    roster = await sbGet('roster', 'is_active=eq.true&select=id,name,school') || [];
+    students = await sbGet('students', 'is_active=eq.true&select=name,school') || [];
+  } catch (e) { showToast('読み込みに失敗しました（' + (e.message || '') + '）', 'error'); return; }
+
+  if (!roster.length) { showToast('消去できる名簿がありません', 'info'); return; }
+
+  // 登録済み判定：氏名＋学校が students と一致する行は残す
+  const appKeys = new Set(students.map(s => rosterKey(s.name, s.school)));
+  const targets = roster.filter(r => !appKeys.has(rosterKey(r.name, r.school)));
+  const keepCount = roster.length - targets.length;
+
+  if (!targets.length) {
+    showToast('未登録の名簿はありません（登録済み ' + keepCount + ' 件はそのまま）', 'info');
+    return;
+  }
+
+  // 二段確認
+  if (!confirm('未登録の名簿 ' + targets.length + ' 件を消去します。\n（登録済み ' + keepCount + ' 件は残ります）\n\nよろしいですか？')) return;
+  if (!confirm('本当に消去しますか？\n\nこの操作で名簿一覧から ' + targets.length + ' 件が消えます。\n（データベースには残るため、必要なら管理者が復旧できます）')) return;
+
+  showLoading('消去中... 0/' + targets.length);
+  let done = 0, failed = 0;
+  for (const r of targets) {
+    try {
+      await sbPatch('roster', 'id=eq.' + encodeURIComponent(r.id), { is_active: false, updated_at: new Date().toISOString() });
+      done++;
+    } catch (e) { failed++; }
+    showLoading('消去中... ' + (done + failed) + '/' + targets.length);
+  }
+  hideLoading();
+  showToast('✅ 未登録の名簿 ' + done + ' 件を消去しました' + (failed ? '（失敗 ' + failed + ' 件）' : ''), failed ? 'error' : 'success');
+  loadRosterList();
 }
 
 // ===== 名簿生として登録（roster の子を students に roster_only=true で登録）=====
