@@ -2952,7 +2952,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zu';
+const APP_VERSION = '20260626zw';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -18322,8 +18322,30 @@ async function onRosterCsvSelected(event) {
       }
     }
 
+    // アプリ登録済みの子（students）への入塾日 補完。
+    //  氏名＋学校が完全一致し、students 側の入塾日が空の子だけ、CSVの入塚日で埋める（既存値は尊重）。
+    let stuFilled = 0;
+    try {
+      const stuList = await sbGet('students', 'select=id,name,school,enroll_date') || [];
+      const stuByExact = new Map();
+      stuList.forEach(s => { stuByExact.set(rosterKey(s.name, s.school), s); });
+      for (const row of incoming) {
+        if (!row.enroll_date) continue;            // CSVに入塾日が無い行は対象外
+        const s = stuByExact.get(row._key);        // 氏名＋学校 完全一致
+        if (!s) continue;
+        if (s.enroll_date) continue;               // 既に入っていれば触らない
+        try {
+          await sbPatch('students', 'id=eq.' + s.id, { enroll_date: row.enroll_date });
+          s.enroll_date = row.enroll_date;         // 同一CSV内の重複防止
+          stuFilled++;
+        } catch (e) { /* enroll_date 列が無い等は無視 */ }
+      }
+    } catch (e) { /* students 取得失敗時はスキップ */ }
+
     sum.innerHTML = '<div style="background:#EAF7EA;border:1px solid #9CD49C;border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px;color:#256025">'
-      + '✅ 取り込み完了：新規 <b>' + added + '</b> 件、更新 <b>' + updated + '</b> 件</div>';
+      + '✅ 取り込み完了：新規 <b>' + added + '</b> 件、更新 <b>' + updated + '</b> 件'
+      + (stuFilled ? '<br>📲 アプリ登録済みの子の入塾日を <b>' + stuFilled + '</b> 名分、補完しました（空欄だった子のみ）' : '')
+      + '</div>';
     const inp = document.getElementById('roster-csv-input');
     if (inp) inp.value = '';
     showToast('✅ 名簿台帳に保存しました', 'success');
@@ -18518,6 +18540,31 @@ function renderRosterList() {
     + '</div>'
     + '<div style="font-size:10px;color:#4A6B3E;line-height:1.5;margin-top:8px">この絞り込みでは名簿 ' + filtered.length + ' 件のうち、<b>「集計に反映」' + reflectCount + ' 件</b>が生徒分析の名簿のみ生として母数に加算されます。<br>「除外」＝氏名（＋学校）がアプリ生と一致するためスキップ。「退塾」＝退塾発効日を過ぎたため集計外。</div>'
     + '</div>';
+
+  // アプリ生だが名簿(roster)に該当が無い子（人数表とのずれの逆方向の原因）
+  // 現在のフィルタ（学校×学年）で、students にいて roster に氏名一致が無い在籍生を洗い出す。
+  const rosterKeySet = new Set(roster.map(r => rosterKey(r.name, r.school)));
+  const rosterNameSet = new Set(roster.map(r => normalizeName(r.name)));
+  const onlyInApp = rcStuAll.filter(s => {
+    if (s.is_active === false) return false;
+    if (rcFilter.school !== '全校' && s.school !== rcFilter.school) return false;
+    if (rcFilter.grade !== '全学年' && s.grade !== rcFilter.grade) return false;
+    // roster に氏名＋学校 or 氏名のみ一致があれば「名簿にいる」とみなす
+    return !rosterKeySet.has(rosterKey(s.name, s.school)) && !rosterNameSet.has(normalizeName(s.name));
+  });
+  if (onlyInApp.length) {
+    let list = onlyInApp.slice(0, 30).map(s =>
+      '<div style="padding:3px 0;border-bottom:1px dashed #C9D8E8">'
+      + '<b>' + escapeHtml(s.name) + '</b>　' + escapeHtml(s.school || '学校未設定') + '／' + escapeHtml(s.grade || '学年未設定')
+      + '</div>'
+    ).join('');
+    if (onlyInApp.length > 30) list += '<div style="padding:3px 0;color:#1A4D80">…ほか ' + (onlyInApp.length - 30) + ' 名</div>';
+    html += '<div style="background:#F0F6FC;border:1px solid #B8D2EC;border-radius:8px;padding:10px;margin-bottom:14px">'
+      + '<div style="font-size:12px;font-weight:700;color:#1A4D80;margin-bottom:6px">📲 アプリ生だが名簿に無い子（' + escapeHtml(scopeLabel) + '・' + onlyInApp.length + '名）</div>'
+      + '<div style="font-size:10px;color:#3A5A7E;line-height:1.6;margin-bottom:8px">この子たちは人数表（アプリ生）には数えられますが、名簿（CSV）に該当行が見つかりません。名簿側に未登録か、氏名の表記ゆれの可能性があります。人数表と名簿照合の差の原因になります。</div>'
+      + '<div style="font-size:12px;color:var(--text)">' + list + '</div>'
+      + '</div>';
+  }
 
   // students 側の同姓同名警告（全体・フィルタ非依存）
   if (dupWarnings.length) {
