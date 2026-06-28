@@ -1854,6 +1854,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <button onclick="switchManageTab('classanalysis',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📊 授業分析</button>
       <button onclick="switchManageTab('studentanalysis',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📈 生徒分析</button>
       <button onclick="switchManageTab('rostercheck',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📋 名簿照合</button>
+      <button onclick="switchManageTab('prospects',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🚪 入退塾管理</button>
       <button id="manage-tab-revenue" onclick="switchManageTab('revenue',this)" class="tab-btn manage-tab-btn" style="display:none;flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">💰 売上</button>
       <button onclick="switchManageTab('settings',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">⚙️ 設定</button>
       <button onclick="switchManageTab('mission',this)" class="tab-btn manage-tab-btn" style="display:none;flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🎯 ミッション</button>
@@ -2312,6 +2313,15 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div id="roster-list-area"></div>
     </div>
 
+    <!-- 入退塾管理タブ（来塾管理：問合せ→体験→面談→入塾/見送り） -->
+    <div id="smcontent-prospects" style="display:none">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">
+        入塾前の見込み（来塾）を管理します。状態は <b>問合せ → 体験 → 面談 → 入塾 / 見送り</b> の順に進みます。
+      </div>
+      <div id="prospects-status-tabs" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
+      <div id="prospects-list-area"></div>
+    </div>
+
     <!-- 売上タブ（admin専用） -->
     <div id="smcontent-revenue" style="display:none">
       <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">
@@ -2756,7 +2766,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626s';
+const APP_VERSION = '20260626t';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -7771,7 +7781,7 @@ function openStaffManage(tab) {
     'report':'報告書', 'todo':'ToDo', 'yesterday':'昨日の来塾', 'makeup':'補習',
     'student-view':'生徒画面', 'birthday':'誕生日', 'calendar':'予定表',
     'alert':'アラート', 'announce':'お知らせ', 'attendance':'授業出欠',
-    'quizstatus':'小テスト状況', 'appusage':'教科アプリ', 'classanalysis':'授業分析', 'studentanalysis':'生徒分析', 'rostercheck':'名簿照合', 'revenue':'売上', 'settings':'設定'
+    'quizstatus':'小テスト状況', 'appusage':'教科アプリ', 'classanalysis':'授業分析', 'studentanalysis':'生徒分析', 'rostercheck':'名簿照合', 'prospects':'入退塾管理', 'revenue':'売上', 'settings':'設定'
   };
   document.getElementById('manage-header-title').textContent = titles[tab] || '管理';
   // 売上タブは admin または revenue 権限を持つスタッフに表示
@@ -14894,7 +14904,7 @@ function switchManageTab(tab, el) {
   // manage-* 系（授業管理など）
   const manageTabs = ['class-master','class-session','check-item','mission','quiz'];
   // smcontent-* 系（小メニューから統合したタブ）
-  const menuTabs = ['report','todo','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','revenue'];
+  const menuTabs = ['report','todo','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','prospects','revenue'];
   manageTabs.forEach(t => {
     const el2 = document.getElementById('manage-' + t);
     if (el2) el2.style.display = 'none';
@@ -14941,10 +14951,99 @@ function switchManageTab(tab, el) {
   if (tab === 'classanalysis') initClassAnalysis();
   if (tab === 'studentanalysis') { saItem = null; saChartType = 'bar'; loadStudentAnalysis(); }
   if (tab === 'rostercheck') initRosterCheck();
+  if (tab === 'prospects') initProspects();
   if (tab === 'revenue') loadRevenue();
   if (tab === 'settings') loadSettingsTab();
 }
 
+// ============================================================
+// 入退塾管理（prospects）：来塾管理の見込み一覧
+// ステータス：問合せ → 体験 → 面談 → 入塾 / 見送り
+// ※ step1 は読み取り専用（一覧表示＋ステータス絞り込み）。登録・編集は次バージョン。
+// 要 SQL: create_prospects.sql
+// ============================================================
+const PROSPECT_STATUSES = ['問合せ', '体験', '面談', '入塾', '見送り'];
+const PROSPECT_STATUS_COLOR = {
+  '問合せ': '#2980B9', '体験': '#8E44AD', '面談': '#E67E22', '入塾': '#27AE60', '見送り': '#7F8C8D'
+};
+let prospectsCache = [];      // 取得済みの見込みデータ
+let prospectsFilter = 'all';  // 表示中のステータス絞り込み（'all' or 各ステータス）
+
+async function initProspects() {
+  prospectsFilter = 'all';
+  renderProspectsStatusTabs();
+  const area = document.getElementById('prospects-list-area');
+  if (area) area.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
+  try {
+    const rows = await sbGet('prospects', 'select=*&order=updated_at.desc');
+    prospectsCache = rows || [];
+    renderProspectsStatusTabs();
+    renderProspectsList();
+  } catch (e) {
+    // テーブル未作成（HTTP 400）などのフォールバック
+    prospectsCache = [];
+    if (area) {
+      area.innerHTML = '<div style="background:#FDECEA;border:1px solid #F5B7B1;border-radius:8px;padding:12px;font-size:12px;color:#943126;line-height:1.6">'
+        + '⚠️ 見込みデータを取得できませんでした。<br><b>create_prospects.sql</b> を Supabase で実行してください。'
+        + '<br><span style="font-size:11px;color:#7A3C36">（テーブル作成後にこのタブを開き直すと表示されます）</span></div>';
+    }
+  }
+}
+
+// ステータス絞り込みタブ（全件＋各ステータス。件数バッジつき）
+function renderProspectsStatusTabs() {
+  const bar = document.getElementById('prospects-status-tabs');
+  if (!bar) return;
+  const countOf = (st) => st === 'all' ? prospectsCache.length : prospectsCache.filter(p => (p.status || '問合せ') === st).length;
+  const mkBtn = (val, label, color) => {
+    const on = prospectsFilter === val;
+    const n = countOf(val);
+    return '<button onclick="setProspectsFilter(\'' + val + '\')" style="flex:0 0 auto;padding:6px 12px;border-radius:14px;border:1px solid '
+      + (on ? (color || 'var(--orange-d)') : 'var(--border)') + ';background:' + (on ? (color || 'var(--orange-d)') : '#fff') + ';color:' + (on ? '#fff' : 'var(--text)')
+      + ';font-size:12px;font-weight:' + (on ? '700' : '400') + ';cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">'
+      + label + ' <span style="opacity:.85">' + n + '</span></button>';
+  };
+  let h = mkBtn('all', '全件', 'var(--orange-d)');
+  PROSPECT_STATUSES.forEach(st => { h += mkBtn(st, st, PROSPECT_STATUS_COLOR[st]); });
+  bar.innerHTML = h;
+}
+
+function setProspectsFilter(val) {
+  prospectsFilter = val;
+  renderProspectsStatusTabs();
+  renderProspectsList();
+}
+
+function renderProspectsList() {
+  const area = document.getElementById('prospects-list-area');
+  if (!area) return;
+  let list = prospectsCache.slice();
+  if (prospectsFilter !== 'all') list = list.filter(p => (p.status || '問合せ') === prospectsFilter);
+  if (!list.length) {
+    area.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">'
+      + (prospectsCache.length ? 'この状態の見込みはいません。' : 'まだ見込みの登録がありません。')
+      + '</div>';
+    return;
+  }
+  area.innerHTML = list.map(p => {
+    const st = p.status || '問合せ';
+    const color = PROSPECT_STATUS_COLOR[st] || '#7F8C8D';
+    const meta = [p.school, p.grade].filter(Boolean).join(' ');
+    const nextLabel = p.next_date ? ('次回 ' + String(p.next_date).slice(5).replace('-', '/')) : '';
+    const sourceLabel = p.source ? ('きっかけ：' + escapeHtml(p.source)) : '';
+    return '<div style="border:1px solid var(--border);border-radius:8px;background:#fff;padding:11px 12px;margin-bottom:8px">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px">'
+      +   '<span style="font-size:14px;font-weight:700;color:var(--text)">' + escapeHtml(p.name || '(無名)') + '</span>'
+      +   '<span style="font-size:11px;font-weight:700;color:#fff;background:' + color + ';padding:2px 10px;border-radius:12px">' + escapeHtml(st) + '</span>'
+      + '</div>'
+      + (meta ? '<div style="font-size:12px;color:var(--muted);margin-bottom:2px">' + escapeHtml(meta) + '</div>' : '')
+      + (p.contact ? '<div style="font-size:12px;color:var(--text)">📞 ' + escapeHtml(p.contact) + '</div>' : '')
+      + (sourceLabel ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + sourceLabel + '</div>' : '')
+      + (nextLabel ? '<div style="font-size:11px;color:#C0392B;font-weight:700;margin-top:3px">📅 ' + nextLabel + '</div>' : '')
+      + (p.note ? '<div style="font-size:11px;color:var(--muted);margin-top:4px;white-space:pre-wrap">' + escapeHtml(p.note) + '</div>' : '')
+      + '</div>';
+  }).join('');
+}
 
 
 // ============================================================
