@@ -491,6 +491,27 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
   </div>
 </div>
 
+<div id="roster-class-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div id="rcp-title" style="font-size:16px;font-weight:700;color:#1A4D80">受講講座</div>
+      <button onclick="closeRosterClassPicker()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="rcp-hint" style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6"></div>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <select class="form-input-sm" id="rcp-subj-sel" onchange="onRcpFilterChange()" style="flex:1"><option value="">科目すべて</option></select>
+      <select class="form-input-sm" id="rcp-grade-sel" onchange="onRcpFilterChange()" style="flex:1">
+        <option value="">全学年</option><option value="1">1年</option><option value="2">2年</option><option value="3">3年</option>
+      </select>
+    </div>
+    <div id="rcp-list" style="max-height:46vh;overflow-y:auto;border:1px solid var(--border);border-radius:10px;padding:4px 8px;margin-bottom:12px"></div>
+    <div style="display:flex;gap:8px">
+      <button onclick="closeRosterClassPicker()" style="flex:1;padding:11px;background:var(--surface2);border:1.5px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">閉じる</button>
+      <button onclick="saveRosterClassPicker()" style="flex:2;padding:11px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:var(--radius-sm);color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">受講講座を保存</button>
+    </div>
+  </div>
+</div>
+
 <div id="shortcuts-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
@@ -2921,7 +2942,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zk';
+const APP_VERSION = '20260626zm';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -6237,24 +6258,44 @@ async function approveApplication(id, name, email, school, grade) {
       if (appRows && appRows[0]) schoolDetail = appRows[0].school_detail || null;
     } catch(_) { schoolDetail = null; }
 
+    // 自動昇格：同名・同校の「名簿生（roster_only）」が既にいれば、新規作成せずその行を昇格。
+    // （メール/PIN を付与し roster_only=false。出欠・科目・集計の履歴をそのまま引き継ぐ）
+    let promoted = false;
+    try {
+      const cand = await sbGet('students',
+        'select=id,name,school,roster_only&order=created_at.desc&limit=200') || [];
+      const hit = cand.find(s => s.roster_only === true
+        && rosterKey(s.name, s.school) === rosterKey(name, school));
+      if (hit) {
+        await sbPatch('students', 'id=eq.' + hit.id, {
+          email: email, pin: pin, student_no: pin, roster_only: false
+        });
+        promoted = true;
+      }
+    } catch (e) { /* roster_only 列が無い等は無視して通常INSERTへ */ }
+
     // studentsテーブルに追加（入塾日＝承認日。enroll_date 列が無ければ自動で省いて再試行）
-    await insertStudentWithEnrollDate({
-      name, email, pin,
-      student_no: pin,
-      school, grade,
-      school_detail: schoolDetail,
-      points: 0,
-      streak: 0
-    }, getTodayJST());
+    if (!promoted) {
+      await insertStudentWithEnrollDate({
+        name, email, pin,
+        student_no: pin,
+        school, grade,
+        school_detail: schoolDetail,
+        points: 0,
+        streak: 0
+      }, getTodayJST());
+    }
 
     // 申請ステータスを承認済みに
     await sbPatch('student_applications', 'id=eq.' + id, { status: 'approved' });
 
     hideLoading();
-    showToast('✅ ' + name + 'さんを承認しました！パスワード：' + pin, 'success');
+    showToast('✅ ' + name + 'さんを承認しました！パスワード：' + pin
+      + (promoted ? '（名簿生から昇格・ポイント対象に）' : ''), 'success');
 
     // パスワードをアラートで表示（スタッフが控える）
-    alert('【' + name + 'さんのパスワード】\n\nパスワード: ' + pin + '\n\nこのパスワードを生徒に伝えてください！');
+    alert('【' + name + 'さんのパスワード】\n\nパスワード: ' + pin + '\n\nこのパスワードを生徒に伝えてください！'
+      + (promoted ? '\n\n※この生徒は名簿生として登録済みでした。出欠・受講科目はそのまま引き継がれ、今後はポイントが貯まります。' : ''));
 
     loadPendingApplications();
     initStaff();
@@ -18004,10 +18045,10 @@ async function saveEnrollDate(studentId) {
 // CSVテンプレート（氏名/学校/学年/性別/文理/部活/備考）
 function downloadRosterTemplate() {
   const lines = [
-    ['氏名', '学校', '学年', '性別', '文理', '部活', '入塾日', '退塾日', '状態', '備考'],
-    ['山田 太郎', '松山東', '1年', '男', '理系', '野球部', '2026-04-10', '', '在籍', ''],
-    ['佐藤 花子', '松山南', '2年', '女', '文系', '吹奏楽部', '2025-09-01', '2026-06-30', '退塾', ''],
-    ['', '', '', '', '', '', '', '', '', '']
+    ['氏名', '学校', '学年', '性別', '文理', '部活', '受講科目', '入塾日', '退塾日', '状態', '備考'],
+    ['山田 太郎', '松山東', '1年', '男', '理系', '野球', '数学,英語', '2026-04-10', '', '在籍', ''],
+    ['佐藤 花子', '松山南', '2年', '女', '文系', '吹奏楽', '英語,国語,数学', '2025-09-01', '2026-06-30', '退塾', ''],
+    ['', '', '', '', '', '', '', '', '', '', '']
   ];
   const csv = '\uFEFF' + lines.map(r => r.map(csvCell).join(',')).join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -18053,6 +18094,22 @@ function rosterKey(name, school) {
   return normalizeName(name) + '|' + normalizeSchool(school);
 }
 
+// 受講科目文字列の正規化：区切り（, 、 ・ 　 / 空白）を半角カンマに統一し、重複除去
+function normalizeSubjectsStr(s) {
+  s = String(s == null ? '' : s).trim();
+  if (!s) return '';
+  const parts = s.split(/[,、，・\/\s\u3000]+/).map(x => x.trim()).filter(Boolean);
+  const seen = [];
+  parts.forEach(p => { if (!seen.includes(p)) seen.push(p); });
+  return seen.join(',');
+}
+// 受講科目文字列 → 配列
+function parseSubjectsStr(s) {
+  s = String(s == null ? '' : s).trim();
+  if (!s) return [];
+  return s.split(',').map(x => x.trim()).filter(Boolean);
+}
+
 // 簡易CSVパーサ（ダブルクォート対応・改行/カンマ込みセル対応）
 function parseCsv(text) {
   text = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -18090,7 +18147,7 @@ async function onRosterCsvSelected(event) {
     // ヘッダ判定＋列マッピング
     let startIdx = 0;
     const head = rows[0].map(c => String(c).trim());
-    let col = { name: 0, school: 1, grade: 2, gender: 3, track: 4, club: 5, enroll: -1, withdraw: -1, status: -1, note: 6 };
+    let col = { name: 0, school: 1, grade: 2, gender: 3, track: 4, club: 5, enroll: -1, withdraw: -1, status: -1, subjects: -1, note: 6 };
     const headerHit = head.some(h => /氏名|名前|name/i.test(h));
     if (headerHit) {
       startIdx = 1;
@@ -18101,6 +18158,7 @@ async function onRosterCsvSelected(event) {
         else if (/性別|gender|男女/i.test(h)) col.gender = idx;
         else if (/文理|course/i.test(h)) col.track = idx;
         else if (/部活|club/i.test(h)) col.club = idx;
+        else if (/受講科目|受講|科目/i.test(h)) col.subjects = idx;
         else if (/入塾日|入塾日|入会日|enroll/i.test(h)) col.enroll = idx;
         else if (/退塾日|退塾日|退会日|withdraw|leave/i.test(h)) col.withdraw = idx;
         else if (/状態|ステータス|status|在籍/i.test(h)) col.status = idx;
@@ -18130,6 +18188,7 @@ async function onRosterCsvSelected(event) {
         gender: (r[col.gender] || '').trim(),
         course_track: (r[col.track] || '').trim(),
         club: (r[col.club] || '').trim(),
+        subjects: col.subjects >= 0 ? normalizeSubjectsStr((r[col.subjects] || '').trim()) : '',
         enroll_date: enrollD,
         withdraw_date: withdrawD,
         status: status,
@@ -18149,16 +18208,19 @@ async function onRosterCsvSelected(event) {
       const payload = {
         name: row.name, name_norm: row.name_norm, school: row.school, grade: row.grade,
         gender: row.gender, course_track: row.course_track, club: row.club, note: row.note,
+        subjects: row.subjects || null,
         enroll_date: row.enroll_date, withdraw_date: row.withdraw_date, status: row.status,
         is_active: true, updated_at: new Date().toISOString()
       };
       const exId = existKey.get(row._key);
-      if (exId) {
-        await sbPatch('roster', 'id=eq.' + exId, payload);
-        updated++;
-      } else {
-        await sbPost('roster', payload);
-        added++;
+      try {
+        if (exId) { await sbPatch('roster', 'id=eq.' + exId, payload); updated++; }
+        else { await sbPost('roster', payload); added++; }
+      } catch (perr) {
+        // subjects 列が未作成（add_roster_only.sql 未実行）の可能性 → subjects を外して再試行
+        const p2 = Object.assign({}, payload); delete p2.subjects;
+        if (exId) { await sbPatch('roster', 'id=eq.' + exId, p2); updated++; }
+        else { await sbPost('roster', p2); added++; }
       }
     }
 
@@ -18191,12 +18253,14 @@ async function loadRosterList() {
   }
 
   // アプリ登録（students 在籍）と氏名＋学校で照合
-  const students = await sbGet('students', 'is_active=eq.true&select=name,school') || [];
+  const students = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade,roster_only') || [];
   const appKeys = new Set();
   const appNameOnly = new Set();
+  const stuByKey = new Map();
   students.forEach(s => {
     appKeys.add(rosterKey(s.name, s.school));
     appNameOnly.add(normalizeName(s.name));
+    stuByKey.set(rosterKey(s.name, s.school), s);
   });
 
   let registered = 0, unregistered = 0;
@@ -18217,7 +18281,7 @@ async function loadRosterList() {
   html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
     + saSectionTitle('📒 名簿台帳一覧')
     + '</div>';
-  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">✅=アプリ登録済（氏名＋学校一致）／⚠️=未登録／❓=氏名は一致するが学校が違う（表記ゆれ・転校の可能性）</div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">✅=アプリ登録済（氏名＋学校一致）／⚠️=未登録／❓=氏名は一致するが学校が違う（表記ゆれ・転校の可能性）<br>「名簿生登録」＝アプリを使わない子を出欠・集計の対象に加えます（ポイントは付かず、本人がアプリ登録すると自動でポイント対象に切り替わります）。</div>';
 
   html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
     + '<thead><tr style="background:var(--orange-l)">'
@@ -18228,11 +18292,31 @@ async function loadRosterList() {
     + '<th style="padding:6px 6px;text-align:center">性別</th>'
     + '<th style="padding:6px 6px;text-align:center">文理</th>'
     + '<th style="padding:6px 8px;text-align:left">部活</th>'
+    + '<th style="padding:6px 8px;text-align:left;white-space:nowrap">受講科目</th>'
+    + '<th style="padding:6px 6px;text-align:center;white-space:nowrap">操作</th>'
     + '</tr></thead><tbody>';
   roster.forEach(r => {
     const badge = r._status === 'ok' ? '<span style="color:#3B6D11;font-weight:700">✅</span>'
       : r._status === 'name_only' ? '<span style="color:#C77F2E;font-weight:700" title="氏名は一致するが学校が違う">❓</span>'
       : '<span style="color:#C0392B;font-weight:700">⚠️</span>';
+    const subjLabel = r.subjects ? escapeHtml(parseSubjectsStr(r.subjects).join('・')) : '—';
+    // 操作セル：
+    //  - 未登録(none)：名簿生登録ボタン
+    //  - 登録済み(ok)：その生徒が名簿生(roster_only)なら「講座編集」、アプリ生なら「登録済」表示
+    //  - 学校違い(name_only)：誤登録防止のため無効
+    let actionCell;
+    if (r._status === 'ok') {
+      const stu = stuByKey.get(rosterKey(r.name, r.school));
+      if (stu && stu.roster_only === true) {
+        actionCell = '<button onclick="openRosterClassPickerById(\'' + stu.id + '\',\'' + r.id + '\')" style="padding:5px 8px;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:6px;color:#1A4D80;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">📚 講座編集</button>';
+      } else {
+        actionCell = '<span style="font-size:10px;color:#3B6D11">登録済</span>';
+      }
+    } else if (r._status === 'name_only') {
+      actionCell = '<span style="font-size:10px;color:#C77F2E" title="同名の生徒が別の学校で登録済み。表記ゆれ・転校の可能性があるため自動登録は無効です">要確認</span>';
+    } else {
+      actionCell = '<button onclick="registerRosterStudent(\'' + r.id + '\')" style="padding:5px 8px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:6px;color:#fff;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">＋名簿生登録</button>';
+    }
     html += '<tr style="border-bottom:1px solid var(--border)">'
       + '<td style="padding:6px 6px;text-align:center">' + badge + '</td>'
       + '<td style="padding:6px 8px;white-space:nowrap;font-weight:600">' + escapeHtml(r.name) + '</td>'
@@ -18241,6 +18325,8 @@ async function loadRosterList() {
       + '<td style="padding:6px 6px;text-align:center;color:var(--muted)">' + escapeHtml(r.gender || '—') + '</td>'
       + '<td style="padding:6px 6px;text-align:center;color:var(--muted)">' + escapeHtml(r.course_track || '—') + '</td>'
       + '<td style="padding:6px 8px;color:var(--muted)">' + escapeHtml(r.club || '—') + '</td>'
+      + '<td style="padding:6px 8px;color:var(--muted);white-space:nowrap">' + subjLabel + '</td>'
+      + '<td style="padding:6px 6px;text-align:center">' + actionCell + '</td>'
       + '</tr>';
   });
   html += '</tbody></table></div>';
@@ -18250,6 +18336,217 @@ async function loadRosterList() {
 
 function saRosterMsg(text, color) {
   return '<div style="font-size:12px;color:' + color + ';padding:12px;background:#FAFAF8;border-radius:8px">' + escapeHtml(text) + '</div>';
+}
+
+// ===== 名簿生として登録（roster の子を students に roster_only=true で登録）=====
+// アプリを使わない子を出欠・集計の対象に加える。本人ログイン用のメール/PINは発行しない。
+// 受講講座は登録後に「講座選択モーダル」で実在の class_master を選んで紐づける
+// （科目名からの自動引き当て・自動生成はしない＝意図しない講座への誤紐づけを防ぐ）。
+// 本人がアプリ登録すると approveApplication 側で自動昇格する。
+async function registerRosterStudent(rosterId) {
+  let r;
+  try {
+    const rows = await sbGet('roster', 'id=eq.' + encodeURIComponent(rosterId) + '&select=*');
+    r = rows && rows[0];
+  } catch (e) { showToast('名簿の取得に失敗しました', 'error'); return; }
+  if (!r) { showToast('対象の名簿が見つかりません', 'error'); return; }
+
+  const subjects = parseSubjectsStr(r.subjects);
+  const subjMsg = subjects.length ? '\n（CSVの受講科目：' + subjects.join('・') + '）' : '';
+  if (!confirm('「' + r.name + '」さんを名簿生として登録します。\n\n・出欠と集計の対象になります\n・ポイントは付きません\n・本人がアプリ登録すると自動でポイント対象に切り替わります\n\n登録後、受講講座を選んで紐づける画面を表示します。' + subjMsg + '\n\nよろしいですか？')) return;
+
+  showLoading('登録中...');
+  try {
+    // 二重登録チェック（氏名＋学校）
+    const existStu = await sbGet('students', 'select=id,name,school,is_active') || [];
+    const dup = existStu.find(s => rosterKey(s.name, s.school) === rosterKey(r.name, r.school));
+    if (dup) {
+      hideLoading();
+      // 既に登録済みなら、そのまま講座選択モーダルを開く
+      showToast('この生徒は既に登録済みです。受講講座を編集します', 'info');
+      openRosterClassPicker(dup.id, r.name, r.grade, subjects);
+      return;
+    }
+
+    // students へ INSERT（roster_only=true・メール/PINなし）。roster_only 列が無ければ外して再試行。
+    const base = {
+      name: r.name,
+      school: r.school || null,
+      grade: r.grade || null,
+      gender: r.gender || null,
+      course_track: r.course_track || null,
+      points: 0,
+      streak: 0,
+      roster_only: true
+    };
+    try {
+      await insertStudentWithEnrollDate(base, r.enroll_date || getTodayJST());
+    } catch (e) {
+      const msg = String(e && e.message || e);
+      if (/roster_only|column|schema|PGRST|400/i.test(msg)) {
+        const b2 = Object.assign({}, base); delete b2.roster_only;
+        await insertStudentWithEnrollDate(b2, r.enroll_date || getTodayJST());
+        hideLoading();
+        showToast('⚠️ roster_only 列が未作成です。add_roster_only.sql を実行してください', 'error');
+        loadRosterList();
+        return;
+      }
+      throw e;
+    }
+
+    // 作成した生徒IDを氏名＋学校で再取得（sbPost は return=minimal）
+    const after = await sbGet('students', 'select=id,name,school,created_at&order=created_at.desc&limit=20') || [];
+    const mine = after.find(s => rosterKey(s.name, s.school) === rosterKey(r.name, r.school));
+    const newSid = mine ? mine.id : null;
+
+    hideLoading();
+    showToast('✅ ' + r.name + 'さんを名簿生として登録しました', 'success');
+    loadRosterList();
+    if (typeof initStaff === 'function') initStaff();
+    // 受講講座を選んで紐づけるモーダルを開く
+    if (newSid) openRosterClassPicker(newSid, r.name, r.grade, subjects);
+  } catch (e) {
+    hideLoading();
+    showToast('登録に失敗しました：' + (e.message || e), 'error');
+  }
+}
+
+// ===== 名簿生の受講講座 選択モーダル =====
+// 実在の class_master を科目フィルタ付きで一覧表示し、チェックボックスで複数選択して紐づける。
+let rcpStudentId = null;       // 対象の生徒ID
+let rcpStudentName = '';
+let rcpGrade = '';             // '1'|'2'|'3'|''
+let rcpHintSubjects = [];      // CSVの受講科目（フィルタ初期値のヒント）
+let rcpMasters = [];           // class_master 一覧
+let rcpEnrolledIds = new Set();// 既存 enrollment の class_master_id
+let rcpChecked = new Set();    // チェック中の class_master_id
+
+// 名簿一覧の「講座編集」用：roster行から氏名・学年・科目ヒントを引いてモーダルを開く
+async function openRosterClassPickerById(studentId, rosterId) {
+  let name = '', grade = '', hint = [];
+  try {
+    const rows = await sbGet('roster', 'id=eq.' + encodeURIComponent(rosterId) + '&select=name,grade,subjects');
+    if (rows && rows[0]) { name = rows[0].name || ''; grade = rows[0].grade || ''; hint = parseSubjectsStr(rows[0].subjects); }
+  } catch (e) { /* 取得失敗でも空で開く */ }
+  openRosterClassPicker(studentId, name, grade, hint);
+}
+
+async function openRosterClassPicker(studentId, name, grade, hintSubjects) {
+  rcpStudentId = studentId;
+  rcpStudentName = name || '';
+  rcpGrade = (grade ? String(grade) : '').replace('年', '');
+  rcpHintSubjects = Array.isArray(hintSubjects) ? hintSubjects : [];
+  showLoading('講座を読み込み中...');
+  try {
+    rcpMasters = await sbGet('class_master',
+      'is_active=eq.true&order=subject,name&select=id,name,subject,grade_level') || [];
+    const enr = await sbGet('class_enrollments', 'student_id=eq.' + studentId + '&select=class_master_id') || [];
+    rcpEnrolledIds = new Set(enr.map(e => e.class_master_id));
+    rcpChecked = new Set(rcpEnrolledIds); // 既存はチェック済み初期値
+  } catch (e) {
+    hideLoading();
+    showToast('講座の取得に失敗しました（' + (e.message || '') + '）', 'error');
+    return;
+  }
+  hideLoading();
+  // 科目フィルタ初期値：CSVの受講科目が1つだけマスター科目に一致するならそれ、複数/不一致なら「すべて」
+  const masterSubj = [...new Set(rcpMasters.map(m => m.subject).filter(Boolean))];
+  let initSubj = '';
+  const hit = rcpHintSubjects.filter(s => masterSubj.includes(s));
+  if (hit.length === 1) initSubj = hit[0];
+  document.getElementById('rcp-subj-sel').innerHTML =
+    '<option value="">科目すべて</option>' +
+    masterSubj.map(s => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('');
+  document.getElementById('rcp-subj-sel').value = initSubj;
+  const gsel = document.getElementById('rcp-grade-sel');
+  gsel.value = ['1', '2', '3'].includes(rcpGrade) ? rcpGrade : '';
+  document.getElementById('rcp-title').textContent = rcpStudentName + 'さんの受講講座';
+  let hintHtml = '';
+  if (rcpHintSubjects.length) {
+    hintHtml = 'CSVの受講科目：' + escapeHtml(rcpHintSubjects.join('・')) + '。下の一覧から実際の講座を選んでください。';
+  } else {
+    hintHtml = '下の一覧から、この生徒が受講する講座を選んでください。';
+  }
+  document.getElementById('rcp-hint').textContent = hintHtml;
+  renderRcpList();
+  document.getElementById('roster-class-modal').style.display = 'flex';
+}
+
+function closeRosterClassPicker() {
+  document.getElementById('roster-class-modal').style.display = 'none';
+  rcpStudentId = null; rcpMasters = []; rcpChecked = new Set(); rcpEnrolledIds = new Set();
+}
+
+function rcpToggle(classId) {
+  if (rcpChecked.has(classId)) rcpChecked.delete(classId);
+  else rcpChecked.add(classId);
+  renderRcpList();
+}
+
+function renderRcpList() {
+  const subj = document.getElementById('rcp-subj-sel').value;
+  const grade = document.getElementById('rcp-grade-sel').value;
+  const filtered = rcpMasters.filter(m => {
+    if (subj && m.subject !== subj) return false;
+    if (grade) {
+      const levels = (m.grade_level || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (levels.length && !levels.includes(grade)) return false;
+    }
+    return true;
+  });
+  const el = document.getElementById('rcp-list');
+  if (!filtered.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">該当する講座がありません</div>';
+    return;
+  }
+  // 科目ごとに見出し
+  const groups = {};
+  filtered.forEach(m => { (groups[m.subject || 'その他'] = groups[m.subject || 'その他'] || []).push(m); });
+  let html = '';
+  Object.entries(groups).forEach(([s, list]) => {
+    html += '<div style="font-size:11px;font-weight:700;color:#2D5FA6;border-bottom:1px solid var(--border);padding:6px 2px 3px;margin-top:6px">' + escapeHtml(s) + '</div>';
+    list.forEach(m => {
+      const on = rcpChecked.has(m.id);
+      const wasEnrolled = rcpEnrolledIds.has(m.id);
+      html += '<label style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid #F0F0EC;cursor:pointer">'
+        + '<input type="checkbox" ' + (on ? 'checked' : '') + ' onchange="rcpToggle(\'' + m.id + '\')" style="width:17px;height:17px;flex-shrink:0">'
+        + '<span style="font-size:13px;color:var(--text)">' + escapeHtml(m.name) + '</span>'
+        + (wasEnrolled ? '<span style="font-size:9px;background:#E8F0E0;color:#3B6D11;padding:1px 6px;border-radius:8px;margin-left:auto">登録済</span>' : '')
+        + '</label>';
+    });
+  });
+  el.innerHTML = html;
+}
+
+function onRcpFilterChange() { renderRcpList(); }
+
+async function saveRosterClassPicker() {
+  if (!rcpStudentId) return;
+  // 追加分（checked かつ 未登録）と削除分（登録済み かつ uncheck）を算出
+  const toAdd = [...rcpChecked].filter(id => !rcpEnrolledIds.has(id));
+  const toRemove = [...rcpEnrolledIds].filter(id => !rcpChecked.has(id));
+  if (!toAdd.length && !toRemove.length) { closeRosterClassPicker(); showToast('変更はありません', 'info'); return; }
+  showLoading('保存中...');
+  let added = 0, removed = 0;
+  try {
+    for (const cid of toAdd) {
+      try { await sbPost('class_enrollments', { class_master_id: cid, student_id: rcpStudentId }); added++; }
+      catch (e) { /* duplicate 等は無視 */ }
+    }
+    for (const cid of toRemove) {
+      try {
+        await sbDelete('class_enrollments', 'student_id=eq.' + rcpStudentId + '&class_master_id=eq.' + cid);
+        removed++;
+      } catch (e) { /* 続行 */ }
+    }
+    hideLoading();
+    showToast('✅ 受講講座を保存しました（追加' + added + '・削除' + removed + '）', 'success');
+    closeRosterClassPicker();
+    loadRosterList();
+  } catch (e) {
+    hideLoading();
+    showToast('保存に失敗しました：' + (e.message || e), 'error');
+  }
 }
 
 
