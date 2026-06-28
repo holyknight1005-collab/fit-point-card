@@ -2947,7 +2947,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zp';
+const APP_VERSION = '20260626zq';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -18320,48 +18320,93 @@ async function loadRosterList() {
     return;
   }
 
-  // アプリ登録（students 在籍）と氏名＋学校で照合
-  const students = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade,roster_only') || [];
-  const appKeys = new Set();
-  const appNameOnly = new Set();
+  // アプリ生(students)を全件取得（退塾含む）。生徒分析の母数判定は退塾も含めた全員で照合するため。
+  const students = await sbGet('students', 'select=id,name,school,grade,roster_only,is_active,inactive_reason') || [];
+  const appKeys = new Set();      // 氏名＋学校
+  const appNameOnly = new Set();  // 氏名のみ
   const stuByKey = new Map();
   students.forEach(s => {
+    if (s.inactive_reason === '除外') return; // デモ等は照合から除外
     appKeys.add(rosterKey(s.name, s.school));
     appNameOnly.add(normalizeName(s.name));
     stuByKey.set(rosterKey(s.name, s.school), s);
   });
 
-  let registered = 0, unregistered = 0;
-  let activeN = 0, withdrawnN = 0;
   const todayJST = getTodayJST();
+  const rosterWithdrawn = (r) => {
+    const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+    if (!isOut) return false;
+    if (r.withdraw_date) return (todayJST > r.withdraw_date);
+    return true;
+  };
+
+  // 各名簿行の「集計上の扱い」を、生徒分析の母数ロジックと完全に一致させて判定。
+  //  reflect='count'  → 集計の母数に反映される（students にいない・在籍）
+  //  reflect='dup'    → students 側にいるとみなしスキップ（氏名＋学校 or 氏名のみ一致）
+  //  reflect='out'    → 退塾発効日を過ぎ集計外
+  let registered = 0, unregistered = 0, activeN = 0, withdrawnN = 0;
+  let reflectCount = 0, reflectDup = 0, reflectOut = 0;
   roster.forEach(r => {
-    // 氏名＋学校で一致＝確実な登録済み。氏名のみ一致＝学校違い（要確認）
+    // バッジ（登録済み/未登録/学校違い）
     if (appKeys.has(rosterKey(r.name, r.school))) { r._status = 'ok'; registered++; }
     else if (appNameOnly.has(normalizeName(r.name))) { r._status = 'name_only'; unregistered++; }
     else { r._status = 'none'; unregistered++; }
-    // 在籍/退塾（集計母数と同じ基準：退塾発効日を過ぎたら退塾。status=退塾で日付無しも退塾）
-    const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
-    let withdrawn = false;
-    if (isOut) {
-      if (r.withdraw_date) withdrawn = (todayJST > r.withdraw_date);
-      else withdrawn = true;
-    }
-    r._withdrawn = withdrawn;
-    if (withdrawn) withdrawnN++; else activeN++;
+    // 在籍/退塾
+    r._withdrawn = rosterWithdrawn(r);
+    if (r._withdrawn) withdrawnN++; else activeN++;
+    // 集計反映の判定（生徒分析と同基準）
+    const isDup = appKeys.has(rosterKey(r.name, r.school)) || appNameOnly.has(normalizeName(r.name));
+    if (isDup) { r._reflect = 'dup'; reflectDup++; }
+    else if (r._withdrawn) { r._reflect = 'out'; reflectOut++; }
+    else { r._reflect = 'count'; reflectCount++; }
+  });
+
+  // ---- students 側の重複・表記ゆれ検出（ずれの洗い出し）----
+  // (a) 同姓同名（正規化氏名が2件以上）, (b) 氏名一致だが学校が違う組
+  const nameGroups = {};
+  students.forEach(s => {
+    if (s.inactive_reason === '除外') return;
+    const nn = normalizeName(s.name);
+    (nameGroups[nn] = nameGroups[nn] || []).push(s);
+  });
+  const dupWarnings = [];
+  Object.values(nameGroups).forEach(g => {
+    if (g.length < 2) return;
+    const schools = [...new Set(g.map(s => (s.school || '（未設定）')))];
+    dupWarnings.push({ name: g[0].name, count: g.length, schools: schools });
   });
 
   let html = '';
-  html += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:14px 0">'
-    + saSummaryCard('名簿の人数', roster.length + '人', 'var(--orange-d)')
-    + saSummaryCard('うち在籍（集計対象）', activeN + '人', '#3B6D11')
-    + saSummaryCard('うち退塾（集計外）', withdrawnN + '人', withdrawnN ? '#C0392B' : '#3B6D11')
-    + saSummaryCard('アプリ登録済', registered + '人', '#3B6D11')
+  // 集計反映の内訳（生徒分析の母数と一致）
+  html += '<div style="background:#F3F8F1;border:1px solid #BFD8B3;border-radius:8px;padding:10px;margin:14px 0">'
+    + '<div style="font-size:12px;font-weight:700;color:#2E6B1E;margin-bottom:8px">📊 生徒分析の母数に反映される名簿</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">'
+    + saSummaryCard('集計に反映', reflectCount + '人', '#2E6B1E')
+    + saSummaryCard('除外（アプリ生と重複）', reflectDup + '人', '#C77F2E')
+    + saSummaryCard('退塾（集計外）', reflectOut + '人', reflectOut ? '#C0392B' : '#3B6D11')
+    + '</div>'
+    + '<div style="font-size:10px;color:#4A6B3E;line-height:1.5;margin-top:8px">名簿 ' + roster.length + ' 件のうち、<b>「集計に反映」' + reflectCount + ' 件</b>だけが生徒分析の名簿のみ生として母数に加算されます。<br>「除外」＝氏名（＋学校）がアプリ生と一致するため二重計上を避けてスキップ。「退塾」＝退塾発効日を過ぎたため集計外。</div>'
     + '</div>';
+
+  // students 側の同姓同名・学校違いの警告（ずれの原因になりやすい）
+  if (dupWarnings.length) {
+    let warnList = dupWarnings.slice(0, 15).map(w =>
+      '<div style="padding:3px 0;border-bottom:1px dashed #E8C4C4">'
+      + '<b>' + escapeHtml(w.name) + '</b>（' + w.count + '名）　学校：' + escapeHtml(w.schools.join(' / '))
+      + '</div>'
+    ).join('');
+    if (dupWarnings.length > 15) warnList += '<div style="padding:3px 0;color:#A04040">…ほか ' + (dupWarnings.length - 15) + ' 名</div>';
+    html += '<div style="background:#FDF6F0;border:1px solid #E8C9A0;border-radius:8px;padding:10px;margin-bottom:14px">'
+      + '<div style="font-size:12px;font-weight:700;color:#A0631E;margin-bottom:6px">⚠️ アプリ生に同姓同名があります（' + dupWarnings.length + '名）</div>'
+      + '<div style="font-size:10px;color:#8A6A3E;line-height:1.6;margin-bottom:8px">同姓同名がいると、名簿照合が「氏名のみ一致」で誤ってスキップ／重複する場合があります。学校違いは転校・表記ゆれの可能性も。人数ずれの原因になりやすい箇所です。</div>'
+      + '<div style="font-size:12px;color:var(--text)">' + warnList + '</div>'
+      + '</div>';
+  }
 
   html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
     + saSectionTitle('📒 名簿台帳一覧')
     + '</div>';
-  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">✅=アプリ登録済（氏名＋学校一致）／⚠️=未登録／❓=氏名は一致するが学校が違う（表記ゆれ・転校の可能性）<br>「名簿生登録」＝アプリを使わない子を出欠・集計の対象に加えます（ポイントは付かず、本人がアプリ登録すると自動でポイント対象に切り替わります）。</div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">✅=アプリ登録済（氏名＋学校一致）／⚠️=未登録／❓=氏名は一致するが学校が違う（表記ゆれ・転校の可能性）<br>「反映」列＝この名簿が生徒分析の母数に入るか（反映／除外＝重複／退塾）。</div>';
 
   html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
     + '<thead><tr style="background:var(--orange-l)">'
@@ -18374,6 +18419,7 @@ async function loadRosterList() {
     + '<th style="padding:6px 8px;text-align:left">部活</th>'
     + '<th style="padding:6px 8px;text-align:left;white-space:nowrap">受講科目</th>'
     + '<th style="padding:6px 6px;text-align:center;white-space:nowrap">状態</th>'
+    + '<th style="padding:6px 6px;text-align:center;white-space:nowrap">反映</th>'
     + '<th style="padding:6px 6px;text-align:center;white-space:nowrap">操作</th>'
     + '</tr></thead><tbody>';
   roster.forEach(r => {
@@ -18401,6 +18447,11 @@ async function loadRosterList() {
     const stateCell = r._withdrawn
       ? '<span style="font-size:10px;background:#FDECEC;color:#C0392B;padding:1px 7px;border-radius:8px;white-space:nowrap">退塾</span>'
       : '<span style="font-size:10px;background:#EAF3EA;color:#3B6D11;padding:1px 7px;border-radius:8px;white-space:nowrap">在籍</span>';
+    const reflectCell = r._reflect === 'count'
+      ? '<span style="font-size:10px;background:#E6F0E0;color:#2E6B1E;padding:1px 7px;border-radius:8px;white-space:nowrap">反映</span>'
+      : r._reflect === 'dup'
+      ? '<span style="font-size:10px;background:#FBEFDD;color:#A0631E;padding:1px 7px;border-radius:8px;white-space:nowrap" title="アプリ生と氏名（＋学校）が一致するため集計では数えません">除外</span>'
+      : '<span style="font-size:10px;background:#FDECEC;color:#C0392B;padding:1px 7px;border-radius:8px;white-space:nowrap">退塾</span>';
     html += '<tr style="border-bottom:1px solid var(--border)' + (r._withdrawn ? ';opacity:0.55' : '') + '">'
       + '<td style="padding:6px 6px;text-align:center">' + badge + '</td>'
       + '<td style="padding:6px 8px;white-space:nowrap;font-weight:600">' + escapeHtml(r.name) + '</td>'
@@ -18411,6 +18462,7 @@ async function loadRosterList() {
       + '<td style="padding:6px 8px;color:var(--muted)">' + escapeHtml(r.club || '—') + '</td>'
       + '<td style="padding:6px 8px;color:var(--muted);white-space:nowrap">' + subjLabel + '</td>'
       + '<td style="padding:6px 6px;text-align:center">' + stateCell + '</td>'
+      + '<td style="padding:6px 6px;text-align:center">' + reflectCell + '</td>'
       + '<td style="padding:6px 6px;text-align:center">' + actionCell + '</td>'
       + '</tr>';
   });
