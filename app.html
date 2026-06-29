@@ -2419,6 +2419,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       </div>
       <div id="sa-flow-report"></div>
       <div id="sa-trend-report"></div>
+      <div id="sa-annual-input"></div>
       <div id="sa-item-tabs" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
       <div id="sa-charttype-tabs" style="display:flex;gap:6px;margin-bottom:14px">
         <button onclick="setSaChartType('bar',this)" class="sa-ct-btn" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--orange-d);color:#fff;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📊 棒グラフ</button>
@@ -2952,7 +2953,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zw';
+const APP_VERSION = '20260626zx';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16446,9 +16447,24 @@ async function saveFlowEnrollDate(studentId) {
 // 折れ線⇔棒グラフ切替。色：在籍#2D6CB6 / 入塾#5A9E3C / 退塾#C0392B。
 var trendChartMode = 'line'; // 'line' | 'bar'
 var trendData = null;        // 集計済みデータをキャッシュ（モード切替で再フェッチしない）
+var trendShow = { enrolled: true, joined: false, left: false }; // 系列の表示（在籍は基本ON）
+var trendYears = {};         // { 2025: [12ヶ月の在籍配列(4月始まり等は月キーで保持)], ... } 手入力データ
+var trendYearShow = {};      // { 2025: true/false } 年ラインの表示トグル
+var ANNUAL_YEARS = [2022, 2023, 2024, 2025]; // 重ね表示できる過去年度
+var TREND_YEAR_COLORS = { 2022: '#9B59B6', 2023: '#E67E22', 2024: '#16A085', 2025: '#7F8C8D' };
 
 function setTrendMode(mode) {
   trendChartMode = mode;
+  drawEnrollmentTrend();
+}
+// 系列（在籍/入塾/退塾）の表示トグル
+function toggleTrendSeries(key) {
+  trendShow[key] = !trendShow[key];
+  drawEnrollmentTrend();
+}
+// 過去年度ラインの表示トグル
+function toggleTrendYear(y) {
+  trendYearShow[y] = !trendYearShow[y];
   drawEnrollmentTrend();
 }
 
@@ -16555,7 +16571,92 @@ async function renderEnrollmentTrend() {
   };
 
   trendData = { months: months, enrolled: enrolled, joined: joined, left: left, compare: compare };
+
+  // 過去年度の月次在籍（手入力 annual_enrollment）を読み込み、年→{月:人数} に整形
+  trendYears = {};
+  try {
+    const ann = await sbGet('annual_enrollment', 'select=year,month,count') || [];
+    ann.forEach(r => {
+      const y = parseInt(r.year, 10), m = parseInt(r.month, 10);
+      if (!trendYears[y]) trendYears[y] = {};
+      trendYears[y][m] = parseInt(r.count, 10) || 0;
+    });
+  } catch (e) { trendYears = {}; }
+
   drawEnrollmentTrend();
+  renderAnnualInput();
+}
+
+// 過去年度の月次在籍数 手入力UI（admin限定）。年を選び、4月〜翌3月の12ヶ月を入力して保存。
+var annualInputYear = 2025;
+function renderAnnualInput() {
+  const wrap = document.getElementById('sa-annual-input');
+  if (!wrap) return;
+  const canSee = (currentStaff && currentStaff.role === 'admin');
+  if (!canSee) { wrap.innerHTML = ''; return; }
+
+  const yearOpts = ANNUAL_YEARS.map(y => '<option value="' + y + '"' + (y === annualInputYear ? ' selected' : '') + '>' + y + '年</option>').join('');
+  // 月は1〜12で持つ（グラフ側は月キーで突合）
+  const ydata = trendYears[annualInputYear] || {};
+  let cells = '';
+  for (let m = 1; m <= 12; m++) {
+    const v = (ydata[m] != null) ? ydata[m] : '';
+    cells += '<div style="display:flex;flex-direction:column;align-items:center;gap:2px">'
+      + '<label style="font-size:10px;color:var(--muted)">' + m + '月</label>'
+      + '<input type="number" min="0" id="annual-m-' + m + '" value="' + v + '" style="width:54px;padding:5px 4px;font-size:13px;text-align:center;border:1px solid var(--border);border-radius:6px;font-family:inherit">'
+      + '</div>';
+  }
+  wrap.innerHTML =
+    '<div style="border:1px solid #D6E4F0;border-radius:10px;padding:14px;margin-bottom:14px;background:#F7FAFD">'
+    + '<div style="font-size:13px;font-weight:800;color:#1A4D80;margin-bottom:6px">✏️ 過去の在籍数を手入力（年×月）</div>'
+    + '<div style="font-size:10px;color:var(--muted);line-height:1.6;margin-bottom:10px">生徒登録は今年からのため、過去年度の月別在籍数はここで入力します。保存するとグラフの「過去の在籍を重ねる」ボタンに反映されます。空欄の月はラインが途切れます。</div>'
+    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
+    +   '<span style="font-size:12px;font-weight:700">年度：</span>'
+    +   '<select id="annual-year-sel" onchange="onAnnualYearChange()" style="padding:6px 10px;font-size:13px;border:1px solid var(--border);border-radius:8px;font-family:inherit">' + yearOpts + '</select>'
+    + '</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">' + cells + '</div>'
+    + '<button onclick="saveAnnualEnrollment()" style="width:100%;padding:10px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 ' + annualInputYear + '年の在籍数を保存</button>'
+    + '</div>';
+}
+
+function onAnnualYearChange() {
+  const sel = document.getElementById('annual-year-sel');
+  if (sel) annualInputYear = parseInt(sel.value, 10);
+  renderAnnualInput();
+}
+
+async function saveAnnualEnrollment() {
+  const y = annualInputYear;
+  showLoading('保存中...');
+  let saved = 0;
+  try {
+    // 既存行を取得して year+month で upsert（GET→PATCH/INSERT）
+    const existing = await sbGet('annual_enrollment', 'year=eq.' + y + '&select=id,month') || [];
+    const exByMonth = new Map();
+    existing.forEach(r => exByMonth.set(parseInt(r.month, 10), r.id));
+    for (let m = 1; m <= 12; m++) {
+      const el = document.getElementById('annual-m-' + m);
+      const raw = el ? el.value.trim() : '';
+      if (raw === '') continue; // 空欄はスキップ（既存値も触らない）
+      const cnt = parseInt(raw, 10);
+      if (isNaN(cnt) || cnt < 0) continue;
+      const exId = exByMonth.get(m);
+      if (exId) await sbPatch('annual_enrollment', 'id=eq.' + exId, { count: cnt, updated_at: new Date().toISOString() });
+      else await sbPost('annual_enrollment', { year: y, month: m, count: cnt });
+      saved++;
+    }
+    hideLoading();
+    showToast('✅ ' + y + '年の在籍数を保存しました（' + saved + 'ヶ月分）', 'success');
+    renderEnrollmentTrend(); // 再集計してグラフ＆入力UIを更新
+  } catch (e) {
+    hideLoading();
+    const msg = String(e && e.message || e);
+    if (/annual_enrollment|relation|schema|PGRST|404/i.test(msg)) {
+      showToast('⚠️ annual_enrollment テーブルが未作成です。create_annual_enrollment.sql を実行してください', 'error');
+    } else {
+      showToast('保存に失敗しました：' + msg, 'error');
+    }
+  }
 }
 
 function drawEnrollmentTrend() {
@@ -16563,16 +16664,37 @@ function drawEnrollmentTrend() {
   if (!wrap || !trendData) return;
   const d = trendData;
 
-  const btn = (mode, label) =>
+  const modeBtn = (mode, label) =>
     '<button onclick="setTrendMode(\'' + mode + '\')" style="flex:1;padding:7px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
     (trendChartMode === mode ? 'var(--orange-d);color:#fff' : 'var(--surface);color:var(--text)') + '">' + label + '</button>';
 
-  const legend =
-    '<div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center;margin:4px 0 10px;font-size:11px">' +
-      '<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:3px;background:#2D6CB6;display:inline-block"></span>在籍人数</span>' +
-      '<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:3px;background:#5A9E3C;display:inline-block"></span>新規入塾</span>' +
-      '<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:3px;background:#C0392B;display:inline-block"></span>退塾</span>' +
-    '</div>';
+  // 系列トグル（在籍/入塾/退塾）
+  const seriesBtn = (key, label, color) => {
+    const on = trendShow[key];
+    return '<button onclick="toggleTrendSeries(\'' + key + '\')" style="display:flex;align-items:center;gap:5px;padding:5px 10px;font-size:11px;font-weight:700;border:1.5px solid ' + color + ';border-radius:16px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+      (on ? color + ';color:#fff' : 'transparent;color:' + color) + '">'
+      + '<span style="width:9px;height:9px;border-radius:50%;background:' + (on ? '#fff' : color) + ';display:inline-block"></span>' + label + '</button>';
+  };
+  const seriesRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin:8px 0">'
+    + seriesBtn('enrolled', '在籍人数', '#2D6CB6')
+    + seriesBtn('joined', '新規入塾', '#5A9E3C')
+    + seriesBtn('left', '退塾', '#C0392B')
+    + '</div>';
+
+  // 過去年度トグル（手入力データがある年のみボタン表示）
+  const availYears = ANNUAL_YEARS.filter(y => trendYears[y] && Object.keys(trendYears[y]).length);
+  let yearRow = '';
+  if (availYears.length) {
+    yearRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin:4px 0 8px;align-items:center">'
+      + '<span style="font-size:10px;color:var(--muted)">過去の在籍を重ねる：</span>'
+      + availYears.map(y => {
+        const on = trendYearShow[y];
+        const c = TREND_YEAR_COLORS[y] || '#888';
+        return '<button onclick="toggleTrendYear(' + y + ')" style="padding:4px 10px;font-size:11px;font-weight:700;border:1.5px solid ' + c + ';border-radius:16px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+          (on ? c + ';color:#fff' : 'transparent;color:' + c) + '">' + y + '年</button>';
+      }).join('')
+      + '</div>';
+  }
 
   const svg = trendChartMode === 'line' ? trendLineSvg(d) : trendBarSvg(d);
 
@@ -16580,10 +16702,43 @@ function drawEnrollmentTrend() {
     '<div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;background:#fff">' +
       '<div style="font-size:13px;font-weight:800;color:var(--text);margin-bottom:10px">📈 人数推移（過去12ヶ月）</div>' +
       trendCompareCard(d.compare) +
-      '<div style="display:flex;gap:6px;margin-bottom:8px">' + btn('line', '📉 折れ線') + btn('bar', '📊 棒グラフ') + '</div>' +
-      legend +
+      '<div style="display:flex;gap:6px;margin-bottom:4px">' + modeBtn('line', '📉 折れ線') + modeBtn('bar', '📊 棒グラフ') + '</div>' +
+      seriesRow +
+      yearRow +
       '<div style="width:100%;overflow-x:auto">' + svg + '</div>' +
+      trendMonthlyTable(d) +
     '</div>';
+}
+
+// グラフ下：月ごとの在籍数と前月差を数値で表示
+function trendMonthlyTable(d) {
+  let rows = '';
+  d.months.forEach((mo, i) => {
+    const cur = d.enrolled[i];
+    const prev = i > 0 ? d.enrolled[i - 1] : null;
+    const diff = (prev == null) ? null : (cur - prev);
+    const diffHtml = (diff == null) ? '<span style="color:var(--muted)">—</span>'
+      : (diff > 0 ? '<span style="color:#1E8449;font-weight:700">▲ +' + diff + '</span>'
+        : diff < 0 ? '<span style="color:#C0392B;font-weight:700">▼ ' + diff + '</span>'
+        : '<span style="color:#7F8C8D">± 0</span>');
+    rows += '<tr style="border-bottom:1px solid #F0F0EC">'
+      + '<td style="padding:5px 8px;white-space:nowrap">' + mo.y + '年' + mo.m + '月</td>'
+      + '<td style="padding:5px 8px;text-align:right;font-weight:700;color:#2D6CB6">' + cur + '</td>'
+      + '<td style="padding:5px 8px;text-align:right">' + diffHtml + '</td>'
+      + (trendShow.joined ? '<td style="padding:5px 8px;text-align:right;color:#5A9E3C">' + d.joined[i] + '</td>' : '')
+      + (trendShow.left ? '<td style="padding:5px 8px;text-align:right;color:#C0392B">' + d.left[i] + '</td>' : '')
+      + '</tr>';
+  });
+  return '<div style="margin-top:12px;overflow-x:auto">'
+    + '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">📋 月ごとの在籍と前月差</div>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+    + '<thead><tr style="background:var(--orange-l)">'
+    + '<th style="padding:5px 8px;text-align:left">月</th>'
+    + '<th style="padding:5px 8px;text-align:right">在籍</th>'
+    + '<th style="padding:5px 8px;text-align:right">前月差</th>'
+    + (trendShow.joined ? '<th style="padding:5px 8px;text-align:right">入塾</th>' : '')
+    + (trendShow.left ? '<th style="padding:5px 8px;text-align:right">退塾</th>' : '')
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
 // 当月の在籍数と、前月比・昨年同月比のサマリーカード。今月の新規入塾/退塾も併記。
@@ -16618,8 +16773,18 @@ function trendCompareCard(c) {
 
 // 在籍は値が大きいので左軸（主軸）、入塾/退塾は右軸（別スケール）で重畳。
 function trendBounds(d) {
-  const maxEnroll = Math.max(1, ...d.enrolled);
-  const maxFlow = Math.max(1, ...d.joined, ...d.left);
+  const enrollVals = trendShow.enrolled ? d.enrolled.slice() : [];
+  // 表示中の過去年度ラインも在籍軸の最大に含める
+  ANNUAL_YEARS.forEach(y => {
+    if (trendYearShow[y] && trendYears[y]) {
+      d.months.forEach(mo => { const v = trendYears[y][mo.m]; if (v != null) enrollVals.push(v); });
+    }
+  });
+  const flowVals = [];
+  if (trendShow.joined) flowVals.push(...d.joined);
+  if (trendShow.left) flowVals.push(...d.left);
+  const maxEnroll = Math.max(1, ...(enrollVals.length ? enrollVals : [1]));
+  const maxFlow = Math.max(1, ...(flowVals.length ? flowVals : [1]));
   return { maxEnroll: maxEnroll, maxFlow: maxFlow };
 }
 
@@ -16652,7 +16817,8 @@ function trendLineSvg(d) {
   });
 
   // showLabel: 値ラベルを点の上に表示するか（在籍のみ。入塾/退塾は重なるため非表示）
-  const polyline = (vals, yFn, color, showLabel) => {
+  const polyline = (vals, yFn, color, showLabel, visible) => {
+    if (visible === false) return '';
     const pts = vals.map((v, i) => xAt(i) + ',' + yFn(v)).join(' ');
     let s = '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="2.5" stroke-linejoin="round"/>';
     vals.forEach((v, i) => {
@@ -16663,9 +16829,28 @@ function trendLineSvg(d) {
     });
     return s;
   };
-  g += polyline(d.enrolled, yEnroll, '#2D6CB6', true);
-  g += polyline(d.joined, yFlow, '#5A9E3C', false);
-  g += polyline(d.left, yFlow, '#C0392B', false);
+  g += polyline(d.enrolled, yEnroll, '#2D6CB6', true, trendShow.enrolled);
+  // 過去年度ライン（点線・ラベルなし）
+  ANNUAL_YEARS.forEach(y => {
+    if (!trendYearShow[y] || !trendYears[y]) return;
+    const vals = d.months.map(mo => trendYears[y][mo.m]);
+    const c = TREND_YEAR_COLORS[y] || '#888';
+    // 欠損(null)はスキップしてセグメント描画
+    let segPts = [];
+    const flush = () => {
+      if (segPts.length >= 2) g += '<polyline points="' + segPts.join(' ') + '" fill="none" stroke="' + c + '" stroke-width="2" stroke-dasharray="5,4" stroke-linejoin="round" opacity="0.85"/>';
+      segPts = [];
+    };
+    vals.forEach((v, i) => {
+      if (v == null) { flush(); return; }
+      const x = xAt(i), yy = yEnroll(v);
+      segPts.push(x + ',' + yy);
+      g += '<circle cx="' + x + '" cy="' + yy + '" r="2.5" fill="' + c + '"/>';
+    });
+    flush();
+  });
+  if (trendShow.joined) g += polyline(d.joined, yFlow, '#5A9E3C', false, true);
+  if (trendShow.left) g += polyline(d.left, yFlow, '#C0392B', false, true);
 
   return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;min-width:560px;height:auto" role="img">' + g + '</svg>';
 }
@@ -16692,24 +16877,46 @@ function trendBarSvg(d) {
     const y = padT + plotH - (plotH * k) / 4;
     g += '<text x="' + (W - padR + 6) + '" y="' + (y + 3) + '" font-size="9" fill="#C0392B" text-anchor="start">' + val + '</text>';
   }
-  // 各月：在籍（太・背景）＋ 入塾/退塾（細・前面）の3本グループ
+  // 各月：在籍（太・背景）＋ 入塾/退塾（細・前面）の表示中バーのみ
   const bw = Math.min(slot * 0.22, 14);
   // 0は省略、>0の値だけバー上にラベル表示
   const barLabel = (cx, topY, v, color) =>
     (v > 0) ? '<text x="' + cx + '" y="' + (topY - 3) + '" font-size="8.5" font-weight="700" fill="' + color + '" text-anchor="middle">' + v + '</text>' : '';
+  // 表示する系列の本数で配置を決める
+  const activeBars = [];
+  if (trendShow.enrolled) activeBars.push({ vals: d.enrolled, yFn: yEnroll, color: '#2D6CB6' });
+  if (trendShow.joined) activeBars.push({ vals: d.joined, yFn: yFlow, color: '#5A9E3C' });
+  if (trendShow.left) activeBars.push({ vals: d.left, yFn: yFlow, color: '#C0392B' });
   d.months.forEach((mo, i) => {
     const cx = padL + slot * i + slot / 2;
-    const hE = yEnroll(d.enrolled[i]);
-    const hJ = yFlow(d.joined[i]);
-    const hL = yFlow(d.left[i]);
-    const xE = cx - bw * 1.5 - 2, xJ = cx - bw / 2, xL = cx + bw / 2 + 2;
-    g += '<rect x="' + xE + '" y="' + (baseY - hE) + '" width="' + bw + '" height="' + hE + '" rx="2" fill="#2D6CB6"/>';
-    g += '<rect x="' + xJ + '" y="' + (baseY - hJ) + '" width="' + bw + '" height="' + hJ + '" rx="2" fill="#5A9E3C"/>';
-    g += '<rect x="' + xL + '" y="' + (baseY - hL) + '" width="' + bw + '" height="' + hL + '" rx="2" fill="#C0392B"/>';
-    g += barLabel(xE + bw / 2, baseY - hE, d.enrolled[i], '#2D6CB6');
-    g += barLabel(xJ + bw / 2, baseY - hJ, d.joined[i], '#5A9E3C');
-    g += barLabel(xL + bw / 2, baseY - hL, d.left[i], '#C0392B');
+    const totalW = activeBars.length * bw + (activeBars.length - 1) * 2;
+    let x0 = cx - totalW / 2;
+    activeBars.forEach(b => {
+      const h = b.yFn(b.vals[i]);
+      g += '<rect x="' + x0 + '" y="' + (baseY - h) + '" width="' + bw + '" height="' + h + '" rx="2" fill="' + b.color + '"/>';
+      g += barLabel(x0 + bw / 2, baseY - h, b.vals[i], b.color);
+      x0 += bw + 2;
+    });
     g += '<text x="' + cx + '" y="' + (H - padB + 16) + '" font-size="9" fill="var(--muted)" text-anchor="middle">' + mo.label + '</text>';
+  });
+  // 過去年度ライン（棒グラフ上にも点線で重ねる）
+  ANNUAL_YEARS.forEach(y => {
+    if (!trendYearShow[y] || !trendYears[y]) return;
+    const c = TREND_YEAR_COLORS[y] || '#888';
+    let segPts = [];
+    const flush = () => {
+      if (segPts.length >= 2) g += '<polyline points="' + segPts.join(' ') + '" fill="none" stroke="' + c + '" stroke-width="2" stroke-dasharray="5,4" opacity="0.85"/>';
+      segPts = [];
+    };
+    d.months.forEach((mo, i) => {
+      const v = trendYears[y][mo.m];
+      if (v == null) { flush(); return; }
+      const cx = padL + slot * i + slot / 2;
+      const yy = baseY - yEnroll(v);
+      segPts.push(cx + ',' + yy);
+      g += '<circle cx="' + cx + '" cy="' + yy + '" r="2.5" fill="' + c + '"/>';
+    });
+    flush();
   });
 
   return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;min-width:560px;height:auto" role="img">' + g + '</svg>';
