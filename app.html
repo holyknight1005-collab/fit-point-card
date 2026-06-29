@@ -2988,7 +2988,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zaf';
+const APP_VERSION = '20260626zag';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16723,11 +16723,11 @@ async function renderEnrollmentTrend() {
     rosterRows.forEach(r => {
       if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
       const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
-      let rWithdraw = null;
-      if (isOut) rWithdraw = r.withdraw_date || getTodayJST(); // 退塾日が空でも今日付けで外す
+      // 退塾だが退塾日が空 → 退塾時期不明。「今月退塾」の誤表示を避けるため推移から除外。
+      if (isOut && !r.withdraw_date) return;
       rosterPersons.push({
         _enroll: r.enroll_date || null,
-        _withdraw: rWithdraw,
+        _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null,
         _school: r.school || '', _grade: r.grade || '', _name: r.name || '(名前なし)'
       });
     });
@@ -16736,12 +16736,11 @@ async function renderEnrollmentTrend() {
   // 各人の入塾基準日（YYYY-MM-DD）と退塾発効日（確定のみ）を正規化
   // 入塾基準は enroll_date（入塾日）のみ。アプリ登録日(created_at)は入塾日と一致しないため使わない。
   const persons = [];
-  const todayStrW = getTodayJST();
   stu.forEach(s => {
     let enroll = s.enroll_date || null;  // 入塾日未入力の生徒は推移に含めない
     // 退塾判定：(1)退塾確定 または (2)is_active=false（退塾・卒業済み）なら「退塾扱い」。
-    // 退塾日は 発効日 → inactive_at → 今日 の順で確定できる日付を採用。
-    // 発効日が空でも在籍から確実に外すため、最後は今日を退塾日に当てる（＝当月以降は在籍外）。
+    // 退塾日は 発効日 → inactive_at の順で確定する。どちらも無い＝退塾時期不明 →
+    // 「今月退塾」のような誤表示を避けるため推移から完全に除外する（在籍にも退塾フローにも出さない）。
     const isWithdrawn = (s.withdraw_status === '確定') || (s.is_active === false);
     let withdraw = null;
     if (isWithdrawn) {
@@ -16749,10 +16748,8 @@ async function renderEnrollmentTrend() {
         withdraw = s.withdraw_effective_date;                 // 発効日が最優先
       } else if (s.inactive_at) {
         withdraw = toJSTDateStr(new Date(s.inactive_at));     // 操作日（卒業・退塾の登録日）
-      } else if (enroll) {
-        withdraw = todayStrW;                                  // 退塾日不明 → 今日付けで在籍から外す
       } else {
-        return;                                                // 入塾日も退塾日も不明 → 推移から除外
+        return;                                                // 退塾時期が不明 → 推移から除外
       }
     }
     if (!enroll && !withdraw) return;    // 入塾日も退塾日も無ければスキップ
