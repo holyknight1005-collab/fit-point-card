@@ -2988,7 +2988,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zai';
+const APP_VERSION = '20260626zak';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16669,6 +16669,11 @@ var trendYears = {};         // { 2025: [12ヶ月の在籍配列(4月始まり�
 var trendYearShow = {};      // { 2025: true/false } 年ラインの表示トグル
 var ANNUAL_YEARS = [2022, 2023, 2024, 2025]; // 重ね表示できる過去年度
 var TREND_YEAR_COLORS = { 2022: '#9B59B6', 2023: '#E67E22', 2024: '#16A085', 2025: '#7F8C8D' };
+// 年度比較：重ねる年度（4月始まりの開始年）の表示ON/OFF。{ 2025:true, ... }
+var trendFYCompare = {};
+// 年度色（年度開始年→色）。固定色＋足りなければ生成。
+var TREND_FY_COLORS = { 2022: '#9B59B6', 2023: '#E67E22', 2024: '#16A085', 2025: '#7F8C8D', 2026: '#2D6CB6', 2027: '#C0392B' };
+function trendFYColor(fy) { return TREND_FY_COLORS[fy] || ('hsl(' + ((fy * 47) % 360) + ',55%,45%)'); }
 var trendFilter = { grade: '全体', school: '全校' }; // グラフの絞り込み
 // 在籍区分の集計モード： 'all'=通常＋時期別のみ を合算 / 'regular'=通常のみ
 var trendMembershipMode = 'all';
@@ -16676,6 +16681,8 @@ var trendPersonsCache = [];   // {enroll, withdraw, school, grade, name, src} �
 var trendOpenMonth = null;    // 名前リストを開いている月（ym 'YYYY-MM'）。同じ月を再タップで閉じる。
 var trendGridYear = null;     // グリッド表で表示中の年（カレンダー年）。null=今年。
 var trendGridMetric = 'enrolled'; // グリッド表の指標： 'enrolled'=在籍 / 'joined'=新規入塾 / 'left'=退塾
+var trendGraphMode = 'fiscal'; // グラフのX軸： 'fiscal'=年度(4月始まり) / 'rolling'=直近12ヶ月
+var trendGraphFY = null;       // 表示中の年度開始年（4月の年）。null=今の年度。
 var trendAnnualRows = [];     // annual_enrollment 全行 {year,month,school,grade,count}
 var trendAllMonths = [];      // 24ヶ月分の月メタ（再集計用）
 
@@ -16692,6 +16699,32 @@ function toggleTrendSeries(key) {
 function toggleTrendYear(y) {
   trendYearShow[y] = !trendYearShow[y];
   drawEnrollmentTrend();
+}
+// 年度比較：重ねる年度のON/OFF
+function toggleTrendFYCompare(fy) {
+  trendFYCompare[fy] = !trendFYCompare[fy];
+  drawEnrollmentTrend();
+}
+// 比較可能な年度（4月始まり開始年）の一覧。実データのある年度＋手入力のある年度。降順。
+function trendComparableFYs() {
+  const set = new Set();
+  const curFY = currentFiscalStartYear();
+  // 実データ：登録生の入塾日／退塾日が属する年度を拾う
+  trendPersonsCache.forEach(p => {
+    [p.enroll, p.withdraw].forEach(ds => {
+      if (!ds) return;
+      const y = parseInt(ds.slice(0, 4), 10), m = parseInt(ds.slice(5, 7), 10);
+      set.add((m >= 4) ? y : (y - 1));
+    });
+  });
+  set.add(curFY);
+  // 手入力：annual_enrollment の (year,month) が属する年度
+  trendAnnualRows.forEach(r => {
+    const y = parseInt(r.year, 10), m = parseInt(r.month, 10);
+    if (isNaN(y) || isNaN(m)) return;
+    set.add((m >= 4) ? y : (y - 1));
+  });
+  return [...set].filter(y => !isNaN(y)).sort((a, b) => b - a);
 }
 
 async function renderEnrollmentTrend() {
@@ -16819,6 +16852,87 @@ function trendMatchMembership(p) {
   return true;
 }
 
+// 日本の年度（4月始まり〜翌3月）系ヘルパ
+// 今日が属する年度の開始年（4月の年）。1〜3月は前年が年度開始年。
+function currentFiscalStartYear() {
+  const todayStr = getTodayJST();
+  const y = parseInt(todayStr.slice(0, 4), 10);
+  const m = parseInt(todayStr.slice(5, 7), 10);
+  return (m >= 4) ? y : (y - 1);
+}
+// 指定年度（開始年=4月の年）の12ヶ月メタ配列を 4月→翌3月 の順で返す。
+function trendFiscalMonths(fyStart) {
+  const arr = [];
+  for (let i = 0; i < 12; i++) {
+    const mm = 4 + i;                 // 4..15
+    const y = (mm <= 12) ? fyStart : (fyStart + 1);
+    const m = (mm <= 12) ? mm : (mm - 12);
+    const lastDay = toJSTDateStr(new Date(y, m, 0));
+    arr.push({ y: y, m: m, label: m + '月', ym: y + '-' + String(m).padStart(2, '0'), lastDay: lastDay });
+  }
+  return arr;
+}
+// 指定年度×指標の月別系列（12要素・4月→翌3月）を返す。
+// 現在の学校/学年/在籍区分フィルタを適用。
+//   実データのある年度（今年度を含む過去も）→ trendPersonsCache から集計
+//   それ以外（手入力のみの年度）→ trendAnnualRows（metric一致）から集計
+// 未来月は null。fmonths を渡せば再生成を省ける。
+function trendFiscalSeries(fyStart, metric, fmonths) {
+  const months = fmonths || trendFiscalMonths(fyStart);
+  const todayStr = getTodayJST();
+  // この年度の実データが（少しでも）存在するか：登録生の入塾日が年度範囲に入るか
+  const fyStartYm = fyStart + '-04', fyEndYm = (fyStart + 1) + '-03';
+  const persons = trendPersonsCache.filter(p => trendMatchFilter(p.school, p.grade) && trendMatchMembership(p));
+  let hasReal = false;
+  persons.forEach(p => {
+    if (p.enroll && p.enroll.slice(0, 7) <= fyEndYm && (!p.withdraw || p.withdraw.slice(0, 7) >= fyStartYm)) hasReal = true;
+  });
+  const out = [];
+  if (hasReal) {
+    months.forEach(mo => {
+      if (mo.ym > todayStr.slice(0, 7)) { out.push(null); return; }
+      const monthLast = mo.lastDay;
+      const asOf = (monthLast > todayStr) ? todayStr : monthLast;
+      let cnt = 0;
+      persons.forEach(p => {
+        if (metric === 'enrolled') {
+          if (p.enroll && p.enroll <= asOf && (!p.withdraw || asOf < p.withdraw)) cnt++;
+        } else if (metric === 'joined') {
+          if (p.enroll && p.enroll.slice(0, 7) === mo.ym) cnt++;
+        } else {
+          if (p.withdraw && p.withdraw.slice(0, 7) === mo.ym) cnt++;
+        }
+      });
+      out.push(cnt);
+    });
+  } else {
+    // 手入力（annual_enrollment）から。カレンダー(year,month)で持つので年度月に突合。
+    const idxByYM = {};
+    months.forEach((mo, i) => { idxByYM[mo.y + '-' + mo.m] = i; });
+    const acc = new Array(12).fill(null);
+    trendAnnualRows.forEach(r => {
+      if ((r.metric || 'enrolled') !== metric) return;
+      if (trendFilter.school !== '全校' && (r.school || '') !== trendFilter.school) return;
+      if (trendFilter.grade !== '全体' && (r.grade || '') !== trendFilter.grade) return;
+      const i = idxByYM[parseInt(r.year, 10) + '-' + parseInt(r.month, 10)];
+      if (i == null) return;
+      acc[i] = (acc[i] || 0) + (parseInt(r.count, 10) || 0);
+    });
+    for (let i = 0; i < 12; i++) out.push(acc[i]);
+  }
+  return out;
+}
+// 年度内の「全体／年度計」値：在籍＝直近非null、入塾/退塾＝年度内累計。
+function trendFiscalAgg(series, metric) {
+  if (metric === 'enrolled') {
+    for (let i = series.length - 1; i >= 0; i--) { if (series[i] != null) return series[i]; }
+    return null;
+  }
+  let sum = null;
+  series.forEach(v => { if (v != null) sum = (sum || 0) + v; });
+  return sum;
+}
+
 // キャッシュ（trendPersonsCache / trendAnnualRows / trendAllMonths）と現在のフィルタから
 // trendData・trendYears を再計算してグラフを描く。再フェッチしない。
 function recomputeTrend() {
@@ -16842,6 +16956,31 @@ function recomputeTrend() {
   const joined = allJoined.slice(-12);
   const left = allLeft.slice(-12);
 
+  // 表示用の月配列・系列を決める。年度モードなら 4月→翌3月 を並べ、各月の値を persons から直接集計。
+  let dispMonths, dispEnrolled, dispJoined, dispLeft;
+  if (trendGraphMode === 'fiscal') {
+    const fyStart = (trendGraphFY == null) ? currentFiscalStartYear() : trendGraphFY;
+    const todayStr2 = getTodayJST();
+    dispMonths = trendFiscalMonths(fyStart);
+    dispEnrolled = []; dispJoined = []; dispLeft = [];
+    dispMonths.forEach(mo => {
+      // 未来月（今日の属する月より後）は空欄（null）にする。
+      const isFuture = (mo.ym > todayStr2.slice(0, 7));
+      if (isFuture) { dispEnrolled.push(null); dispJoined.push(null); dispLeft.push(null); return; }
+      const monthLast = mo.lastDay;
+      const asOf = (monthLast > todayStr2) ? todayStr2 : monthLast; // 当月は今日基準
+      let en = 0, jo = 0, le = 0;
+      persons.forEach(p => {
+        if (p.enroll && p.enroll <= asOf && (!p.withdraw || asOf < p.withdraw)) en++;
+        if (p.enroll && p.enroll.slice(0, 7) === mo.ym) jo++;
+        if (p.withdraw && p.withdraw.slice(0, 7) === mo.ym) le++;
+      });
+      dispEnrolled.push(en); dispJoined.push(jo); dispLeft.push(le);
+    });
+  } else {
+    dispMonths = months; dispEnrolled = enrolled; dispJoined = joined; dispLeft = left;
+  }
+
   const iNow = allMonths.length - 1, iPrev = iNow - 1, iYoY = iNow - 12;
   const compare = {
     nowLabel: allMonths[iNow].y + '年' + allMonths[iNow].m + '月',
@@ -16853,7 +16992,27 @@ function recomputeTrend() {
     enrolledPrev: (iPrev >= 0) ? allEnrolled[iPrev] : null,
     enrolledYoY: (iYoY >= 0) ? allEnrolled[iYoY] : null
   };
-  trendData = { months: months, enrolled: enrolled, joined: joined, left: left, compare: compare };
+  trendData = { months: dispMonths, enrolled: dispEnrolled, joined: dispJoined, left: dispLeft, compare: compare };
+
+  // 年度比較：選択された年度（4月始まり）の月別系列を、表示中の年度月に重ねるため計算。
+  // 年度モードのときのみ。表示中の年度（dispFY）は主線なので重ねない。
+  trendData.fyCompare = [];
+  if (trendGraphMode === 'fiscal') {
+    const dispFY = (trendGraphFY == null) ? currentFiscalStartYear() : trendGraphFY;
+    trendData.dispFY = dispFY;
+    Object.keys(trendFYCompare).forEach(k => {
+      const fy = parseInt(k, 10);
+      if (!trendFYCompare[fy] || fy === dispFY) return;
+      trendData.fyCompare.push({
+        fy: fy,
+        color: trendFYColor(fy),
+        enrolled: trendFiscalSeries(fy, 'enrolled', dispMonths),
+        joined: trendFiscalSeries(fy, 'joined', dispMonths),
+        left: trendFiscalSeries(fy, 'left', dispMonths)
+      });
+    });
+    trendData.fyCompare.sort((a, b) => b.fy - a.fy);
+  }
 
   // 過去年度ライン：在籍数の重ね表示用。現在のフィルタに合致する annual 行（在籍のみ）を
   // 年→{月:合計} に集計（末端を自動合計）。入塾/退塾の手入力は在籍ラインには混ぜない。
@@ -16875,6 +17034,14 @@ function setTrendFilterGrade(g) { trendFilter.grade = g; recomputeTrend(); }
 function setTrendFilterSchool(s) { trendFilter.school = s; recomputeTrend(); }
 // 在籍区分モード切替（通常のみ / 時期別のみ合算）
 function setTrendMembershipMode(mode) { trendMembershipMode = mode; recomputeTrend(); }
+// グラフX軸モード切替（年度 / 直近12ヶ月）
+function setTrendGraphMode(mode) {
+  trendGraphMode = mode;
+  if (mode === 'fiscal' && trendGraphFY == null) trendGraphFY = currentFiscalStartYear();
+  recomputeTrend();
+}
+// 年度セレクタ
+function onTrendGraphFYChange(v) { trendGraphFY = parseInt(v, 10); recomputeTrend(); }
 
 // 過去年度の月次在籍数 手入力UI（admin限定）。年＋学校を選び、その学校の3学年×12月を入力。
 // 末端（学校×学年）のみ保存。上位（全体・学校計・学年計）はグラフ側で自動合計。
@@ -17042,19 +17209,22 @@ function drawEnrollmentTrend() {
     + seriesBtn('left', '退塾', '#C0392B')
     + '</div>';
 
-  // 過去年度トグル（手入力データがある年のみボタン表示）
-  const availYears = ANNUAL_YEARS.filter(y => trendYears[y] && Object.keys(trendYears[y]).length);
+  // 年度比較トグル（年度モードのみ）。比較可能な年度を年度色付きで複数選択。
   let yearRow = '';
-  if (availYears.length) {
-    yearRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin:4px 0 8px;align-items:center">'
-      + '<span style="font-size:10px;color:var(--muted)">過去の在籍を重ねる：</span>'
-      + availYears.map(y => {
-        const on = trendYearShow[y];
-        const c = TREND_YEAR_COLORS[y] || '#888';
-        return '<button onclick="toggleTrendYear(' + y + ')" style="padding:4px 10px;font-size:11px;font-weight:700;border:1.5px solid ' + c + ';border-radius:16px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
-          (on ? c + ';color:#fff' : 'transparent;color:' + c) + '">' + y + '年</button>';
-      }).join('')
-      + '</div>';
+  if (trendGraphMode === 'fiscal') {
+    const dispFY = (trendGraphFY == null) ? currentFiscalStartYear() : trendGraphFY;
+    const cmpYears = trendComparableFYs().filter(y => y !== dispFY);
+    if (cmpYears.length) {
+      yearRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin:4px 0 8px;align-items:center">'
+        + '<span style="font-size:10px;color:var(--muted)">他の年度を重ねる：</span>'
+        + cmpYears.map(y => {
+          const on = trendFYCompare[y];
+          const c = trendFYColor(y);
+          return '<button onclick="toggleTrendFYCompare(' + y + ')" style="padding:4px 10px;font-size:11px;font-weight:700;border:1.5px dashed ' + c + ';border-radius:16px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+            (on ? c + ';color:#fff;border-style:solid' : 'transparent;color:' + c) + '">' + y + '年度</button>';
+        }).join('')
+        + '</div>';
+    }
   }
 
   const svg = trendChartMode === 'line' ? trendLineSvg(d) : trendBarSvg(d);
@@ -17078,16 +17248,43 @@ function drawEnrollmentTrend() {
   const memRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:center;margin:2px 0 8px">'
     + '<span style="font-size:10px;color:var(--muted)">集計対象：</span>'
     + memBtn('regular', '通常のみ') + memBtn('all', '時期別のみ合算') + '</div>';
+
+  // グラフX軸モード（年度4月始まり / 直近12ヶ月）＋ 年度セレクタ
+  const curFY = currentFiscalStartYear();
+  const xModeBtn = (mode, label) =>
+    '<button onclick="setTrendGraphMode(\'' + mode + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1.5px solid #2D6CB6;border-radius:16px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+    (trendGraphMode === mode ? '#2D6CB6;color:#fff' : 'transparent;color:#2D6CB6') + '">' + label + '</button>';
+  // 年度の選択肢：手入力データのある年度＋現年度（過去3年分も）。実データは curFY 中心。
+  const fyChoices = [];
+  for (let y = curFY; y >= curFY - 4; y--) fyChoices.push(y);
+  ANNUAL_YEARS.forEach(y => { if (!fyChoices.includes(y)) fyChoices.push(y); });
+  fyChoices.sort((a, b) => b - a);
+  const fySel = (trendGraphFY == null) ? curFY : trendGraphFY;
+  const fyOpts = fyChoices.map(y =>
+    '<option value="' + y + '"' + (y === fySel ? ' selected' : '') + '>' + y + '年度（' + y + '年4月〜' + (y + 1) + '年3月）' + (y === curFY ? '・今年度' : '') + '</option>'
+  ).join('');
+  let xModeRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:center;margin:2px 0 8px">'
+    + '<span style="font-size:10px;color:var(--muted)">期間：</span>'
+    + xModeBtn('fiscal', '年度（4月〜3月）') + xModeBtn('rolling', '直近12ヶ月');
+  if (trendGraphMode === 'fiscal') {
+    xModeRow += '<select onchange="onTrendGraphFYChange(this.value)" style="padding:4px 8px;font-size:11px;border:1px solid var(--border);border-radius:8px;font-family:inherit">' + fyOpts + '</select>';
+  }
+  xModeRow += '</div>';
   const scopeNote = '<div style="text-align:center;font-size:10px;color:var(--muted);margin-bottom:6px">表示中：'
     + (trendFilter.school === '全校' ? '全校' : trendFilter.school) + '／' + trendFilter.grade
     + '／' + (trendMembershipMode === 'regular' ? '通常のみ' : '時期別のみ合算') + '</div>';
 
+  const titleSpan = (trendGraphMode === 'fiscal')
+    ? ('📈 人数推移（' + ((trendGraphFY == null) ? curFY : trendGraphFY) + '年度）')
+    : '📈 人数推移（直近12ヶ月）';
+
   wrap.innerHTML =
     '<div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;background:#fff">' +
-      '<div style="font-size:13px;font-weight:800;color:var(--text);margin-bottom:10px">📈 人数推移（過去12ヶ月）</div>' +
+      '<div style="font-size:13px;font-weight:800;color:var(--text);margin-bottom:10px">' + titleSpan + '</div>' +
       gradeRow +
       schoolRow +
       memRow +
+      xModeRow +
       scopeNote +
       trendCompareCard(d.compare) +
       '<div style="display:flex;gap:6px;margin-bottom:4px">' + modeBtn('line', '📉 折れ線') + modeBtn('bar', '📊 棒グラフ') + '</div>' +
@@ -17095,6 +17292,7 @@ function drawEnrollmentTrend() {
       yearRow +
       '<div style="width:100%;overflow-x:auto">' + svg + '</div>' +
       trendGridTable(d) +
+      trendFYCompareTable(d) +
     '</div>';
 }
 
@@ -17103,10 +17301,10 @@ function drawEnrollmentTrend() {
 // 年セレクタで今年度の実データ／過去年度の手入力データを切替表示。学校フィルタに連動。
 // 月の列ヘッダをタップでその月の名前リストを展開。
 function trendGridTable(d) {
-  // 表示年（カレンダー年）。未指定なら最新月の年。
+  // 表示年度（4月始まりの開始年）。未指定なら今の年度。
   const todayStr = getTodayJST();
-  const curYear = parseInt(todayStr.slice(0, 4), 10);
-  const year = (trendGridYear == null) ? curYear : trendGridYear;
+  const curFY = currentFiscalStartYear();
+  const fyStart = (trendGridYear == null) ? curFY : trendGridYear;
   const metric = trendGridMetric; // 'enrolled' | 'joined' | 'left'
   const metricLabel = (metric === 'joined') ? '新規入塾' : (metric === 'left') ? '退塾' : '在籍';
 
@@ -17116,23 +17314,22 @@ function trendGridTable(d) {
   trendAnnualRows.forEach(r => { if (r.grade) gradeSet.add(r.grade); });
   const grades = SA_GRADES.concat([...gradeSet].filter(g => !SA_GRADES.includes(g)));
 
-  // 各学年×月の値を求める（指標別）。
-  // 今年度（実データ）: trendPersonsCache から在籍／入塾／退塾を学年別月別に集計。
-  // 過去年度（手入力）: trendAnnualRows（metric 一致・学校フィルタ適用・年一致）を合計。
-  const isCurrentYear = (year === curYear);
-  // grid[grade][month] = count | null
-  const grid = {};
-  grades.forEach(g => { grid[g] = {}; for (let m = 1; m <= 12; m++) grid[g][m] = null; });
+  // 年度の12ヶ月メタ（4月→翌3月）。各 fmonths[i] = {y,m,ym,lastDay,label}
+  const fmonths = trendFiscalMonths(fyStart);
+  // 実データで賄えるか：今年度は実データ、過去年度は手入力（annual_enrollment）を使う。
+  const isCurrentFY = (fyStart === curFY);
 
-  if (isCurrentYear) {
+  // grid[grade][i] = count | null （i=0..11 が 4月..翌3月）
+  const grid = {};
+  grades.forEach(g => { grid[g] = {}; for (let i = 0; i < 12; i++) grid[g][i] = null; });
+
+  if (isCurrentFY) {
     // 実データ：学校フィルタのみ適用し、学年はこの表で分けるので grade では絞らない
     const persons = trendPersonsCache.filter(p => (trendFilter.school === '全校' || p.school === trendFilter.school) && trendMatchMembership(p));
-    for (let m = 1; m <= 12; m++) {
-      const monthLast = toJSTDateStr(new Date(year, m, 0)); // 当月末
-      // 当月はまだ月末が来ていないので「今日」を基準日に。翌月以降（未来）は空欄。
+    fmonths.forEach((mo, i) => {
+      if (mo.ym > todayStr.slice(0, 7)) return; // 翌月以降（未来）は空欄
+      const monthLast = mo.lastDay;
       const asOf = (monthLast > todayStr) ? todayStr : monthLast;
-      if (year + '-' + String(m).padStart(2, '0') > todayStr.slice(0, 7)) continue; // 翌月以降は空欄
-      const ym = year + '-' + String(m).padStart(2, '0');
       grades.forEach(g => {
         let cnt = 0;
         persons.forEach(p => {
@@ -17140,67 +17337,68 @@ function trendGridTable(d) {
           if (metric === 'enrolled') {
             if (p.enroll && p.enroll <= asOf && (!p.withdraw || asOf < p.withdraw)) cnt++;
           } else if (metric === 'joined') {
-            if (p.enroll && p.enroll.slice(0, 7) === ym) cnt++;
+            if (p.enroll && p.enroll.slice(0, 7) === mo.ym) cnt++;
           } else { // left
-            if (p.withdraw && p.withdraw.slice(0, 7) === ym) cnt++;
+            if (p.withdraw && p.withdraw.slice(0, 7) === mo.ym) cnt++;
           }
         });
-        grid[g][m] = cnt;
+        grid[g][i] = cnt;
       });
-    }
+    });
   } else {
     // 過去年度：手入力データ。metric 一致・学校フィルタ適用。
+    // annual_enrollment は (year, month) のカレンダー値で保持しているので、
+    // 年度月 fmonths[i].y / .m と突き合わせて該当セルに入れる。
+    const idxByYM = {};
+    fmonths.forEach((mo, i) => { idxByYM[mo.y + '-' + mo.m] = i; });
     trendAnnualRows.forEach(r => {
       if ((r.metric || 'enrolled') !== metric) return;
-      if (parseInt(r.year, 10) !== year) return;
       if (trendFilter.school !== '全校' && (r.school || '') !== trendFilter.school) return;
       const g = r.grade || '';
-      const m = parseInt(r.month, 10);
+      const ry = parseInt(r.year, 10), rm = parseInt(r.month, 10);
+      const i = idxByYM[ry + '-' + rm];
+      if (i == null) return;
       if (!grid[g]) return;
-      if (m < 1 || m > 12) return;
-      grid[g][m] = (grid[g][m] || 0) + (parseInt(r.count, 10) || 0);
+      grid[g][i] = (grid[g][i] || 0) + (parseInt(r.count, 10) || 0);
     });
   }
 
   // 列末「合計」＝各月の学年合計（全指標共通）。
-  const monthTotal = {}; for (let m = 1; m <= 12; m++) monthTotal[m] = null;
+  const monthTotal = {}; for (let i = 0; i < 12; i++) monthTotal[i] = null;
   grades.forEach(g => {
-    for (let m = 1; m <= 12; m++) {
-      if (grid[g][m] != null) { monthTotal[m] = (monthTotal[m] || 0) + grid[g][m]; }
+    for (let i = 0; i < 12; i++) {
+      if (grid[g][i] != null) { monthTotal[i] = (monthTotal[i] || 0) + grid[g][i]; }
     }
   });
-  // 行末「全体」列：
-  //   在籍＝その学年の直近（右端の非空）月の在籍。
-  //   入塾／退塾＝年度（4月〜翌3月）内の累計。年セレクタが示すカレンダー年の4月〜翌年3月を
-  //   合算したいが、本表は単一カレンダー年の1〜12月しか持たないため、ここでは
-  //   「表示中の1〜12月の合計」を年度内累計の近似として表示する（4月始まり運用の注記を併記）。
+  // 行末「全体／年度計」列：
+  //   在籍＝その学年の年度内の直近（右端の非空）月の在籍。
+  //   入塾／退塾＝年度（4月〜翌3月）内の累計。
   const rowAgg = {}; // 学年→全体列の値
   grades.forEach(g => {
     if (metric === 'enrolled') {
       let latest = null;
-      for (let m = 12; m >= 1; m--) { if (grid[g][m] != null) { latest = grid[g][m]; break; } }
+      for (let i = 11; i >= 0; i--) { if (grid[g][i] != null) { latest = grid[g][i]; break; } }
       rowAgg[g] = latest;
     } else {
       let sum = null;
-      for (let m = 1; m <= 12; m++) { if (grid[g][m] != null) sum = (sum || 0) + grid[g][m]; }
+      for (let i = 0; i < 12; i++) { if (grid[g][i] != null) sum = (sum || 0) + grid[g][i]; }
       rowAgg[g] = sum;
     }
   });
   let grandAgg = null;
   if (metric === 'enrolled') {
-    for (let m = 12; m >= 1; m--) { if (monthTotal[m] != null) { grandAgg = monthTotal[m]; break; } }
+    for (let i = 11; i >= 0; i--) { if (monthTotal[i] != null) { grandAgg = monthTotal[i]; break; } }
   } else {
-    for (let m = 1; m <= 12; m++) { if (monthTotal[m] != null) grandAgg = (grandAgg || 0) + monthTotal[m]; }
+    for (let i = 0; i < 12; i++) { if (monthTotal[i] != null) grandAgg = (grandAgg || 0) + monthTotal[i]; }
   }
 
-  // 年セレクタ（今年＋過去年度）
-  const yearChoices = [];
-  if (!ANNUAL_YEARS.includes(curYear)) yearChoices.push(curYear);
-  ANNUAL_YEARS.slice().sort((a, b) => b - a).forEach(y => { if (!yearChoices.includes(y)) yearChoices.push(y); });
-  if (!yearChoices.includes(curYear)) yearChoices.unshift(curYear);
-  yearChoices.sort((a, b) => b - a);
-  const yearOpts = yearChoices.map(y =>
-    '<option value="' + y + '"' + (y === year ? ' selected' : '') + '>' + y + '年' + (y === curYear ? '（実データ）' : '（手入力）') + '</option>'
+  // 年度セレクタ（今年度＋過去年度）
+  const fyChoices = [];
+  for (let y = curFY; y >= curFY - 4; y--) fyChoices.push(y);
+  ANNUAL_YEARS.forEach(y => { if (!fyChoices.includes(y)) fyChoices.push(y); });
+  fyChoices.sort((a, b) => b - a);
+  const yearOpts = fyChoices.map(y =>
+    '<option value="' + y + '"' + (y === fyStart ? ' selected' : '') + '>' + y + '年度' + (y === curFY ? '（実データ）' : '（手入力）') + '</option>'
   ).join('');
 
   // 色（画像に寄せた緑系ヘッダ・グレー見出し）。指標で合計色を変える。
@@ -17218,17 +17416,17 @@ function trendGridTable(d) {
   // 「全体」列の見出し（在籍＝直近、入塾/退塾＝年度内累計）
   const aggHead = (metric === 'enrolled') ? '全体' : '年度計';
 
-  // ヘッダ行（年度ラベル＋1〜12月＋全体/年度計）。月ヘッダはタップで名前リスト（実データのみ）。
+  // ヘッダ行（年度ラベル＋4月…翌3月＋全体/年度計）。月ヘッダはタップで名前リスト（実データのみ）。
   let head = '<tr>'
-    + '<th style="border:1px solid #BFBFBF;padding:5px 8px;text-align:center;background:#fff;white-space:nowrap;font-size:12px">' + year + '年</th>';
-  for (let m = 1; m <= 12; m++) {
-    const ym = year + '-' + String(m).padStart(2, '0');
+    + '<th style="border:1px solid #BFBFBF;padding:5px 8px;text-align:center;background:#fff;white-space:nowrap;font-size:12px">' + fyStart + '年度</th>';
+  fmonths.forEach((mo, i) => {
+    const ym = mo.ym;
     const isOpen = (trendOpenMonth === ym);
-    const tappable = isCurrentYear;
+    const tappable = isCurrentFY;
     head += '<th style="border:1px solid ' + headBd + ';padding:5px 4px;background:' + headBg + ';font-size:11px;white-space:nowrap;text-align:center;' + (tappable ? 'cursor:pointer' : '') + '"'
       + (tappable ? ' onclick="trendToggleMonthNames(\'' + ym + '\')"' : '') + '>'
-      + (isOpen ? '▾' : '') + m + '月</th>';
-  }
+      + (isOpen ? '▾' : '') + mo.m + '月</th>';
+  });
   head += '<th style="border:1px solid ' + headBd + ';padding:5px 6px;background:' + headBg + ';font-size:12px;text-align:center">' + aggHead + '</th></tr>';
 
   // 学年行（学年見出しも中央揃え）
@@ -17236,35 +17434,37 @@ function trendGridTable(d) {
   grades.forEach(g => {
     body += '<tr>'
       + '<td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + sideBg + ';font-weight:700;white-space:nowrap;font-size:12px;text-align:center">' + escapeHtml(g) + '</td>';
-    for (let m = 1; m <= 12; m++) body += cell(grid[g][m]);
+    for (let i = 0; i < 12; i++) body += cell(grid[g][i]);
     body += cell(rowAgg[g], { bg: totBg, bold: true });
     body += '</tr>';
   });
   // 合計行（見出しも中央揃え）
   body += '<tr>'
     + '<td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + sideBg + ';font-weight:700;white-space:nowrap;font-size:12px;text-align:center">合計</td>';
-  for (let m = 1; m <= 12; m++) body += cell(monthTotal[m], { bold: true, color: metricColor });
+  for (let i = 0; i < 12; i++) body += cell(monthTotal[i], { bold: true, color: metricColor });
   body += cell(grandAgg, { bg: totBg, bold: true, color: metricColor });
   body += '</tr>';
 
   // 名前リスト展開（実データかつ開いている月）
   let namePanel = '';
-  if (isCurrentYear && trendOpenMonth && trendOpenMonth.slice(0, 4) === String(year)) {
-    const m = parseInt(trendOpenMonth.slice(5, 7), 10);
-    const monthLast = toJSTDateStr(new Date(year, m, 0));
-    const asOf = (monthLast > todayStr) ? todayStr : monthLast;
-    const mo = { y: year, m: m, ym: trendOpenMonth, lastDay: asOf };
-    namePanel = '<div style="margin-top:8px;padding:8px 10px;border:1px solid #D6E4F0;border-radius:8px;background:#FAFBFC">'
-      + trendMonthNamesHtml(mo) + '</div>';
+  if (isCurrentFY && trendOpenMonth) {
+    const openMo = fmonths.find(mo => mo.ym === trendOpenMonth);
+    if (openMo) {
+      const monthLast = openMo.lastDay;
+      const asOf = (monthLast > todayStr) ? todayStr : monthLast;
+      const mo = { y: openMo.y, m: openMo.m, ym: openMo.ym, lastDay: asOf };
+      namePanel = '<div style="margin-top:8px;padding:8px 10px;border:1px solid #D6E4F0;border-radius:8px;background:#FAFBFC">'
+        + trendMonthNamesHtml(mo) + '</div>';
+    }
   }
 
-  const note = isCurrentYear
+  const note = isCurrentFY
     ? (metric === 'enrolled'
-        ? '※セル＝各月末の在籍人数。「全体」列はその学年の直近月の在籍、「合計」行は各月の学年合計です。月をタップすると名前リストが出ます。入塾日 未入力の在籍生は数に含まれません。'
+        ? '※' + fyStart + '年度（4月〜翌3月）。セル＝各月末の在籍人数。「全体」列はその学年の直近月の在籍、「合計」行は各月の学年合計です。月をタップすると名前リストが出ます。入塾日 未入力の在籍生は数に含まれません。'
         : (metric === 'joined'
-            ? '※セル＝その月に新規入塾した人数。「年度計」列・「合計」行はその学年／全体の1〜12月の累計です。月をタップで名前リスト。入塾日 未入力の生徒は数えられません。'
-            : '※セル＝その月に退塾した人数（退塾日が確定している人のみ）。「年度計」列・「合計」行は1〜12月の累計です。退塾日が空の退塾者は含まれません。'))
-    : '※過去年度の手入力データ（学校×学年×月）。空欄は未入力。学校フィルタに連動します。表示中の指標：' + metricLabel;
+            ? '※' + fyStart + '年度（4月〜翌3月）。セル＝その月に新規入塾した人数。「年度計」列・「合計」行は年度内の累計です。月をタップで名前リスト。入塾日 未入力の生徒は数えられません。'
+            : '※' + fyStart + '年度（4月〜翌3月）。セル＝その月に退塾した人数（退塾日が確定している人のみ）。「年度計」列・「合計」行は年度内の累計です。退塾日が空の退塾者は含まれません。'))
+    : '※過去年度の手入力データ（学校×学年×月／4月〜翌3月）。空欄は未入力。学校フィルタに連動します。表示中の指標：' + metricLabel;
 
   // 指標切替ボタン（在籍／新規入塾／退塾）
   const mBtn = (mk, label, color) =>
@@ -17279,7 +17479,7 @@ function trendGridTable(d) {
 
   return '<div style="margin-top:14px">'
     + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">'
-    +   '<span style="font-size:12px;font-weight:700;color:var(--muted)">📋 ' + metricLabel + 'の一覧（年×月×学年）</span>'
+    +   '<span style="font-size:12px;font-weight:700;color:var(--muted)">📋 ' + metricLabel + 'の一覧（年度×月×学年）</span>'
     +   '<select onchange="onTrendGridYearChange(this.value)" style="padding:4px 8px;font-size:12px;border:1px solid var(--border);border-radius:8px;font-family:inherit">' + yearOpts + '</select>'
     +   (trendFilter.school !== '全校' ? '<span style="font-size:11px;color:#1A4D80;background:#DCEBFA;border:1px solid #9CC0E8;padding:1px 8px;border-radius:12px">' + escapeHtml(trendFilter.school) + '</span>' : '')
     + '</div>'
@@ -17298,6 +17498,89 @@ function onTrendGridYearChange(v) {
 function setTrendGridMetric(mk) {
   trendGridMetric = mk;
   drawEnrollmentTrend();
+}
+
+// 年度比較表：選択した複数年度を横に並べ、月（4月→翌3月）×年度で数値比較。
+// 指標はグリッド表のタブ（trendGridMetric）に連動。2年度以上で差分列を表示。
+function trendFYCompareTable(d) {
+  if (trendGraphMode !== 'fiscal') return '';
+  const dispFY = (trendGraphFY == null) ? currentFiscalStartYear() : trendGraphFY;
+  // 並べる年度：表示中の年度＋ONにした比較年度（降順）
+  const years = [dispFY];
+  Object.keys(trendFYCompare).forEach(k => {
+    const fy = parseInt(k, 10);
+    if (trendFYCompare[fy] && fy !== dispFY) years.push(fy);
+  });
+  if (years.length < 2) return ''; // 比較対象が無ければ非表示
+  years.sort((a, b) => b - a);
+
+  const metric = trendGridMetric;
+  const metricLabel = (metric === 'joined') ? '新規入塾' : (metric === 'left') ? '退塾' : '在籍';
+  const metricColor = (metric === 'joined') ? '#1E8449' : (metric === 'left') ? '#C0392B' : '#2D6CB6';
+  const fmonths = trendFiscalMonths(dispFY); // 月ラベルの並び（4月→翌3月）
+
+  // 各年度の系列と年度計
+  const seriesByFY = {}; const aggByFY = {};
+  years.forEach(fy => {
+    const s = trendFiscalSeries(fy, metric, trendFiscalMonths(fy));
+    seriesByFY[fy] = s;
+    aggByFY[fy] = trendFiscalAgg(s, metric);
+  });
+
+  // 差分：最新年度 − 1つ前（年度順で隣）
+  const newestFY = years[0], prevFY = years[1];
+
+  const headBg = '#EAF1F8', headBd = '#C3D6EA', sideBg = '#EDEDED', totBg = '#DDDDDD';
+  const cell = (v, opt) => {
+    opt = opt || {};
+    const bg = opt.bg || '#fff';
+    const fw = opt.bold ? '700' : '400';
+    const col = opt.color || 'var(--text)';
+    const txt = (v == null) ? '' : v;
+    return '<td style="border:1px solid #BFBFBF;padding:5px 8px;text-align:center;background:' + bg + ';font-weight:' + fw + ';color:' + col + ';white-space:nowrap">' + txt + '</td>';
+  };
+  const diffCell = (a, b) => {
+    if (a == null || b == null) return cell('', { bg: '#FAFAFA' });
+    const diff = a - b;
+    const sign = diff > 0 ? '+' : (diff < 0 ? '' : '±');
+    const col = diff > 0 ? '#1E8449' : (diff < 0 ? '#C0392B' : '#7F8C8D');
+    const arrow = diff > 0 ? '▲' : (diff < 0 ? '▼' : '−');
+    return '<td style="border:1px solid #BFBFBF;padding:5px 8px;text-align:center;background:#FAFAFA;font-weight:700;color:' + col + ';white-space:nowrap">' + arrow + sign + diff + '</td>';
+  };
+
+  // ヘッダ
+  let head = '<tr><th style="border:1px solid #BFBFBF;padding:5px 8px;background:#fff;text-align:center;font-size:12px">月</th>';
+  years.forEach(fy => {
+    const c = trendFYColor(fy);
+    head += '<th style="border:1px solid ' + headBd + ';padding:5px 8px;background:' + headBg + ';text-align:center;font-size:11px;white-space:nowrap"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + c + ';margin-right:4px"></span>' + fy + '年度</th>';
+  });
+  head += '<th style="border:1px solid ' + headBd + ';padding:5px 8px;background:' + headBg + ';text-align:center;font-size:11px;white-space:nowrap">差分<br>(' + newestFY + '−' + prevFY + ')</th></tr>';
+
+  // 月行
+  let body = '';
+  fmonths.forEach((mo, i) => {
+    body += '<tr><td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + sideBg + ';text-align:center;font-weight:700;font-size:12px;white-space:nowrap">' + mo.m + '月</td>';
+    years.forEach(fy => { body += cell(seriesByFY[fy][i], { color: (fy === dispFY ? metricColor : 'var(--text)') }); });
+    body += diffCell(seriesByFY[newestFY][i], seriesByFY[prevFY][i]);
+    body += '</tr>';
+  });
+  // 年度計行
+  const aggLabel = (metric === 'enrolled') ? '直近月' : '年度計';
+  body += '<tr><td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + totBg + ';text-align:center;font-weight:700;font-size:12px;white-space:nowrap">' + aggLabel + '</td>';
+  years.forEach(fy => { body += cell(aggByFY[fy], { bg: totBg, bold: true, color: metricColor }); });
+  body += diffCell(aggByFY[newestFY], aggByFY[prevFY]);
+  body += '</tr>';
+
+  const note = (metric === 'enrolled')
+    ? '※各月末の在籍人数を年度（4月〜翌3月）で比較。「直近月」行はその年度の直近の在籍。差分＝' + newestFY + '年度−' + prevFY + '年度。学校・学年・在籍区分フィルタに連動します。'
+    : '※その月の' + metricLabel + '人数を年度で比較。「年度計」行は年度内の累計。差分＝' + newestFY + '年度−' + prevFY + '年度。手入力年度は add_annual_enrollment_metric.sql 実行後の入力が必要です。';
+
+  return '<div style="margin-top:16px">'
+    + '<div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px">📊 年度比較（' + metricLabel + '）— ' + years.map(y => y + '年度').join(' / ') + '</div>'
+    + '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;min-width:' + (140 + years.length * 90) + 'px"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.5">' + note + '</div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:2px">指標は上の表のボタン（在籍／新規入塾／退塾）で切り替わります。比較する年度は「他の年度を重ねる」で選びます。</div>'
+    + '</div>';
 }
 
 // 月行の展開トグル。同じ月を再タップで閉じる。グラフ全体は再描画せず表だけ更新。
@@ -17375,16 +17658,22 @@ function trendCompareCard(c) {
 
 // 在籍は値が大きいので左軸（主軸）、入塾/退塾は右軸（別スケール）で重畳。
 function trendBounds(d) {
-  const enrollVals = trendShow.enrolled ? d.enrolled.slice() : [];
-  // 表示中の過去年度ラインも在籍軸の最大に含める
+  const enrollVals = trendShow.enrolled ? d.enrolled.filter(v => v != null) : [];
+  const flowVals = [];
+  if (trendShow.joined) d.joined.forEach(v => { if (v != null) flowVals.push(v); });
+  if (trendShow.left) d.left.forEach(v => { if (v != null) flowVals.push(v); });
+  // 比較年度（年度オーバーレイ）の値も軸最大に含める
+  (d.fyCompare || []).forEach(fc => {
+    if (trendShow.enrolled) fc.enrolled.forEach(v => { if (v != null) enrollVals.push(v); });
+    if (trendShow.joined) fc.joined.forEach(v => { if (v != null) flowVals.push(v); });
+    if (trendShow.left) fc.left.forEach(v => { if (v != null) flowVals.push(v); });
+  });
+  // 旧：手入力（カレンダー月キー）の在籍重ねも含める（互換）
   ANNUAL_YEARS.forEach(y => {
     if (trendYearShow[y] && trendYears[y]) {
       d.months.forEach(mo => { const v = trendYears[y][mo.m]; if (v != null) enrollVals.push(v); });
     }
   });
-  const flowVals = [];
-  if (trendShow.joined) flowVals.push(...d.joined);
-  if (trendShow.left) flowVals.push(...d.left);
   const maxEnroll = Math.max(1, ...(enrollVals.length ? enrollVals : [1]));
   const maxFlow = Math.max(1, ...(flowVals.length ? flowVals : [1]));
   return { maxEnroll: maxEnroll, maxFlow: maxFlow };
@@ -17421,9 +17710,23 @@ function trendLineSvg(d) {
   // showLabel: 値ラベルを点の上に表示するか（在籍のみ。入塾/退塾は重なるため非表示）
   const polyline = (vals, yFn, color, showLabel, visible) => {
     if (visible === false) return '';
-    const pts = vals.map((v, i) => xAt(i) + ',' + yFn(v)).join(' ');
-    let s = '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="2.5" stroke-linejoin="round"/>';
+    let s = '';
+    // null（未来月など）で線を分断。連続する非null区間ごとに polyline を描く。
+    let seg = [];
+    const flush = () => {
+      if (seg.length >= 2) {
+        const pts = seg.map(pt => pt.x + ',' + pt.y).join(' ');
+        s += '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="2.5" stroke-linejoin="round"/>';
+      }
+      seg = [];
+    };
     vals.forEach((v, i) => {
+      if (v == null) { flush(); return; }
+      seg.push({ x: xAt(i), y: yFn(v) });
+    });
+    flush();
+    vals.forEach((v, i) => {
+      if (v == null) return;
       s += '<circle cx="' + xAt(i) + '" cy="' + yFn(v) + '" r="3" fill="' + color + '"/>';
       if (showLabel) {
         s += '<text x="' + xAt(i) + '" y="' + (yFn(v) - 7) + '" font-size="9.5" font-weight="700" fill="' + color + '" text-anchor="middle">' + v + '</text>';
@@ -17432,24 +17735,25 @@ function trendLineSvg(d) {
     return s;
   };
   g += polyline(d.enrolled, yEnroll, '#2D6CB6', true, trendShow.enrolled);
-  // 過去年度ライン（点線・ラベルなし）
-  ANNUAL_YEARS.forEach(y => {
-    if (!trendYearShow[y] || !trendYears[y]) return;
-    const vals = d.months.map(mo => trendYears[y][mo.m]);
-    const c = TREND_YEAR_COLORS[y] || '#888';
-    // 欠損(null)はスキップしてセグメント描画
+  // 比較年度の重ね（点線・年度色・ラベルなし）。表示中の系列に合わせて描く。
+  const dashLine = (vals, yFn, color) => {
     let segPts = [];
     const flush = () => {
-      if (segPts.length >= 2) g += '<polyline points="' + segPts.join(' ') + '" fill="none" stroke="' + c + '" stroke-width="2" stroke-dasharray="5,4" stroke-linejoin="round" opacity="0.85"/>';
+      if (segPts.length >= 2) g += '<polyline points="' + segPts.join(' ') + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-dasharray="5,4" stroke-linejoin="round" opacity="0.85"/>';
       segPts = [];
     };
     vals.forEach((v, i) => {
       if (v == null) { flush(); return; }
-      const x = xAt(i), yy = yEnroll(v);
+      const x = xAt(i), yy = yFn(v);
       segPts.push(x + ',' + yy);
-      g += '<circle cx="' + x + '" cy="' + yy + '" r="2.5" fill="' + c + '"/>';
+      g += '<circle cx="' + x + '" cy="' + yy + '" r="2.5" fill="' + color + '"/>';
     });
     flush();
+  };
+  (d.fyCompare || []).forEach(fc => {
+    if (trendShow.enrolled) dashLine(fc.enrolled, yEnroll, fc.color);
+    if (trendShow.joined) dashLine(fc.joined, yFlow, fc.color);
+    if (trendShow.left) dashLine(fc.left, yFlow, fc.color);
   });
   if (trendShow.joined) g += polyline(d.joined, yFlow, '#5A9E3C', false, true);
   if (trendShow.left) g += polyline(d.left, yFlow, '#C0392B', false, true);
@@ -17494,6 +17798,7 @@ function trendBarSvg(d) {
     const totalW = activeBars.length * bw + (activeBars.length - 1) * 2;
     let x0 = cx - totalW / 2;
     activeBars.forEach(b => {
+      if (b.vals[i] == null) { x0 += bw + 2; return; } // 未来月など欠損はバーを描かない
       const h = b.yFn(b.vals[i]);
       g += '<rect x="' + x0 + '" y="' + (baseY - h) + '" width="' + bw + '" height="' + h + '" rx="2" fill="' + b.color + '"/>';
       g += barLabel(x0 + bw / 2, baseY - h, b.vals[i], b.color);
@@ -17501,24 +17806,26 @@ function trendBarSvg(d) {
     });
     g += '<text x="' + cx + '" y="' + (H - padB + 16) + '" font-size="9" fill="var(--muted)" text-anchor="middle">' + mo.label + '</text>';
   });
-  // 過去年度ライン（棒グラフ上にも点線で重ねる）
-  ANNUAL_YEARS.forEach(y => {
-    if (!trendYearShow[y] || !trendYears[y]) return;
-    const c = TREND_YEAR_COLORS[y] || '#888';
+  // 比較年度（棒グラフ上に点線で重ねる・年度色）。表示中の系列に合わせる。
+  const barDash = (vals, yFn, color) => {
     let segPts = [];
     const flush = () => {
-      if (segPts.length >= 2) g += '<polyline points="' + segPts.join(' ') + '" fill="none" stroke="' + c + '" stroke-width="2" stroke-dasharray="5,4" opacity="0.85"/>';
+      if (segPts.length >= 2) g += '<polyline points="' + segPts.join(' ') + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-dasharray="5,4" opacity="0.85"/>';
       segPts = [];
     };
-    d.months.forEach((mo, i) => {
-      const v = trendYears[y][mo.m];
+    vals.forEach((v, i) => {
       if (v == null) { flush(); return; }
       const cx = padL + slot * i + slot / 2;
-      const yy = baseY - yEnroll(v);
+      const yy = baseY - yFn(v);
       segPts.push(cx + ',' + yy);
-      g += '<circle cx="' + cx + '" cy="' + yy + '" r="2.5" fill="' + c + '"/>';
+      g += '<circle cx="' + cx + '" cy="' + yy + '" r="2.5" fill="' + color + '"/>';
     });
     flush();
+  };
+  (d.fyCompare || []).forEach(fc => {
+    if (trendShow.enrolled) barDash(fc.enrolled, yEnroll, fc.color);
+    if (trendShow.joined) barDash(fc.joined, yFlow, fc.color);
+    if (trendShow.left) barDash(fc.left, yFlow, fc.color);
   });
 
   return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;min-width:560px;height:auto" role="img">' + g + '</svg>';
