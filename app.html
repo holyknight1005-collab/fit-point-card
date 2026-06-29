@@ -2988,7 +2988,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zab';
+const APP_VERSION = '20260626zac';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16670,7 +16670,8 @@ var trendYearShow = {};      // { 2025: true/false } 年ラインの表示トグ
 var ANNUAL_YEARS = [2022, 2023, 2024, 2025]; // 重ね表示できる過去年度
 var TREND_YEAR_COLORS = { 2022: '#9B59B6', 2023: '#E67E22', 2024: '#16A085', 2025: '#7F8C8D' };
 var trendFilter = { grade: '全体', school: '全校' }; // グラフの絞り込み
-var trendPersonsCache = [];   // {enroll, withdraw, school, grade} 全員（再集計用）
+var trendPersonsCache = [];   // {enroll, withdraw, school, grade, name, src} 全員（再集計用）
+var trendOpenMonth = null;    // 名前リストを開いている月（ym 'YYYY-MM'）。同じ月を再タップで閉じる。
 var trendAnnualRows = [];     // annual_enrollment 全行 {year,month,school,grade,count}
 var trendAllMonths = [];      // 24ヶ月分の月メタ（再集計用）
 
@@ -16724,7 +16725,7 @@ async function renderEnrollmentTrend() {
       rosterPersons.push({
         _enroll: r.enroll_date || null,
         _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null,
-        _school: r.school || '', _grade: r.grade || ''
+        _school: r.school || '', _grade: r.grade || '', _name: r.name || '(名前なし)'
       });
     });
   } catch (e) { rosterPersons = []; }
@@ -16743,9 +16744,9 @@ async function renderEnrollmentTrend() {
       else return; // 退塾時期が全く不明な退会者は推移から除外（人数表と揃える）
     }
     if (!enroll && !withdraw) return;    // 入塾日も退塾日も無ければスキップ
-    persons.push({ enroll: enroll, withdraw: withdraw, school: s.school || '', grade: s.grade || '' });
+    persons.push({ enroll: enroll, withdraw: withdraw, school: s.school || '', grade: s.grade || '', name: s.name || '(名前なし)', src: 'app' });
   });
-  rosterPersons.forEach(r => { persons.push({ enroll: r._enroll, withdraw: r._withdraw, school: r._school || '', grade: r._grade || '' }); });
+  rosterPersons.forEach(r => { persons.push({ enroll: r._enroll, withdraw: r._withdraw, school: r._school || '', grade: r._grade || '', name: r._name || '(名前なし)', src: 'roster' }); });
   trendPersonsCache = persons; // 絞り込み再集計用にキャッシュ
 
   // 過去24ヶ月分を内部集計（昨年同月比のため）。グラフ表示は直近12ヶ月のみ。
@@ -17009,7 +17010,7 @@ function drawEnrollmentTrend() {
     '</div>';
 }
 
-// グラフ下：月ごとの在籍数と前月差を数値で表示
+// グラフ下：月ごとの在籍数と前月差を数値で表示。各行をタップで「誰が反映されているか」名前リストを展開。
 function trendMonthlyTable(d) {
   let rows = '';
   d.months.forEach((mo, i) => {
@@ -17020,16 +17021,22 @@ function trendMonthlyTable(d) {
       : (diff > 0 ? '<span style="color:#1E8449;font-weight:700">▲ +' + diff + '</span>'
         : diff < 0 ? '<span style="color:#C0392B;font-weight:700">▼ ' + diff + '</span>'
         : '<span style="color:#7F8C8D">± 0</span>');
-    rows += '<tr style="border-bottom:1px solid #F0F0EC">'
-      + '<td style="padding:5px 8px;white-space:nowrap">' + mo.y + '年' + mo.m + '月</td>'
+    const isOpen = (trendOpenMonth === mo.ym);
+    const colspan = 3 + (trendShow.joined ? 1 : 0) + (trendShow.left ? 1 : 0);
+    rows += '<tr style="border-bottom:1px solid #F0F0EC;cursor:pointer" onclick="trendToggleMonthNames(\'' + mo.ym + '\')">'
+      + '<td style="padding:5px 8px;white-space:nowrap">' + (isOpen ? '▾ ' : '▸ ') + mo.y + '年' + mo.m + '月</td>'
       + '<td style="padding:5px 8px;text-align:right;font-weight:700;color:#2D6CB6">' + cur + '</td>'
       + '<td style="padding:5px 8px;text-align:right">' + diffHtml + '</td>'
       + (trendShow.joined ? '<td style="padding:5px 8px;text-align:right;color:#5A9E3C">' + d.joined[i] + '</td>' : '')
       + (trendShow.left ? '<td style="padding:5px 8px;text-align:right;color:#C0392B">' + d.left[i] + '</td>' : '')
       + '</tr>';
+    if (isOpen) {
+      rows += '<tr><td colspan="' + colspan + '" style="padding:0 8px 10px 8px;background:#FAFBFC">'
+        + trendMonthNamesHtml(mo) + '</td></tr>';
+    }
   });
   return '<div style="margin-top:12px;overflow-x:auto">'
-    + '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">📋 月ごとの在籍と前月差</div>'
+    + '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">📋 月ごとの在籍と前月差<span style="font-weight:400">（行をタップで名前リスト）</span></div>'
     + '<table style="width:100%;border-collapse:collapse;font-size:12px">'
     + '<thead><tr style="background:var(--orange-l)">'
     + '<th style="padding:5px 8px;text-align:left">月</th>'
@@ -17038,6 +17045,50 @@ function trendMonthlyTable(d) {
     + (trendShow.joined ? '<th style="padding:5px 8px;text-align:right">入塾</th>' : '')
     + (trendShow.left ? '<th style="padding:5px 8px;text-align:right">退塾</th>' : '')
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+// 月行の展開トグル。同じ月を再タップで閉じる。グラフ全体は再描画せず表だけ更新。
+function trendToggleMonthNames(ym) {
+  trendOpenMonth = (trendOpenMonth === ym) ? null : ym;
+  drawEnrollmentTrend();
+}
+
+// 指定月（mo）に在籍としてカウントされている生徒の名前リストHTML。
+// 現在の学校×学年フィルタを適用。入塾・退塾もその月分を併記。
+function trendMonthNamesHtml(mo) {
+  const mEnd = mo.lastDay, ym = mo.ym;
+  const persons = trendPersonsCache.filter(p => trendMatchFilter(p.school, p.grade));
+  const enrolledList = [], joinedList = [], leftList = [];
+  persons.forEach(p => {
+    if (p.enroll && p.enroll <= mEnd && (!p.withdraw || mEnd < p.withdraw)) enrolledList.push(p);
+    if (p.enroll && p.enroll.slice(0, 7) === ym) joinedList.push(p);
+    if (p.withdraw && p.withdraw.slice(0, 7) === ym) leftList.push(p);
+  });
+  const sortByName = (a, b) => (a.name || '').localeCompare(b.name || '', 'ja');
+  enrolledList.sort(sortByName); joinedList.sort(sortByName); leftList.sort(sortByName);
+
+  const chip = (p, color) => {
+    const sub = [p.grade || '', p.school || ''].filter(Boolean).join(' ');
+    const rosterBadge = (p.src === 'roster') ? '<span style="font-size:9px;color:#9A7B3C;margin-left:3px">名簿</span>' : '';
+    return '<span style="display:inline-flex;align-items:baseline;gap:3px;padding:2px 8px;margin:2px;border:1px solid ' + color + '40;background:' + color + '0F;border-radius:12px;font-size:11px;color:var(--text)">'
+      + escapeHtml(p.name) + (sub ? '<span style="font-size:9px;color:var(--muted)">' + escapeHtml(sub) + '</span>' : '') + rosterBadge + '</span>';
+  };
+  const section = (title, list, color) => {
+    if (!list.length) return '<div style="font-size:11px;color:var(--muted);margin:4px 0">' + title + '：0名</div>';
+    return '<div style="margin:6px 0">'
+      + '<div style="font-size:11px;font-weight:700;color:' + color + ';margin-bottom:2px">' + title + '（' + list.length + '名）</div>'
+      + '<div style="display:flex;flex-wrap:wrap">' + list.map(p => chip(p, color)).join('') + '</div>'
+      + '</div>';
+  };
+
+  let html = '<div style="font-size:10px;color:var(--muted);margin:6px 0 4px">' + mo.y + '年' + mo.m + '月末時点で在籍にカウントされている生徒'
+    + (trendFilter.school !== '全校' || trendFilter.grade !== '全体'
+        ? '（' + (trendFilter.school !== '全校' ? trendFilter.school : '全校') + '／' + (trendFilter.grade !== '全体' ? trendFilter.grade : '全体') + '）' : '')
+    + '。入塾日が未入力の在籍生はここに出ません。</div>';
+  html += section('在籍', enrolledList, '#2D6CB6');
+  if (trendShow.joined || joinedList.length) html += section('この月の入塾', joinedList, '#5A9E3C');
+  if (trendShow.left || leftList.length) html += section('この月の退塾', leftList, '#C0392B');
+  return html;
 }
 
 // 当月の在籍数と、前月比・昨年同月比のサマリーカード。今月の新規入塾/退塾も併記。
