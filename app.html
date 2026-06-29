@@ -2988,7 +2988,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zad';
+const APP_VERSION = '20260626zae';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16672,6 +16672,7 @@ var TREND_YEAR_COLORS = { 2022: '#9B59B6', 2023: '#E67E22', 2024: '#16A085', 202
 var trendFilter = { grade: '全体', school: '全校' }; // グラフの絞り込み
 var trendPersonsCache = [];   // {enroll, withdraw, school, grade, name, src} 全員（再集計用）
 var trendOpenMonth = null;    // 名前リストを開いている月（ym 'YYYY-MM'）。同じ月を再タップで閉じる。
+var trendGridYear = null;     // グリッド表で表示中の年（カレンダー年）。null=今年。
 var trendAnnualRows = [];     // annual_enrollment 全行 {year,month,school,grade,count}
 var trendAllMonths = [];      // 24ヶ月分の月メタ（再集計用）
 
@@ -17006,45 +17007,161 @@ function drawEnrollmentTrend() {
       seriesRow +
       yearRow +
       '<div style="width:100%;overflow-x:auto">' + svg + '</div>' +
-      trendMonthlyTable(d) +
+      trendGridTable(d) +
     '</div>';
 }
 
-// グラフ下：月ごとの在籍数と前月差を数値で表示。各行をタップで「誰が反映されているか」名前リストを展開。
-function trendMonthlyTable(d) {
-  let rows = '';
-  d.months.forEach((mo, i) => {
-    const cur = d.enrolled[i];
-    const prev = i > 0 ? d.enrolled[i - 1] : null;
-    const diff = (prev == null) ? null : (cur - prev);
-    const diffHtml = (diff == null) ? '<span style="color:var(--muted)">—</span>'
-      : (diff > 0 ? '<span style="color:#1E8449;font-weight:700">▲ +' + diff + '</span>'
-        : diff < 0 ? '<span style="color:#C0392B;font-weight:700">▼ ' + diff + '</span>'
-        : '<span style="color:#7F8C8D">± 0</span>');
-    const isOpen = (trendOpenMonth === mo.ym);
-    const colspan = 3 + (trendShow.joined ? 1 : 0) + (trendShow.left ? 1 : 0);
-    rows += '<tr style="border-bottom:1px solid #F0F0EC;cursor:pointer" onclick="trendToggleMonthNames(\'' + mo.ym + '\')">'
-      + '<td style="padding:5px 8px;white-space:nowrap">' + (isOpen ? '▾ ' : '▸ ') + mo.y + '年' + mo.m + '月</td>'
-      + '<td style="padding:5px 8px;text-align:right;font-weight:700;color:#2D6CB6">' + cur + '</td>'
-      + '<td style="padding:5px 8px;text-align:right">' + diffHtml + '</td>'
-      + (trendShow.joined ? '<td style="padding:5px 8px;text-align:right;color:#5A9E3C">' + d.joined[i] + '</td>' : '')
-      + (trendShow.left ? '<td style="padding:5px 8px;text-align:right;color:#C0392B">' + d.left[i] + '</td>' : '')
-      + '</tr>';
-    if (isOpen) {
-      rows += '<tr><td colspan="' + colspan + '" style="padding:0 8px 10px 8px;background:#FAFBFC">'
-        + trendMonthNamesHtml(mo) + '</td></tr>';
+// グラフ下：年度×月×学年の在籍グリッド表（提出資料風）。
+// 行＝学年（＋合計）、列＝1〜12月（＋全体）。セル＝各月末の在籍人数。
+// 年セレクタで今年度の実データ／過去年度の手入力データを切替表示。学校フィルタに連動。
+// 月の列ヘッダをタップでその月の名前リストを展開。
+function trendGridTable(d) {
+  // 表示年（カレンダー年）。未指定なら最新月の年。
+  const todayStr = getTodayJST();
+  const curYear = parseInt(todayStr.slice(0, 4), 10);
+  const year = (trendGridYear == null) ? curYear : trendGridYear;
+
+  // 学年の並び：SA_GRADES を基本に、データに出てくる他の学年も末尾へ
+  const gradeSet = new Set(SA_GRADES);
+  trendPersonsCache.forEach(p => { if (p.grade) gradeSet.add(p.grade); });
+  trendAnnualRows.forEach(r => { if (r.grade) gradeSet.add(r.grade); });
+  const grades = SA_GRADES.concat([...gradeSet].filter(g => !SA_GRADES.includes(g)));
+
+  // 各学年×月の在籍数を求める。
+  // 今年度（実データ）: trendPersonsCache（学校フィルタ適用）から各月末の在籍を学年別に集計。
+  // 過去年度（手入力）: trendAnnualRows（学校フィルタ適用、年一致）から学年別月別を合計。
+  const isCurrentYear = (year === curYear);
+  // grid[grade][month] = count | null
+  const grid = {};
+  grades.forEach(g => { grid[g] = {}; for (let m = 1; m <= 12; m++) grid[g][m] = null; });
+
+  if (isCurrentYear) {
+    // 実データ：学校フィルタのみ適用し、学年はこの表で分けるので grade では絞らない
+    const persons = trendPersonsCache.filter(p => (trendFilter.school === '全校' || p.school === trendFilter.school));
+    for (let m = 1; m <= 12; m++) {
+      const monthLast = toJSTDateStr(new Date(year, m, 0)); // 当月末
+      // 当月はまだ月末が来ていないので「今日」を基準日に。翌月以降（未来）は空欄。
+      const asOf = (monthLast > todayStr) ? todayStr : monthLast;
+      if (year + '-' + String(m).padStart(2, '0') > todayStr.slice(0, 7)) continue; // 翌月以降は空欄
+      grades.forEach(g => {
+        let cnt = 0;
+        persons.forEach(p => {
+          if ((p.grade || '') !== g) return;
+          if (p.enroll && p.enroll <= asOf && (!p.withdraw || asOf < p.withdraw)) cnt++;
+        });
+        grid[g][m] = cnt;
+      });
+    }
+  } else {
+    // 過去年度：手入力データ。学校フィルタ適用。
+    trendAnnualRows.forEach(r => {
+      if (parseInt(r.year, 10) !== year) return;
+      if (trendFilter.school !== '全校' && (r.school || '') !== trendFilter.school) return;
+      const g = r.grade || '';
+      const m = parseInt(r.month, 10);
+      if (!grid[g]) return;
+      if (m < 1 || m > 12) return;
+      grid[g][m] = (grid[g][m] || 0) + (parseInt(r.count, 10) || 0);
+    });
+  }
+
+  // 行末「全体」＝その学年の直近（右端の非空）月の在籍。列末「合計」＝各月の学年合計。
+  const monthTotal = {}; for (let m = 1; m <= 12; m++) monthTotal[m] = null;
+  grades.forEach(g => {
+    for (let m = 1; m <= 12; m++) {
+      if (grid[g][m] != null) { monthTotal[m] = (monthTotal[m] || 0) + grid[g][m]; }
     }
   });
-  return '<div style="margin-top:12px;overflow-x:auto">'
-    + '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">📋 月ごとの在籍と前月差<span style="font-weight:400">（行をタップで名前リスト）</span></div>'
-    + '<table style="width:100%;border-collapse:collapse;font-size:12px">'
-    + '<thead><tr style="background:var(--orange-l)">'
-    + '<th style="padding:5px 8px;text-align:left">月</th>'
-    + '<th style="padding:5px 8px;text-align:right">在籍</th>'
-    + '<th style="padding:5px 8px;text-align:right">前月差</th>'
-    + (trendShow.joined ? '<th style="padding:5px 8px;text-align:right">入塾</th>' : '')
-    + (trendShow.left ? '<th style="padding:5px 8px;text-align:right">退塾</th>' : '')
-    + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+  const rowLatest = {}; // 学年→直近月の在籍
+  grades.forEach(g => {
+    let latest = null;
+    for (let m = 12; m >= 1; m--) { if (grid[g][m] != null) { latest = grid[g][m]; break; } }
+    rowLatest[g] = latest;
+  });
+  let grandLatest = null;
+  for (let m = 12; m >= 1; m--) { if (monthTotal[m] != null) { grandLatest = monthTotal[m]; break; } }
+
+  // 年セレクタ（今年＋過去年度）
+  const yearChoices = [];
+  if (!ANNUAL_YEARS.includes(curYear)) yearChoices.push(curYear);
+  ANNUAL_YEARS.slice().sort((a, b) => b - a).forEach(y => { if (!yearChoices.includes(y)) yearChoices.push(y); });
+  if (!yearChoices.includes(curYear)) yearChoices.unshift(curYear);
+  yearChoices.sort((a, b) => b - a);
+  const yearOpts = yearChoices.map(y =>
+    '<option value="' + y + '"' + (y === year ? ' selected' : '') + '>' + y + '年' + (y === curYear ? '（実データ）' : '（手入力）') + '</option>'
+  ).join('');
+
+  // 色（画像に寄せた緑系ヘッダ・グレー見出し）
+  const headBg = '#E2EFDA', headBd = '#C6D9BC', sideBg = '#EDEDED', totBg = '#DDDDDD';
+  const cell = (v, opt) => {
+    opt = opt || {};
+    const bg = opt.bg || '#fff';
+    const fw = opt.bold ? '700' : '400';
+    const col = opt.color || 'var(--text)';
+    const txt = (v == null) ? '' : v;
+    return '<td style="border:1px solid #BFBFBF;padding:5px 6px;text-align:center;background:' + bg + ';font-weight:' + fw + ';color:' + col + ';white-space:nowrap">' + txt + '</td>';
+  };
+
+  // ヘッダ行（年度ラベル＋1〜12月＋全体）。月ヘッダはタップで名前リスト（実データのみ）。
+  let head = '<tr>'
+    + '<th style="border:1px solid #BFBFBF;padding:5px 8px;text-align:left;background:#fff;white-space:nowrap;font-size:12px">' + year + '年</th>';
+  for (let m = 1; m <= 12; m++) {
+    const ym = year + '-' + String(m).padStart(2, '0');
+    const isOpen = (trendOpenMonth === ym);
+    const tappable = isCurrentYear;
+    head += '<th style="border:1px solid ' + headBd + ';padding:5px 4px;background:' + headBg + ';font-size:11px;white-space:nowrap;' + (tappable ? 'cursor:pointer' : '') + '"'
+      + (tappable ? ' onclick="trendToggleMonthNames(\'' + ym + '\')"' : '') + '>'
+      + (isOpen ? '▾' : '') + m + '月</th>';
+  }
+  head += '<th style="border:1px solid ' + headBd + ';padding:5px 6px;background:' + headBg + ';font-size:12px">全体</th></tr>';
+
+  // 学年行
+  let body = '';
+  grades.forEach(g => {
+    body += '<tr>'
+      + '<td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + sideBg + ';font-weight:700;white-space:nowrap;font-size:12px">' + escapeHtml(g) + '</td>';
+    for (let m = 1; m <= 12; m++) body += cell(grid[g][m]);
+    body += cell(rowLatest[g], { bg: totBg, bold: true });
+    body += '</tr>';
+  });
+  // 合計行
+  body += '<tr>'
+    + '<td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + sideBg + ';font-weight:700;white-space:nowrap;font-size:12px">合計</td>';
+  for (let m = 1; m <= 12; m++) body += cell(monthTotal[m], { bold: true, color: '#2D6CB6' });
+  body += cell(grandLatest, { bg: totBg, bold: true, color: '#2D6CB6' });
+  body += '</tr>';
+
+  // 名前リスト展開（実データかつ開いている月）
+  let namePanel = '';
+  if (isCurrentYear && trendOpenMonth && trendOpenMonth.slice(0, 4) === String(year)) {
+    const m = parseInt(trendOpenMonth.slice(5, 7), 10);
+    const monthLast = toJSTDateStr(new Date(year, m, 0));
+    const asOf = (monthLast > todayStr) ? todayStr : monthLast;
+    const mo = { y: year, m: m, ym: trendOpenMonth, lastDay: asOf };
+    namePanel = '<div style="margin-top:8px;padding:8px 10px;border:1px solid #D6E4F0;border-radius:8px;background:#FAFBFC">'
+      + trendMonthNamesHtml(mo) + '</div>';
+  }
+
+  const note = isCurrentYear
+    ? '※セル＝各月末の在籍人数。「全体」列はその学年の直近月の在籍、「合計」行は各月の学年合計です。月をタップすると名前リストが出ます。入塾日 未入力の在籍生は数に含まれません。'
+    : '※過去年度の手入力データ（学校×学年×月）。空欄は未入力。学校フィルタに連動します。';
+
+  return '<div style="margin-top:14px">'
+    + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">'
+    +   '<span style="font-size:12px;font-weight:700;color:var(--muted)">📋 在籍人数の一覧（年×月×学年）</span>'
+    +   '<select onchange="onTrendGridYearChange(this.value)" style="padding:4px 8px;font-size:12px;border:1px solid var(--border);border-radius:8px;font-family:inherit">' + yearOpts + '</select>'
+    +   (trendFilter.school !== '全校' ? '<span style="font-size:11px;color:#1A4D80;background:#DCEBFA;border:1px solid #9CC0E8;padding:1px 8px;border-radius:12px">' + escapeHtml(trendFilter.school) + '</span>' : '')
+    + '</div>'
+    + '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;min-width:680px">'
+    +   '<thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
+    + namePanel
+    + '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.5">' + note + '</div>'
+    + '</div>';
+}
+
+function onTrendGridYearChange(v) {
+  trendGridYear = parseInt(v, 10);
+  drawEnrollmentTrend();
 }
 
 // 月行の展開トグル。同じ月を再タップで閉じる。グラフ全体は再描画せず表だけ更新。
