@@ -2988,7 +2988,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zag';
+const APP_VERSION = '20260626zah';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16670,6 +16670,8 @@ var trendYearShow = {};      // { 2025: true/false } 年ラインの表示トグ
 var ANNUAL_YEARS = [2022, 2023, 2024, 2025]; // 重ね表示できる過去年度
 var TREND_YEAR_COLORS = { 2022: '#9B59B6', 2023: '#E67E22', 2024: '#16A085', 2025: '#7F8C8D' };
 var trendFilter = { grade: '全体', school: '全校' }; // グラフの絞り込み
+// 在籍区分の集計モード： 'all'=通常＋時期別のみ を合算 / 'regular'=通常のみ
+var trendMembershipMode = 'all';
 var trendPersonsCache = [];   // {enroll, withdraw, school, grade, name, src} 全員（再集計用）
 var trendOpenMonth = null;    // 名前リストを開いている月（ym 'YYYY-MM'）。同じ月を再タップで閉じる。
 var trendGridYear = null;     // グリッド表で表示中の年（カレンダー年）。null=今年。
@@ -16703,9 +16705,13 @@ async function renderEnrollmentTrend() {
   let stu = [];
   try {
     try {
-      stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+      stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status') || [];
     } catch (e0) {
-      stu = await sbGet('students', 'select=id,name,school,grade,created_at,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+      try {
+        stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+      } catch (e1) {
+        stu = await sbGet('students', 'select=id,name,school,grade,created_at,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+      }
     }
   } catch (e) {
     wrap.innerHTML = '<div style="border:1px solid #E8B4B4;border-radius:10px;padding:14px;margin-bottom:14px;background:#FDF2F2;color:#A04040;font-size:12px">推移グラフの取得に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
@@ -16716,7 +16722,12 @@ async function renderEnrollmentTrend() {
   // roster（アプリ未登録分）を氏名＋学校でstudents優先・二重計上防止して合算
   let rosterPersons = [];
   try {
-    const rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status') || [];
+    let rosterRows;
+    try {
+      rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status,membership_status') || [];
+    } catch (eR) {
+      rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status') || [];
+    }
     const allStu = await sbGet('students', 'select=name,school') || [];
     const stuKeys = new Set(); const stuNames = new Set();
     allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
@@ -16728,7 +16739,8 @@ async function renderEnrollmentTrend() {
       rosterPersons.push({
         _enroll: r.enroll_date || null,
         _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null,
-        _school: r.school || '', _grade: r.grade || '', _name: r.name || '(名前なし)'
+        _school: r.school || '', _grade: r.grade || '', _name: r.name || '(名前なし)',
+        _membership: r.membership_status || '通常'
       });
     });
   } catch (e) { rosterPersons = []; }
@@ -16753,9 +16765,10 @@ async function renderEnrollmentTrend() {
       }
     }
     if (!enroll && !withdraw) return;    // 入塾日も退塾日も無ければスキップ
-    persons.push({ enroll: enroll, withdraw: withdraw, school: s.school || '', grade: s.grade || '', name: s.name || '(名前なし)', src: 'app' });
+    const membership = (s.membership_status === '時期別のみ') ? '時期別のみ' : '通常';
+    persons.push({ enroll: enroll, withdraw: withdraw, school: s.school || '', grade: s.grade || '', name: s.name || '(名前なし)', src: 'app', membership: membership });
   });
-  rosterPersons.forEach(r => { persons.push({ enroll: r._enroll, withdraw: r._withdraw, school: r._school || '', grade: r._grade || '', name: r._name || '(名前なし)', src: 'roster' }); });
+  rosterPersons.forEach(r => { persons.push({ enroll: r._enroll, withdraw: r._withdraw, school: r._school || '', grade: r._grade || '', name: r._name || '(名前なし)', src: 'roster', membership: (r._membership === '時期別のみ') ? '時期別のみ' : '通常' }); });
   trendPersonsCache = persons; // 絞り込み再集計用にキャッシュ
 
   // 過去24ヶ月分を内部集計（昨年同月比のため）。グラフ表示は直近12ヶ月のみ。
@@ -16792,15 +16805,18 @@ function trendMatchFilter(school, grade) {
   if (trendFilter.grade !== '全体' && grade !== trendFilter.grade) return false;
   return true;
 }
+// 在籍区分モードに合致するか。'regular'=通常のみ（時期別のみを除外）／'all'=合算。
+function trendMatchMembership(p) {
+  if (trendMembershipMode === 'regular') return (p.membership || '通常') !== '時期別のみ';
+  return true;
+}
 
 // キャッシュ（trendPersonsCache / trendAnnualRows / trendAllMonths）と現在のフィルタから
 // trendData・trendYears を再計算してグラフを描く。再フェッチしない。
 function recomputeTrend() {
   const allMonths = trendAllMonths;
   if (!allMonths || !allMonths.length) return;
-  const persons = trendPersonsCache.filter(p => trendMatchFilter(p.school, p.grade));
-
-  const allEnrolled = [], allJoined = [], allLeft = [];
+  const persons = trendPersonsCache.filter(p => trendMatchFilter(p.school, p.grade) && trendMatchMembership(p));
   allMonths.forEach(mo => {
     const mEnd = mo.lastDay, ymPrefix = mo.ym;
     let en = 0, jo = 0, le = 0;
@@ -16846,6 +16862,8 @@ function recomputeTrend() {
 // グラフの学年/学校フィルタ切替
 function setTrendFilterGrade(g) { trendFilter.grade = g; recomputeTrend(); }
 function setTrendFilterSchool(s) { trendFilter.school = s; recomputeTrend(); }
+// 在籍区分モード切替（通常のみ / 時期別のみ合算）
+function setTrendMembershipMode(mode) { trendMembershipMode = mode; recomputeTrend(); }
 
 // 過去年度の月次在籍数 手入力UI（admin限定）。年＋学校を選び、その学校の3学年×12月を入力。
 // 末端（学校×学年）のみ保存。上位（全体・学校計・学年計）はグラフ側で自動合計。
@@ -17001,14 +17019,23 @@ function drawEnrollmentTrend() {
     (trendFilter.school === s ? '#2D5FA6;color:#fff' : 'var(--surface);color:var(--text)') + '">' + escapeHtml(label) + '</button>';
   const schoolRow = '<div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:center;margin:2px 0 8px">'
     + schoolBtn('全校', '全校') + SA_SCHOOLS.map(s => schoolBtn(s, s)).join('') + '</div>';
+  // 在籍区分モード（通常のみ / 時期別のみ合算）
+  const memBtn = (mode, label) =>
+    '<button onclick="setTrendMembershipMode(\'' + mode + '\')" style="padding:5px 14px;font-size:11px;font-weight:700;border:1.5px solid #2D6CB6;border-radius:16px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+    (trendMembershipMode === mode ? '#2D6CB6;color:#fff' : 'transparent;color:#2D6CB6') + '">' + label + '</button>';
+  const memRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:center;margin:2px 0 8px">'
+    + '<span style="font-size:10px;color:var(--muted)">集計対象：</span>'
+    + memBtn('regular', '通常のみ') + memBtn('all', '時期別のみ合算') + '</div>';
   const scopeNote = '<div style="text-align:center;font-size:10px;color:var(--muted);margin-bottom:6px">表示中：'
-    + (trendFilter.school === '全校' ? '全校' : trendFilter.school) + '／' + trendFilter.grade + '</div>';
+    + (trendFilter.school === '全校' ? '全校' : trendFilter.school) + '／' + trendFilter.grade
+    + '／' + (trendMembershipMode === 'regular' ? '通常のみ' : '時期別のみ合算') + '</div>';
 
   wrap.innerHTML =
     '<div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;background:#fff">' +
       '<div style="font-size:13px;font-weight:800;color:var(--text);margin-bottom:10px">📈 人数推移（過去12ヶ月）</div>' +
       gradeRow +
       schoolRow +
+      memRow +
       scopeNote +
       trendCompareCard(d.compare) +
       '<div style="display:flex;gap:6px;margin-bottom:4px">' + modeBtn('line', '📉 折れ線') + modeBtn('bar', '📊 棒グラフ') + '</div>' +
@@ -17045,7 +17072,7 @@ function trendGridTable(d) {
 
   if (isCurrentYear) {
     // 実データ：学校フィルタのみ適用し、学年はこの表で分けるので grade では絞らない
-    const persons = trendPersonsCache.filter(p => (trendFilter.school === '全校' || p.school === trendFilter.school));
+    const persons = trendPersonsCache.filter(p => (trendFilter.school === '全校' || p.school === trendFilter.school) && trendMatchMembership(p));
     for (let m = 1; m <= 12; m++) {
       const monthLast = toJSTDateStr(new Date(year, m, 0)); // 当月末
       // 当月はまだ月末が来ていないので「今日」を基準日に。翌月以降（未来）は空欄。
@@ -17182,8 +17209,7 @@ function trendToggleMonthNames(ym) {
 // 現在の学校×学年フィルタを適用。入塾・退塾もその月分を併記。
 function trendMonthNamesHtml(mo) {
   const mEnd = mo.lastDay, ym = mo.ym;
-  const persons = trendPersonsCache.filter(p => trendMatchFilter(p.school, p.grade));
-  const enrolledList = [], joinedList = [], leftList = [];
+  const persons = trendPersonsCache.filter(p => trendMatchFilter(p.school, p.grade) && trendMatchMembership(p));
   persons.forEach(p => {
     if (p.enroll && p.enroll <= mEnd && (!p.withdraw || mEnd < p.withdraw)) enrolledList.push(p);
     if (p.enroll && p.enroll.slice(0, 7) === ym) joinedList.push(p);
