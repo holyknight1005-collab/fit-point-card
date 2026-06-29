@@ -2953,7 +2953,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zx';
+const APP_VERSION = '20260626zy';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16452,6 +16452,10 @@ var trendYears = {};         // { 2025: [12ヶ月の在籍配列(4月始まり�
 var trendYearShow = {};      // { 2025: true/false } 年ラインの表示トグル
 var ANNUAL_YEARS = [2022, 2023, 2024, 2025]; // 重ね表示できる過去年度
 var TREND_YEAR_COLORS = { 2022: '#9B59B6', 2023: '#E67E22', 2024: '#16A085', 2025: '#7F8C8D' };
+var trendFilter = { grade: '全体', school: '全校' }; // グラフの絞り込み
+var trendPersonsCache = [];   // {enroll, withdraw, school, grade} 全員（再集計用）
+var trendAnnualRows = [];     // annual_enrollment 全行 {year,month,school,grade,count}
+var trendAllMonths = [];      // 24ヶ月分の月メタ（再集計用）
 
 function setTrendMode(mode) {
   trendChartMode = mode;
@@ -16480,9 +16484,9 @@ async function renderEnrollmentTrend() {
   let stu = [];
   try {
     try {
-      stu = await sbGet('students', 'select=id,name,school,created_at,enroll_date,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+      stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,inactive_reason,withdraw_status,withdraw_effective_date') || [];
     } catch (e0) {
-      stu = await sbGet('students', 'select=id,name,school,created_at,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+      stu = await sbGet('students', 'select=id,name,school,grade,created_at,inactive_reason,withdraw_status,withdraw_effective_date') || [];
     }
   } catch (e) {
     wrap.innerHTML = '<div style="border:1px solid #E8B4B4;border-radius:10px;padding:14px;margin-bottom:14px;background:#FDF2F2;color:#A04040;font-size:12px">推移グラフの取得に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
@@ -16493,7 +16497,7 @@ async function renderEnrollmentTrend() {
   // roster（アプリ未登録分）を氏名＋学校でstudents優先・二重計上防止して合算
   let rosterPersons = [];
   try {
-    const rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,enroll_date,withdraw_date,status') || [];
+    const rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status') || [];
     const allStu = await sbGet('students', 'select=name,school') || [];
     const stuKeys = new Set(); const stuNames = new Set();
     allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
@@ -16502,7 +16506,8 @@ async function renderEnrollmentTrend() {
       const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
       rosterPersons.push({
         _enroll: r.enroll_date || null,
-        _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null
+        _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null,
+        _school: r.school || '', _grade: r.grade || ''
       });
     });
   } catch (e) { rosterPersons = []; }
@@ -16514,9 +16519,10 @@ async function renderEnrollmentTrend() {
     let enroll = s.enroll_date || null;  // 入塾日未入力の生徒は推移に含めない
     let withdraw = (s.withdraw_status === '確定' && s.withdraw_effective_date) ? s.withdraw_effective_date : null;
     if (!enroll && !withdraw) return;    // 入塾日も退塾日も無ければスキップ
-    persons.push({ enroll: enroll, withdraw: withdraw });
+    persons.push({ enroll: enroll, withdraw: withdraw, school: s.school || '', grade: s.grade || '' });
   });
-  rosterPersons.forEach(r => { persons.push({ enroll: r._enroll, withdraw: r._withdraw }); });
+  rosterPersons.forEach(r => { persons.push({ enroll: r._enroll, withdraw: r._withdraw, school: r._school || '', grade: r._grade || '' }); });
+  trendPersonsCache = persons; // 絞り込み再集計用にキャッシュ
 
   // 過去24ヶ月分を内部集計（昨年同月比のため）。グラフ表示は直近12ヶ月のみ。
   const todayStr = getTodayJST();
@@ -16529,66 +16535,88 @@ async function renderEnrollmentTrend() {
     allMonths.push({ y: y, m: m, label: (m) + '月', ym: y + '-' + String(m).padStart(2, '0'), lastDay: lastDay });
   }
 
-  // 24ヶ月分すべて集計
+  trendAllMonths = allMonths;
+
+  // 過去年度の月次在籍（手入力 annual_enrollment・学校×学年粒度）を生で読み込み
+  trendAnnualRows = [];
+  try {
+    try {
+      trendAnnualRows = await sbGet('annual_enrollment', 'select=year,month,count,school,grade') || [];
+    } catch (e1) {
+      // school/grade 列が無い旧スキーマ
+      trendAnnualRows = await sbGet('annual_enrollment', 'select=year,month,count') || [];
+    }
+  } catch (e) { trendAnnualRows = []; }
+
+  recomputeTrend();
+  renderAnnualInput();
+}
+
+// 学校×学年フィルタ用ヘルパ：person/annual行が現在の絞り込みに合致するか
+function trendMatchFilter(school, grade) {
+  if (trendFilter.school !== '全校' && school !== trendFilter.school) return false;
+  if (trendFilter.grade !== '全体' && grade !== trendFilter.grade) return false;
+  return true;
+}
+
+// キャッシュ（trendPersonsCache / trendAnnualRows / trendAllMonths）と現在のフィルタから
+// trendData・trendYears を再計算してグラフを描く。再フェッチしない。
+function recomputeTrend() {
+  const allMonths = trendAllMonths;
+  if (!allMonths || !allMonths.length) return;
+  const persons = trendPersonsCache.filter(p => trendMatchFilter(p.school, p.grade));
+
   const allEnrolled = [], allJoined = [], allLeft = [];
   allMonths.forEach(mo => {
-    const mEnd = mo.lastDay;
-    const ymPrefix = mo.ym; // 'YYYY-MM'
+    const mEnd = mo.lastDay, ymPrefix = mo.ym;
     let en = 0, jo = 0, le = 0;
     persons.forEach(p => {
-      // 在籍 = 入塾日≤月末 かつ（退塾日なし or 月末<退塾日）
       if (p.enroll && p.enroll <= mEnd && (!p.withdraw || mEnd < p.withdraw)) en++;
-      // 新規入塾 = その月に入塾日
       if (p.enroll && p.enroll.slice(0, 7) === ymPrefix) jo++;
-      // 退塾 = その月に退塾発効日
       if (p.withdraw && p.withdraw.slice(0, 7) === ymPrefix) le++;
     });
     allEnrolled.push(en); allJoined.push(jo); allLeft.push(le);
   });
 
-  // グラフ表示用：直近12ヶ月（末尾12要素）
   const months = allMonths.slice(-12);
   const enrolled = allEnrolled.slice(-12);
   const joined = allJoined.slice(-12);
   const left = allLeft.slice(-12);
 
-  // 比較サマリー：当月（24ヶ月配列の末尾=index 23）vs 前月(22) vs 昨年同月(11)
-  const iNow = allMonths.length - 1;   // 23
-  const iPrev = iNow - 1;              // 22（前月）
-  const iYoY = iNow - 12;              // 11（昨年同月）
+  const iNow = allMonths.length - 1, iPrev = iNow - 1, iYoY = iNow - 12;
   const compare = {
     nowLabel: allMonths[iNow].y + '年' + allMonths[iNow].m + '月',
     prevLabel: allMonths[iPrev] ? (allMonths[iPrev].m + '月') : '',
     yoyLabel: allMonths[iYoY] ? (allMonths[iYoY].y + '年' + allMonths[iYoY].m + '月') : '',
-    enrolledNow: allEnrolled[iNow],
-    joinedNow: allJoined[iNow],
-    leftNow: allLeft[iNow],
-    // 在籍数の差分（前月比・昨年同月比）。比較月のデータが無ければ null。
+    enrolledNow: allEnrolled[iNow], joinedNow: allJoined[iNow], leftNow: allLeft[iNow],
     enrolledVsPrev: (iPrev >= 0) ? (allEnrolled[iNow] - allEnrolled[iPrev]) : null,
     enrolledVsYoY: (iYoY >= 0) ? (allEnrolled[iNow] - allEnrolled[iYoY]) : null,
     enrolledPrev: (iPrev >= 0) ? allEnrolled[iPrev] : null,
     enrolledYoY: (iYoY >= 0) ? allEnrolled[iYoY] : null
   };
-
   trendData = { months: months, enrolled: enrolled, joined: joined, left: left, compare: compare };
 
-  // 過去年度の月次在籍（手入力 annual_enrollment）を読み込み、年→{月:人数} に整形
+  // 過去年度ライン：現在のフィルタに合致する annual 行を 年→{月:合計} に集計（末端を自動合計）
   trendYears = {};
-  try {
-    const ann = await sbGet('annual_enrollment', 'select=year,month,count') || [];
-    ann.forEach(r => {
-      const y = parseInt(r.year, 10), m = parseInt(r.month, 10);
-      if (!trendYears[y]) trendYears[y] = {};
-      trendYears[y][m] = parseInt(r.count, 10) || 0;
-    });
-  } catch (e) { trendYears = {}; }
+  trendAnnualRows.forEach(r => {
+    const sc = r.school || '', gr = r.grade || '';
+    if (!trendMatchFilter(sc, gr)) return;
+    const y = parseInt(r.year, 10), m = parseInt(r.month, 10);
+    if (!trendYears[y]) trendYears[y] = {};
+    trendYears[y][m] = (trendYears[y][m] || 0) + (parseInt(r.count, 10) || 0);
+  });
 
   drawEnrollmentTrend();
-  renderAnnualInput();
 }
 
-// 過去年度の月次在籍数 手入力UI（admin限定）。年を選び、4月〜翌3月の12ヶ月を入力して保存。
+// グラフの学年/学校フィルタ切替
+function setTrendFilterGrade(g) { trendFilter.grade = g; recomputeTrend(); }
+function setTrendFilterSchool(s) { trendFilter.school = s; recomputeTrend(); }
+
+// 過去年度の月次在籍数 手入力UI（admin限定）。年＋学校を選び、その学校の3学年×12月を入力。
+// 末端（学校×学年）のみ保存。上位（全体・学校計・学年計）はグラフ側で自動合計。
 var annualInputYear = 2025;
+var annualInputSchool = '松山東';
 function renderAnnualInput() {
   const wrap = document.getElementById('sa-annual-input');
   if (!wrap) return;
@@ -16596,26 +16624,45 @@ function renderAnnualInput() {
   if (!canSee) { wrap.innerHTML = ''; return; }
 
   const yearOpts = ANNUAL_YEARS.map(y => '<option value="' + y + '"' + (y === annualInputYear ? ' selected' : '') + '>' + y + '年</option>').join('');
-  // 月は1〜12で持つ（グラフ側は月キーで突合）
-  const ydata = trendYears[annualInputYear] || {};
-  let cells = '';
-  for (let m = 1; m <= 12; m++) {
-    const v = (ydata[m] != null) ? ydata[m] : '';
-    cells += '<div style="display:flex;flex-direction:column;align-items:center;gap:2px">'
-      + '<label style="font-size:10px;color:var(--muted)">' + m + '月</label>'
-      + '<input type="number" min="0" id="annual-m-' + m + '" value="' + v + '" style="width:54px;padding:5px 4px;font-size:13px;text-align:center;border:1px solid var(--border);border-radius:6px;font-family:inherit">'
-      + '</div>';
-  }
+  const schoolOpts = SA_SCHOOLS.map(s => '<option value="' + escapeHtml(s) + '"' + (s === annualInputSchool ? ' selected' : '') + '>' + escapeHtml(s) + '</option>').join('');
+
+  // 現在の年×学校の既存値を {grade:{month:count}} に整形
+  const cur = {};
+  trendAnnualRows.forEach(r => {
+    if (parseInt(r.year, 10) !== annualInputYear) return;
+    if ((r.school || '') !== annualInputSchool) return;
+    const g = r.grade || '';
+    if (!cur[g]) cur[g] = {};
+    cur[g][parseInt(r.month, 10)] = parseInt(r.count, 10);
+  });
+
+  // 学年×月の入力グリッド（行=学年、列=12月）
+  let grid = '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;min-width:640px">'
+    + '<thead><tr><th style="padding:4px 6px;text-align:left;position:sticky;left:0;background:#F7FAFD">学年＼月</th>';
+  for (let m = 1; m <= 12; m++) grid += '<th style="padding:4px 2px;font-size:10px;color:var(--muted)">' + m + '月</th>';
+  grid += '</tr></thead><tbody>';
+  SA_GRADES.forEach(g => {
+    grid += '<tr><td style="padding:4px 6px;font-weight:700;white-space:nowrap;position:sticky;left:0;background:#F7FAFD">' + g + '</td>';
+    for (let m = 1; m <= 12; m++) {
+      const v = (cur[g] && cur[g][m] != null) ? cur[g][m] : '';
+      grid += '<td style="padding:2px"><input type="number" min="0" id="annual-' + g + '-' + m + '" value="' + v + '" style="width:46px;padding:4px 2px;font-size:12px;text-align:center;border:1px solid var(--border);border-radius:5px;font-family:inherit"></td>';
+    }
+    grid += '</tr>';
+  });
+  grid += '</tbody></table></div>';
+
   wrap.innerHTML =
     '<div style="border:1px solid #D6E4F0;border-radius:10px;padding:14px;margin-bottom:14px;background:#F7FAFD">'
-    + '<div style="font-size:13px;font-weight:800;color:#1A4D80;margin-bottom:6px">✏️ 過去の在籍数を手入力（年×月）</div>'
-    + '<div style="font-size:10px;color:var(--muted);line-height:1.6;margin-bottom:10px">生徒登録は今年からのため、過去年度の月別在籍数はここで入力します。保存するとグラフの「過去の在籍を重ねる」ボタンに反映されます。空欄の月はラインが途切れます。</div>'
-    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
+    + '<div style="font-size:13px;font-weight:800;color:#1A4D80;margin-bottom:6px">✏️ 過去の在籍数を手入力（学校×学年×月）</div>'
+    + '<div style="font-size:10px;color:var(--muted);line-height:1.6;margin-bottom:10px">生徒登録は今年からのため、過去年度の在籍数はここで入力します。<b>各学校×学年の月別人数</b>だけ入れれば、全体・学校別・学年別の昨年ラインはグラフ側で自動合計されます。空欄の月はラインが途切れます。</div>'
+    + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
     +   '<span style="font-size:12px;font-weight:700">年度：</span>'
     +   '<select id="annual-year-sel" onchange="onAnnualYearChange()" style="padding:6px 10px;font-size:13px;border:1px solid var(--border);border-radius:8px;font-family:inherit">' + yearOpts + '</select>'
+    +   '<span style="font-size:12px;font-weight:700">学校：</span>'
+    +   '<select id="annual-school-sel" onchange="onAnnualSchoolChange()" style="padding:6px 10px;font-size:13px;border:1px solid var(--border);border-radius:8px;font-family:inherit">' + schoolOpts + '</select>'
     + '</div>'
-    + '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">' + cells + '</div>'
-    + '<button onclick="saveAnnualEnrollment()" style="width:100%;padding:10px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 ' + annualInputYear + '年の在籍数を保存</button>'
+    + grid
+    + '<button onclick="saveAnnualEnrollment()" style="width:100%;margin-top:12px;padding:10px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 ' + annualInputYear + '年 ' + escapeHtml(annualInputSchool) + ' の在籍数を保存</button>'
     + '</div>';
 }
 
@@ -16624,35 +16671,45 @@ function onAnnualYearChange() {
   if (sel) annualInputYear = parseInt(sel.value, 10);
   renderAnnualInput();
 }
+function onAnnualSchoolChange() {
+  const sel = document.getElementById('annual-school-sel');
+  if (sel) annualInputSchool = sel.value;
+  renderAnnualInput();
+}
 
 async function saveAnnualEnrollment() {
-  const y = annualInputYear;
+  const y = annualInputYear, school = annualInputSchool;
   showLoading('保存中...');
   let saved = 0;
   try {
-    // 既存行を取得して year+month で upsert（GET→PATCH/INSERT）
-    const existing = await sbGet('annual_enrollment', 'year=eq.' + y + '&select=id,month') || [];
-    const exByMonth = new Map();
-    existing.forEach(r => exByMonth.set(parseInt(r.month, 10), r.id));
-    for (let m = 1; m <= 12; m++) {
-      const el = document.getElementById('annual-m-' + m);
-      const raw = el ? el.value.trim() : '';
-      if (raw === '') continue; // 空欄はスキップ（既存値も触らない）
-      const cnt = parseInt(raw, 10);
-      if (isNaN(cnt) || cnt < 0) continue;
-      const exId = exByMonth.get(m);
-      if (exId) await sbPatch('annual_enrollment', 'id=eq.' + exId, { count: cnt, updated_at: new Date().toISOString() });
-      else await sbPost('annual_enrollment', { year: y, month: m, count: cnt });
-      saved++;
+    // この年×学校の既存行を取得して year+month+school+grade で upsert
+    let existing = [];
+    try {
+      existing = await sbGet('annual_enrollment', 'year=eq.' + y + '&school=eq.' + encodeURIComponent(school) + '&select=id,month,grade') || [];
+    } catch (e) { existing = []; }
+    const exKey = new Map();
+    existing.forEach(r => exKey.set((r.grade || '') + '|' + parseInt(r.month, 10), r.id));
+    for (const g of SA_GRADES) {
+      for (let m = 1; m <= 12; m++) {
+        const el = document.getElementById('annual-' + g + '-' + m);
+        const raw = el ? el.value.trim() : '';
+        if (raw === '') continue;
+        const cnt = parseInt(raw, 10);
+        if (isNaN(cnt) || cnt < 0) continue;
+        const exId = exKey.get(g + '|' + m);
+        if (exId) await sbPatch('annual_enrollment', 'id=eq.' + exId, { count: cnt, updated_at: new Date().toISOString() });
+        else await sbPost('annual_enrollment', { year: y, month: m, school: school, grade: g, count: cnt });
+        saved++;
+      }
     }
     hideLoading();
-    showToast('✅ ' + y + '年の在籍数を保存しました（' + saved + 'ヶ月分）', 'success');
-    renderEnrollmentTrend(); // 再集計してグラフ＆入力UIを更新
+    showToast('✅ ' + y + '年 ' + school + ' の在籍数を保存しました（' + saved + '件）', 'success');
+    renderEnrollmentTrend(); // 再フェッチして全体を更新
   } catch (e) {
     hideLoading();
     const msg = String(e && e.message || e);
-    if (/annual_enrollment|relation|schema|PGRST|404/i.test(msg)) {
-      showToast('⚠️ annual_enrollment テーブルが未作成です。create_annual_enrollment.sql を実行してください', 'error');
+    if (/annual_enrollment|relation|schema|PGRST|404|column/i.test(msg)) {
+      showToast('⚠️ テーブル未作成か学校/学年列が未追加です。create_annual_enrollment.sql と alter_annual_enrollment_school_grade.sql を実行してください', 'error');
     } else {
       showToast('保存に失敗しました：' + msg, 'error');
     }
@@ -16698,9 +16755,27 @@ function drawEnrollmentTrend() {
 
   const svg = trendChartMode === 'line' ? trendLineSvg(d) : trendBarSvg(d);
 
+  // 学年フィルタ（全体/1年/2年/3年）
+  const gradeBtn = (g, label) =>
+    '<button onclick="setTrendFilterGrade(\'' + g + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid var(--border);border-radius:16px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+    (trendFilter.grade === g ? 'var(--orange-d);color:#fff' : 'var(--surface);color:var(--text)') + '">' + label + '</button>';
+  const gradeRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin:2px 0 6px">'
+    + gradeBtn('全体', '全体') + gradeBtn('1年', '1年') + gradeBtn('2年', '2年') + gradeBtn('3年', '3年') + '</div>';
+  // 学校フィルタ
+  const schoolBtn = (s, label) =>
+    '<button onclick="setTrendFilterSchool(\'' + s.replace(/'/g, "\\'") + '\')" style="padding:4px 9px;font-size:10px;font-weight:700;border:1px solid var(--border);border-radius:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+    (trendFilter.school === s ? '#2D5FA6;color:#fff' : 'var(--surface);color:var(--text)') + '">' + escapeHtml(label) + '</button>';
+  const schoolRow = '<div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:center;margin:2px 0 8px">'
+    + schoolBtn('全校', '全校') + SA_SCHOOLS.map(s => schoolBtn(s, s)).join('') + '</div>';
+  const scopeNote = '<div style="text-align:center;font-size:10px;color:var(--muted);margin-bottom:6px">表示中：'
+    + (trendFilter.school === '全校' ? '全校' : trendFilter.school) + '／' + trendFilter.grade + '</div>';
+
   wrap.innerHTML =
     '<div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;background:#fff">' +
       '<div style="font-size:13px;font-weight:800;color:var(--text);margin-bottom:10px">📈 人数推移（過去12ヶ月）</div>' +
+      gradeRow +
+      schoolRow +
+      scopeNote +
       trendCompareCard(d.compare) +
       '<div style="display:flex;gap:6px;margin-bottom:4px">' + modeBtn('line', '📉 折れ線') + modeBtn('bar', '📊 棒グラフ') + '</div>' +
       seriesRow +
