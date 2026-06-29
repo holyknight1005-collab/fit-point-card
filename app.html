@@ -2988,7 +2988,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zak';
+const APP_VERSION = '20260626zal';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -17511,13 +17511,46 @@ function trendFYCompareTable(d) {
     const fy = parseInt(k, 10);
     if (trendFYCompare[fy] && fy !== dispFY) years.push(fy);
   });
-  if (years.length < 2) return ''; // 比較対象が無ければ非表示
   years.sort((a, b) => b - a);
 
   const metric = trendGridMetric;
   const metricLabel = (metric === 'joined') ? '新規入塾' : (metric === 'left') ? '退塾' : '在籍';
   const metricColor = (metric === 'joined') ? '#1E8449' : (metric === 'left') ? '#C0392B' : '#2D6CB6';
   const fmonths = trendFiscalMonths(dispFY); // 月ラベルの並び（4月→翌3月）
+
+  // 指標ボタン（上のグリッドと同じ・setTrendGridMetric 連動）
+  const mBtn = (mk, label, color) =>
+    '<button onclick="setTrendGridMetric(\'' + mk + '\')" style="padding:4px 12px;font-size:11px;font-weight:700;border:1.5px solid ' + color + ';border-radius:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+    (metric === mk ? color + ';color:#fff' : 'transparent;color:' + color) + '">' + label + '</button>';
+  const metricRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0 8px">'
+    + '<span style="font-size:11px;color:var(--muted)">表示する指標：</span>'
+    + mBtn('enrolled', '在籍人数', '#2D6CB6') + mBtn('joined', '新規入塾', '#1E8449') + mBtn('left', '退塾', '#C0392B')
+    + '</div>';
+
+  // 比較する年度ボタン（グラフ上と同じ・toggleTrendFYCompare 連動）
+  const cmpYears = trendComparableFYs().filter(y => y !== dispFY);
+  let yearRow = '';
+  if (cmpYears.length) {
+    yearRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:2px 0 10px">'
+      + '<span style="font-size:11px;color:var(--muted)">比較する年度：</span>'
+      + cmpYears.map(y => {
+        const on = trendFYCompare[y];
+        const c = trendFYColor(y);
+        return '<button onclick="toggleTrendFYCompare(' + y + ')" style="padding:4px 10px;font-size:11px;font-weight:700;border:1.5px dashed ' + c + ';border-radius:16px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+          (on ? c + ';color:#fff;border-style:solid' : 'transparent;color:' + c) + '">' + y + '年度</button>';
+      }).join('')
+      + '</div>';
+  }
+
+  const header = '<div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:8px">📊 年度比較表</div>';
+
+  // 比較対象が1年度しか無い（＝表示年度のみ）の場合は、ボタンだけ出して表は案内文に。
+  if (years.length < 2) {
+    return '<div style="margin-top:16px;border-top:1px dashed var(--border);padding-top:12px">'
+      + header + metricRow + yearRow
+      + '<div style="font-size:11px;color:var(--muted);background:#F7FAFD;border:1px solid #D6E4F0;border-radius:8px;padding:10px">「比較する年度」を1つ以上選ぶと、' + dispFY + '年度と並べた比較表（' + metricLabel + '）がここに表示されます。</div>'
+      + '</div>';
+  }
 
   // 各年度の系列と年度計
   const seriesByFY = {}; const aggByFY = {};
@@ -17530,56 +17563,68 @@ function trendFYCompareTable(d) {
   // 差分：最新年度 − 1つ前（年度順で隣）
   const newestFY = years[0], prevFY = years[1];
 
-  const headBg = '#EAF1F8', headBd = '#C3D6EA', sideBg = '#EDEDED', totBg = '#DDDDDD';
+  const headBg = '#E2EFDA', headBd = '#C6D9BC', sideBg = '#EDEDED', totBg = '#DDDDDD';
   const cell = (v, opt) => {
     opt = opt || {};
     const bg = opt.bg || '#fff';
     const fw = opt.bold ? '700' : '400';
     const col = opt.color || 'var(--text)';
     const txt = (v == null) ? '' : v;
-    return '<td style="border:1px solid #BFBFBF;padding:5px 8px;text-align:center;background:' + bg + ';font-weight:' + fw + ';color:' + col + ';white-space:nowrap">' + txt + '</td>';
+    return '<td style="border:1px solid #BFBFBF;padding:5px 6px;text-align:center;background:' + bg + ';font-weight:' + fw + ';color:' + col + ';white-space:nowrap">' + txt + '</td>';
   };
-  const diffCell = (a, b) => {
-    if (a == null || b == null) return cell('', { bg: '#FAFAFA' });
-    const diff = a - b;
+  // 差分の色つきセル（増=緑▲ / 減=赤▼）
+  const diffOf = (a, b) => (a == null || b == null) ? null : (a - b);
+  const fmtDiff = (diff) => {
+    if (diff == null) return '';
     const sign = diff > 0 ? '+' : (diff < 0 ? '' : '±');
-    const col = diff > 0 ? '#1E8449' : (diff < 0 ? '#C0392B' : '#7F8C8D');
     const arrow = diff > 0 ? '▲' : (diff < 0 ? '▼' : '−');
-    return '<td style="border:1px solid #BFBFBF;padding:5px 8px;text-align:center;background:#FAFAFA;font-weight:700;color:' + col + ';white-space:nowrap">' + arrow + sign + diff + '</td>';
+    return arrow + sign + diff;
   };
+  const diffColor = (diff) => (diff == null) ? 'var(--text)' : (diff > 0 ? '#1E8449' : (diff < 0 ? '#C0392B' : '#7F8C8D'));
 
-  // ヘッダ
-  let head = '<tr><th style="border:1px solid #BFBFBF;padding:5px 8px;background:#fff;text-align:center;font-size:12px">月</th>';
+  const aggHead = (metric === 'enrolled') ? '全体' : '年度計';
+
+  // ── 転置：行＝年度（＋差分）／列＝4月…翌3月＋全体（上のグリッドと同じ向き）──
+  // ヘッダ行
+  let head = '<tr><th style="border:1px solid #BFBFBF;padding:5px 8px;text-align:center;background:#fff;white-space:nowrap;font-size:12px">年度＼月</th>';
+  fmonths.forEach(mo => {
+    head += '<th style="border:1px solid ' + headBd + ';padding:5px 4px;background:' + headBg + ';font-size:11px;white-space:nowrap;text-align:center">' + mo.m + '月</th>';
+  });
+  head += '<th style="border:1px solid ' + headBd + ';padding:5px 6px;background:' + headBg + ';font-size:12px;text-align:center">' + aggHead + '</th></tr>';
+
+  // 年度行（各年度1行）。年度色のドット付き見出し。
+  let body = '';
   years.forEach(fy => {
     const c = trendFYColor(fy);
-    head += '<th style="border:1px solid ' + headBd + ';padding:5px 8px;background:' + headBg + ';text-align:center;font-size:11px;white-space:nowrap"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + c + ';margin-right:4px"></span>' + fy + '年度</th>';
-  });
-  head += '<th style="border:1px solid ' + headBd + ';padding:5px 8px;background:' + headBg + ';text-align:center;font-size:11px;white-space:nowrap">差分<br>(' + newestFY + '−' + prevFY + ')</th></tr>';
-
-  // 月行
-  let body = '';
-  fmonths.forEach((mo, i) => {
-    body += '<tr><td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + sideBg + ';text-align:center;font-weight:700;font-size:12px;white-space:nowrap">' + mo.m + '月</td>';
-    years.forEach(fy => { body += cell(seriesByFY[fy][i], { color: (fy === dispFY ? metricColor : 'var(--text)') }); });
-    body += diffCell(seriesByFY[newestFY][i], seriesByFY[prevFY][i]);
+    const isDisp = (fy === dispFY);
+    body += '<tr>'
+      + '<td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + sideBg + ';font-weight:700;white-space:nowrap;font-size:12px;text-align:center">'
+      + '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + c + ';margin-right:4px"></span>' + fy + '年度</td>';
+    for (let i = 0; i < 12; i++) body += cell(seriesByFY[fy][i], { color: (isDisp ? metricColor : 'var(--text)'), bold: isDisp });
+    body += cell(aggByFY[fy], { bg: totBg, bold: true, color: metricColor });
     body += '</tr>';
   });
-  // 年度計行
-  const aggLabel = (metric === 'enrolled') ? '直近月' : '年度計';
-  body += '<tr><td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + totBg + ';text-align:center;font-weight:700;font-size:12px;white-space:nowrap">' + aggLabel + '</td>';
-  years.forEach(fy => { body += cell(aggByFY[fy], { bg: totBg, bold: true, color: metricColor }); });
-  body += diffCell(aggByFY[newestFY], aggByFY[prevFY]);
+  // 差分行（最新年度 − 1つ前）
+  body += '<tr>'
+    + '<td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + totBg + ';font-weight:700;white-space:nowrap;font-size:11px;text-align:center">差分<br>(' + newestFY + '−' + prevFY + ')</td>';
+  for (let i = 0; i < 12; i++) {
+    const diff = diffOf(seriesByFY[newestFY][i], seriesByFY[prevFY][i]);
+    body += '<td style="border:1px solid #BFBFBF;padding:5px 6px;text-align:center;background:#FAFAFA;font-weight:700;color:' + diffColor(diff) + ';white-space:nowrap">' + fmtDiff(diff) + '</td>';
+  }
+  const aggDiff = diffOf(aggByFY[newestFY], aggByFY[prevFY]);
+  body += '<td style="border:1px solid #BFBFBF;padding:5px 6px;text-align:center;background:' + totBg + ';font-weight:700;color:' + diffColor(aggDiff) + ';white-space:nowrap">' + fmtDiff(aggDiff) + '</td>';
   body += '</tr>';
 
+  const aggNote = (metric === 'enrolled') ? '「全体」列はその年度の直近月の在籍' : '「年度計」列は年度内（4月〜翌3月）の累計';
   const note = (metric === 'enrolled')
-    ? '※各月末の在籍人数を年度（4月〜翌3月）で比較。「直近月」行はその年度の直近の在籍。差分＝' + newestFY + '年度−' + prevFY + '年度。学校・学年・在籍区分フィルタに連動します。'
-    : '※その月の' + metricLabel + '人数を年度で比較。「年度計」行は年度内の累計。差分＝' + newestFY + '年度−' + prevFY + '年度。手入力年度は add_annual_enrollment_metric.sql 実行後の入力が必要です。';
+    ? '※各月末の在籍人数を年度（4月〜翌3月）で比較。' + aggNote + '。差分＝' + newestFY + '年度−' + prevFY + '年度。学校・学年・在籍区分フィルタに連動します。'
+    : '※その月の' + metricLabel + '人数を年度で比較。' + aggNote + '。差分＝' + newestFY + '年度−' + prevFY + '年度。手入力年度は add_annual_enrollment_metric.sql 実行後の入力が必要です。';
 
-  return '<div style="margin-top:16px">'
-    + '<div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px">📊 年度比較（' + metricLabel + '）— ' + years.map(y => y + '年度').join(' / ') + '</div>'
-    + '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;min-width:' + (140 + years.length * 90) + 'px"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
+  return '<div style="margin-top:16px;border-top:1px dashed var(--border);padding-top:12px">'
+    + header + metricRow + yearRow
+    + '<div style="font-size:12px;font-weight:700;color:' + metricColor + ';margin-bottom:6px">' + metricLabel + '：' + years.map(y => y + '年度').join(' / ') + '</div>'
+    + '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;min-width:680px"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
     + '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.5">' + note + '</div>'
-    + '<div style="font-size:10px;color:var(--muted);margin-top:2px">指標は上の表のボタン（在籍／新規入塾／退塾）で切り替わります。比較する年度は「他の年度を重ねる」で選びます。</div>'
     + '</div>';
 }
 
