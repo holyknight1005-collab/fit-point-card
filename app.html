@@ -2988,7 +2988,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zah';
+const APP_VERSION = '20260626zai';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16675,6 +16675,7 @@ var trendMembershipMode = 'all';
 var trendPersonsCache = [];   // {enroll, withdraw, school, grade, name, src} 全員（再集計用）
 var trendOpenMonth = null;    // 名前リストを開いている月（ym 'YYYY-MM'）。同じ月を再タップで閉じる。
 var trendGridYear = null;     // グリッド表で表示中の年（カレンダー年）。null=今年。
+var trendGridMetric = 'enrolled'; // グリッド表の指標： 'enrolled'=在籍 / 'joined'=新規入塾 / 'left'=退塾
 var trendAnnualRows = [];     // annual_enrollment 全行 {year,month,school,grade,count}
 var trendAllMonths = [];      // 24ヶ月分の月メタ（再集計用）
 
@@ -16784,16 +16785,23 @@ async function renderEnrollmentTrend() {
 
   trendAllMonths = allMonths;
 
-  // 過去年度の月次在籍（手入力 annual_enrollment・学校×学年粒度）を生で読み込み
+  // 過去年度の月次データ（手入力 annual_enrollment・学校×学年×指標粒度）を生で読み込み
   trendAnnualRows = [];
   try {
     try {
-      trendAnnualRows = await sbGet('annual_enrollment', 'select=year,month,count,school,grade') || [];
-    } catch (e1) {
-      // school/grade 列が無い旧スキーマ
-      trendAnnualRows = await sbGet('annual_enrollment', 'select=year,month,count') || [];
+      trendAnnualRows = await sbGet('annual_enrollment', 'select=year,month,count,school,grade,metric') || [];
+    } catch (e0) {
+      try {
+        // metric 列が無い旧スキーマ → 全て在籍扱い
+        trendAnnualRows = await sbGet('annual_enrollment', 'select=year,month,count,school,grade') || [];
+      } catch (e1) {
+        // school/grade 列も無い旧スキーマ
+        trendAnnualRows = await sbGet('annual_enrollment', 'select=year,month,count') || [];
+      }
     }
   } catch (e) { trendAnnualRows = []; }
+  // metric 未設定（旧データ）は在籍扱いに正規化
+  trendAnnualRows.forEach(r => { if (!r.metric) r.metric = 'enrolled'; });
 
   recomputeTrend();
   renderAnnualInput();
@@ -16847,9 +16855,11 @@ function recomputeTrend() {
   };
   trendData = { months: months, enrolled: enrolled, joined: joined, left: left, compare: compare };
 
-  // 過去年度ライン：現在のフィルタに合致する annual 行を 年→{月:合計} に集計（末端を自動合計）
+  // 過去年度ライン：在籍数の重ね表示用。現在のフィルタに合致する annual 行（在籍のみ）を
+  // 年→{月:合計} に集計（末端を自動合計）。入塾/退塾の手入力は在籍ラインには混ぜない。
   trendYears = {};
   trendAnnualRows.forEach(r => {
+    if ((r.metric || 'enrolled') !== 'enrolled') return;
     const sc = r.school || '', gr = r.grade || '';
     if (!trendMatchFilter(sc, gr)) return;
     const y = parseInt(r.year, 10), m = parseInt(r.month, 10);
@@ -16870,32 +16880,46 @@ function setTrendMembershipMode(mode) { trendMembershipMode = mode; recomputeTre
 // 末端（学校×学年）のみ保存。上位（全体・学校計・学年計）はグラフ側で自動合計。
 var annualInputYear = 2025;
 var annualInputSchool = '松山東';
+var annualInputMetric = 'enrolled'; // 'enrolled' | 'joined' | 'left'
+function annualMetricLabel(mk) { return (mk === 'joined') ? '新規入塾' : (mk === 'left') ? '退塾' : '在籍'; }
 function renderAnnualInput() {
   const wrap = document.getElementById('sa-annual-input');
   if (!wrap) return;
   const canSee = (currentStaff && currentStaff.role === 'admin');
   if (!canSee) { wrap.innerHTML = ''; return; }
 
+  const metric = annualInputMetric;
+  const mLabel = annualMetricLabel(metric);
   const yearOpts = ANNUAL_YEARS.map(y => '<option value="' + y + '"' + (y === annualInputYear ? ' selected' : '') + '>' + y + '年</option>').join('');
   const schoolOpts = SA_SCHOOLS.map(s => '<option value="' + escapeHtml(s) + '"' + (s === annualInputSchool ? ' selected' : '') + '>' + escapeHtml(s) + '</option>').join('');
 
-  // 現在の年×学校の既存値を {grade:{month:count}} に整形
+  // 現在の年×学校×指標の既存値を {grade:{month:count}} に整形
   const cur = {};
   trendAnnualRows.forEach(r => {
     if (parseInt(r.year, 10) !== annualInputYear) return;
     if ((r.school || '') !== annualInputSchool) return;
+    if ((r.metric || 'enrolled') !== metric) return;
     const g = r.grade || '';
     if (!cur[g]) cur[g] = {};
     cur[g][parseInt(r.month, 10)] = parseInt(r.count, 10);
   });
 
+  // 指標タブ
+  const tab = (mk, label, color) =>
+    '<button onclick="onAnnualMetricChange(\'' + mk + '\')" style="padding:5px 12px;font-size:12px;font-weight:700;border:1.5px solid ' + color + ';border-radius:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+    (metric === mk ? color + ';color:#fff' : 'transparent;color:' + color) + '">' + label + '</button>';
+  const tabRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
+    + '<span style="font-size:12px;font-weight:700">入力する指標：</span>'
+    + tab('enrolled', '在籍数', '#2D6CB6') + tab('joined', '新規入塾', '#1E8449') + tab('left', '退塾', '#C0392B')
+    + '</div>';
+
   // 学年×月の入力グリッド（行=学年、列=12月）
   let grid = '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;min-width:640px">'
-    + '<thead><tr><th style="padding:4px 6px;text-align:left;position:sticky;left:0;background:#F7FAFD">学年＼月</th>';
-  for (let m = 1; m <= 12; m++) grid += '<th style="padding:4px 2px;font-size:10px;color:var(--muted)">' + m + '月</th>';
+    + '<thead><tr><th style="padding:4px 6px;text-align:center;position:sticky;left:0;background:#F7FAFD">学年＼月</th>';
+  for (let m = 1; m <= 12; m++) grid += '<th style="padding:4px 2px;font-size:10px;color:var(--muted);text-align:center">' + m + '月</th>';
   grid += '</tr></thead><tbody>';
   SA_GRADES.forEach(g => {
-    grid += '<tr><td style="padding:4px 6px;font-weight:700;white-space:nowrap;position:sticky;left:0;background:#F7FAFD">' + g + '</td>';
+    grid += '<tr><td style="padding:4px 6px;font-weight:700;white-space:nowrap;position:sticky;left:0;background:#F7FAFD;text-align:center">' + g + '</td>';
     for (let m = 1; m <= 12; m++) {
       const v = (cur[g] && cur[g][m] != null) ? cur[g][m] : '';
       grid += '<td style="padding:2px"><input type="number" min="0" id="annual-' + g + '-' + m + '" value="' + v + '" style="width:46px;padding:4px 2px;font-size:12px;text-align:center;border:1px solid var(--border);border-radius:5px;font-family:inherit"></td>';
@@ -16904,10 +16928,17 @@ function renderAnnualInput() {
   });
   grid += '</tbody></table></div>';
 
+  const intro = (metric === 'enrolled')
+    ? '生徒登録は今年からのため、過去年度の在籍数はここで入力します。<b>各学校×学年の月別人数</b>だけ入れれば、全体・学校別・学年別の昨年ラインはグラフ側で自動合計されます。'
+    : (metric === 'joined'
+        ? 'その月に<b>新規入塾</b>した人数を学校×学年×月で入力します。年度（4月始まり）で運用するため、4月〜翌3月の流れで入れてください。'
+        : 'その月に<b>退塾</b>した人数を学校×学年×月で入力します。年度（4月始まり）で運用するため、4月〜翌3月の流れで入れてください。');
+
   wrap.innerHTML =
     '<div style="border:1px solid #D6E4F0;border-radius:10px;padding:14px;margin-bottom:14px;background:#F7FAFD">'
-    + '<div style="font-size:13px;font-weight:800;color:#1A4D80;margin-bottom:6px">✏️ 過去の在籍数を手入力（学校×学年×月）</div>'
-    + '<div style="font-size:10px;color:var(--muted);line-height:1.6;margin-bottom:10px">生徒登録は今年からのため、過去年度の在籍数はここで入力します。<b>各学校×学年の月別人数</b>だけ入れれば、全体・学校別・学年別の昨年ラインはグラフ側で自動合計されます。空欄の月はラインが途切れます。</div>'
+    + '<div style="font-size:13px;font-weight:800;color:#1A4D80;margin-bottom:6px">✏️ 過去の' + mLabel + 'を手入力（学校×学年×月）</div>'
+    + '<div style="font-size:10px;color:var(--muted);line-height:1.6;margin-bottom:10px">' + intro + '空欄の月は未入力扱いです。</div>'
+    + tabRow
     + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">'
     +   '<span style="font-size:12px;font-weight:700">年度：</span>'
     +   '<select id="annual-year-sel" onchange="onAnnualYearChange()" style="padding:6px 10px;font-size:13px;border:1px solid var(--border);border-radius:8px;font-family:inherit">' + yearOpts + '</select>'
@@ -16915,7 +16946,7 @@ function renderAnnualInput() {
     +   '<select id="annual-school-sel" onchange="onAnnualSchoolChange()" style="padding:6px 10px;font-size:13px;border:1px solid var(--border);border-radius:8px;font-family:inherit">' + schoolOpts + '</select>'
     + '</div>'
     + grid
-    + '<button onclick="saveAnnualEnrollment()" style="width:100%;margin-top:12px;padding:10px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 ' + annualInputYear + '年 ' + escapeHtml(annualInputSchool) + ' の在籍数を保存</button>'
+    + '<button onclick="saveAnnualEnrollment()" style="width:100%;margin-top:12px;padding:10px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 ' + annualInputYear + '年 ' + escapeHtml(annualInputSchool) + ' の' + mLabel + 'を保存</button>'
     + '</div>';
 }
 
@@ -16929,17 +16960,32 @@ function onAnnualSchoolChange() {
   if (sel) annualInputSchool = sel.value;
   renderAnnualInput();
 }
+function onAnnualMetricChange(mk) {
+  annualInputMetric = mk;
+  renderAnnualInput();
+}
 
 async function saveAnnualEnrollment() {
-  const y = annualInputYear, school = annualInputSchool;
+  const y = annualInputYear, school = annualInputSchool, metric = annualInputMetric;
+  const mLabel = annualMetricLabel(metric);
   showLoading('保存中...');
   let saved = 0;
+  let metricSupported = true;
   try {
-    // この年×学校の既存行を取得して year+month+school+grade で upsert
+    // この年×学校×指標の既存行を取得して year+month+school+grade+metric で upsert
     let existing = [];
     try {
+      existing = await sbGet('annual_enrollment', 'year=eq.' + y + '&school=eq.' + encodeURIComponent(school) + '&metric=eq.' + metric + '&select=id,month,grade') || [];
+    } catch (e) {
+      // metric 列が無い旧スキーマ → 在籍のみ従来動作。入塾/退塾は保存不可。
+      metricSupported = false;
+      if (metric !== 'enrolled') {
+        hideLoading();
+        showToast('⚠️ 入塾/退塾の手入力には add_annual_enrollment_metric.sql の実行が必要です', 'error');
+        return;
+      }
       existing = await sbGet('annual_enrollment', 'year=eq.' + y + '&school=eq.' + encodeURIComponent(school) + '&select=id,month,grade') || [];
-    } catch (e) { existing = []; }
+    }
     const exKey = new Map();
     existing.forEach(r => exKey.set((r.grade || '') + '|' + parseInt(r.month, 10), r.id));
     for (const g of SA_GRADES) {
@@ -16950,19 +16996,24 @@ async function saveAnnualEnrollment() {
         const cnt = parseInt(raw, 10);
         if (isNaN(cnt) || cnt < 0) continue;
         const exId = exKey.get(g + '|' + m);
-        if (exId) await sbPatch('annual_enrollment', 'id=eq.' + exId, { count: cnt, updated_at: new Date().toISOString() });
-        else await sbPost('annual_enrollment', { year: y, month: m, school: school, grade: g, count: cnt });
+        if (exId) {
+          await sbPatch('annual_enrollment', 'id=eq.' + exId, { count: cnt, updated_at: new Date().toISOString() });
+        } else {
+          const payload = { year: y, month: m, school: school, grade: g, count: cnt };
+          if (metricSupported) payload.metric = metric;
+          await sbPost('annual_enrollment', payload);
+        }
         saved++;
       }
     }
     hideLoading();
-    showToast('✅ ' + y + '年 ' + school + ' の在籍数を保存しました（' + saved + '件）', 'success');
+    showToast('✅ ' + y + '年 ' + school + ' の' + mLabel + 'を保存しました（' + saved + '件）', 'success');
     renderEnrollmentTrend(); // 再フェッチして全体を更新
   } catch (e) {
     hideLoading();
     const msg = String(e && e.message || e);
     if (/annual_enrollment|relation|schema|PGRST|404|column/i.test(msg)) {
-      showToast('⚠️ テーブル未作成か学校/学年列が未追加です。create_annual_enrollment.sql と alter_annual_enrollment_school_grade.sql を実行してください', 'error');
+      showToast('⚠️ テーブル未作成か列が未追加です。create_annual_enrollment.sql / alter_annual_enrollment_school_grade.sql / add_annual_enrollment_metric.sql を実行してください', 'error');
     } else {
       showToast('保存に失敗しました：' + msg, 'error');
     }
@@ -17056,6 +17107,8 @@ function trendGridTable(d) {
   const todayStr = getTodayJST();
   const curYear = parseInt(todayStr.slice(0, 4), 10);
   const year = (trendGridYear == null) ? curYear : trendGridYear;
+  const metric = trendGridMetric; // 'enrolled' | 'joined' | 'left'
+  const metricLabel = (metric === 'joined') ? '新規入塾' : (metric === 'left') ? '退塾' : '在籍';
 
   // 学年の並び：SA_GRADES を基本に、データに出てくる他の学年も末尾へ
   const gradeSet = new Set(SA_GRADES);
@@ -17063,9 +17116,9 @@ function trendGridTable(d) {
   trendAnnualRows.forEach(r => { if (r.grade) gradeSet.add(r.grade); });
   const grades = SA_GRADES.concat([...gradeSet].filter(g => !SA_GRADES.includes(g)));
 
-  // 各学年×月の在籍数を求める。
-  // 今年度（実データ）: trendPersonsCache（学校フィルタ適用）から各月末の在籍を学年別に集計。
-  // 過去年度（手入力）: trendAnnualRows（学校フィルタ適用、年一致）から学年別月別を合計。
+  // 各学年×月の値を求める（指標別）。
+  // 今年度（実データ）: trendPersonsCache から在籍／入塾／退塾を学年別月別に集計。
+  // 過去年度（手入力）: trendAnnualRows（metric 一致・学校フィルタ適用・年一致）を合計。
   const isCurrentYear = (year === curYear);
   // grid[grade][month] = count | null
   const grid = {};
@@ -17079,18 +17132,26 @@ function trendGridTable(d) {
       // 当月はまだ月末が来ていないので「今日」を基準日に。翌月以降（未来）は空欄。
       const asOf = (monthLast > todayStr) ? todayStr : monthLast;
       if (year + '-' + String(m).padStart(2, '0') > todayStr.slice(0, 7)) continue; // 翌月以降は空欄
+      const ym = year + '-' + String(m).padStart(2, '0');
       grades.forEach(g => {
         let cnt = 0;
         persons.forEach(p => {
           if ((p.grade || '') !== g) return;
-          if (p.enroll && p.enroll <= asOf && (!p.withdraw || asOf < p.withdraw)) cnt++;
+          if (metric === 'enrolled') {
+            if (p.enroll && p.enroll <= asOf && (!p.withdraw || asOf < p.withdraw)) cnt++;
+          } else if (metric === 'joined') {
+            if (p.enroll && p.enroll.slice(0, 7) === ym) cnt++;
+          } else { // left
+            if (p.withdraw && p.withdraw.slice(0, 7) === ym) cnt++;
+          }
         });
         grid[g][m] = cnt;
       });
     }
   } else {
-    // 過去年度：手入力データ。学校フィルタ適用。
+    // 過去年度：手入力データ。metric 一致・学校フィルタ適用。
     trendAnnualRows.forEach(r => {
+      if ((r.metric || 'enrolled') !== metric) return;
       if (parseInt(r.year, 10) !== year) return;
       if (trendFilter.school !== '全校' && (r.school || '') !== trendFilter.school) return;
       const g = r.grade || '';
@@ -17101,21 +17162,36 @@ function trendGridTable(d) {
     });
   }
 
-  // 行末「全体」＝その学年の直近（右端の非空）月の在籍。列末「合計」＝各月の学年合計。
+  // 列末「合計」＝各月の学年合計（全指標共通）。
   const monthTotal = {}; for (let m = 1; m <= 12; m++) monthTotal[m] = null;
   grades.forEach(g => {
     for (let m = 1; m <= 12; m++) {
       if (grid[g][m] != null) { monthTotal[m] = (monthTotal[m] || 0) + grid[g][m]; }
     }
   });
-  const rowLatest = {}; // 学年→直近月の在籍
+  // 行末「全体」列：
+  //   在籍＝その学年の直近（右端の非空）月の在籍。
+  //   入塾／退塾＝年度（4月〜翌3月）内の累計。年セレクタが示すカレンダー年の4月〜翌年3月を
+  //   合算したいが、本表は単一カレンダー年の1〜12月しか持たないため、ここでは
+  //   「表示中の1〜12月の合計」を年度内累計の近似として表示する（4月始まり運用の注記を併記）。
+  const rowAgg = {}; // 学年→全体列の値
   grades.forEach(g => {
-    let latest = null;
-    for (let m = 12; m >= 1; m--) { if (grid[g][m] != null) { latest = grid[g][m]; break; } }
-    rowLatest[g] = latest;
+    if (metric === 'enrolled') {
+      let latest = null;
+      for (let m = 12; m >= 1; m--) { if (grid[g][m] != null) { latest = grid[g][m]; break; } }
+      rowAgg[g] = latest;
+    } else {
+      let sum = null;
+      for (let m = 1; m <= 12; m++) { if (grid[g][m] != null) sum = (sum || 0) + grid[g][m]; }
+      rowAgg[g] = sum;
+    }
   });
-  let grandLatest = null;
-  for (let m = 12; m >= 1; m--) { if (monthTotal[m] != null) { grandLatest = monthTotal[m]; break; } }
+  let grandAgg = null;
+  if (metric === 'enrolled') {
+    for (let m = 12; m >= 1; m--) { if (monthTotal[m] != null) { grandAgg = monthTotal[m]; break; } }
+  } else {
+    for (let m = 1; m <= 12; m++) { if (monthTotal[m] != null) grandAgg = (grandAgg || 0) + monthTotal[m]; }
+  }
 
   // 年セレクタ（今年＋過去年度）
   const yearChoices = [];
@@ -17127,8 +17203,9 @@ function trendGridTable(d) {
     '<option value="' + y + '"' + (y === year ? ' selected' : '') + '>' + y + '年' + (y === curYear ? '（実データ）' : '（手入力）') + '</option>'
   ).join('');
 
-  // 色（画像に寄せた緑系ヘッダ・グレー見出し）
+  // 色（画像に寄せた緑系ヘッダ・グレー見出し）。指標で合計色を変える。
   const headBg = '#E2EFDA', headBd = '#C6D9BC', sideBg = '#EDEDED', totBg = '#DDDDDD';
+  const metricColor = (metric === 'joined') ? '#1E8449' : (metric === 'left') ? '#C0392B' : '#2D6CB6';
   const cell = (v, opt) => {
     opt = opt || {};
     const bg = opt.bg || '#fff';
@@ -17138,33 +17215,36 @@ function trendGridTable(d) {
     return '<td style="border:1px solid #BFBFBF;padding:5px 6px;text-align:center;background:' + bg + ';font-weight:' + fw + ';color:' + col + ';white-space:nowrap">' + txt + '</td>';
   };
 
-  // ヘッダ行（年度ラベル＋1〜12月＋全体）。月ヘッダはタップで名前リスト（実データのみ）。
+  // 「全体」列の見出し（在籍＝直近、入塾/退塾＝年度内累計）
+  const aggHead = (metric === 'enrolled') ? '全体' : '年度計';
+
+  // ヘッダ行（年度ラベル＋1〜12月＋全体/年度計）。月ヘッダはタップで名前リスト（実データのみ）。
   let head = '<tr>'
-    + '<th style="border:1px solid #BFBFBF;padding:5px 8px;text-align:left;background:#fff;white-space:nowrap;font-size:12px">' + year + '年</th>';
+    + '<th style="border:1px solid #BFBFBF;padding:5px 8px;text-align:center;background:#fff;white-space:nowrap;font-size:12px">' + year + '年</th>';
   for (let m = 1; m <= 12; m++) {
     const ym = year + '-' + String(m).padStart(2, '0');
     const isOpen = (trendOpenMonth === ym);
     const tappable = isCurrentYear;
-    head += '<th style="border:1px solid ' + headBd + ';padding:5px 4px;background:' + headBg + ';font-size:11px;white-space:nowrap;' + (tappable ? 'cursor:pointer' : '') + '"'
+    head += '<th style="border:1px solid ' + headBd + ';padding:5px 4px;background:' + headBg + ';font-size:11px;white-space:nowrap;text-align:center;' + (tappable ? 'cursor:pointer' : '') + '"'
       + (tappable ? ' onclick="trendToggleMonthNames(\'' + ym + '\')"' : '') + '>'
       + (isOpen ? '▾' : '') + m + '月</th>';
   }
-  head += '<th style="border:1px solid ' + headBd + ';padding:5px 6px;background:' + headBg + ';font-size:12px">全体</th></tr>';
+  head += '<th style="border:1px solid ' + headBd + ';padding:5px 6px;background:' + headBg + ';font-size:12px;text-align:center">' + aggHead + '</th></tr>';
 
-  // 学年行
+  // 学年行（学年見出しも中央揃え）
   let body = '';
   grades.forEach(g => {
     body += '<tr>'
-      + '<td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + sideBg + ';font-weight:700;white-space:nowrap;font-size:12px">' + escapeHtml(g) + '</td>';
+      + '<td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + sideBg + ';font-weight:700;white-space:nowrap;font-size:12px;text-align:center">' + escapeHtml(g) + '</td>';
     for (let m = 1; m <= 12; m++) body += cell(grid[g][m]);
-    body += cell(rowLatest[g], { bg: totBg, bold: true });
+    body += cell(rowAgg[g], { bg: totBg, bold: true });
     body += '</tr>';
   });
-  // 合計行
+  // 合計行（見出しも中央揃え）
   body += '<tr>'
-    + '<td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + sideBg + ';font-weight:700;white-space:nowrap;font-size:12px">合計</td>';
-  for (let m = 1; m <= 12; m++) body += cell(monthTotal[m], { bold: true, color: '#2D6CB6' });
-  body += cell(grandLatest, { bg: totBg, bold: true, color: '#2D6CB6' });
+    + '<td style="border:1px solid #BFBFBF;padding:5px 8px;background:' + sideBg + ';font-weight:700;white-space:nowrap;font-size:12px;text-align:center">合計</td>';
+  for (let m = 1; m <= 12; m++) body += cell(monthTotal[m], { bold: true, color: metricColor });
+  body += cell(grandAgg, { bg: totBg, bold: true, color: metricColor });
   body += '</tr>';
 
   // 名前リスト展開（実データかつ開いている月）
@@ -17179,17 +17259,32 @@ function trendGridTable(d) {
   }
 
   const note = isCurrentYear
-    ? '※セル＝各月末の在籍人数。「全体」列はその学年の直近月の在籍、「合計」行は各月の学年合計です。月をタップすると名前リストが出ます。入塾日 未入力の在籍生は数に含まれません。'
-    : '※過去年度の手入力データ（学校×学年×月）。空欄は未入力。学校フィルタに連動します。';
+    ? (metric === 'enrolled'
+        ? '※セル＝各月末の在籍人数。「全体」列はその学年の直近月の在籍、「合計」行は各月の学年合計です。月をタップすると名前リストが出ます。入塾日 未入力の在籍生は数に含まれません。'
+        : (metric === 'joined'
+            ? '※セル＝その月に新規入塾した人数。「年度計」列・「合計」行はその学年／全体の1〜12月の累計です。月をタップで名前リスト。入塾日 未入力の生徒は数えられません。'
+            : '※セル＝その月に退塾した人数（退塾日が確定している人のみ）。「年度計」列・「合計」行は1〜12月の累計です。退塾日が空の退塾者は含まれません。'))
+    : '※過去年度の手入力データ（学校×学年×月）。空欄は未入力。学校フィルタに連動します。表示中の指標：' + metricLabel;
+
+  // 指標切替ボタン（在籍／新規入塾／退塾）
+  const mBtn = (mk, label, color) =>
+    '<button onclick="setTrendGridMetric(\'' + mk + '\')" style="padding:4px 12px;font-size:11px;font-weight:700;border:1.5px solid ' + color + ';border-radius:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+    (metric === mk ? color + ';color:#fff' : 'transparent;color:' + color) + '">' + label + '</button>';
+  const metricRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:6px 0 8px">'
+    + '<span style="font-size:11px;color:var(--muted)">表示する指標：</span>'
+    + mBtn('enrolled', '在籍人数', '#2D6CB6')
+    + mBtn('joined', '新規入塾', '#1E8449')
+    + mBtn('left', '退塾', '#C0392B')
+    + '</div>';
 
   return '<div style="margin-top:14px">'
     + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">'
-    +   '<span style="font-size:12px;font-weight:700;color:var(--muted)">📋 在籍人数の一覧（年×月×学年）</span>'
+    +   '<span style="font-size:12px;font-weight:700;color:var(--muted)">📋 ' + metricLabel + 'の一覧（年×月×学年）</span>'
     +   '<select onchange="onTrendGridYearChange(this.value)" style="padding:4px 8px;font-size:12px;border:1px solid var(--border);border-radius:8px;font-family:inherit">' + yearOpts + '</select>'
     +   (trendFilter.school !== '全校' ? '<span style="font-size:11px;color:#1A4D80;background:#DCEBFA;border:1px solid #9CC0E8;padding:1px 8px;border-radius:12px">' + escapeHtml(trendFilter.school) + '</span>' : '')
     + '</div>'
-    + '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;min-width:680px">'
-    +   '<thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
+    + metricRow
+    + '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;min-width:680px"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
     + namePanel
     + '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.5">' + note + '</div>'
     + '</div>';
@@ -17197,6 +17292,11 @@ function trendGridTable(d) {
 
 function onTrendGridYearChange(v) {
   trendGridYear = parseInt(v, 10);
+  drawEnrollmentTrend();
+}
+// グリッド表の指標切替（在籍／新規入塾／退塾）
+function setTrendGridMetric(mk) {
+  trendGridMetric = mk;
   drawEnrollmentTrend();
 }
 
