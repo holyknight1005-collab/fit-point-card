@@ -2451,6 +2451,9 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <label style="font-size:11px;color:var(--orange-d);display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;border:1px solid var(--border);border-radius:6px;padding:4px 8px">
           <input type="checkbox" id="sa-include-inactive" onchange="loadStudentAnalysis()" style="cursor:pointer"> 卒業・退塾も含む
         </label>
+        <label style="font-size:11px;color:#2D6CB6;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;border:1px solid var(--border);border-radius:6px;padding:4px 8px">
+          <input type="checkbox" id="sa-regular-only" onchange="loadStudentAnalysis()" style="cursor:pointer"> 通常のみ（時期別を除く）
+        </label>
       </div>
       <div id="sa-flow-report"></div>
       <div id="sa-trend-report"></div>
@@ -2988,7 +2991,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zal';
+const APP_VERSION = '20260626zam';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -18099,13 +18102,24 @@ async function loadStudentAnalysis() {
   renderEnrollmentFlow();
   renderEnrollmentTrend();
   const includeInactive = document.getElementById('sa-include-inactive') && document.getElementById('sa-include-inactive').checked;
-  let q = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason,withdraw_status,withdraw_effective_date';
+  let q = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status';
   if (!includeInactive) q += '&is_active=eq.true';
-  let studentsRaw = await sbGet('students', q) || [];
+  let studentsRaw;
+  try {
+    studentsRaw = await sbGet('students', q) || [];
+  } catch (eMem) {
+    // membership_status 列が無い旧環境フォールバック
+    let q2 = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason,withdraw_status,withdraw_effective_date';
+    if (!includeInactive) q2 += '&is_active=eq.true';
+    studentsRaw = await sbGet('students', q2) || [];
+  }
   // 除外生徒（デモ等）は卒業含む表示でも常に弾く
   studentsRaw = studentsRaw.filter(s => s.inactive_reason !== '除外');
   // 通常表示（卒業含むOFF）では、退塾確定で在籍最終日を過ぎた生徒も母数から外す
   if (!includeInactive) studentsRaw = studentsRaw.filter(s => isEnrolledNow(s));
+  // 在籍区分モード（通常のみ／時期別含む）。「通常のみ」は時期別のみを母数から除外。
+  const saMemRegularOnly = document.getElementById('sa-regular-only') && document.getElementById('sa-regular-only').checked;
+  if (saMemRegularOnly) studentsRaw = studentsRaw.filter(s => (s.membership_status || '通常') !== '時期別のみ');
 
   // 受講科目（class_enrollments × class_master）
   const studentIdSet = new Set(studentsRaw.map(s => s.id));
@@ -18125,11 +18139,14 @@ async function loadStudentAnalysis() {
   // 登録済みの子は students 側（本人入力）を優先するので roster からは取り込まない
   let rosterRows = [];
   try {
-    rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,gender,course_track,club,withdraw_date,status') || [];
+    rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,gender,course_track,club,withdraw_date,status,membership_status') || [];
   } catch (e) {
-    // 旧スキーマ（status等が無い）フォールバック
-    try { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,gender,course_track,club') || []; }
-    catch (e2) { rosterRows = []; }
+    // 旧スキーマ（status/membership_status等が無い）フォールバック
+    try { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,gender,course_track,club,withdraw_date,status') || []; }
+    catch (e1) {
+      try { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,gender,course_track,club') || []; }
+      catch (e2) { rosterRows = []; }
+    }
   }
   const appKeySet = new Set();
   const appNameSet = new Set();
@@ -18156,6 +18173,8 @@ async function loadStudentAnalysis() {
     if (appKeySet.has(rosterKey(r.name, r.school)) || appNameSet.has(normalizeName(r.name))) return;
     // 「卒業・退塾も含む」OFF のときは、退塾発効日を過ぎた名簿のみ生を母数から外す
     if (!includeInactive && !rosterEnrolledNow(r)) return;
+    // 「通常のみ」モードでは時期別のみの名簿生を除外
+    if (saMemRegularOnly && r.membership_status === '時期別のみ') return;
     students.push({
       id: 'roster:' + normalizeName(r.name) + ':' + (r.school || ''),
       name: r.name, gender: r.gender || '', school: r.school || '', grade: r.grade || '',
