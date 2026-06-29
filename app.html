@@ -1388,6 +1388,14 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
           <select class="form-select" id="detail-club-name" style="width:100%;font-size:13px;margin-bottom:6px;display:none"></select>
           <input type="text" class="form-select" id="detail-club-free" placeholder="部活名を入力" style="width:100%;font-size:13px;display:none">
         </div>
+        <div style="margin-bottom:8px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">在籍区分</div>
+          <select class="form-select" id="detail-membership" style="width:100%;font-size:13px">
+            <option value="通常">通常受講</option>
+            <option value="時期別のみ">時期別のみ（季節講習など）</option>
+          </select>
+          <div style="font-size:10px;color:var(--muted);margin-top:4px">「時期別のみ」にすると通常受講の人数には数えず、在籍（時期別含む）にのみ数えます。</div>
+        </div>
         <button onclick="saveStudentAttributes()" style="width:100%;padding:9px;background:var(--surface2);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">属性を保存</button>
       </div>
     </div>
@@ -1449,6 +1457,33 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <div style="display:flex;gap:8px">
           <button onclick="addEnrollment()" style="flex:1;padding:10px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">追加</button>
           <button onclick="document.getElementById('enrollment-add-box').style.display='none'" style="flex:1;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--muted);font-size:13px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">キャンセル</button>
+        </div>
+      </div>
+
+      <!-- 受講の履歴（変遷） -->
+      <div style="margin-top:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <div class="section-title" style="margin:0">🕓 受講の履歴</div>
+          <button onclick="toggleEnrollHistoryBackfill()" style="padding:4px 10px;font-size:11px;border-radius:12px;border:1.5px solid var(--border);background:var(--surface);color:var(--muted);cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋ 過去分を手入力</button>
+        </div>
+        <div id="detail-enroll-history" style="display:flex;flex-direction:column;gap:6px"></div>
+        <div id="enroll-backfill-box" style="display:none;margin-top:8px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">過去の受講を手で追加します（既に終了した受講の復元用）。終了日が空なら継続中になります。</div>
+          <div style="display:flex;gap:8px;margin-bottom:6px">
+            <select class="form-select" id="bf-subj-sel" onchange="renderBackfillClassOptions()" style="flex:1;font-size:13px"><option value="">科目すべて</option></select>
+            <select class="form-select" id="bf-grade-sel" onchange="renderBackfillClassOptions()" style="flex:1;font-size:13px">
+              <option value="">全学年</option><option value="1">1年</option><option value="2">2年</option><option value="3">3年</option>
+            </select>
+          </div>
+          <select class="form-select" id="bf-class-sel" style="margin-bottom:6px"><option value="">授業を選択してください</option></select>
+          <div style="display:flex;gap:8px;margin-bottom:8px">
+            <div style="flex:1"><label style="font-size:10px;color:var(--muted)">開始日</label><input type="date" id="bf-started" class="form-input" style="width:100%;font-size:13px"></div>
+            <div style="flex:1"><label style="font-size:10px;color:var(--muted)">終了日（空=継続中）</label><input type="date" id="bf-ended" class="form-input" style="width:100%;font-size:13px"></div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button onclick="saveEnrollBackfill()" style="flex:1;padding:9px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">追加</button>
+            <button onclick="document.getElementById('enroll-backfill-box').style.display='none'" style="flex:1;padding:9px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--muted);font-size:13px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">キャンセル</button>
+          </div>
         </div>
       </div>
     </div>
@@ -2953,7 +2988,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zz';
+const APP_VERSION = '20260626zab';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -3082,6 +3117,67 @@ async function sbDelete(table, query) {
   if (!res.ok) throw new Error(await res.text());
 }
 
+// ===== 受講変遷（class_enrollments の started_on / ended_on） =====
+// 「現在の受講」だけを取りたい箇所で、ended_on IS NULL を付与して GET する。
+// started_on/ended_on 列がまだ無い旧環境では 400 になるので、その場合は
+// フィルタ無しで再取得して JS 側で ended_on を見て絞る（二段フォールバック）。
+async function sbGetActiveEnrollments(query) {
+  // query は select=... や student_id=eq.xxx 等。&ended_on=is.null を付けて投げる。
+  try {
+    const q = query + (query ? '&' : '') + 'ended_on=is.null';
+    return await sbGet('class_enrollments', q) || [];
+  } catch (e) {
+    // 旧環境（列が無い）など → フィルタ無しで取り、JSで ended_on を見て絞る
+    try {
+      const rows = await sbGet('class_enrollments', query) || [];
+      return rows.filter(r => r.ended_on == null);
+    } catch (e2) {
+      throw e2;
+    }
+  }
+}
+
+// 受講を「外す」を論理化する。物理 DELETE せず ended_on=今日 を入れる。
+// 該当する継続中（ended_on IS NULL）の行だけを終了扱いにする。
+async function endEnrollment(classMasterId, studentId) {
+  const today = getTodayJST();
+  const q = 'class_master_id=eq.' + classMasterId + '&student_id=eq.' + studentId + '&ended_on=is.null';
+  try {
+    await sbPatch('class_enrollments', q, { ended_on: today });
+  } catch (e) {
+    // 旧環境（ended_on 列が無い）フォールバック：従来通り物理削除
+    await sbDelete('class_enrollments', 'class_master_id=eq.' + classMasterId + '&student_id=eq.' + studentId);
+  }
+}
+
+// 受講を追加する。既に終了済み（ended_on あり）の同一講座があれば
+// それを継続中に戻す（ended_on=NULL）。無ければ started_on=今日 で新規 INSERT。
+async function startEnrollment(classMasterId, studentId) {
+  const today = getTodayJST();
+  // まず終了済みの行があるか確認（あれば復活させる）
+  let ended = [];
+  try {
+    ended = await sbGet('class_enrollments',
+      'class_master_id=eq.' + classMasterId + '&student_id=eq.' + studentId +
+      '&ended_on=not.is.null&select=id&order=ended_on.desc&limit=1') || [];
+  } catch (e) { ended = []; }
+  if (ended.length) {
+    await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(ended[0].id), { ended_on: null });
+    return;
+  }
+  // 新規。started_on を入れて INSERT（旧環境なら列無視されず 400 → フォールバック）
+  try {
+    await sbPost('class_enrollments', { class_master_id: classMasterId, student_id: studentId, started_on: today });
+  } catch (e) {
+    if (String(e.message || '').toLowerCase().includes('column') ||
+        String(e.message || '').includes('started_on')) {
+      await sbPost('class_enrollments', { class_master_id: classMasterId, student_id: studentId });
+    } else {
+      throw e;
+    }
+  }
+}
+
 let currentStudent = null, currentTab = 'week', allCheckins = [], staffStudents = [], detailCheckins = [];
 // 日付文字列(toDateString) -> その日に獲得したチェックインポイント合計
 let checkinPtsByDate = {};
@@ -3148,8 +3244,7 @@ async function setClassFilter(classId) {
     return;
   }
   if (clearBtn) clearBtn.style.display = '';
-  const enrollments = await sbGet('class_enrollments',
-    'class_master_id=eq.' + classId + '&select=student_id') || [];
+  const enrollments = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id');
   filterClassStudentIds = new Set(enrollments.map(e => e.student_id));
   renderStudentList();
 }
@@ -3358,8 +3453,7 @@ async function checkChemAccess() {
   if (!card) return;
   if (!currentStudent) { card.style.display = 'none'; return; }
   try {
-    const enrollments = await sbGet('class_enrollments',
-      'student_id=eq.' + currentStudent.id + '&select=class_master(name,subject)') || [];
+    const enrollments = await sbGetActiveEnrollments('student_id=eq.' + currentStudent.id + '&select=class_master(name,subject)');
     const hasChem = enrollments.some(function(e) {
       const cm = e.class_master;
       if (!cm) return false;
@@ -3378,8 +3472,7 @@ async function checkMathAccess() {
   if (!card) return;
   if (!currentStudent) { card.style.display = 'none'; return; }
   try {
-    const enrollments = await sbGet('class_enrollments',
-      'student_id=eq.' + currentStudent.id + '&select=class_master(name,subject)') || [];
+    const enrollments = await sbGetActiveEnrollments('student_id=eq.' + currentStudent.id + '&select=class_master(name,subject)');
     const hasMath = enrollments.some(function(e) {
       const cm = e.class_master;
       if (!cm) return false;
@@ -3424,7 +3517,7 @@ async function loadQuizNotice() {
   if (!card || !currentStudent) return;
   card.style.display = 'none';
   try {
-    const enrolls = await sbGet('class_enrollments', 'student_id=eq.' + currentStudent.id + '&select=class_master_id');
+    const enrolls = await sbGetActiveEnrollments('student_id=eq.' + currentStudent.id + '&select=class_master_id');
     const classIds = [...new Set(enrolls.map(e => e.class_master_id).filter(Boolean))];
     if (!classIds.length) return;
     const assigns = await sbGet('mini_quiz_assignments', 'class_master_id=in.(' + classIds.join(',') + ')&status=eq.open&select=id');
@@ -5826,8 +5919,17 @@ async function saveStudentAttributes() {
     schoolDetail = document.getElementById('detail-school-detail').value.trim();
   }
   showLoading('保存中...');
+  const memEl = document.getElementById('detail-membership');
+  const membership = memEl ? (memEl.value || '通常') : '通常';
   try {
-    await sbPatch('students', 'id=eq.' + detailStudent.id, { name: name, gender: gender || null, club: club || null, birthday: birthday, school: school || null, grade: grade || null, school_detail: schoolDetail || null });
+    const base = { name: name, gender: gender || null, club: club || null, birthday: birthday, school: school || null, grade: grade || null, school_detail: schoolDetail || null };
+    try {
+      await sbPatch('students', 'id=eq.' + detailStudent.id, Object.assign({}, base, { membership_status: membership }));
+      detailStudent.membership_status = membership;
+    } catch (e0) {
+      // membership_status 列が無い旧環境 → 外して保存
+      await sbPatch('students', 'id=eq.' + detailStudent.id, base);
+    }
     detailStudent.name = name;
     detailStudent.gender = gender;
     detailStudent.club = club;
@@ -6170,6 +6272,8 @@ async function openStudentDetail(idx, from) {
     document.getElementById('detail-school').value = s.school || '';
     document.getElementById('detail-grade').value = s.grade || '';
     document.getElementById('detail-school-detail').value = s.school_detail || '';
+    const memSel = document.getElementById('detail-membership');
+    if (memSel) memSel.value = (s.membership_status === '時期別のみ') ? '時期別のみ' : '通常';
     onSchoolChange('detail');
     setClubUI('detail', s.club);
     setBirthdayUI('detail', s.birthday);
@@ -6443,8 +6547,7 @@ async function loadDailyAttendance() {
     // 受講授業（授業フィルタ用）
     dailyEnrollMap = {};
     try {
-      const enrolls = await sbGet('class_enrollments',
-        'student_id=in.(' + ids.join(',') + ')&select=student_id,class_master_id,class_master(id,name,subject)') || [];
+      const enrolls = await sbGetActiveEnrollments('student_id=in.(' + ids.join(',') + ')&select=student_id,class_master_id,class_master(id,name,subject)');
       const classOpts = {};
       enrolls.forEach(e => {
         if (!dailyEnrollMap[e.student_id]) dailyEnrollMap[e.student_id] = new Set();
@@ -9622,7 +9725,7 @@ async function loadAlertBoard() {
     // 一括取得：来塾・受講・授業日・補習
     const [checkins, enrollments, makeups] = await Promise.all([
       sbGet('checkins', 'student_id=in.(' + ids.join(',') + ')&select=student_id,checkin_date') || [],
-      sbGet('class_enrollments', 'student_id=in.(' + ids.join(',') + ')&select=student_id,class_master_id') || [],
+      sbGetActiveEnrollments('student_id=in.(' + ids.join(',') + ')&select=student_id,class_master_id'),
       (async () => { try { return await sbGet('video_makeups', 'student_id=in.(' + ids.join(',') + ')&status=in.(pending,approved)&select=student_id,class_master_id,session_date') || []; } catch(e){ return []; } })()
     ]);
 
@@ -11569,7 +11672,7 @@ async function openEnrollStudents(classId) {
   // 現在の受講生
   enrollCurrentSet = new Set(); enrollIdMap = {};
   try {
-    const rows = await sbGet('class_enrollments', 'class_master_id=eq.' + classId + '&select=id,student_id') || [];
+    const rows = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=id,student_id');
     rows.forEach(r => { enrollCurrentSet.add(r.student_id); enrollIdMap[r.student_id] = r.id; });
   } catch(e) {}
   renderEnrollSchoolFilter();
@@ -11620,12 +11723,12 @@ async function toggleEnroll(studentId) {
   const on = enrollCurrentSet.has(studentId);
   try {
     if (on) {
-      // 解除（class_master_id + student_id で特定してDELETE）
-      await sbDelete('class_enrollments', 'class_master_id=eq.' + enrollModalClassId + '&student_id=eq.' + studentId);
+      // 解除（論理化：ended_on=今日。物理削除しない）
+      await endEnrollment(enrollModalClassId, studentId);
       enrollCurrentSet.delete(studentId);
     } else {
-      // 登録（INSERT）
-      await sbPost('class_enrollments', { class_master_id: enrollModalClassId, student_id: studentId });
+      // 登録（継続中に復活 or 新規 INSERT）
+      await startEnrollment(enrollModalClassId, studentId);
       enrollCurrentSet.add(studentId);
     }
     renderEnrollList();
@@ -12032,25 +12135,137 @@ async function loadDetailEnrollments() {
   // 生徒切り替え時に追加入力ボックスを閉じてリセット
   const addBox = document.getElementById('enrollment-add-box');
   if (addBox) addBox.style.display = 'none';
+  const bfBox = document.getElementById('enroll-backfill-box');
+  if (bfBox) bfBox.style.display = 'none';
   const sel = document.getElementById('enrollment-class-sel');
   if (sel) sel.value = '';
-  const enrollments = await sbGet('class_enrollments',
-    'student_id=eq.' + detailStudent.id + '&select=id,class_master(id,name,subject)') || [];
-  const el = document.getElementById('detail-enrollments');
-  if (!el) return;
-  if (!enrollments.length) {
-    el.innerHTML = '<div style="font-size:12px;color:var(--muted)">受講授業が登録されていません</div>';
-    return;
+  // started_on/ended_on も取得（旧環境では列無しでフォールバック）
+  let all = [];
+  try {
+    all = await sbGet('class_enrollments',
+      'student_id=eq.' + detailStudent.id + '&select=id,started_on,ended_on,class_master(id,name,subject)&order=started_on.desc.nullslast') || [];
+  } catch (e) {
+    try {
+      all = await sbGet('class_enrollments',
+        'student_id=eq.' + detailStudent.id + '&select=id,class_master(id,name,subject)') || [];
+    } catch (e2) { all = []; }
   }
+  const active = all.filter(e => e.ended_on == null);
   const SUBJ_COLORS = {'英語':'#2D5FA6','国語':'#8B2020','数学':'#7B2D8B','理科':'#1A7340','社会':'#8B6020','その他':'#5A5A5A'};
-  el.innerHTML = enrollments.map(e => {
-    const c = e.class_master || {};
-    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface2);border-radius:8px">' +
-      '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:' + (SUBJ_COLORS[c.subject]||'#5A5A5A') + '20;color:' + (SUBJ_COLORS[c.subject]||'#5A5A5A') + ';font-weight:700">' + (c.subject||'') + '</span>' +
-      '<span style="font-size:13px;color:var(--text);flex:1">' + (c.name||'不明') + '</span>' +
-      '<button onclick="removeEnrollment(\'' + e.id + '\')" style="padding:2px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">削除</button>' +
-    '</div>';
-  }).join('');
+
+  // 現在の受講（active）
+  const el = document.getElementById('detail-enrollments');
+  if (el) {
+    if (!active.length) {
+      el.innerHTML = '<div style="font-size:12px;color:var(--muted)">受講中の授業がありません</div>';
+    } else {
+      el.innerHTML = active.map(e => {
+        const c = e.class_master || {};
+        const since = e.started_on ? '<span style="font-size:10px;color:var(--muted);margin-left:4px">' + e.started_on + '〜</span>' : '';
+        return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface2);border-radius:8px">' +
+          '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:' + (SUBJ_COLORS[c.subject]||'#5A5A5A') + '20;color:' + (SUBJ_COLORS[c.subject]||'#5A5A5A') + ';font-weight:700">' + (c.subject||'') + '</span>' +
+          '<span style="font-size:13px;color:var(--text);flex:1">' + (c.name||'不明') + since + '</span>' +
+          '<button onclick="removeEnrollment(\'' + e.id + '\')" style="padding:2px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">終了</button>' +
+        '</div>';
+      }).join('');
+    }
+  }
+
+  // 受講の履歴（active + ended すべて）
+  const hist = document.getElementById('detail-enroll-history');
+  if (hist) {
+    const sorted = all.slice().sort((a, b) => {
+      const ax = a.ended_on == null ? 1 : 0, bx = b.ended_on == null ? 1 : 0;
+      if (ax !== bx) return bx - ax; // 継続中を上に
+      return (b.started_on || '').localeCompare(a.started_on || '');
+    });
+    if (!sorted.length) {
+      hist.innerHTML = '<div style="font-size:11px;color:var(--muted)">履歴がありません</div>';
+    } else {
+      hist.innerHTML = sorted.map(e => {
+        const c = e.class_master || {};
+        const ongoing = e.ended_on == null;
+        const range = (e.started_on || '？') + ' 〜 ' + (ongoing ? '継続中' : e.ended_on);
+        const col = SUBJ_COLORS[c.subject] || '#5A5A5A';
+        return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:' + (ongoing ? 'var(--surface2)' : 'var(--surface)') + ';border:1px solid ' + (ongoing ? 'transparent' : 'var(--border)') + ';border-radius:8px;opacity:' + (ongoing ? '1' : '0.75') + '">' +
+          '<span style="width:8px;height:8px;border-radius:50%;background:' + col + ';flex-shrink:0"></span>' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:12px;color:var(--text)">' + (c.name||'不明') + '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + (c.subject||'') + '</span></div>' +
+            '<div style="font-size:10px;color:var(--muted)">' + range + '</div>' +
+          '</div>' +
+          (ongoing ? '' : '<button onclick="reopenEnrollment(\'' + e.id + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:10px;cursor:pointer">再開</button>') +
+        '</div>';
+      }).join('');
+    }
+  }
+}
+
+// 終了済みの受講を継続中に戻す
+async function reopenEnrollment(enrollmentId) {
+  if (!confirm('この受講を再開（継続中に戻す）しますか？')) return;
+  try {
+    await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(enrollmentId), { ended_on: null });
+    showToast('受講を再開しました', 'success');
+    loadDetailEnrollments();
+  } catch (e) { showToast('エラー: ' + e.message, 'error'); }
+}
+
+// ===== 受講の過去分 手入力（さかのぼり） =====
+let bfMasters = [];
+async function toggleEnrollHistoryBackfill() {
+  const box = document.getElementById('enroll-backfill-box');
+  if (!box) return;
+  if (box.style.display === 'block') { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  bfMasters = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject,grade_level') || [];
+  const subjects = [...new Set(bfMasters.map(m => m.subject).filter(Boolean))];
+  document.getElementById('bf-subj-sel').innerHTML = '<option value="">科目すべて</option>' +
+    subjects.map(s => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('');
+  const g = (detailStudent && detailStudent.grade ? String(detailStudent.grade) : '').replace('年', '');
+  document.getElementById('bf-grade-sel').value = ['1','2','3'].includes(g) ? g : '';
+  document.getElementById('bf-subj-sel').value = '';
+  document.getElementById('bf-started').value = '';
+  document.getElementById('bf-ended').value = '';
+  renderBackfillClassOptions();
+}
+function renderBackfillClassOptions() {
+  const subj = document.getElementById('bf-subj-sel').value;
+  const grade = document.getElementById('bf-grade-sel').value;
+  const filtered = bfMasters.filter(m => {
+    if (subj && m.subject !== subj) return false;
+    if (grade) {
+      const levels = (m.grade_level || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (levels.length && !levels.includes(grade)) return false;
+    }
+    return true;
+  });
+  const sel = document.getElementById('bf-class-sel');
+  if (!filtered.length) { sel.innerHTML = '<option value="">該当する授業がありません</option>'; return; }
+  const subjGroups = {};
+  filtered.forEach(m => { (subjGroups[m.subject || 'その他'] = subjGroups[m.subject || 'その他'] || []).push(m); });
+  sel.innerHTML = '<option value="">授業を選択してください</option>' +
+    Object.entries(subjGroups).map(([s, list]) =>
+      '<optgroup label="── ' + escapeHtml(s) + ' ──">' +
+      list.map(m => '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>').join('') +
+      '</optgroup>').join('');
+}
+async function saveEnrollBackfill() {
+  const classId = document.getElementById('bf-class-sel').value;
+  const started = document.getElementById('bf-started').value || null;
+  const ended = document.getElementById('bf-ended').value || null;
+  if (!classId || !detailStudent) { showToast('授業を選択してください', 'error'); return; }
+  if (started && ended && ended < started) { showToast('終了日は開始日より後にしてください', 'error'); return; }
+  showLoading('追加中...');
+  try {
+    await sbPost('class_enrollments', { class_master_id: classId, student_id: detailStudent.id, started_on: started, ended_on: ended });
+    hideLoading();
+    showToast('✅ 受講履歴を追加しました', 'success');
+    document.getElementById('enroll-backfill-box').style.display = 'none';
+    loadDetailEnrollments();
+  } catch (e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
 }
 
 let enrollMasters = []; // 授業マスターのキャッシュ（絞り込み用）
@@ -12112,7 +12327,7 @@ async function addEnrollment() {
   if (!classId || !detailStudent) { showToast('授業を選択してください', 'error'); return; }
   showLoading('登録中...');
   try {
-    await sbPost('class_enrollments', { class_master_id: classId, student_id: detailStudent.id });
+    await startEnrollment(classId, detailStudent.id);
     hideLoading();
     showToast('✅ 受講授業を登録しました', 'success');
     document.getElementById('enrollment-add-box').style.display = 'none';
@@ -12128,7 +12343,16 @@ async function addEnrollment() {
 }
 
 async function removeEnrollment(enrollmentId) {
-  if (!confirm('この受講授業を削除しますか？')) return;
+  if (!confirm('この受講授業を終了しますか？（受講履歴には残ります）')) return;
+  const today = getTodayJST();
+  try {
+    await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(enrollmentId), { ended_on: today });
+    showToast('受講を終了しました', 'info');
+    loadDetailEnrollments();
+    return;
+  } catch (e) {
+    // 旧環境（ended_on 列が無い）フォールバック：物理削除
+  }
   await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/class_enrollments?id=eq.' + enrollmentId, {
     method: 'DELETE',
     headers: { 'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU', 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU' }
@@ -12154,8 +12378,7 @@ async function loadTodayClasses() {
     }
 
     // 自分の受講登録を確認
-    const enrollments = await sbGet('class_enrollments',
-      'student_id=eq.' + currentStudent.id + '&select=class_master_id');
+    const enrollments = await sbGetActiveEnrollments('student_id=eq.' + currentStudent.id + '&select=class_master_id');
     const myClassIds = (enrollments || []).map(e => e.class_master_id);
 
     const mySessions = sessions.filter(s => s.class_master && myClassIds.includes(s.class_master.id));
@@ -12840,8 +13063,7 @@ async function loadDetailCalendar() {
     return dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
   }));
   try {
-    const enrollments = await sbGet('class_enrollments',
-      'student_id=eq.' + detailStudent.id + '&select=class_master_id,class_master(id,name,subject)') || [];
+    const enrollments = await sbGetActiveEnrollments('student_id=eq.' + detailStudent.id + '&select=class_master_id,class_master(id,name,subject)');
     if (enrollments.length) {
       const classInfo = {};
       enrollments.forEach(e => {
@@ -12959,8 +13181,7 @@ async function loadUnifiedCalendar() {
   unifiedSessions = [];
   unifiedMakeupMap = {};
   try {
-    const enrollments = await sbGet('class_enrollments',
-      'student_id=eq.' + currentStudent.id + '&select=class_master_id,class_master(id,name,subject)') || [];
+    const enrollments = await sbGetActiveEnrollments('student_id=eq.' + currentStudent.id + '&select=class_master_id,class_master(id,name,subject)');
     if (enrollments.length) {
       const classInfo = {};
       enrollments.forEach(e => {
@@ -13088,8 +13309,7 @@ async function loadMyAttendance() {
   });
   try {
     // 受講授業
-    const enrollments = await sbGet('class_enrollments',
-      'student_id=eq.' + currentStudent.id + '&select=class_master_id,class_master(id,name,subject)') || [];
+    const enrollments = await sbGetActiveEnrollments('student_id=eq.' + currentStudent.id + '&select=class_master_id,class_master(id,name,subject)');
     if (!enrollments.length) {
       box.style.display = 'none';
       return;
@@ -13664,7 +13884,7 @@ async function loadCheckScreen() {
 // 今週、授業日が終わった（今日以前の）授業を取得
 async function loadFinishedClassesThisWeek(studentId, today) {
   // 受講中の授業
-  const enrolls = await sbGet('class_enrollments', 'student_id=eq.' + studentId + '&select=class_master_id') || [];
+  const enrolls = await sbGetActiveEnrollments('student_id=eq.' + studentId + '&select=class_master_id');
   if (!enrolls.length) return [];
   const classIds = enrolls.map(e => e.class_master_id);
   // 授業日当日を含めて7日間ローリング：今日から6日前〜今日 の授業日を出す
@@ -14429,8 +14649,7 @@ async function loadAttendanceRoster() {
   showLoading('名簿を読み込み中...');
   try {
     // 名簿
-    const enrolls = await sbGet('class_enrollments',
-      'class_master_id=eq.' + classId + '&select=student_id') || [];
+    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id');
     const studentIds = enrolls.map(e => e.student_id);
     if (!studentIds.length) {
       hideLoading();
@@ -14781,8 +15000,7 @@ async function exportAttendanceCsv() {
       '&select=session_date,period,start_time,end_time&order=session_date,period') || [];
     if (!sessions.length) { hideLoading(); showToast('期間内に授業日がありません', 'error'); return; }
     // 名簿
-    const enrolls = await sbGet('class_enrollments',
-      'class_master_id=eq.' + classId + '&select=student_id') || [];
+    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id');
     const studentIds = enrolls.map(e => e.student_id);
     // 出欠記録
     const atts = await sbGet('session_attendance',
@@ -14928,8 +15146,7 @@ async function loadAttMatrix() {
       'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
       '&select=session_date,period,start_time,end_time&order=session_date,period') || [];
     // 受講名簿
-    const enrolls = await sbGet('class_enrollments',
-      'class_master_id=eq.' + classId + '&select=student_id') || [];
+    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id');
     const studentIds = enrolls.map(e => e.student_id);
     if (!sessions.length || !studentIds.length) {
       hideLoading();
@@ -17018,15 +17235,32 @@ async function loadExecDashboard() {
 
   // --- 在籍・入塾・退塾の集計（renderEnrollmentTrend と同じ基準。enroll_date / 退塾発効日ベース）---
   let persons = [];
-  let currentEnrolled = 0;   // 現在在籍（入塾日に関係なく今いる在籍。学校×学年人数表と同基準）
+  let currentEnrolled = 0;   // 在籍（時期別のみ含む。今いる在籍。学校×学年人数表と同基準）
   let missingEnrollDate = 0; // 在籍中だが入塾日が未入力の人数
+  let regularCount = 0;      // 通常受講（受講中の通常講座が1つ以上ある人）
+  let seasonalOnly = 0;      // 時期別のみ（在籍だが通常講座を受講していない）
   const todayStrForCount = getTodayJST();
   try {
+    // 受講中の「通常」講座(class_master.category in normal/null)を持つ生徒ID集合を作る。
+    // これが「通常受講」の判定キー。ended_on IS NULL で現在の受講のみ。
+    let regularSet = new Set();
+    try {
+      const ae = await sbGetActiveEnrollments('select=student_id,class_master(category)');
+      ae.forEach(e => {
+        const cat = (e.class_master && e.class_master.category) || 'normal';
+        if (cat === 'normal') regularSet.add(e.student_id);
+      });
+    } catch (e) { regularSet = new Set(); }
+
     let stu = [];
     try {
-      stu = await sbGet('students', 'select=id,enroll_date,is_active,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+      stu = await sbGet('students', 'select=id,enroll_date,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status') || [];
     } catch (e0) {
-      stu = await sbGet('students', 'select=id,is_active,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+      try {
+        stu = await sbGet('students', 'select=id,enroll_date,is_active,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+      } catch (e1) {
+        stu = await sbGet('students', 'select=id,is_active,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+      }
     }
     stu = stu.filter(s => s.inactive_reason !== '除外');
     stu.forEach(s => {
@@ -17035,26 +17269,57 @@ async function loadExecDashboard() {
       // 現在在籍判定（人数表と同じ：is_active かつ 退塾発効日を過ぎていない）
       let enrolledNowFlag = (s.is_active !== false);
       if (enrolledNowFlag && withdraw && todayStrForCount > withdraw) enrolledNowFlag = false;
-      if (enrolledNowFlag) { currentEnrolled++; if (!enroll) missingEnrollDate++; }
+      if (enrolledNowFlag) {
+        currentEnrolled++;
+        if (!enroll) missingEnrollDate++;
+        // 通常受講 / 時期別のみ の判定
+        const isSeasonal = (s.membership_status === '時期別のみ');
+        const hasRegular = regularSet.has(s.id);
+        if (isSeasonal) seasonalOnly++;
+        else if (hasRegular || s.membership_status == null || s.membership_status === '通常') regularCount++;
+        else seasonalOnly++;
+      }
       if (!enroll && !withdraw) return;
       persons.push({ enroll: enroll, withdraw: withdraw });
     });
     // roster（アプリ未登録分）も合算
     try {
-      const rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,enroll_date,withdraw_date,status') || [];
+      const rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,enroll_date,withdraw_date,status,membership_status') || [];
       const allStu = await sbGet('students', 'select=name,school') || [];
       const stuKeys = new Set(); const stuNames = new Set();
       allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
       rosterRows.forEach(r => {
         if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
-        const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+        const isOut = (r.status === '退塾') || (r.membership_status === '退塾') || (!r.status && r.withdraw_date);
         // 現在在籍判定（roster分）
         let rEnrolledNow = true;
         if (isOut) { rEnrolledNow = r.withdraw_date ? !(todayStrForCount > r.withdraw_date) : false; }
-        if (rEnrolledNow) { currentEnrolled++; if (!r.enroll_date) missingEnrollDate++; }
+        if (rEnrolledNow) {
+          currentEnrolled++;
+          if (!r.enroll_date) missingEnrollDate++;
+          // roster生は受講データを持たないので membership_status で判定（既定=通常）
+          if (r.membership_status === '時期別のみ') seasonalOnly++;
+          else regularCount++;
+        }
         persons.push({ enroll: r.enroll_date || null, withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null });
       });
-    } catch (e) { /* roster無しは無視 */ }
+    } catch (e) {
+      // membership_status 列が無い旧環境フォールバック
+      try {
+        const rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,enroll_date,withdraw_date,status') || [];
+        const allStu = await sbGet('students', 'select=name,school') || [];
+        const stuKeys = new Set(); const stuNames = new Set();
+        allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
+        rosterRows.forEach(r => {
+          if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
+          const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+          let rEnrolledNow = true;
+          if (isOut) { rEnrolledNow = r.withdraw_date ? !(todayStrForCount > r.withdraw_date) : false; }
+          if (rEnrolledNow) { currentEnrolled++; if (!r.enroll_date) missingEnrollDate++; regularCount++; }
+          persons.push({ enroll: r.enroll_date || null, withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null });
+        });
+      } catch (e2) { /* roster無しは無視 */ }
+    }
   } catch (e) {
     wrap.innerHTML = '<div style="background:#FDF2F2;border:1px solid #E8B4B4;border-radius:12px;padding:14px;margin-bottom:14px;color:#A04040;font-size:12px">経営サマリーの集計に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
     return;
@@ -17098,7 +17363,8 @@ async function loadExecDashboard() {
     enrolledNow: enrolledNow, enrolledPrev: enrolledPrev, enrolledYoY: enrolledYoY,
     joinedNow: joinedNow, leftNow: leftNow,
     todayCount: todayCount,
-    currentEnrolled: currentEnrolled, missingEnrollDate: missingEnrollDate
+    currentEnrolled: currentEnrolled, missingEnrollDate: missingEnrollDate,
+    regularCount: regularCount, seasonalOnly: seasonalOnly
   });
 }
 
@@ -17133,17 +17399,17 @@ function renderExecDashboard(d) {
     + (sub ? '<div style="margin-top:6px;line-height:1.6">' + sub + '</div>' : '')
     + '</div>';
 
-  // 在籍カード（前月比・昨年同月比）
-  const enrolledSub =
-    '<div>' + diffBadge(d.enrolledNow, d.enrolledPrev, '前月比') + '</div>'
-    + '<div>' + diffBadge(d.enrolledNow, d.enrolledYoY, '昨年同月比') + '</div>';
-  const enrolledCard = card(d.cur.y + '年' + d.cur.m + '月の在籍', d.enrolledNow + '<span style="font-size:13px;color:var(--muted)">名</span>', enrolledSub, '#2D6CB6', "openHomeFeature('studentanalysis')");
+  // 通常受講カード（受講中の通常講座が1つ以上ある人）
+  const regularSub = (d.seasonalOnly > 0)
+    ? '<span style="font-size:11px;color:var(--muted)">うち時期別のみ <b style="color:#1A6E8E">' + d.seasonalOnly + '</b> 名は別計</span>'
+    : '<span style="font-size:11px;color:#1E8449">時期別のみの在籍なし</span>';
+  const regularCard = card('通常受講', (d.regularCount == null ? '—' : d.regularCount) + '<span style="font-size:13px;color:var(--muted)">名</span>', regularSub, '#2D6CB6', "openHomeFeature('studentanalysis')");
 
-  // 現在在籍カード（入塾日に関係なく今いる在籍。学校×学年人数表と一致）
+  // 在籍（時期別含む）カード＝今いる在籍の実数。学校×学年人数表と一致。
   const curEnrSub = (d.missingEnrollDate > 0)
     ? '<span style="font-size:11px;color:#C0392B;font-weight:700">⚠️ 入塾日 未入力 ' + d.missingEnrollDate + '名</span>'
     : '<span style="font-size:11px;color:#1E8449">入塾日すべて入力済</span>';
-  const currentCard = card('現在の在籍（実数）', (d.currentEnrolled == null ? '—' : d.currentEnrolled) + '<span style="font-size:13px;color:var(--muted)">名</span>', curEnrSub, '#1A6E8E', "openHomeFeature('studentanalysis')");
+  const currentCard = card('在籍（時期別含む）', (d.currentEnrolled == null ? '—' : d.currentEnrolled) + '<span style="font-size:13px;color:var(--muted)">名</span>', curEnrSub, '#1A6E8E', "openHomeFeature('studentanalysis')");
 
   // 入塾・退塾カード
   const flowSub = '<span style="font-size:11px;color:var(--muted)">今月</span>';
@@ -17162,9 +17428,9 @@ function renderExecDashboard(d) {
     + '</div>'
     + '<div id="exec-dash-body" style="display:' + (execDashOpen ? 'block' : 'none') + '">'
     +   '<div style="display:flex;flex-wrap:wrap;gap:10px">'
-    +     enrolledCard + currentCard + joinCard + leftCard + todayCard
+    +     regularCard + currentCard + joinCard + leftCard + todayCard
     +   '</div>'
-    +   '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※「○月の在籍」は入塾日／退塾発効日を基準にした集計（前月比・推移用）。「現在の在籍（実数）」は入塾日に関係なく今いる在籍数で、学校×学年人数表と一致します。入塾日が未入力の在籍生がいると2つの数に差が出ます。カードをタップすると詳細タブが開きます。</div>'
+    +   '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※「通常受講」は受講中の通常講座が1つ以上ある在籍生の人数。「在籍（時期別含む）」は時期別のみの在籍生も含めた今いる在籍の実数で、学校×学年人数表と一致します。差は「時期別のみ」の在籍生です。前月比・昨年同月比や推移は人数推移グラフ（生徒分析タブ）で確認できます。カードをタップすると詳細タブが開きます。</div>'
     + '</div>'
     + '</div>';
 }
@@ -17190,7 +17456,7 @@ async function loadStudentAnalysis() {
   const studentIdSet = new Set(studentsRaw.map(s => s.id));
   let enrolls = [];
   try {
-    enrolls = await sbGet('class_enrollments', 'select=student_id,class_master_id,class_master(subject,name,teacher_staff_id)') || [];
+    enrolls = await sbGetActiveEnrollments('select=student_id,class_master_id,class_master(subject,name,teacher_staff_id)');
   } catch (e) { enrolls = []; }
   enrolls = enrolls.filter(e => studentIdSet.has(e.student_id));
   const studentSubjects = {};
@@ -18388,6 +18654,7 @@ function downloadRosterTemplate() {
     ['氏名', '学校', '学年', '性別', '文理', '部活', '受講科目', '入塾日', '退塾日', '状態', '備考'],
     ['山田 太郎', '松山東', '1年', '男', '理系', '野球', '数学,英語', '2026-04-10', '', '在籍', ''],
     ['佐藤 花子', '松山南', '2年', '女', '文系', '吹奏楽', '英語,国語,数学', '2025-09-01', '2026-06-30', '退塾', ''],
+    ['高橋 三郎', '松山北', '3年', '男', '理系', '無所属', '', '2026-07-01', '', '時期別のみ', '夏期講習のみ'],
     ['', '', '', '', '', '', '', '', '', '', '']
   ];
   const csv = '\uFEFF' + lines.map(r => r.map(csvCell).join(',')).join('\r\n');
@@ -18539,10 +18806,15 @@ async function onRosterCsvSelected(event) {
       }
 
       let status = col.status >= 0 ? (r[col.status] || '').trim() : '';
-      // 状態の正規化：空欄や「在籍中」等は在籍、「退塾/退塾/退会」は退塾
-      if (/退塾|退塾|退会|stop|withdraw|left/i.test(status)) status = '退塾';
-      else if (status) status = '在籍';
-      else status = withdrawD ? '退塾' : '在籍'; // 退塾日があれば退塾とみなす
+      // 状態の正規化：在籍／時期別のみ／退塾 の3区分に振り分ける。
+      // membership_status … 通常 / 時期別のみ / 退塾（人数集計の基準）
+      // status（既存列）   … 在籍 / 退塾（後方互換。時期別のみも在籍扱い）
+      let membership;
+      if (/退塾|退会|stop|withdraw|left/i.test(status)) { status = '退塾'; membership = '退塾'; }
+      else if (/時期別|季節|講習のみ|seasonal|spot/i.test(status)) { status = '在籍'; membership = '時期別のみ'; }
+      else if (status) { status = '在籍'; membership = '通常'; }
+      else if (withdrawD) { status = '退塾'; membership = '退塾'; } // 退塾日があれば退塾とみなす
+      else { status = '在籍'; membership = '通常'; }
       incoming.push({
         name: rawName,
         name_norm: normalizeName(rawName),
@@ -18555,6 +18827,7 @@ async function onRosterCsvSelected(event) {
         enroll_date: enrollD,
         withdraw_date: withdrawD,
         status: status,
+        membership_status: membership,
         note: (r[col.note] || '').trim(),
         _key: rosterKey(rawName, school)
       });
@@ -18597,6 +18870,7 @@ async function onRosterCsvSelected(event) {
         gender: row.gender, course_track: row.course_track, club: row.club, note: row.note,
         subjects: row.subjects || null,
         enroll_date: row.enroll_date, withdraw_date: row.withdraw_date, status: row.status,
+        membership_status: row.membership_status,
         is_active: true, updated_at: new Date().toISOString()
       };
       const exId = existKey.get(row._key);
@@ -18604,8 +18878,8 @@ async function onRosterCsvSelected(event) {
         if (exId) { await sbPatch('roster', 'id=eq.' + exId, payload); updated++; }
         else { await sbPost('roster', payload); added++; }
       } catch (perr) {
-        // subjects 列が未作成（add_roster_only.sql 未実行）の可能性 → subjects を外して再試行
-        const p2 = Object.assign({}, payload); delete p2.subjects;
+        // subjects / membership_status 列が未作成の可能性 → 外して再試行
+        const p2 = Object.assign({}, payload); delete p2.subjects; delete p2.membership_status;
         if (exId) { await sbPatch('roster', 'id=eq.' + exId, p2); updated++; }
         else { await sbPost('roster', p2); added++; }
       }
@@ -19094,7 +19368,7 @@ async function openRosterClassPicker(studentId, name, grade, hintSubjects) {
   try {
     rcpMasters = await sbGet('class_master',
       'is_active=eq.true&order=subject,name&select=id,name,subject,grade_level') || [];
-    const enr = await sbGet('class_enrollments', 'student_id=eq.' + studentId + '&select=class_master_id') || [];
+    const enr = await sbGetActiveEnrollments('student_id=eq.' + studentId + '&select=class_master_id');
     rcpEnrolledIds = new Set(enr.map(e => e.class_master_id));
     rcpChecked = new Set(rcpEnrolledIds); // 既存はチェック済み初期値
   } catch (e) {
@@ -19184,12 +19458,12 @@ async function saveRosterClassPicker() {
   let added = 0, removed = 0;
   try {
     for (const cid of toAdd) {
-      try { await sbPost('class_enrollments', { class_master_id: cid, student_id: rcpStudentId }); added++; }
+      try { await startEnrollment(cid, rcpStudentId); added++; }
       catch (e) { /* duplicate 等は無視 */ }
     }
     for (const cid of toRemove) {
       try {
-        await sbDelete('class_enrollments', 'student_id=eq.' + rcpStudentId + '&class_master_id=eq.' + cid);
+        await endEnrollment(cid, rcpStudentId);
         removed++;
       } catch (e) { /* 続行 */ }
     }
@@ -19275,7 +19549,7 @@ async function loadRevenue() {
   const idSet = new Set(students.map(s => s.id));
   let enrolls = [];
   try {
-    enrolls = await sbGet('class_enrollments', 'select=student_id,class_master(subject)') || [];
+    enrolls = await sbGetActiveEnrollments('select=student_id,class_master(subject)');
   } catch (e) { enrolls = []; }
   enrolls = enrolls.filter(e => idSet.has(e.student_id));
   const subjOf = {};
@@ -19533,8 +19807,7 @@ async function loadClassAnalysis() {
     const sessions = await sbGet('class_sessions', sessQ) || [];
 
     // 受講名簿
-    const enrolls = await sbGet('class_enrollments',
-      'class_master_id=eq.' + classId + '&select=student_id') || [];
+    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id');
     const studentIds = enrolls.map(e => e.student_id);
 
     // 出欠記録
