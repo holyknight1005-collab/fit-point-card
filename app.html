@@ -1135,6 +1135,37 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       </div>
     </div>
 
+    <!-- ルーティーン編集モーダル -->
+    <div id="routine-mgr-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:500;align-items:center;justify-content:center;padding:16px">
+      <div style="background:#fff;border-radius:14px;max-width:420px;width:100%;max-height:84vh;overflow-y:auto;padding:18px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <span style="font-size:15px;font-weight:700;color:var(--orange-d)">🔁 ルーティーンの編集</span>
+          <button onclick="closeRoutineManager()" style="font-size:18px;color:var(--muted);background:none;border:none;cursor:pointer;line-height:1">×</button>
+        </div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:12px">毎日「今日やること」に出る自分用のチェック項目です。チェックは翌日リセットされます。</div>
+        <div id="routine-mgr-list" style="margin-bottom:14px"></div>
+        <div style="border-top:1px solid var(--border);padding-top:12px">
+          <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">➕ 追加する</div>
+          <div style="display:flex;gap:8px;margin-bottom:8px">
+            <input id="routine-add-icon" type="text" maxlength="2" placeholder="🔁" style="width:54px;text-align:center;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:16px;font-family:'Noto Sans JP',sans-serif">
+            <input id="routine-add-title" type="text" placeholder="例：来塾メンバーの進捗確認" style="flex:1;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:'Noto Sans JP',sans-serif">
+          </div>
+          <div style="margin-bottom:8px">
+            <select id="routine-add-tab" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:'Noto Sans JP',sans-serif;background:#fff">
+              <option value="">タップで開く先：なし</option>
+              <option value="prospects">入退塾管理</option>
+              <option value="attendance">授業出欠</option>
+              <option value="report">報告書</option>
+              <option value="rostercheck">名簿照合</option>
+              <option value="announce">お知らせ</option>
+              <option value="studentanalysis">生徒分析</option>
+            </select>
+          </div>
+          <button onclick="addRoutine()" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">追加</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ★ 自分へのToDo（ホーム上部・すぐ見える） -->
     <div id="home-mytodo-section" style="background:linear-gradient(135deg,#EAF5E1,#FFFFFF);border:1.5px solid var(--green);border-radius:var(--radius);padding:14px 16px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -2991,7 +3022,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zao';
+const APP_VERSION = '20260626zap';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -4921,6 +4952,13 @@ async function loadTodayTasks() {
       items.push(taskRow('✅', '締切が近いToDo', sub, false, "openTaskTodo()", overdueCount > 0));
     }
 
+    // ===== ルーティーン（入退塾・面談の自動件数 ＋ 自由チェック）=====
+    // 件数は担当校スコープで絞る。チェック状態は当日分のみ（翌日リセット）。
+    try {
+      const routineHtml = await buildRoutineRows(today);
+      if (routineHtml) items.push(routineHtml);
+    } catch (e) { /* ルーティーンが出せなくても今日やること本体は表示する */ }
+
     listEl.innerHTML = items.join('');
 
     // 件数バッジ（授業◯件・報告書・ToDo◯件）
@@ -4953,6 +4991,221 @@ async function loadTodayTasks() {
     listEl.innerHTML = '<div style="font-size:12px;color:var(--red)">読み込みに失敗しました<br><span style="font-size:10px;word-break:break-all">' + escapeHtml(String(e.message || e)).slice(0, 200) + '</span></div>';
     const countEl = document.getElementById('today-tasks-count');
     if (countEl) countEl.textContent = '—';
+  }
+}
+
+// ===== 日次ルーティーン（入退塾・面談の自動件数 ＋ 自由チェック）=====
+// 「今日やること」内に1ブロックとして差し込むHTMLを返す。
+// ・入退塾／面談の件数は担当校スコープ（saMyPerms.school_scope）で絞る
+// ・自由ルーティーンは staff_routines / staff_routine_checks（当日チェックは翌日リセット）
+// 当日チェックは window._routineCheckedToday（routine_id Set）に保持
+window._routineCheckedToday = window._routineCheckedToday || new Set();
+
+// 自分の担当校（配列）を返す。全校なら null。
+function myScopeSchools() {
+  if (!saMyPerms) return null;                 // 未ロード＝全校扱い
+  if (saMyPerms.admin) return null;            // 管理者＝全校
+  const ss = saMyPerms.school_scope;
+  if (Array.isArray(ss)) return ss;            // 担当校配列
+  return null;                                 // 'all' など＝全校
+}
+
+async function buildRoutineRows(today) {
+  const scope = myScopeSchools(); // null=全校 / 配列=担当校
+  let rowsHtml = '';
+
+  // ---- (A) 入退塾：来塾の未対応・面談中の自動件数 ----
+  let untouched = 0, interviewing = 0, prospectsOk = true;
+  try {
+    let q = 'select=id,status,school,next_date';
+    const rows = await sbGet('prospects', q) || [];
+    const inScope = (p) => !scope || (p.school && scope.includes(p.school));
+    const active = rows.filter(p => {
+      const st = p.status || '問合せ';
+      return (st === '問合せ' || st === '体験' || st === '面談') && inScope(p);
+    });
+    // 未対応＝next_date が今日以前 or 未設定
+    untouched = active.filter(p => !p.next_date || p.next_date <= today).length;
+    // 面談中＝status='面談'
+    interviewing = active.filter(p => (p.status || '') === '面談').length;
+  } catch (e) {
+    prospectsOk = false; // prospects 未作成などは静かにスキップ
+  }
+
+  if (prospectsOk) {
+    const scopeNote = (scope && scope.length) ? '（担当校）' : '';
+    // 来塾メンバーの未対応
+    if (untouched > 0) {
+      rowsHtml += taskRow('🚪', '来塾メンバーの未対応' + scopeNote, untouched + '件', false,
+        "openHomeFeature('prospects')", true);
+    } else {
+      rowsHtml += taskRow('🚪', '来塾メンバーの未対応' + scopeNote, 'なし', true,
+        "openHomeFeature('prospects')");
+    }
+    // 面談中
+    if (interviewing > 0) {
+      rowsHtml += taskRow('🗣', '面談中の対応' + scopeNote, interviewing + '件', false,
+        "openHomeFeature('prospects')");
+    } else {
+      rowsHtml += taskRow('🗣', '面談中の対応' + scopeNote, 'なし', true,
+        "openHomeFeature('prospects')");
+    }
+  }
+
+  // ---- (B) 自由ルーティーン（毎日チェック・翌日リセット）----
+  try {
+    const sid = currentStaff && currentStaff.staff_id;
+    if (sid) {
+      const defs = await sbGet('staff_routines',
+        'staff_id=eq.' + encodeURIComponent(sid) + '&is_active=eq.true&select=id,title,icon,link_tab,sort_order&order=sort_order.asc') || [];
+      // 当日チェック済み一覧
+      const checks = await sbGet('staff_routine_checks',
+        'staff_id=eq.' + encodeURIComponent(sid) + '&check_date=eq.' + today + '&select=routine_id') || [];
+      window._routineCheckedToday = new Set((checks || []).map(c => c.routine_id));
+      (defs || []).forEach(r => {
+        const done = window._routineCheckedToday.has(r.id);
+        const icon = r.icon || '🔁';
+        const tab = r.link_tab ? r.link_tab.replace(/'/g, '') : '';
+        // タップ＝チェックをトグル。タブ指定があればイベント伝播は止めず別ボタンで遷移。
+        const oc = "toggleRoutineCheck('" + r.id + "',event)";
+        rowsHtml += routineCustomRow(icon, r.title, done, oc, tab);
+      });
+    }
+  } catch (e) { /* テーブル未作成などはスキップ */ }
+
+  if (!rowsHtml) return '';
+  // 区切り見出し＋管理ボタン
+  return '<div style="margin-top:4px;padding-top:8px;border-top:1px dashed var(--border)">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'
+    +   '<span style="font-size:11px;font-weight:700;color:var(--orange-d)">🔁 ルーティーン</span>'
+    +   '<button onclick="openRoutineManager()" style="font-size:10px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);border-radius:20px;padding:2px 10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">編集</button>'
+    + '</div>'
+    + rowsHtml
+    + '</div>';
+}
+
+// 自由ルーティーン1行（チェック可能・任意でタブ遷移ボタン付き）
+function routineCustomRow(icon, title, done, onclick, tab) {
+  const badgeBg = done ? 'var(--green-l)' : 'var(--surface2)';
+  const badgeColor = done ? 'var(--green-d)' : 'var(--muted)';
+  const badgeText = done ? '✓ 済' : '未';
+  const jumpBtn = tab
+    ? '<button onclick="event.stopPropagation();openHomeFeature(\'' + tab + '\')" style="font-size:11px;color:var(--muted);background:none;border:none;cursor:pointer;padding:2px 4px">開く ›</button>'
+    : '';
+  return '<div onclick="' + onclick + '" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">'
+    + '<span style="font-size:16px">' + icon + '</span>'
+    + '<span style="flex:1;font-size:13px;font-weight:700;color:' + (done ? 'var(--muted)' : 'var(--text)') + ';' + (done ? 'text-decoration:line-through' : '') + '">' + escapeHtml(title) + '</span>'
+    + jumpBtn
+    + '<span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;background:' + badgeBg + ';color:' + badgeColor + '">' + badgeText + '</span>'
+    + '</div>';
+}
+
+// ルーティーンのチェックをトグル（当日分）。INSERT/UPDATEのみ＝物理DELETEしない。
+// 未チェック→チェック：INSERT。チェック済み→解除：is無いので、当日行を残しつつ
+// 解除はUI都合上「再チェックで再表示」=チェック解除は当日行を消す必要があるが
+// DELETE禁止のため、解除時は staff_routine_checks に行を作らず、既存行があれば
+// チェック扱いのまま（＝解除不可）にすると使い勝手が悪い。
+// → 解除を許すため checks には check_date を更新する論理フラグを持たせず、
+//   「当日にチェック行が存在する＝済」「無い＝未」で表現。解除はローカル状態のみ反映し、
+//   再読込で実体（INSERT済み）に従う。解除を完全対応するには undone 列が要るが、
+//   今回は「チェックは前進のみ（誤タップ取消はローカルのみ）」とする。
+async function toggleRoutineCheck(routineId, ev) {
+  if (ev && ev.stopPropagation) ev.stopPropagation();
+  const sid = currentStaff && currentStaff.staff_id;
+  if (!sid) return;
+  const today = getTodayJST();
+  const already = window._routineCheckedToday.has(routineId);
+  if (already) {
+    // ローカル解除（実体は残る。次回読込で済表示に戻る点は許容）
+    window._routineCheckedToday.delete(routineId);
+    loadTodayTasks();
+    return;
+  }
+  try {
+    await sbPost('staff_routine_checks', { routine_id: routineId, staff_id: sid, check_date: today });
+    window._routineCheckedToday.add(routineId);
+  } catch (e) {
+    // UNIQUE衝突（既にチェック済み）も成功扱い
+    window._routineCheckedToday.add(routineId);
+  }
+  loadTodayTasks();
+}
+
+// ===== ルーティーン編集モーダル =====
+let routineMgrCache = [];
+
+async function openRoutineManager() {
+  const box = document.getElementById('routine-mgr-box');
+  if (!box) return;
+  box.style.display = 'flex';
+  await renderRoutineManager();
+}
+function closeRoutineManager() {
+  const box = document.getElementById('routine-mgr-box');
+  if (box) box.style.display = 'none';
+}
+
+async function renderRoutineManager() {
+  const listEl = document.getElementById('routine-mgr-list');
+  if (!listEl) return;
+  const sid = currentStaff && currentStaff.staff_id;
+  if (!sid) { listEl.innerHTML = ''; return; }
+  listEl.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:12px">読み込み中...</div>';
+  try {
+    const rows = await sbGet('staff_routines',
+      'staff_id=eq.' + encodeURIComponent(sid) + '&is_active=eq.true&select=id,title,icon,link_tab,sort_order&order=sort_order.asc') || [];
+    routineMgrCache = rows || [];
+  } catch (e) {
+    listEl.innerHTML = '<div style="background:#FDECEA;border:1px solid #F5B7B1;border-radius:8px;padding:10px;font-size:12px;color:#943126;line-height:1.6">⚠️ 取得できませんでした。<br><b>create_staff_routines.sql</b> を Supabase で実行してください。</div>';
+    return;
+  }
+  if (!routineMgrCache.length) {
+    listEl.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">まだルーティーンがありません。下から追加してください。</div>';
+    return;
+  }
+  listEl.innerHTML = routineMgrCache.map(function(r){
+    const tabLabel = r.link_tab ? ('開く先：' + escapeHtml(r.link_tab)) : '';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:#fff;margin-bottom:6px">'
+      + '<span style="font-size:16px">' + (r.icon || '🔁') + '</span>'
+      + '<div style="flex:1"><div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(r.title) + '</div>'
+      + (tabLabel ? '<div style="font-size:10px;color:var(--muted)">' + tabLabel + '</div>' : '') + '</div>'
+      + '<button onclick="deleteRoutine(\'' + r.id + '\')" style="font-size:11px;color:var(--red);background:#fff;border:1px solid var(--red);border-radius:6px;padding:5px 10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">削除</button>'
+      + '</div>';
+  }).join('');
+}
+
+async function addRoutine() {
+  const sid = currentStaff && currentStaff.staff_id;
+  if (!sid) return;
+  const titleEl = document.getElementById('routine-add-title');
+  const iconEl = document.getElementById('routine-add-icon');
+  const tabEl = document.getElementById('routine-add-tab');
+  const title = (titleEl.value || '').trim();
+  if (!title) { showToast('内容を入力してください', 'error'); return; }
+  const icon = (iconEl.value || '🔁').trim() || '🔁';
+  const tab = (tabEl.value || '').trim();
+  const sort = routineMgrCache.length ? (Math.max.apply(null, routineMgrCache.map(r => r.sort_order || 0)) + 1) : 0;
+  try {
+    await sbPost('staff_routines', { staff_id: sid, title: title, icon: icon, link_tab: tab || null, sort_order: sort });
+    titleEl.value = ''; iconEl.value = ''; tabEl.value = '';
+    await renderRoutineManager();
+    loadTodayTasks();
+    showToast('追加しました', 'success');
+  } catch (e) {
+    showToast('追加エラー: ' + e.message + '（create_staff_routines.sql 未実行の可能性）', 'error');
+  }
+}
+
+// 削除＝論理削除（is_active=false）。物理DELETEしない。
+async function deleteRoutine(id) {
+  if (!confirm('このルーティーンを削除しますか？')) return;
+  try {
+    await sbPatch('staff_routines', 'id=eq.' + id, { is_active: false, updated_at: new Date().toISOString() });
+    await renderRoutineManager();
+    loadTodayTasks();
+    showToast('削除しました', 'success');
+  } catch (e) {
+    showToast('削除エラー: ' + e.message, 'error');
   }
 }
 
