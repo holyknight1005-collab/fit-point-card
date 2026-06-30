@@ -3022,7 +3022,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zap';
+const APP_VERSION = '20260626zaq';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16745,10 +16745,25 @@ async function renderEnrollmentFlow() {
   // 退塾予定（確定だが発効日がまだ未来）＝近々抜ける
   const upcoming = confRows.filter(s => s.withdraw_effective_date && s.withdraw_effective_date > todayStr);
   // 退塾済み（確定・発効日が今日以前）＝在籍外。全期間。年単位で並べる。
-  const withdrawn = confRows.filter(s => s.withdraw_effective_date && s.withdraw_effective_date <= todayStr)
+  const withdrawnStu = confRows.filter(s => s.withdraw_effective_date && s.withdraw_effective_date <= todayStr);
+  // 名簿（roster）側の退塾者も合算。高校生のうち（is_active=true）はずっと表示＝再アプローチ用。
+  // 重複除外：氏名＋学校 が students 確定退塾と一致するものは除く（アプリ側優先）。
+  const stuWdKeys = new Set(withdrawnStu.map(s => rosterKey(s.name, s.school)));
+  const stuWdNames = new Set(withdrawnStu.map(s => normalizeName(s.name)));
+  const rosterWithdrawn = (rosterRows || []).filter(r => {
+    const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+    if (!isOut || !r.withdraw_date) return false;
+    if (r.withdraw_date > todayStr) return false; // 未来発効は除外（students と同基準）
+    if (stuWdKeys.has(rosterKey(r.name, r.school)) || stuWdNames.has(normalizeName(r.name))) return false;
+    return true;
+  }).map(r => ({
+    id: null, name: r.name, school: r.school || '', grade: r.grade || '',
+    withdraw_effective_date: r.withdraw_date, withdraw_reason: '', _roster: true
+  }));
+  const withdrawn = withdrawnStu.concat(rosterWithdrawn)
     .sort((a, b) => (b.withdraw_effective_date || '').localeCompare(a.withdraw_effective_date || ''));
   // 入塾日未登録（アプリ登録済みで enroll_date が空・除外と退塾済み以外＝現役の在籍系）。入力を促す対象。
-  const withdrawnIds = new Set(confRows.filter(s => s.withdraw_effective_date && s.withdraw_effective_date <= todayStr).map(s => s.id));
+  const withdrawnIds = new Set(withdrawnStu.map(s => s.id));
   const noEnrollDate = inRows.filter(s => !s.enroll_date && !withdrawnIds.has(s.id));
   const net7 = in7.length - out7.length;
   const net30 = in30.length - out30.length;
@@ -16806,16 +16821,21 @@ async function renderEnrollmentFlow() {
   const wYears = Object.keys(withdrawnByYear).sort((a, b) => b.localeCompare(a));
   const withdrawnRow = (s) => {
     const reason = s.withdraw_reason || '';
+    const nameBadge = s._roster ? '<span style="font-size:9px;color:#fff;background:#999;border-radius:4px;padding:1px 5px;margin-left:6px">名簿</span>' : '';
+    // 名簿由来（id無し）は退塾理由の保存先（students.id）が無いため入力欄を出さない。
+    const reasonRow = s._roster
+      ? '<div style="font-size:10px;color:var(--muted);padding-left:2px">名簿台帳の退塾者（再アプローチ候補）。在学中（名簿有効）の間は表示します。</div>'
+      : '<div style="display:flex;gap:6px;align-items:center">' +
+          '<input type="text" id="wreason-' + s.id + '" value="' + escapeHtml(reason) + '" placeholder="退塾理由（任意）" style="flex:1;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-family:inherit;color:var(--text);background:#fff">' +
+          '<button onclick="saveWithdrawReason(\'' + s.id + '\')" style="padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">保存</button>' +
+        '</div>';
     return '<div style="padding:6px 0;border-bottom:1px solid var(--border)">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-bottom:4px">' +
-        '<div><span style="font-weight:700;color:#C0392B">' + escapeHtml(s.name || '') + '</span>' +
+        '<div><span style="font-weight:700;color:#C0392B">' + escapeHtml(s.name || '') + '</span>' + nameBadge +
         '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(s.grade) : '') + '</span></div>' +
         '<div style="color:var(--muted);font-size:11px">' + fmtDate(s.withdraw_effective_date) + '</div>' +
       '</div>' +
-      '<div style="display:flex;gap:6px;align-items:center">' +
-        '<input type="text" id="wreason-' + s.id + '" value="' + escapeHtml(reason) + '" placeholder="退塾理由（任意）" style="flex:1;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-family:inherit;color:var(--text);background:#fff">' +
-        '<button onclick="saveWithdrawReason(\'' + s.id + '\')" style="padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">保存</button>' +
-      '</div>' +
+      reasonRow +
     '</div>';
   };
   let withdrawnBody = '';
@@ -17733,6 +17753,14 @@ function trendGridTable(d) {
     + mBtn('left', '退塾', '#C0392B')
     + '</div>';
 
+  // 学校フィルタ（この表のすぐ上にも設置。グラフ側と同じ trendFilter.school に連動）
+  const gSchoolBtn = (s, label) =>
+    '<button onclick="setTrendFilterSchool(\'' + s.replace(/'/g, "\\'") + '\')" style="padding:4px 9px;font-size:10px;font-weight:700;border:1px solid var(--border);border-radius:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;background:' +
+    (trendFilter.school === s ? '#2D5FA6;color:#fff' : 'var(--surface);color:var(--text)') + '">' + escapeHtml(label) + '</button>';
+  const gSchoolRow = '<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin:0 0 8px">'
+    + '<span style="font-size:11px;color:var(--muted)">学校：</span>'
+    + gSchoolBtn('全校', '全校') + SA_SCHOOLS.map(s => gSchoolBtn(s, s)).join('') + '</div>';
+
   return '<div style="margin-top:14px">'
     + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">'
     +   '<span style="font-size:12px;font-weight:700;color:var(--muted)">📋 ' + metricLabel + 'の一覧（年度×月×学年）</span>'
@@ -17740,6 +17768,7 @@ function trendGridTable(d) {
     +   (trendFilter.school !== '全校' ? '<span style="font-size:11px;color:#1A4D80;background:#DCEBFA;border:1px solid #9CC0E8;padding:1px 8px;border-radius:12px">' + escapeHtml(trendFilter.school) + '</span>' : '')
     + '</div>'
     + metricRow
+    + gSchoolRow
     + '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;min-width:680px"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
     + namePanel
     + '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.5">' + note + '</div>'
