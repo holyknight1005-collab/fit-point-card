@@ -179,8 +179,12 @@
 
       <!-- AI貼り付け取り込み -->
       <div class="card" style="border-color:var(--green);background:var(--green-l)">
-        <div class="sec-title" style="color:var(--green-d)">🤖 AIで作った問題を貼り付け</div>
-        <div class="muted" style="margin-bottom:8px">Claudeに下記フォーマットで問題を作ってもらい、JSONを貼り付けて取り込めます。</div>
+        <div class="sec-title" style="color:var(--green-d)">🤖 AIで問題を作る／貼り付け</div>
+        <div class="muted" style="margin-bottom:8px">下のボタンで「見本＋依頼文」をコピーし、ChatGPTなどに貼り付けて問題を作ってもらえます。できたJSONをここに貼って「取り込み」。</div>
+        <div style="display:flex;gap:7px;margin-bottom:8px">
+          <button class="btn btn-primary" style="flex:1" onclick="copyForChatGPT()">📋 ChatGPT用にコピー</button>
+          <button class="btn btn-ghost" style="flex:1" onclick="copyCurrentJson()">📄 今の問題をJSON表示</button>
+        </div>
         <textarea id="cr-json" class="ta" placeholder='{"questions":[{"type":"number","text":"2x+6=14 のとき x=","answer":"4"},{"type":"choice","text":"y=2x²の頂点は？","answer":"(0,0)","choices":["(0,0)","(1,2)","(0,2)","(2,0)","(-1,2)","(0,-2)"]}]}'></textarea>
         <div style="display:flex;gap:7px;margin-top:8px">
           <button class="btn btn-ghost" style="flex:1" onclick="showJsonFormat()">📄 フォーマット例</button>
@@ -214,7 +218,7 @@
 // デプロイのたびにこの値を上げ、quiz_version.txt の中身と一致させること。
 // app.html とは独立管理（quiz_version.txt を参照）。app側の更新で quiz が巻き込まれない。
 // ============================================================
-const QUIZ_VERSION = '20260702a';
+const QUIZ_VERSION = '20260702c';
 
 // quiz_version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkQuizVersion(){
@@ -595,6 +599,70 @@ function renderCrQuestions(){
 function showJsonFormat(){
   const sample = '【Claudeへの依頼例】\n「2次関数の頂点を求める問題を5問、下のJSON形式で作って」\n\n【形式】\n{\n  "questions": [\n    { "type":"number", "text":"問題文", "answer":"4" },\n    { "type":"choice", "text":"問題文", "answer":"正解", "choices":["正解","選択肢2","選択肢3","選択肢4","選択肢5","選択肢6"] }\n  ]\n}\n\n・type は "number"（数値入力）か "choice"（6択）\n・number は answer だけでOK（ダミー自動生成）\n・choice は choices に正解を必ず含める';
   alert(sample);
+}
+
+// クリップボードにコピー（新API→execCommandフォールバック）
+async function copyToClipboard(text){
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  }catch(e){ /* フォールバックへ */ }
+  try{
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  }catch(e){ return false; }
+}
+
+// 今フォームにある問題を JSON 文字列にする（見本/コピー用）
+function buildCurrentQuizJson(){
+  const title = (document.getElementById('cr-title') ? document.getElementById('cr-title').value.trim() : '') || '';
+  const subject = (document.getElementById('cr-subject') ? document.getElementById('cr-subject').value : '') || '';
+  const questions = (crQuestions || []).map(q => {
+    if(q.type === 'choice'){
+      return { type:'choice', text:q.text||'', answer:q.answer||'', choices:(q.choices||[]).filter(c=>c!=='') };
+    }
+    return { type:'number', text:q.text||'', answer:q.answer||'' };
+  });
+  const obj = {};
+  if(title) obj.title = title;
+  if(subject) obj.subject = subject;
+  obj.questions = questions;
+  return JSON.stringify(obj, null, 2);
+}
+
+// 今の問題をそのままJSONでコピー（下のテキストエリアにも表示して中身を確認できる）
+async function copyCurrentJson(){
+  if(!crQuestions || !crQuestions.length){ showToast('先に問題を1問以上つくってください','error'); return; }
+  const json = buildCurrentQuizJson();
+  const ta = document.getElementById('cr-json');
+  if(ta) ta.value = json; // 中身を画面に表示（そのまま編集して取り込みも可）
+  const ok = await copyToClipboard(json);
+  showToast(ok ? 'JSONを表示＆コピーしました' : '表示しました（コピーは失敗）', ok ? 'success' : 'error');
+}
+
+// ChatGPT等に貼る用：依頼文＋今の問題を見本として付けてコピー
+async function copyForChatGPT(){
+  const hasQ = crQuestions && crQuestions.length;
+  const sampleJson = hasQ ? buildCurrentQuizJson() : '{\n  "questions": [\n    { "type":"number", "text":"2x+6=14 のとき x=", "answer":"4" },\n    { "type":"choice", "text":"y=2x²の頂点は？", "answer":"(0,0)", "choices":["(0,0)","(1,2)","(0,2)","(2,0)","(-1,2)","(0,-2)"] }\n  ]\n}';
+  const prompt =
+    'あなたは塾の小テスト作成アシスタントです。下の【見本JSON】と同じ形式で、新しい問題を作ってください。\n\n' +
+    '【お願い】ここに「作ってほしい問題」を書いてください（例：2次関数の頂点を求める問題を5問）。\n\n' +
+    '【ルール】\n' +
+    '・出力はJSONのみ。前後に説明文やコードブロック記号（```）を付けない。\n' +
+    '・type は "number"（数値入力）か "choice"（6択）のどちらか。\n' +
+    '・number は text と answer だけでよい。\n' +
+    '・choice は choices に必ず正解(answer)を含め、選択肢は6個にする。\n' +
+    '・answer は文字列で書く。\n\n' +
+    '【見本JSON】' + (hasQ ? '（いま作成中の問題です。これと同じ形式で）' : '') + '\n' +
+    sampleJson;
+  const ok = await copyToClipboard(prompt);
+  showToast(ok ? 'ChatGPT用の文をコピーしました。貼り付けて使えます' : 'コピーに失敗しました', ok ? 'success' : 'error');
 }
 function importJson(){
   const raw = document.getElementById('cr-json').value.trim();
