@@ -3105,7 +3105,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zat';
+const APP_VERSION = '20260626zav';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -17121,8 +17121,8 @@ function isEnrolledNow(s) {
 async function renderEnrollmentFlow() {
   const wrap = document.getElementById('sa-flow-report');
   if (!wrap) return;
-  // 権限：現状は admin のみ。将来は saCanView('enrollment_flow') に置き換え可能。
-  const canSee = (currentStaff && currentStaff.role === 'admin');
+  // 権限：人数増減は全スタッフに開放（全校の増減を閲覧可）。
+  const canSee = !!currentStaff;
   if (!canSee) { wrap.innerHTML = ''; return; }
 
   wrap.innerHTML = '<div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;background:var(--surface)"><div style="text-align:center;color:var(--muted);font-size:12px">増減を集計中…</div></div>';
@@ -20628,9 +20628,19 @@ function renderRosterList() {
       + '</div>';
   }
 
+  // 未登録（⚠️＝在籍中）の件数（全校・全学年基準。一括登録の対象数）
+  const bulkTargetCount = roster.filter(r => r._status === 'none' && !r._withdrawn).length;
+
   html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
     + saSectionTitle('📒 名簿台帳一覧（' + filtered.length + '件）')
     + '</div>';
+  // 一括登録ボタン（未登録⚠️がある時だけ表示。対象は全校・全学年の未登録すべて）
+  if (bulkTargetCount > 0) {
+    html += '<div style="background:#EAF3FB;border:1px solid #9FC4E8;border-radius:8px;padding:10px;margin-bottom:10px">'
+      + '<div style="font-size:12px;color:#1A4D80;line-height:1.5;margin-bottom:8px">未登録（⚠️）の生徒が <b>' + bulkTargetCount + ' 人</b> います（全校・全学年）。まとめて名簿生として登録できます。<br><span style="font-size:10px;color:#3A5A7E">※「❓学校違い（要確認）」「退塾」はスキップ。受講講座は登録後に各行の📚から選んでください。</span></div>'
+      + '<button onclick="bulkRegisterRosterStudents()" style="width:100%;padding:11px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">＋ 未登録 ' + bulkTargetCount + ' 人をまとめて名簿生登録</button>'
+      + '</div>';
+  }
   html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">✅=アプリ登録済（氏名＋学校一致）／⚠️=未登録／❓=氏名は一致するが学校が違う（表記ゆれ・転校の可能性）<br>「反映」列＝この名簿が生徒分析の母数に入るか（反映／除外＝重複／退塾）。</div>';
 
   if (!filtered.length) {
@@ -20823,7 +20833,100 @@ async function registerRosterStudent(rosterId) {
   }
 }
 
-// ===== 名簿生の受講講座 選択モーダル =====
+// ===== 名簿生の一括登録 =====
+// 名簿一覧の未登録（⚠️＝氏名＋学校がアプリ生と一致しない）行を、まとめて名簿生（roster_only=true）で登録する。
+// 対象は全校・全学年。「❓氏名のみ一致（学校違い＝要確認）」と「退塾」は安全側でスキップ。
+// 講座紐づけは行わない（登録後に各行の「📚講座編集」から個別に選ぶ）。1人ずつの確認ダイアログ＆モーダルを省き、一括で作るのが目的。
+async function bulkRegisterRosterStudents() {
+  // rcRosterCache は照合済みの名簿（_status: ok/name_only/none、_withdrawn 付き）。loadRosterList 実行後に存在。
+  const roster = Array.isArray(rcRosterCache) ? rcRosterCache : [];
+  if (!roster.length) { showToast('先に名簿を読み込んでください', 'info'); return; }
+
+  // 未登録（⚠️）かつ在籍中のみ。要確認（name_only）・退塾はスキップ。
+  const targets = roster.filter(r => r._status === 'none' && !r._withdrawn);
+  const skipConfirm = roster.filter(r => r._status === 'name_only').length;
+  const skipWithdrawn = roster.filter(r => r._status === 'none' && r._withdrawn).length;
+
+  if (!targets.length) {
+    showToast('一括登録できる未登録の名簿がありません', 'info');
+    return;
+  }
+
+  let msg = '未登録（⚠️）の名簿 ' + targets.length + ' 人を、まとめて名簿生として登録します。\n\n'
+    + '・出欠と集計の対象になります（ポイントは付きません）\n'
+    + '・本人がアプリ登録すると自動でポイント対象に切り替わります\n'
+    + '・受講講座は登録後、各行の「📚講座編集」から選んでください\n';
+  if (skipConfirm) msg += '\n※「❓学校違い（要確認）」' + skipConfirm + ' 人はスキップします';
+  if (skipWithdrawn) msg += '\n※「退塾」' + skipWithdrawn + ' 人はスキップします';
+  msg += '\n\nよろしいですか？';
+  if (!confirm(msg)) return;
+
+  // 二重登録を防ぐため、students の現況を1回だけ取得してキー集合化
+  let existStu = [];
+  try {
+    existStu = await sbGet('students', 'select=id,name,school') || [];
+  } catch (e) { showToast('生徒情報の取得に失敗しました', 'error'); return; }
+  const existKeys = new Set(existStu.map(s => rosterKey(s.name, s.school)));
+  let rosterOnlyMissing = false; // roster_only 列が無い環境の検知
+
+  showLoading('一括登録中... 0/' + targets.length);
+  let done = 0, skipped = 0, failed = 0;
+  const failNames = [];
+  for (const r of targets) {
+    const key = rosterKey(r.name, r.school);
+    // ループ中に同名を作ってしまわないよう、その場でキーを追加していく
+    if (existKeys.has(key)) { skipped++; showLoading('一括登録中... ' + (done + skipped + failed) + '/' + targets.length); continue; }
+
+    const base = {
+      name: r.name,
+      school: r.school || null,
+      grade: r.grade || null,
+      gender: r.gender || null,
+      course_track: r.course_track || null,
+      points: 0,
+      streak: 0,
+      roster_only: true
+    };
+    try {
+      await insertStudentWithEnrollDate(base, r.enroll_date || getTodayJST());
+      existKeys.add(key);
+      done++;
+    } catch (e) {
+      const em = String(e && e.message || e);
+      // roster_only 列が無い環境：列を外して再試行し、フラグを立てる（後でまとめて案内）
+      if (/roster_only|column|schema|PGRST|400/i.test(em)) {
+        try {
+          const b2 = Object.assign({}, base); delete b2.roster_only;
+          await insertStudentWithEnrollDate(b2, r.enroll_date || getTodayJST());
+          existKeys.add(key);
+          done++;
+          rosterOnlyMissing = true;
+        } catch (e2) { failed++; failNames.push(r.name); }
+      } else {
+        failed++; failNames.push(r.name);
+      }
+    }
+    showLoading('一括登録中... ' + (done + skipped + failed) + '/' + targets.length);
+  }
+  hideLoading();
+
+  let result = '✅ ' + done + ' 人を名簿生として登録しました';
+  if (skipped) result += '（登録済みスキップ ' + skipped + '）';
+  if (failed) result += '（失敗 ' + failed + '）';
+  showToast(result, failed ? 'error' : 'success');
+  if (rosterOnlyMissing) {
+    showToast('⚠️ roster_only 列が未作成のため通常生扱いで登録されました。add_roster_only.sql の実行を推奨します', 'error');
+  }
+  if (failed && failNames.length) {
+    alert('登録に失敗した生徒（' + failed + '人）：\n' + failNames.slice(0, 30).join('、') + (failNames.length > 30 ? ' ほか' : ''));
+  }
+
+  // 一覧・スタッフ画面を更新
+  loadRosterList();
+  if (typeof initStaff === 'function') initStaff();
+}
+
+
 // 実在の class_master を科目フィルタ付きで一覧表示し、チェックボックスで複数選択して紐づける。
 let rcpStudentId = null;       // 対象の生徒ID
 let rcpStudentName = '';
