@@ -2247,7 +2247,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <!-- ビデオ補習 承認タブ -->
     <div id="smcontent-makeup" style="display:none">
       <div class="section-title">📺 ビデオ補習の承認</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.5">生徒からの補習申請です。承認すると +2pt が付与され、生徒のカレンダーに補習済みとして反映されます。</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.5">生徒がビデオ補習を予約→視聴完了報告したものです。「✅視聴完了報告あり」を確認して出席反映すると +2pt が付与され、生徒のカレンダーに補習済みとして反映されます。</div>
       <div id="sm-makeup-pending" style="display:flex;flex-direction:column;gap:8px"></div>
       <div class="section-title" style="margin-top:18px">承認済み（直近）</div>
       <div id="sm-makeup-approved" style="display:flex;flex-direction:column;gap:6px"></div>
@@ -3105,7 +3105,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260626zav';
+const APP_VERSION = '20260626zax';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -3149,6 +3149,10 @@ const SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
 const STAFF_PASSWORD = '99999';
 const FIT_LAT = 33.840737, FIT_LNG = 132.770524, FIT_RADIUS = 100;
+// ビデオ補習の予約フォーム（LINE LIFF）。欠席コマの補習予約に使う。
+// ※ liff_id と is の両パラメータが揃わないと開けないため、フルURLで保持する。
+// （is= が失効する可能性があるので、将来的に設定画面から差し替え可能にする予定）
+const VIDEO_RESERVE_URL = 'https://liff.line.me/1654282071-GLZNj98x?liff_id=1654282071-GLZNj98x&is=H8U8GywQD5';
 
 // ===== 教室定義 =====
 // location 値 → 表示ラベル。本校(fit)はGPS判定、それ以外はQR判定。
@@ -9949,7 +9953,7 @@ async function loadMakeupApprovals() {
   pendEl.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:12px">読み込み中...</div>';
   try {
     const pending = await sbGet('video_makeups',
-      'status=eq.pending&select=*,students(name),class_master(name,subject)&order=requested_at.desc') || [];
+      'status=in.(reported,pending)&select=*,students(name),class_master(name,subject)&order=requested_at.desc') || [];
     if (!pending.length) {
       pendEl.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px;background:#fff;border:1px dashed var(--border);border-radius:8px">承認待ちの申請はありません</div>';
     } else {
@@ -9958,13 +9962,18 @@ async function loadMakeupApprovals() {
         const cname = m.class_master?.name || '授業';
         const subj = m.class_master?.subject || '';
         const dateStr = m.session_date.replace(/-/g, '/');
+        const isReported = (m.status === 'reported');
+        const flowBadge = isReported
+          ? '<span style="font-size:9px;background:#D8C4E4;color:#5A2168;padding:2px 7px;border-radius:9px;font-weight:700">✅視聴完了報告あり</span>'
+          : '<span style="font-size:9px;background:#EDE3F2;color:#7B2D8B;padding:2px 7px;border-radius:9px;font-weight:700">申請</span>';
+        const repStr = m.reported_at ? ('　報告 ' + String(m.reported_at).slice(0,10).replace(/-/g,'/')) : '';
         return '<div style="background:#fff;border:1.5px solid var(--orange-l);border-radius:8px;padding:12px">' +
           '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
-            '<div style="flex:1"><div style="font-size:13px;font-weight:700;color:var(--text)">' + sname + '</div>' +
-            '<div style="font-size:11px;color:var(--muted)">' + cname + (subj ? '（' + subj + '）' : '') + '　授業日 ' + dateStr + '</div></div>' +
+            '<div style="flex:1"><div style="font-size:13px;font-weight:700;color:var(--text)">' + sname + '　' + flowBadge + '</div>' +
+            '<div style="font-size:11px;color:var(--muted)">' + cname + (subj ? '（' + subj + '）' : '') + '　授業日 ' + dateStr + repStr + '</div></div>' +
           '</div>' +
           '<div style="display:flex;gap:8px">' +
-            '<button onclick="approveMakeup(' + m.id + ')" style="flex:1;padding:8px;background:var(--green-d);border:none;border-radius:6px;color:white;font-weight:700;font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">✅ 承認 +2pt</button>' +
+            '<button onclick="approveMakeup(' + m.id + ')" style="flex:1;padding:8px;background:var(--green-d);border:none;border-radius:6px;color:white;font-weight:700;font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">✅ 出席反映 +2pt</button>' +
             '<button onclick="rejectMakeup(' + m.id + ')" style="padding:8px 14px;background:transparent;border:1.5px solid #C75050;border-radius:6px;color:#C75050;font-weight:700;font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">却下</button>' +
           '</div>' +
         '</div>';
@@ -13422,7 +13431,7 @@ async function loadDetailCalendar() {
       detailCalSessions = Object.values(byDate);
       try {
         const makeups = await sbGet('video_makeups',
-          'student_id=eq.' + detailStudent.id + '&status=in.(pending,approved)&select=class_master_id,session_date,status') || [];
+          'student_id=eq.' + detailStudent.id + '&status=in.(reserved,reported,pending,approved)&select=class_master_id,session_date,status') || [];
         makeups.forEach(m => { detailCalMakeup[m.class_master_id + '|' + m.session_date] = m.status; });
       } catch(e) { /* テーブル未作成時は無視 */ }
     }
@@ -13440,16 +13449,18 @@ function detailGetDayStatus(dateISO, sess, todayISO) {
   const attendedDay = detailCalAttended.has(dateISO);
   if (sess) {
     const isPast = dateISO <= todayISO;
-    let makeupInvolved = false, allFilled = true, anyPending = false;
+    let makeupInvolved = false, allFilled = true, anyPending = false, anyInProgress = false;
     sess.classes.forEach(c => {
       const st = detailCalMakeup[c.id + '|' + dateISO];
       if (st === 'approved') { makeupInvolved = true; }
-      else if (st === 'pending') { makeupInvolved = true; anyPending = true; allFilled = false; }
+      else if (st === 'reported' || st === 'pending') { makeupInvolved = true; anyPending = true; allFilled = false; }
+      else if (st === 'reserved') { makeupInvolved = true; anyInProgress = true; allFilled = false; }
       else if (!attendedDay) { allFilled = false; }
     });
     if (makeupInvolved) {
       if (allFilled) return { bg:'#7B2D8B', color:'#fff', label:'補習完了', dashed:false };
-      return { bg:'#E3D0EC', color:'#7B2D8B', label:(anyPending?'補習申請中':'補習途中'), dashed:true };
+      const lbl = anyPending ? '確認待ち' : (anyInProgress ? '予約済み' : '補習途中');
+      return { bg:'#E3D0EC', color:'#7B2D8B', label:lbl, dashed:true };
     }
     if (!isPast) return { bg:'#B8C4D0', color:'#fff', label:'予定', dashed:false };
     if (attendedDay) return { bg:'var(--green-d)', color:'#fff', label:'出席', dashed:false };
@@ -13538,10 +13549,10 @@ async function loadUnifiedCalendar() {
         if (!byDate[s.session_date].classes.some(c => c.id === info.id)) byDate[s.session_date].classes.push(info);
       });
       unifiedSessions = Object.values(byDate);
-      // ビデオ補習
+      // ビデオ補習（予約・報告・承認待ち・承認済みをすべて反映）
       try {
         const makeups = await sbGet('video_makeups',
-          'student_id=eq.' + currentStudent.id + '&status=in.(pending,approved)&select=class_master_id,session_date,status') || [];
+          'student_id=eq.' + currentStudent.id + '&status=in.(reserved,reported,pending,approved)&select=class_master_id,session_date,status') || [];
         makeups.forEach(m => { unifiedMakeupMap[m.class_master_id + '|' + m.session_date] = m.status; });
       } catch(e) { /* テーブル未作成時は無視 */ }
     }
@@ -13870,16 +13881,18 @@ function getDayStatus(dateISO, sess, todayISO) {
   const attendedDay = unifiedAttendedDates.has(dateISO);
   if (sess) {
     const isPast = dateISO <= todayISO;
-    let makeupInvolved = false, allFilled = true, anyPending = false;
+    let makeupInvolved = false, allFilled = true, anyPending = false, anyInProgress = false;
     sess.classes.forEach(c => {
       const st = unifiedMakeupMap[c.id + '|' + dateISO];
       if (st === 'approved') { makeupInvolved = true; }
-      else if (st === 'pending') { makeupInvolved = true; anyPending = true; allFilled = false; }
+      else if (st === 'reported' || st === 'pending') { makeupInvolved = true; anyPending = true; allFilled = false; }
+      else if (st === 'reserved') { makeupInvolved = true; anyInProgress = true; allFilled = false; }
       else if (!attendedDay) { allFilled = false; }
     });
     if (makeupInvolved) {
       if (allFilled) return { bg:'#7B2D8B', color:'#fff', label:'補習完了', dashed:false, clickable:false };
-      return { bg:'#E3D0EC', color:'#7B2D8B', label:(anyPending?'補習申請中':'補習途中'), dashed:true, clickable:isPast };
+      const lbl = anyPending ? '確認待ち' : (anyInProgress ? '予約済み' : '補習途中');
+      return { bg:'#E3D0EC', color:'#7B2D8B', label:lbl, dashed:true, clickable:isPast };
     }
     if (!isPast) return { bg:'#B8C4D0', color:'#fff', label:'予定', dashed:false, clickable:false };
     if (attendedDay) return { bg:'var(--green-d)', color:'#fff', label:'出席', dashed:false, clickable:false };
@@ -14021,7 +14034,7 @@ function openDayModal(dateISO) {
     body += '<div style="font-size:13px;color:var(--green-d);font-weight:700">✅ この日は来塾しています</div>';
   }
 
-  // --- 授業（出欠・補習申請） ---
+  // --- 授業（出欠・補習フロー） ---
   if (sess) {
     const isPast = dateISO <= todayISO;
     body += '<div><div style="font-size:12px;font-weight:700;color:#7B2D8B;margin-bottom:6px">📋 授業</div>';
@@ -14032,6 +14045,8 @@ function openDayModal(dateISO) {
     body += items.map(it => {
       let badge, selectable = false;
       if (it.status === 'approved') badge = '<span style="font-size:10px;background:#7B2D8B;color:#fff;padding:2px 8px;border-radius:10px;font-weight:700">補習済み</span>';
+      else if (it.status === 'reported') badge = '<span style="font-size:10px;background:#D8C4E4;color:#5A2168;padding:2px 8px;border-radius:10px;font-weight:700">確認待ち</span>';
+      else if (it.status === 'reserved') badge = '<span style="font-size:10px;background:#FCE9CE;color:#B5741A;padding:2px 8px;border-radius:10px;font-weight:700">予約済み</span>';
       else if (it.status === 'pending') badge = '<span style="font-size:10px;background:#E3D0EC;color:#7B2D8B;padding:2px 8px;border-radius:10px;font-weight:700">承認待ち</span>';
       else if (it.status === 'attended') badge = '<span style="font-size:10px;background:#E8F5E8;color:var(--green-d);padding:2px 8px;border-radius:10px;font-weight:700">出席済み</span>';
       else if (it.status === 'future') badge = '<span style="font-size:10px;background:#EDF1F5;color:#5A6B7B;padding:2px 8px;border-radius:10px;font-weight:700">予定</span>';
@@ -14039,17 +14054,27 @@ function openDayModal(dateISO) {
       const checkbox = selectable
         ? '<input type="checkbox" class="makeup-coma-check" value="' + it.id + '" style="width:18px;height:18px;accent-color:#7B2D8B">'
         : '<span style="width:18px;display:inline-block"></span>';
-      return '<label style="display:flex;align-items:center;gap:10px;padding:10px;background:#fff;border:1px solid var(--border);border-radius:8px;margin-bottom:4px;' + (selectable ? 'cursor:pointer' : 'opacity:0.8') + '">' +
+      // コマ本体
+      let row = '<label style="display:flex;align-items:center;gap:10px;padding:10px;background:#fff;border:1px solid var(--border);border-radius:8px;' + (selectable ? 'cursor:pointer' : 'opacity:0.9') + '">' +
         checkbox +
         '<div style="flex:1"><div style="font-size:13px;font-weight:700;color:var(--text)">' + it.name + '</div>' +
         (it.subject ? '<div style="font-size:10px;color:var(--muted)">' + it.subject + '</div>' : '') + '</div>' +
         badge + '</label>';
+      // 予約済みコマ：予約し直す／視聴完了報告の2ボタン
+      if (it.status === 'reserved') {
+        const arg = "'" + it.id + "','" + dateISO + "'";
+        row += '<div style="display:flex;gap:6px;margin:4px 0 8px">' +
+          '<button onclick="reopenVideoReserve(' + arg + ')" style="flex:1;padding:9px;background:#fff;border:1.5px solid #B5741A;border-radius:8px;color:#B5741A;font-weight:700;font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📹 予約し直す</button>' +
+          '<button onclick="reportVideoDone(' + arg + ')" style="flex:1.4;padding:9px;background:#7B2D8B;border:none;border-radius:8px;color:#fff;font-weight:700;font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">✅ ビデオ補習 完了報告</button>' +
+          '</div>';
+      }
+      return row;
     }).join('');
     const hasSelectable = items.some(it => it.status === 'absent');
     if (hasSelectable) {
       makeupModalDate = dateISO;
-      body += '<div style="font-size:10px;color:var(--muted);margin:8px 0;line-height:1.5">※ 欠席したコマを選んで申請できます。承認されると1コマ +2pt。</div>' +
-        '<button onclick="submitMakeupSelected()" style="width:100%;padding:12px;background:#7B2D8B;border:none;border-radius:10px;color:#fff;font-weight:700;font-size:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">選んだ授業の補習を申請する</button>';
+      body += '<div style="font-size:10px;color:var(--muted);margin:8px 0;line-height:1.5">※ 欠席したコマを選んでビデオ補習を予約できます。視聴後に「完了報告」→スタッフ確認で 1コマ +2pt。</div>' +
+        '<button onclick="reserveMakeupSelected()" style="width:100%;padding:12px;background:#B5741A;border:none;border-radius:10px;color:#fff;font-weight:700;font-size:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📹 選んだ授業のビデオ補習を予約する</button>';
     }
     body += '</div>';
   }
@@ -14065,36 +14090,96 @@ function closeDayModal() {
   dayModalDate = null;
 }
 
-async function submitMakeupSelected() {
+// ===== ビデオ補習フロー（生徒側）=====
+// 欠席 →（予約）→ reserved →（視聴完了報告）→ reported →（スタッフ確認）→ approved
+// 予約実体は LINE の LIFF フォーム。アプリは予約完了を自動取得できないため、
+// LIFFを開いた上で「予約できましたか？」と確認して reserved にする。
+
+// 選んだ欠席コマを「予約」する（LIFFを開く→確認→reserved で保存）
+async function reserveMakeupSelected() {
   const checks = Array.from(document.querySelectorAll('.makeup-coma-check:checked'));
-  if (!checks.length) { showToast('補習する授業を選んでください', 'info'); return; }
+  if (!checks.length) { showToast('予約する授業を選んでください', 'info'); return; }
   const dateISO = makeupModalDate;
   const classIds = checks.map(c => c.value);
-  showLoading('申請中...');
+  // 予約フォーム（LIFF）を開く
+  window.open(VIDEO_RESERVE_URL, '_blank');
+  // 予約できたか確認してから reserved 保存
+  if (!confirm('予約フォームを開きました。\n予約が完了したら「OK」を押してください。\n（まだの場合はキャンセル）')) return;
+  showLoading('登録中...');
   try {
     for (const classId of classIds) {
-      await sbPost('video_makeups', {
-        student_id: currentStudent.id,
-        class_master_id: classId,
-        session_date: dateISO,
-        status: 'pending',
-        points_awarded: 0
-      });
-      unifiedMakeupMap[classId + '|' + dateISO] = 'pending';
+      await saveMakeupReserved(classId, dateISO);
+      unifiedMakeupMap[classId + '|' + dateISO] = 'reserved';
     }
     hideLoading();
     closeDayModal();
-    showToast('📺 ' + classIds.length + '件の補習を申請しました', 'success');
+    showToast('📹 ' + classIds.length + '件を予約済みにしました', 'success');
     renderUnifiedMonth();
     renderMakeupHistory();
   } catch(e) {
     hideLoading();
     if (e.message && e.message.includes('duplicate')) {
-      showToast('すでに申請済みのものがあります', 'info');
+      showToast('すでに予約済みのものがあります', 'info');
       loadUnifiedCalendar();
     } else {
       showToast('エラー: ' + e.message, 'error');
     }
+  }
+}
+
+// video_makeups に reserved で1件保存（reserved_at 列が無い環境は二段フォールバック）
+async function saveMakeupReserved(classId, dateISO) {
+  const base = {
+    student_id: currentStudent.id,
+    class_master_id: classId,
+    session_date: dateISO,
+    status: 'reserved',
+    points_awarded: 0
+  };
+  try {
+    await sbPost('video_makeups', Object.assign({}, base, { reserved_at: new Date().toISOString() }));
+  } catch(e) {
+    const em = String(e && e.message || e);
+    if (/reserved_at|column|schema|PGRST|400/i.test(em)) {
+      await sbPost('video_makeups', base); // 列が無い旧環境
+    } else { throw e; }
+  }
+}
+
+// 予約し直す（LIFFを再度開くだけ。状態は reserved のまま）
+function reopenVideoReserve(classId, dateISO) {
+  window.open(VIDEO_RESERVE_URL, '_blank');
+  showToast('予約フォームを開きました。日時を取り直してください', 'info');
+}
+
+// 視聴完了報告：reserved → reported（スタッフ確認待ち）
+async function reportVideoDone(classId, dateISO) {
+  if (!confirm('このビデオ補習を視聴し終えましたか？\n完了報告するとスタッフの確認後に +2pt が付きます。')) return;
+  showLoading('報告中...');
+  try {
+    // 対象の予約レコードを特定して reported に更新
+    const rows = await sbGet('video_makeups',
+      'student_id=eq.' + currentStudent.id + '&class_master_id=eq.' + classId + '&session_date=eq.' + dateISO + '&select=id,status&order=id.desc&limit=1') || [];
+    const rec = rows[0];
+    if (!rec) { hideLoading(); showToast('予約が見つかりませんでした', 'error'); return; }
+    const patch = { status: 'reported' };
+    try {
+      await sbPatch('video_makeups', 'id=eq.' + rec.id, Object.assign({}, patch, { reported_at: new Date().toISOString() }));
+    } catch(e) {
+      const em = String(e && e.message || e);
+      if (/reported_at|column|schema|PGRST|400/i.test(em)) {
+        await sbPatch('video_makeups', 'id=eq.' + rec.id, patch);
+      } else { throw e; }
+    }
+    unifiedMakeupMap[classId + '|' + dateISO] = 'reported';
+    hideLoading();
+    closeDayModal();
+    showToast('✅ 完了報告しました。スタッフの確認をお待ちください', 'success');
+    renderUnifiedMonth();
+    renderMakeupHistory();
+  } catch(e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
   }
 }
 
@@ -14105,7 +14190,7 @@ async function renderMakeupHistory() {
   if (!el) return;
   try {
     const makeups = await sbGet('video_makeups',
-      'student_id=eq.' + currentStudent.id + '&status=in.(pending,approved)&select=session_date,status,class_master(name,subject)&order=session_date.desc&limit=20') || [];
+      'student_id=eq.' + currentStudent.id + '&status=in.(reserved,reported,pending,approved)&select=session_date,status,class_master(name,subject)&order=session_date.desc&limit=20') || [];
     if (!makeups.length) {
       if (box) box.style.display = 'none';
       return;
@@ -14114,10 +14199,11 @@ async function renderMakeupHistory() {
     el.innerHTML = makeups.map(m => {
       const cname = m.class_master?.name || '授業';
       const dateStr = m.session_date.replace(/-/g, '/');
-      const approved = m.status === 'approved';
-      const badge = approved
-        ? '<span style="font-size:10px;background:#7B2D8B;color:#fff;padding:2px 8px;border-radius:10px;font-weight:700">補習済み +2pt</span>'
-        : '<span style="font-size:10px;background:#E3D0EC;color:#7B2D8B;padding:2px 8px;border-radius:10px;font-weight:700">承認待ち</span>';
+      let badge;
+      if (m.status === 'approved') badge = '<span style="font-size:10px;background:#7B2D8B;color:#fff;padding:2px 8px;border-radius:10px;font-weight:700">補習済み +2pt</span>';
+      else if (m.status === 'reported') badge = '<span style="font-size:10px;background:#D8C4E4;color:#5A2168;padding:2px 8px;border-radius:10px;font-weight:700">確認待ち</span>';
+      else if (m.status === 'reserved') badge = '<span style="font-size:10px;background:#FCE9CE;color:#B5741A;padding:2px 8px;border-radius:10px;font-weight:700">予約済み</span>';
+      else badge = '<span style="font-size:10px;background:#E3D0EC;color:#7B2D8B;padding:2px 8px;border-radius:10px;font-weight:700">承認待ち</span>';
       return '<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:8px 10px">' +
         '<div style="flex:1"><div style="font-size:12px;font-weight:700;color:var(--text)">' + cname + '</div>' +
         '<div style="font-size:10px;color:var(--muted)">授業日 ' + dateStr + '</div></div>' + badge + '</div>';
