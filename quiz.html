@@ -198,6 +198,7 @@
         <button class="btn btn-ghost" style="flex:1;border-style:dashed" onclick="addQuestion('number')">＋ 数値問題</button>
         <button class="btn btn-ghost" style="flex:1;border-style:dashed" onclick="addQuestion('choice')">＋ 6択問題</button>
       </div>
+      <button class="btn btn-ghost btn-block" style="margin-bottom:8px" onclick="previewFromCreate()">👁 生徒画面でプレビュー（保存不要）</button>
       <button class="btn btn-primary btn-block" id="cr-save-btn" onclick="saveQuizSet()">💾 テストを保存</button>
     </div>
 
@@ -218,7 +219,7 @@
 // デプロイのたびにこの値を上げ、quiz_version.txt の中身と一致させること。
 // app.html とは独立管理（quiz_version.txt を参照）。app側の更新で quiz が巻き込まれない。
 // ============================================================
-const QUIZ_VERSION = '20260702c';
+const QUIZ_VERSION = '20260702d';
 
 // quiz_version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkQuizVersion(){
@@ -790,6 +791,7 @@ async function loadStaffSets(){
             '<div class="muted" style="font-weight:600;margin-top:3px">'+esc(s.subject||'')+' ・ '+(cntMap[s.id]||0)+'問</div>'+
           '</div>'+
           '<div class="set-actions">'+
+            '<button class="mini-btn" onclick="previewSet(\''+s.id+'\',\''+esc(s.title).replace(/\'/g,"\\\\'")+'\')">👁 プレビュー</button>'+
             '<button class="mini-btn" onclick="editSet(\''+s.id+'\')">✏️ 編集</button>'+
             '<button class="mini-btn" onclick="renameSet(\''+s.id+'\',\''+esc(s.title).replace(/\'/g,"\\\\'")+'\')">📝 名前変更</button>'+
             '<button class="mini-btn" onclick="duplicateSet(\''+s.id+'\')">📑 複製</button>'+
@@ -1009,9 +1011,100 @@ async function startSolve(assignId, setId){
   }catch(e){ hideLoading(); showToast('エラー: '+e.message,'error'); }
 }
 
+// ============================================================
+// スタッフ：プレビュー（生徒画面と同じ見た目を、ログイン切替なし・DB書き込みなしで確認）
+// ============================================================
+// 共通：問題配列 [{id,type,text,answer,choices}] から solveState を組み、solve画面をプレビュー表示
+function openPreview(title, questions, fromList){
+  if(!questions || !questions.length){ showToast('プレビューする問題がありません','error'); return; }
+  solveState = { assignId:null, setId:null, preview:true, fromList:!!fromList, questions: questions.map(q=>{
+    let display=null;
+    if(q.type==='choice'){ display = shuffle((q.choices||[]).filter(c=>c&&String(c).trim())); }
+    else { display = genNumberChoices(q.answer); }
+    return { id:q.id, type:q.type, text:q.text, answer:q.answer, display:display };
+  }), given:{} };
+  document.getElementById('solve-title').textContent = (title||'小テスト') + '（プレビュー）';
+  renderSolve();
+  document.getElementById('solve-result').style.display='none';
+  // 提出ボタンを「答え合わせを見る」に差し替え（採点はローカルのみ・DB書き込みなし）
+  const btn = document.getElementById('solve-submit');
+  btn.style.display='block';
+  btn.textContent='✅ 答え合わせを表示（プレビュー）';
+  showScreen('screen-solve');
+  window.scrollTo(0,0);
+}
+
+// 作成フォームの現在の問題（未保存でもOK）からプレビュー
+function previewFromCreate(){
+  const valid = (crQuestions||[]).filter(q=>q.text && q.answer);
+  if(!valid.length){ showToast('先に問題を1問以上入力してください','error'); return; }
+  const title = (document.getElementById('cr-title').value || '').trim() || '（無題）';
+  const questions = valid.map((q,idx)=>({
+    id:'preview-'+idx, type:q.type, text:q.text, answer:q.answer,
+    choices: q.type==='choice' ? (q.choices||[]).filter(c=>c && c.trim()) : null
+  }));
+  openPreview(title, questions, false);
+}
+
+// 保存済みテスト（setId）からプレビュー
+async function previewSet(setId, title){
+  showLoading('読み込み中...');
+  try{
+    const qs = await sbGet('mini_quiz_questions','quiz_set_id=eq.'+setId+'&order=q_order&select=*');
+    hideLoading();
+    if(!qs.length){ showToast('問題がありません','error'); return; }
+    const questions = qs.map(q=>({ id:q.id, type:q.q_type, text:q.text, answer:q.answer, choices:q.choices }));
+    openPreview(title, questions, true);
+  }catch(e){ hideLoading(); showToast('読み込みエラー: '+e.message,'error'); }
+}
+
+// プレビューの「答え合わせ表示」：DBに書かず、その場で正誤ハイライトのみ行う
+function previewGrade(){
+  const st=solveState;
+  let correct=0;
+  const answers = st.questions.map(q=>{
+    const given = st.given[q.id]!=null ? String(st.given[q.id]) : null;
+    const ok = given!=null && String(given).trim()===String(q.answer).trim();
+    if(ok) correct++;
+    return { question_id:q.id, given:given, correct:ok };
+  });
+  document.getElementById('solve-submit').style.display='none';
+  const ansMap={}; answers.forEach(a=>ansMap[a.question_id]=a);
+  st.questions.forEach(q=>{
+    const card=document.querySelector('.card[data-qid="'+q.id+'"]');
+    if(!card) return;
+    const a=ansMap[q.id];
+    card.querySelectorAll('.choice-opt').forEach(o=>{
+      const v=o.getAttribute('data-val');
+      o.style.pointerEvents='none';
+      if(v===String(q.answer)) o.classList.add('correct');
+      else if(a && a.given===v && !a.correct) o.classList.add('wrong');
+    });
+  });
+  const total=st.questions.length;
+  const rate = total?Math.round(correct/total*100):0;
+  const box=document.getElementById('solve-result');
+  box.style.display='block';
+  box.innerHTML='<div style="background:var(--green-ok-l);border-radius:12px;padding:16px;text-align:center">'+
+    '<div style="font-size:13px;color:var(--green-ok);font-weight:700">プレビュー採点（保存されません）</div>'+
+    '<div style="font-size:28px;font-weight:900;color:var(--green-ok)">'+correct+' / '+total+' 正解</div>'+
+    '<div class="muted">正答率 '+rate+'%　正解を緑で表示しています</div>'+
+    '<button class="btn btn-primary btn-block" style="margin-top:12px" onclick="exitPreview()">スタッフ画面に戻る</button>'+
+  '</div>';
+  box.scrollIntoView({behavior:'smooth'});
+}
+
+// プレビュー終了：スタッフ画面へ戻る
+function exitPreview(){
+  const wasList = (solveState && solveState.fromList);
+  solveState=null;
+  showScreen('screen-staff');
+  staffTab(wasList ? 'list' : 'create');
+}
+
 function renderSolve(){
   const st=solveState;
-  document.getElementById('solve-progress').textContent='全'+st.questions.length+'問　自分で解いてから答えを選んでね';
+  document.getElementById('solve-progress').textContent = (st.preview? '【プレビュー】全' : '全')+st.questions.length+'問　自分で解いてから答えを選んでね';
   document.getElementById('solve-questions').innerHTML = st.questions.map((q,i)=>{
     const opts = q.display.map(c=>{
       const selp = (st.given[q.id]===String(c))?' sel':'';
@@ -1038,6 +1131,8 @@ function pickAnswer(elDom){
 
 async function submitSolve(){
   const st=solveState;
+  // プレビュー中は採点だけローカルで表示（DBに書かない）
+  if(st && st.preview){ previewGrade(); return; }
   const unanswered = st.questions.filter(q=>st.given[q.id]==null);
   if(unanswered.length){ if(!confirm(unanswered.length+'問 未回答です。提出しますか？')) return; }
   showLoading('採点中...');
@@ -1128,7 +1223,7 @@ async function viewMyResult(assignId){
   }catch(e){ hideLoading(); showToast('エラー: '+e.message,'error'); }
 }
 
-function backToStudent(){ solveState=null; showScreen('screen-student'); loadStudentQuizzes(); }
+function backToStudent(){ if(solveState && solveState.preview){ exitPreview(); return; } solveState=null; showScreen('screen-student'); loadStudentQuizzes(); }
 
 // ============================================================
 // スタッフ：集計（正答率）
