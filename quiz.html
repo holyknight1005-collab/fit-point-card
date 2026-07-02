@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#2D6DB5">
@@ -106,6 +108,7 @@
       <input type="checkbox" id="keep-login" checked style="width:16px;height:16px"> ログイン状態を保持
     </label>
   </div>
+  <div id="quiz-version-label" style="font-size:10px;color:var(--muted);margin-top:4px"></div>
 </div>
 
 <!-- ===== 生徒ホーム（解けるテスト一覧） ===== -->
@@ -206,6 +209,36 @@
 </div>
 
 <script>
+// ============================================================
+// バージョン管理（キャッシュ対策・自動リロード）
+// デプロイのたびにこの値を上げ、quiz_version.txt の中身と一致させること。
+// app.html とは独立管理（quiz_version.txt を参照）。app側の更新で quiz が巻き込まれない。
+// ============================================================
+const QUIZ_VERSION = '20260702a';
+
+// quiz_version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
+async function checkQuizVersion(){
+  try{
+    const url = 'quiz_version.txt?t=' + Date.now(); // キャッシュ回避
+    const res = await fetch(url, { cache: 'no-store' });
+    if(!res.ok) return; // 無い/取得失敗時は何もしない（フェイルセーフ）
+    const latest = (await res.text()).trim();
+    if(!latest) return;
+    if(latest === QUIZ_VERSION){
+      try{ sessionStorage.removeItem('quizReloadedFor'); }catch(e){}
+      return;
+    }
+    // 新版あり。同一セッションで一度リロード済みなら止める（無限ループ防止）
+    let guard = null;
+    try{ guard = sessionStorage.getItem('quizReloadedFor'); }catch(e){}
+    if(guard === latest) return;
+    try{ sessionStorage.setItem('quizReloadedFor', latest); }catch(e){}
+    const u = new URL(window.location.href);
+    u.searchParams.set('v', latest);
+    window.location.replace(u.toString());
+  }catch(e){ /* オフライン等は無視 */ }
+}
+
 // ============================================================
 // Supabase ヘルパー（math.html / chem.html と同じ作法）
 // ============================================================
@@ -430,7 +463,12 @@ async function afterLogin(){
 // ============================================================
 // 起動
 // ============================================================
-window.addEventListener('DOMContentLoaded', autoLogin);
+window.addEventListener('DOMContentLoaded', function(){
+  checkQuizVersion(); // 新版があれば自動リロード（autoLoginより先に。リロード時はここで止まる）
+  var vl = document.getElementById('quiz-version-label');
+  if(vl) vl.textContent = 'v' + QUIZ_VERSION;
+  autoLogin();
+});
 
 // ============================================================
 // スタッフ：タブ切替
