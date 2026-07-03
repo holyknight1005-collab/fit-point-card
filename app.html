@@ -2124,6 +2124,10 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         ⚠️ チーム課題テーブルが未作成です。<br><b>create_team_tasks.sql</b> を Supabase で実行してください。
       </div>
 
+      <!-- 進捗パネル -->
+      <div class="section-title">📊 チーム進捗</div>
+      <div id="tt-progress-panel" style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px"></div>
+
       <!-- 新規作成 -->
       <div class="section-title">➕ チーム課題を追加</div>
       <div class="card-box" style="display:flex;flex-direction:column;gap:10px">
@@ -2149,10 +2153,17 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
             <input class="form-input-sm" id="tt-due" type="date" style="width:100%">
           </div>
         </div>
+        <div>
+          <div class="form-label">担当者（複数選択可・未選択＝誰でも）</div>
+          <div id="tt-assignee-checks" style="display:flex;flex-direction:column;gap:6px;max-height:150px;overflow-y:auto;padding:4px;border:1px solid var(--border);border-radius:var(--radius-sm)"></div>
+        </div>
         <div style="display:flex;gap:10px">
           <div style="flex:1">
-            <div class="form-label">担当者（任意）</div>
-            <select class="form-input-sm" id="tt-assignee" style="width:100%"><option value="">未指定</option></select>
+            <div class="form-label">完了ルール</div>
+            <select class="form-input-sm" id="tt-rule" style="width:100%">
+              <option value="any" selected>誰か1人がやれば完了</option>
+              <option value="all">担当全員がやって完了</option>
+            </select>
           </div>
           <div style="flex:1">
             <div class="form-label">カテゴリ（任意）</div>
@@ -3119,7 +3130,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702e';
+const APP_VERSION = '20260702f';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -3238,6 +3249,19 @@ async function sbWrite(method, table, query, body) {
 
 async function sbPost(table, body) {
   return sbWrite('POST', table, '', body);
+}
+
+// 挿入した行を返す POST（Prefer: return=representation）。
+// 挿入直後に id が必要な親テーブルで使う（子テーブルの task_id 等）。
+// リトライは行わない（重複挿入を避けるため）。サーバーエラーは即throw。
+async function sbPostReturn(table, body) {
+  const res = await fetch(SB_URL + '/rest/v1/' + table, {
+    method: 'POST',
+    headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
 }
 
 async function sbPatch(table, query, body) {
@@ -16190,19 +16214,23 @@ function switchManageTab(tab, el) {
 }
 
 // ============================================================
-// チーム課題管理（team_tasks）：全員共有のタスク
+// チーム課題管理（team_tasks + team_task_assignees）：チーム共有タスク
 // 要 SQL: create_team_tasks.sql（未実行でも落ちず、案内バナー表示）
-// 状態: open → done（完了後もリストに残す＝履歴）／ deleted（論理削除）
-// 属性: 期限(due_date) / 担当者(assignee_staff_id) / 優先度(priority) / カテゴリ(category)
+// 状態(親): todo → doing → done（完了後もリストに残す＝履歴）／ deleted(論理削除)
+// 完了ルール complete_rule: 'any'(誰か1人で完了) / 'all'(担当全員で完了)
+// 担当は複数（中間テーブル team_task_assignees、member_status: todo|doing|done）
+// 属性: 期限(due_date) / 優先度(priority) / カテゴリ(category)
 // ============================================================
 var TT_PRIORITY = {
   high: { label: '高', color: '#C0392B', bg: '#FCE9E7' },
   mid:  { label: '中', color: '#B9770E', bg: '#FDF3E3' },
   low:  { label: '低', color: '#1E8449', bg: '#E8F6EE' }
 };
-var ttTasks = [];        // 取得済みキャッシュ（deleted除外）
+var ttTasks = [];        // 親タスク（deleted除外）
+var ttAssignees = [];    // 中間テーブル行（task_id, staff_id, member_status）
 var ttFilter = 'open';   // 'open' | 'done' | 'all'
 var ttStaffMap = {};     // staff_id -> name
+var ttStaffList = [];     // [{staff_id, name}]
 
 async function loadTeamTasks() {
   const listEl = document.getElementById('tt-list');
@@ -16210,26 +16238,38 @@ async function loadTeamTasks() {
   if (needSql) needSql.style.display = 'none';
   if (listEl) listEl.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:12px">読み込み中...</div>';
 
-  // 担当者セレクトを埋める（staff一覧）
+  // スタッフ一覧（担当チェック欄＋名前解決）
   try {
     const staff = await sbGet('staff', 'select=staff_id,name&order=name.asc') || [];
-    ttStaffMap = {};
-    staff.forEach(s => { if (s.staff_id) ttStaffMap[s.staff_id] = s.name; });
-    const sel = document.getElementById('tt-assignee');
-    if (sel) {
-      sel.innerHTML = '<option value="">未指定</option>' +
-        staff.map(s => '<option value="' + escapeHtml(s.staff_id || '') + '">' + escapeHtml(s.name || s.staff_id || '') + '</option>').join('');
+    ttStaffMap = {}; ttStaffList = [];
+    staff.forEach(s => { if (s.staff_id) { ttStaffMap[s.staff_id] = s.name; ttStaffList.push({ staff_id: s.staff_id, name: s.name || s.staff_id }); } });
+    const box = document.getElementById('tt-assignee-checks');
+    if (box) {
+      box.innerHTML = ttStaffList.map(s =>
+        '<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">' +
+        '<input type="checkbox" class="tt-assignee-check" value="' + escapeHtml(s.staff_id) + '">' +
+        '<span>' + escapeHtml(s.name) + '</span></label>'
+      ).join('') || '<div style="font-size:12px;color:var(--muted)">スタッフがいません</div>';
     }
-  } catch (e) { /* staff取得失敗しても課題一覧は続行 */ }
+  } catch (e) { /* staff取得失敗しても続行 */ }
 
-  // タスク取得（deleted除外）
+  // 親タスク取得（deleted除外）
   try {
-    ttTasks = await sbGet('team_tasks', 'status=in.(open,done)&order=created_at.desc&select=*') || [];
+    ttTasks = await sbGet('team_tasks', 'status=in.(todo,doing,done)&order=created_at.desc&select=*') || [];
   } catch (e) {
-    // テーブル未作成
     if (needSql) needSql.style.display = 'block';
     if (listEl) listEl.innerHTML = '';
+    const pp = document.getElementById('tt-progress-panel'); if (pp) pp.innerHTML = '';
     return;
+  }
+
+  // 担当割当を取得（該当タスクぶん）
+  ttAssignees = [];
+  const ids = ttTasks.map(t => t.id);
+  if (ids.length) {
+    try {
+      ttAssignees = await sbGet('team_task_assignees', 'task_id=in.(' + ids.join(',') + ')&select=*') || [];
+    } catch (e) { ttAssignees = []; }
   }
 
   // カテゴリ候補（datalist）
@@ -16239,8 +16279,14 @@ async function loadTeamTasks() {
     if (dl) dl.innerHTML = cats.map(c => '<option value="' + escapeHtml(c) + '">').join('');
   } catch (e) {}
 
+  renderTeamProgress();
   renderTeamTasks();
   refreshTeamTaskBadge();
+}
+
+// タスクIDごとの担当配列を返す
+function ttAssigneesOf(taskId) {
+  return ttAssignees.filter(a => String(a.task_id) === String(taskId));
 }
 
 function filterTeamTasks(mode, btn) {
@@ -16260,18 +16306,115 @@ function filterTeamTasks(mode, btn) {
   renderTeamTasks();
 }
 
+// ---- 進捗パネル（人別／全体サマリ／締切アラート）----
+function renderTeamProgress() {
+  const el = document.getElementById('tt-progress-panel');
+  if (!el) return;
+  const today = getTodayJST();
+  const active = ttTasks.filter(t => t.status === 'todo' || t.status === 'doing');
+
+  // 全体サマリ（親タスクの状態で集計）
+  const nTodo = ttTasks.filter(t => t.status === 'todo').length;
+  const nDoing = ttTasks.filter(t => t.status === 'doing').length;
+  const nDone = ttTasks.filter(t => t.status === 'done').length;
+  const total = nTodo + nDoing + nDone;
+  const donePct = total ? Math.round(nDone / total * 100) : 0;
+
+  const summary =
+    '<div class="card-box" style="padding:12px">' +
+      '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">📈 全体サマリ</div>' +
+      '<div style="display:flex;gap:8px;margin-bottom:8px">' +
+        '<div style="flex:1;text-align:center;background:var(--surface2);border-radius:8px;padding:8px"><div style="font-size:18px;font-weight:700;color:#7F8C8D">' + nTodo + '</div><div style="font-size:10px;color:var(--muted)">未着手</div></div>' +
+        '<div style="flex:1;text-align:center;background:#FDF3E3;border-radius:8px;padding:8px"><div style="font-size:18px;font-weight:700;color:#B9770E">' + nDoing + '</div><div style="font-size:10px;color:var(--muted)">着手中</div></div>' +
+        '<div style="flex:1;text-align:center;background:#E8F6EE;border-radius:8px;padding:8px"><div style="font-size:18px;font-weight:700;color:#1E8449">' + nDone + '</div><div style="font-size:10px;color:var(--muted)">完了</div></div>' +
+      '</div>' +
+      '<div style="height:8px;background:var(--surface2);border-radius:4px;overflow:hidden"><div style="height:100%;width:' + donePct + '%;background:linear-gradient(90deg,#27AE60,#1E8449)"></div></div>' +
+      '<div style="font-size:11px;color:var(--muted);text-align:right;margin-top:3px">完了率 ' + donePct + '%</div>' +
+    '</div>';
+
+  // 締切アラート（未完了タスクのうち、期限切れ／今日・明日まで）
+  const tomorrow = toJSTDateStr(new Date(Date.now() + 86400000));
+  const overdue = active.filter(t => t.due_date && t.due_date < today);
+  const soon = active.filter(t => t.due_date && t.due_date >= today && t.due_date <= tomorrow);
+  let alertHtml = '';
+  if (overdue.length || soon.length) {
+    const rowHtml = (t, over) => {
+      const dt = new Date(t.due_date + 'T00:00:00+09:00');
+      const ds = (dt.getMonth() + 1) + '/' + dt.getDate();
+      return '<div style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 0">' +
+        '<span style="color:' + (over ? '#C0392B' : '#B9770E') + ';font-weight:700">' + (over ? '⚠️' : '⏰') + ' ' + ds + '</span>' +
+        '<span style="color:var(--text)">' + escapeHtml(t.title || '') + '</span></div>';
+    };
+    alertHtml =
+      '<div class="card-box" style="padding:12px;border-color:#F5D5A8">' +
+        '<div style="font-size:12px;font-weight:700;color:#B9770E;margin-bottom:6px">🔔 締切アラート</div>' +
+        overdue.map(t => rowHtml(t, true)).join('') +
+        soon.map(t => rowHtml(t, false)).join('') +
+      '</div>';
+  }
+
+  // 人別一覧（担当割当をスタッフごとに集計）
+  const perStaff = {};
+  ttAssignees.forEach(a => {
+    const t = ttTasks.find(x => String(x.id) === String(a.task_id));
+    if (!t) return;
+    const st = perStaff[a.staff_id] || (perStaff[a.staff_id] = { total: 0, todo: 0, doing: 0, done: 0 });
+    st.total++;
+    // 個人状態（member_status）で数える。親が done でも個人の履歴は member_status を尊重
+    const ms = a.member_status || 'todo';
+    if (ms === 'done') st.done++;
+    else if (ms === 'doing') st.doing++;
+    else st.todo++;
+  });
+  const staffIds = Object.keys(perStaff).sort((a, b) => {
+    // 未完了(todo+doing)が多い順＝溜めている人を上に
+    const au = perStaff[a].todo + perStaff[a].doing, bu = perStaff[b].todo + perStaff[b].doing;
+    return bu - au;
+  });
+  let peopleHtml = '';
+  if (staffIds.length) {
+    peopleHtml =
+      '<div class="card-box" style="padding:12px">' +
+        '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">👥 担当者ごとの状況</div>' +
+        staffIds.map(sid => {
+          const s = perStaff[sid];
+          const name = ttStaffMap[sid] || sid;
+          const pct = s.total ? Math.round(s.done / s.total * 100) : 0;
+          const open = s.todo + s.doing;
+          return '<div style="margin-bottom:10px">' +
+            '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">' +
+              '<span style="font-size:13px;font-weight:600;color:var(--text)">' + escapeHtml(name) + '</span>' +
+              '<span style="font-size:11px;color:var(--muted)">未着手' + s.todo + '・着手中' + s.doing + '・完了' + s.done + '</span>' +
+            '</div>' +
+            '<div style="display:flex;align-items:center;gap:8px">' +
+              '<div style="flex:1;height:7px;background:var(--surface2);border-radius:4px;overflow:hidden;display:flex">' +
+                '<div style="height:100%;width:' + (s.total ? s.done / s.total * 100 : 0) + '%;background:#1E8449"></div>' +
+                '<div style="height:100%;width:' + (s.total ? s.doing / s.total * 100 : 0) + '%;background:#E9A93C"></div>' +
+              '</div>' +
+              '<span style="font-size:11px;color:var(--muted);min-width:56px;text-align:right">残' + open + '件</span>' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+  } else {
+    peopleHtml = '<div class="card-box" style="padding:12px;font-size:12px;color:var(--muted);text-align:center">担当が割り当てられた課題はまだありません</div>';
+  }
+
+  el.innerHTML = summary + alertHtml + peopleHtml;
+}
+
 function renderTeamTasks() {
   const el = document.getElementById('tt-list');
   if (!el) return;
   let rows = ttTasks.slice();
-  if (ttFilter === 'open') rows = rows.filter(t => t.status === 'open');
+  if (ttFilter === 'open') rows = rows.filter(t => t.status === 'todo' || t.status === 'doing');
   else if (ttFilter === 'done') rows = rows.filter(t => t.status === 'done');
 
-  // 並び：未完了は 期限昇順(null後回し)→優先度高順、完了は完了日時降順
   const prioRank = { high: 0, mid: 1, low: 2 };
   rows.sort((a, b) => {
-    if (a.status !== b.status) return a.status === 'open' ? -1 : 1;
-    if (a.status === 'done') return (b.done_at || '').localeCompare(a.done_at || '');
+    const aOpen = a.status !== 'done', bOpen = b.status !== 'done';
+    if (aOpen !== bOpen) return aOpen ? -1 : 1;
+    if (!aOpen) return (b.done_at || '').localeCompare(a.done_at || '');
     const ad = a.due_date || '9999-12-31', bd = b.due_date || '9999-12-31';
     if (ad !== bd) return ad < bd ? -1 : 1;
     return (prioRank[a.priority] ?? 1) - (prioRank[b.priority] ?? 1);
@@ -16283,11 +16426,23 @@ function renderTeamTasks() {
   }
 
   const today = getTodayJST();
+  const myId = currentStaff ? currentStaff.staff_id : null;
+
   el.innerHTML = rows.map(t => {
     const done = t.status === 'done';
+    const doing = t.status === 'doing';
     const p = TT_PRIORITY[t.priority] || TT_PRIORITY.mid;
-    const assignee = t.assignee_staff_id ? (ttStaffMap[t.assignee_staff_id] || t.assignee_staff_id) : null;
-    // 期限バッジ
+    const as = ttAssigneesOf(t.id);
+    const ruleLabel = t.complete_rule === 'all' ? '全員で完了' : '誰か1人で完了';
+
+    // 状態バッジ
+    const statusBadge = done
+      ? '<span style="font-size:11px;padding:1px 8px;border-radius:10px;background:#E8F6EE;color:#1E8449;font-weight:700">✅ 完了</span>'
+      : (doing
+        ? '<span style="font-size:11px;padding:1px 8px;border-radius:10px;background:#FDF3E3;color:#B9770E;font-weight:700">🔧 着手中</span>'
+        : '<span style="font-size:11px;padding:1px 8px;border-radius:10px;background:var(--surface2);color:#7F8C8D;font-weight:700">・未着手</span>');
+
+    // 期限
     let dueBadge = '';
     if (t.due_date) {
       const overdue = !done && t.due_date < today;
@@ -16297,16 +16452,44 @@ function renderTeamTasks() {
         (overdue ? '#FCE9E7' : 'var(--surface2)') + ';color:' + (overdue ? '#C0392B' : 'var(--muted)') +
         ';font-weight:' + (overdue ? '700' : '400') + '">' + (overdue ? '⚠️ ' : '📅 ') + ds + '</span>';
     }
+
+    // 担当バッジ（個人状態つき）
+    let assigneeHtml = '';
+    if (as.length) {
+      assigneeHtml = '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">' +
+        as.map(a => {
+          const nm = ttStaffMap[a.staff_id] || a.staff_id;
+          const ms = a.member_status || 'todo';
+          const mColor = ms === 'done' ? '#1E8449' : (ms === 'doing' ? '#B9770E' : '#5A6B7B');
+          const mBg = ms === 'done' ? '#E8F6EE' : (ms === 'doing' ? '#FDF3E3' : '#EAF1FB');
+          const mIcon = ms === 'done' ? '✓' : (ms === 'doing' ? '🔧' : '');
+          return '<span style="font-size:11px;padding:1px 8px;border-radius:10px;background:' + mBg + ';color:' + mColor + '">' + (mIcon ? mIcon + ' ' : '👤 ') + escapeHtml(nm) + '</span>';
+        }).join('') +
+      '</div>';
+    } else {
+      assigneeHtml = '<div style="margin-top:6px"><span style="font-size:11px;padding:1px 8px;border-radius:10px;background:#EAF1FB;color:#2D5FA6">🙋 誰でも（担当未指定）</span></div>';
+    }
+
     const meta = [
+      statusBadge,
       '<span style="font-size:11px;padding:1px 7px;border-radius:10px;background:' + p.bg + ';color:' + p.color + ';font-weight:700">' + p.label + '</span>',
       dueBadge,
       t.category ? '<span style="font-size:11px;padding:1px 7px;border-radius:10px;background:var(--surface2);color:var(--muted)">🏷 ' + escapeHtml(t.category) + '</span>' : '',
-      assignee ? '<span style="font-size:11px;padding:1px 7px;border-radius:10px;background:#EAF1FB;color:#2D5FA6">👤 ' + escapeHtml(assignee) + '</span>' : ''
+      '<span style="font-size:11px;padding:1px 7px;border-radius:10px;background:var(--surface2);color:var(--muted)">' + ruleLabel + '</span>'
     ].filter(Boolean).join(' ');
 
-    const btn = done
-      ? '<button onclick="reopenTeamTask(\'' + t.id + '\')" style="padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:11px;cursor:pointer;flex-shrink:0;font-family:\'Noto Sans JP\',sans-serif">↩︎ 戻す</button>'
-      : '<button onclick="doneTeamTask(\'' + t.id + '\')" style="padding:5px 12px;background:var(--orange);border:none;border-radius:6px;color:white;font-size:11px;font-weight:700;cursor:pointer;flex-shrink:0;font-family:\'Noto Sans JP\',sans-serif">✓ 完了</button>';
+    // 操作ボタン。自分が担当（または担当未指定なら誰でも）操作できる。
+    const iAmAssignee = myId && as.some(a => a.staff_id === myId);
+    const canAct = !done && (as.length === 0 || iAmAssignee || true); // 共有タスクは誰でも動かせる
+    let actionBtns = '';
+    if (!done) {
+      if (t.status === 'todo') {
+        actionBtns += '<button onclick="startTeamTask(\'' + t.id + '\')" style="padding:5px 10px;background:#E9A93C;border:none;border-radius:6px;color:white;font-size:11px;font-weight:700;cursor:pointer;flex-shrink:0;font-family:\'Noto Sans JP\',sans-serif">🔧 着手</button>';
+      }
+      actionBtns += '<button onclick="doneTeamTask(\'' + t.id + '\')" style="padding:5px 12px;background:var(--orange);border:none;border-radius:6px;color:white;font-size:11px;font-weight:700;cursor:pointer;flex-shrink:0;font-family:\'Noto Sans JP\',sans-serif">✓ 完了</button>';
+    } else {
+      actionBtns += '<button onclick="reopenTeamTask(\'' + t.id + '\')" style="padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:11px;cursor:pointer;flex-shrink:0;font-family:\'Noto Sans JP\',sans-serif">↩︎ 戻す</button>';
+    }
 
     let doneInfo = '';
     if (done && t.done_at) {
@@ -16317,15 +16500,16 @@ function renderTeamTasks() {
     }
 
     return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:11px 13px;' +
-      (done ? 'opacity:0.75;' : '') + 'display:flex;align-items:flex-start;gap:10px">' +
+      (done ? 'opacity:0.72;' : '') + 'display:flex;align-items:flex-start;gap:10px">' +
       '<div style="flex:1;min-width:0">' +
         '<div style="font-size:14px;font-weight:600;color:var(--text);' + (done ? 'text-decoration:line-through;' : '') + '">' + escapeHtml(t.title || '') + '</div>' +
         (t.detail ? '<div style="font-size:12px;color:var(--muted);margin-top:3px;white-space:pre-wrap">' + escapeHtml(t.detail) + '</div>' : '') +
         '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:6px">' + meta + '</div>' +
+        assigneeHtml +
         doneInfo +
       '</div>' +
       '<div style="display:flex;flex-direction:column;gap:5px;flex-shrink:0">' +
-        btn +
+        actionBtns +
         '<button onclick="deleteTeamTask(\'' + t.id + '\')" style="padding:4px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">削除</button>' +
       '</div>' +
     '</div>';
@@ -16338,25 +16522,35 @@ async function createTeamTask() {
   const detail = (document.getElementById('tt-detail').value || '').trim();
   const priority = document.getElementById('tt-priority').value || 'mid';
   const due = document.getElementById('tt-due').value || null;
-  const assignee = document.getElementById('tt-assignee').value || null;
   const category = (document.getElementById('tt-category').value || '').trim() || null;
+  const rule = document.getElementById('tt-rule').value || 'any';
+  const assignees = [...document.querySelectorAll('.tt-assignee-check:checked')].map(c => c.value);
   const by = currentStaff ? (currentStaff.staff_id || null) : null;
 
   showLoading('追加中...');
   try {
-    await sbPost('team_tasks', {
+    // 親を作成 → id を得るため return=representation で取得
+    const created = await sbPostReturn('team_tasks', {
       title: title, detail: detail || null, category: category,
-      priority: priority, due_date: due, assignee_staff_id: assignee,
-      status: 'open', created_by: by, updated_at: new Date().toISOString()
+      priority: priority, due_date: due, complete_rule: rule,
+      status: 'todo', created_by: by, updated_at: new Date().toISOString()
     });
+    const taskId = created && created[0] ? created[0].id : null;
+    // 担当を割当（中間テーブル）
+    if (taskId && assignees.length) {
+      for (const sid of assignees) {
+        try { await sbPost('team_task_assignees', { task_id: taskId, staff_id: sid, member_status: 'todo', updated_at: new Date().toISOString() }); } catch (e) {}
+      }
+    }
     hideLoading();
     // フォームクリア
     document.getElementById('tt-title').value = '';
     document.getElementById('tt-detail').value = '';
     document.getElementById('tt-due').value = '';
-    document.getElementById('tt-assignee').value = '';
     document.getElementById('tt-category').value = '';
     document.getElementById('tt-priority').value = 'mid';
+    document.getElementById('tt-rule').value = 'any';
+    document.querySelectorAll('.tt-assignee-check').forEach(c => c.checked = false);
     showToast('🗂 課題を追加しました', 'success');
     loadTeamTasks();
   } catch (e) {
@@ -16370,15 +16564,66 @@ async function createTeamTask() {
   }
 }
 
-async function doneTeamTask(id) {
-  const by = currentStaff ? (currentStaff.staff_id || null) : null;
+// 「着手」：親を doing に。自分が担当なら自分の member_status も doing に。
+async function startTeamTask(id) {
+  const myId = currentStaff ? currentStaff.staff_id : null;
   showLoading('処理中...');
   try {
-    await sbPatch('team_tasks', 'id=eq.' + id, {
-      status: 'done', done_by: by, done_at: new Date().toISOString(), updated_at: new Date().toISOString()
-    });
+    await sbPatch('team_tasks', 'id=eq.' + id, { status: 'doing', updated_at: new Date().toISOString() });
+    if (myId) {
+      const mine = ttAssigneesOf(id).find(a => a.staff_id === myId);
+      if (mine) {
+        await sbPatch('team_task_assignees', 'id=eq.' + mine.id, { member_status: 'doing', updated_at: new Date().toISOString() });
+      }
+    }
     hideLoading();
-    showToast('✓ 完了にしました', 'success');
+    showToast('🔧 着手中にしました', 'success');
+    loadTeamTasks();
+  } catch (e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+// 「完了」：complete_rule に従う。
+//   any … 押した時点で親を done（誰か1人で完了）
+//   all … 自分の member_status を done にし、全員 done なら親を done
+async function doneTeamTask(id) {
+  const myId = currentStaff ? currentStaff.staff_id : null;
+  const task = ttTasks.find(t => String(t.id) === String(id));
+  const rule = task ? (task.complete_rule || 'any') : 'any';
+  const as = ttAssigneesOf(id);
+  showLoading('処理中...');
+  try {
+    if (rule === 'all' && as.length) {
+      // 自分の割当を done に（担当でなければ全体完了として扱う確認）
+      const mine = as.find(a => a.staff_id === myId);
+      if (mine) {
+        await sbPatch('team_task_assignees', 'id=eq.' + mine.id, { member_status: 'done', updated_at: new Date().toISOString() });
+      } else if (!confirm('あなたはこの課題の担当ではありません。全体を完了にしますか？')) {
+        hideLoading(); return;
+      }
+      // 最新の割当状態を確認して全員doneか判定
+      const fresh = await sbGet('team_task_assignees', 'task_id=eq.' + id + '&select=member_status') || [];
+      const allDone = fresh.length > 0 && fresh.every(a => a.member_status === 'done');
+      if (allDone || !mine) {
+        await sbPatch('team_tasks', 'id=eq.' + id, {
+          status: 'done', done_by: (myId || null), done_at: new Date().toISOString(), updated_at: new Date().toISOString()
+        });
+        hideLoading(); showToast('✅ 全員完了しました', 'success');
+      } else {
+        // まだ全員完了していない → 親は doing のまま進める
+        await sbPatch('team_tasks', 'id=eq.' + id, { status: 'doing', updated_at: new Date().toISOString() });
+        const remain = fresh.filter(a => a.member_status !== 'done').length;
+        hideLoading(); showToast('✓ あなたの分を完了（残り' + remain + '名）', 'success');
+      }
+    } else {
+      // any：親を即 done。担当がいれば全員 done に揃える（履歴の整合）
+      await sbPatch('team_tasks', 'id=eq.' + id, {
+        status: 'done', done_by: (myId || null), done_at: new Date().toISOString(), updated_at: new Date().toISOString()
+      });
+      for (const a of as) {
+        try { await sbPatch('team_task_assignees', 'id=eq.' + a.id, { member_status: 'done', updated_at: new Date().toISOString() }); } catch (e) {}
+      }
+      hideLoading(); showToast('✓ 完了にしました', 'success');
+    }
     loadTeamTasks();
   } catch (e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
@@ -16387,10 +16632,15 @@ async function reopenTeamTask(id) {
   showLoading('処理中...');
   try {
     await sbPatch('team_tasks', 'id=eq.' + id, {
-      status: 'open', done_by: null, done_at: null, updated_at: new Date().toISOString()
+      status: 'todo', done_by: null, done_at: null, updated_at: new Date().toISOString()
     });
+    // 割当も未着手に戻す
+    const as = ttAssigneesOf(id);
+    for (const a of as) {
+      try { await sbPatch('team_task_assignees', 'id=eq.' + a.id, { member_status: 'todo', updated_at: new Date().toISOString() }); } catch (e) {}
+    }
     hideLoading();
-    showToast('未完了に戻しました', 'info');
+    showToast('未着手に戻しました', 'info');
     loadTeamTasks();
   } catch (e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
@@ -16399,24 +16649,28 @@ async function deleteTeamTask(id) {
   if (!confirm('この課題を削除しますか？（履歴からも消えます）')) return;
   showLoading('削除中...');
   try {
-    // 論理削除（RLS保護：物理削除しない）
+    // 親は論理削除（RLS保護：物理削除しない）
     await sbPatch('team_tasks', 'id=eq.' + id, { status: 'deleted', updated_at: new Date().toISOString() });
+    // 中間テーブルは物理削除（DELETE許可済み）
+    const as = ttAssigneesOf(id);
+    for (const a of as) {
+      try { await sbDelete('team_task_assignees', 'id=eq.' + a.id); } catch (e) {}
+    }
     hideLoading();
     showToast('削除しました', 'info');
     loadTeamTasks();
   } catch (e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
-// ホームバッジ：未完了かつ期限切れ／今日期限の件数を集計（テーブル未作成は0扱い）
+// ホーム集計用：未完了かつ期限切れ／今日期限の件数（テーブル未作成は0扱い）
 async function refreshTeamTaskBadge() {
   try {
     const today = getTodayJST();
-    const open = await sbGet('team_tasks', 'status=eq.open&select=due_date') || [];
+    const open = await sbGet('team_tasks', 'status=in.(todo,doing)&select=due_date') || [];
     const urgent = open.filter(t => t.due_date && t.due_date <= today).length;
     if (typeof _pendingCounts !== 'undefined') { _pendingCounts.teamtask = urgent; }
   } catch (e) { /* 未作成は無視 */ }
 }
-
 // ============================================================
 // 入退塾管理（prospects）：来塾管理の見込み一覧
 // ステータス：問合せ → 体験 → 面談 → 入塾 / 見送り
