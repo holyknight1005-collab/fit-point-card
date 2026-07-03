@@ -3130,7 +3130,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702f';
+const APP_VERSION = '20260702g';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -15023,9 +15023,25 @@ async function loadQuizStatusDetail(classId) {
       const sets = await sbGet('mini_quiz_sets', 'id=in.(' + setIds.join(',') + ')&select=id,title');
       (sets || []).forEach(s => { setMap[s.id] = s.title; });
     }
-    // 各配信の結果（mini_quiz_results）をまとめて取得
+    // 各配信の結果（mini_quiz_results）をまとめて取得（answers=各問◯×も含める）
     const asgIds = assigns.map(a => a.id);
-    const results = await sbGet('mini_quiz_results', 'quiz_assignment_id=in.(' + asgIds.join(',') + ')&select=quiz_assignment_id,student_id,correct_count,total_count');
+    const results = await sbGet('mini_quiz_results', 'quiz_assignment_id=in.(' + asgIds.join(',') + ')&select=id,quiz_assignment_id,student_id,correct_count,total_count,answers');
+    // 各テストセットの問題順（question_id -> 表示番号）をまとめて取得
+    const qOrderBySet = {}; // setId -> { question_id: num }
+    if (setIds.length) {
+      try {
+        const qs = await sbGet('mini_quiz_questions', 'quiz_set_id=in.(' + setIds.join(',') + ')&order=q_order&select=id,quiz_set_id') || [];
+        const counter = {};
+        qs.forEach(q => {
+          const m = qOrderBySet[q.quiz_set_id] || (qOrderBySet[q.quiz_set_id] = {});
+          counter[q.quiz_set_id] = (counter[q.quiz_set_id] || 0) + 1;
+          m[q.id] = counter[q.quiz_set_id];
+        });
+      } catch (e) { /* 問題取得失敗しても点数は出す */ }
+    }
+    // 展開ハンドラ用に結果と問順を保持
+    window._qsCtx = { results: results || [], qOrderBySet: qOrderBySet, asgToSet: {} };
+    assigns.forEach(a => { window._qsCtx.asgToSet[a.id] = a.quiz_set_id; });
     // 生徒名をまとめて取得
     const sids = [...new Set((results || []).map(r => r.student_id).filter(Boolean))];
     let nameMap = {};
@@ -15056,9 +15072,13 @@ async function loadQuizStatusDetail(classId) {
           const sc = (r.correct_count != null ? r.correct_count : '-') + '/' + (r.total_count != null ? r.total_count : '-');
           const pct = (r.total_count ? Math.round((r.correct_count / r.total_count) * 100) : null);
           const color = pct == null ? 'var(--muted)' : (pct >= 80 ? 'var(--green-d)' : (pct >= 50 ? 'var(--orange-d)' : 'var(--red)'));
-          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-top:1px solid var(--border)">' +
-            '<span style="font-size:13px;color:var(--text)">' + escapeHtml(nm) + '</span>' +
-            '<span style="font-size:13px;font-weight:700;color:' + color + '">' + sc + (pct != null ? '（' + pct + '%）' : '') + '</span>' +
+          const hasAnswers = r.answers && r.answers.length;
+          return '<div style="border-top:1px solid var(--border)">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;' + (hasAnswers ? 'cursor:pointer' : '') + '"' + (hasAnswers ? ' onclick="toggleQsStudent(\'' + r.id + '\')"' : '') + '>' +
+              '<span style="font-size:13px;color:var(--text)">' + (hasAnswers ? '▸ ' : '') + escapeHtml(nm) + '</span>' +
+              '<span style="font-size:13px;font-weight:700;color:' + color + '">' + sc + (pct != null ? '（' + pct + '%）' : '') + '</span>' +
+            '</div>' +
+            '<div id="qsstu-' + r.id + '" style="display:none;padding:2px 0 8px"></div>' +
           '</div>';
         }).join('');
       }
@@ -15068,6 +15088,30 @@ async function loadQuizStatusDetail(classId) {
   } catch (e) {
     detail.innerHTML = '<div style="color:var(--red);font-size:13px;padding:8px">読み込みに失敗しました: ' + escapeHtml(e.message) + '</div>';
   }
+}
+
+// 小テスト状況：生徒行タップで各問◯×を展開（mini_quiz_results.answers を使用）
+function toggleQsStudent(resultId) {
+  const box = document.getElementById('qsstu-' + resultId);
+  if (!box) return;
+  if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+  const ctx = window._qsCtx || {};
+  const r = (ctx.results || []).find(x => String(x.id) === String(resultId));
+  box.style.display = 'block';
+  if (!r || !r.answers || !r.answers.length) {
+    box.innerHTML = '<div style="font-size:11px;color:var(--muted)">各問の記録がありません（旧形式）</div>';
+    return;
+  }
+  const setId = ctx.asgToSet ? ctx.asgToSet[r.quiz_assignment_id] : null;
+  const qOrder = (setId && ctx.qOrderBySet) ? (ctx.qOrderBySet[setId] || {}) : {};
+  const ans = r.answers.slice().sort((a, b) => (qOrder[a.question_id] || 0) - (qOrder[b.question_id] || 0));
+  box.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:5px">' +
+    ans.map(a => {
+      const num = qOrder[a.question_id] || '?';
+      const ok = a.correct;
+      return '<span style="font-size:11px;padding:2px 8px;border-radius:8px;font-weight:700;background:' + (ok ? '#E8F6EE' : '#FCE9E7') + ';color:' + (ok ? 'var(--green-d)' : 'var(--red)') + '">問' + num + ' ' + (ok ? '○' : '×') + '</span>';
+    }).join('') +
+  '</div>';
 }
 
 // ============================================================

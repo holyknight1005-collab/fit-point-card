@@ -219,7 +219,7 @@
 // デプロイのたびにこの値を上げ、quiz_version.txt の中身と一致させること。
 // app.html とは独立管理（quiz_version.txt を参照）。app側の更新で quiz が巻き込まれない。
 // ============================================================
-const QUIZ_VERSION = '20260702e';
+const QUIZ_VERSION = '20260702f';
 
 // quiz_version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkQuizVersion(){
@@ -787,9 +787,10 @@ async function loadStaffSets(){
         let actions='';
         if(a.status==='ready') actions='<button class="btn btn-ok" style="padding:6px 12px;font-size:12px" onclick="openAssign(\''+a.id+'\')">▶ 開始</button>';
         else if(a.status==='open') actions='<button class="btn btn-warn" style="padding:6px 12px;font-size:12px" onclick="closeAssign(\''+a.id+'\')">■ 終了</button>';
+        actions += '<button class="btn btn-ghost" style="padding:6px 10px;font-size:12px;color:var(--red)" onclick="deleteAssign(\''+a.id+'\')">🗑</button>';
         return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;border-top:1px solid var(--border)">'+
           '<div style="font-size:12px"><b>'+esc(cls)+'</b> '+fmtDateLabel(a.session_date,a.period)+' '+statusPill+'</div>'+
-          actions+
+          '<div style="display:flex;gap:6px;align-items:center">'+actions+'</div>'+
         '</div>';
       }).join('') : '<div class="muted" style="padding:6px 0">未配信</div>';
       return '<div class="set-card">'+
@@ -890,6 +891,35 @@ async function closeAssign(assignId){
     await sbPatch('mini_quiz_assignments','id=eq.'+assignId,{status:'closed',closed_at:new Date().toISOString()});
     hideLoading(); showToast('終了しました','success'); loadStaffSets();
   }catch(e){ hideLoading(); showToast('エラー: '+e.message,'error'); }
+}
+
+// 配信の削除：配信本体＋その受験結果をまとめて物理削除。
+// 要 SQL: allow_quiz_delete.sql（未実行だと403/権限エラー → 案内トースト）
+async function deleteAssign(assignId){
+  // まず受験件数を確認して警告文を出す
+  let n=0;
+  try{ const rs=await sbGet('mini_quiz_results','quiz_assignment_id=eq.'+assignId+'&select=id'); n=(rs||[]).length; }catch(e){}
+  const warn = n>0
+    ? ('この配信を削除しますか？\n受験結果 '+n+'件も一緒に削除されます。（元に戻せません）')
+    : 'この配信を削除しますか？（元に戻せません）';
+  if(!confirm(warn)) return;
+  showLoading('削除中...');
+  try{
+    // 先に結果を消してから配信を消す（外部キー無しでも整合を保つ）
+    if(n>0){ await sbDelete('mini_quiz_results','quiz_assignment_id=eq.'+assignId); }
+    await sbDelete('mini_quiz_assignments','id=eq.'+assignId);
+    hideLoading(); showToast('配信を削除しました','success'); loadStaffSets();
+    // 統計画面が開いていれば配信リストを更新
+    if(typeof loadAssignSelectForStats==='function'){ try{ loadAssignSelectForStats(); }catch(e){} }
+  }catch(e){
+    hideLoading();
+    const msg=String(e&&e.message||e);
+    if(/403|permission|denied|policy/i.test(msg)){
+      showToast('削除権限がありません。allow_quiz_delete.sql を実行してください','error');
+    }else{
+      showToast('削除エラー: '+msg,'error');
+    }
+  }
 }
 
 // ============================================================
@@ -1292,21 +1322,79 @@ async function loadStats(){
         '<div class="bar-bg"><div class="bar-fill" style="width:'+rate+'%;background:'+color+'"></div></div>'+
       '</div>';
     });
-    // 生徒別（折りたたみ）
+    // 生徒別（折りたたみ）＋各問◯×展開＋結果取消
     const sids=results.map(r=>r.student_id);
     let nameMap={};
     if(sids.length){ try{ const stus=await sbGet('students','id=in.('+sids.join(',')+')&select=id,name'); stus.forEach(s=>nameMap[s.id]=s.name); }catch(e){} }
+    // 問題の並び順マップ（question_id -> 表示番号）
+    const qOrder={}; qs.forEach((q,i)=>{ qOrder[q.id]=i+1; });
+    // 展開・取消ハンドラ用に結果を保持
+    window._statCtx = { assignId: assignId, results: results, nameMap: nameMap, qOrder: qOrder, qCount: qs.length };
+    const sorted = results.slice().sort((a,b)=>((b.correct_count||0)/(b.total_count||1))-((a.correct_count||0)/(a.total_count||1)));
     html+='<div class="card" style="margin-top:8px"><div style="font-size:12px;font-weight:700;cursor:pointer" onclick="document.getElementById(\'stat-students\').style.display=document.getElementById(\'stat-students\').style.display===\'none\'?\'block\':\'none\'">👥 生徒別の正誤を見る ▼</div>'+
       '<div id="stat-students" style="display:none;margin-top:8px">'+
-      results.sort((a,b)=>(b.correct_count/b.total_count)-(a.correct_count/a.total_count)).map(r=>
-        '<div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-top:1px solid var(--border)">'+
-          '<span>'+esc(nameMap[r.student_id]||'(生徒)')+'</span>'+
-          '<span style="font-weight:700">'+r.correct_count+'/'+r.total_count+'</span>'+
-        '</div>'
-      ).join('')+
+      sorted.map(r=>{
+        const nm=esc(nameMap[r.student_id]||'(生徒)');
+        const sc=(r.correct_count!=null?r.correct_count:'-')+'/'+(r.total_count!=null?r.total_count:'-');
+        return '<div style="border-top:1px solid var(--border)">'+
+          '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:6px 0;cursor:pointer" onclick="toggleStatStudent(\''+r.id+'\')">'+
+            '<span>▸ '+nm+'</span>'+
+            '<span style="display:flex;gap:10px;align-items:center">'+
+              '<span style="font-weight:700">'+sc+'</span>'+
+              '<button class="btn btn-ghost" style="padding:3px 8px;font-size:11px;color:var(--red)" onclick="event.stopPropagation();deleteResult(\''+r.id+'\')">取消</button>'+
+            '</span>'+
+          '</div>'+
+          '<div id="statstu-'+r.id+'" style="display:none;padding:4px 0 10px"></div>'+
+        '</div>';
+      }).join('')+
       '</div></div>';
     body.innerHTML=html;
   }catch(e){ body.innerHTML='<div class="muted" style="text-align:center;padding:16px;color:var(--red)">エラー: '+esc(e.message)+'</div>'; }
+}
+
+// 生徒行をタップ → 各問◯×を展開表示（mini_quiz_results.answers を使用）
+function toggleStatStudent(resultId){
+  const box=document.getElementById('statstu-'+resultId);
+  if(!box) return;
+  if(box.style.display!=='none'){ box.style.display='none'; return; }
+  const ctx=window._statCtx||{};
+  const r=(ctx.results||[]).find(x=>String(x.id)===String(resultId));
+  if(!r){ box.style.display='block'; box.innerHTML='<div class="muted" style="font-size:11px">データがありません</div>'; return; }
+  const ans=(r.answers||[]).slice().sort((a,b)=>(ctx.qOrder[a.question_id]||0)-(ctx.qOrder[b.question_id]||0));
+  let inner='';
+  if(!ans.length){
+    inner='<div class="muted" style="font-size:11px">各問の記録がありません（旧形式の結果）</div>';
+  }else{
+    inner='<div style="display:flex;flex-wrap:wrap;gap:5px">'+
+      ans.map(a=>{
+        const num=ctx.qOrder[a.question_id]||'?';
+        const ok=a.correct;
+        return '<span style="font-size:11px;padding:2px 8px;border-radius:8px;font-weight:700;background:'+(ok?'#E8F6EE':'#FCE9E7')+';color:'+(ok?'var(--green-ok)':'var(--red)')+'">問'+num+' '+(ok?'○':'×')+'</span>';
+      }).join('')+
+    '</div>';
+  }
+  box.style.display='block';
+  box.innerHTML=inner;
+}
+
+// 受験結果の取消：1件の結果を物理削除（再受験できるようにする）
+// 要 SQL: allow_quiz_delete.sql
+async function deleteResult(resultId){
+  if(!confirm('この生徒の受験結果を取り消しますか？\n（再受験できるようになります。元に戻せません）')) return;
+  showLoading('取消中...');
+  try{
+    await sbDelete('mini_quiz_results','id=eq.'+resultId);
+    hideLoading(); showToast('結果を取り消しました','success');
+    loadStats();
+  }catch(e){
+    hideLoading();
+    const msg=String(e&&e.message||e);
+    if(/403|permission|denied|policy/i.test(msg)){
+      showToast('削除権限がありません。allow_quiz_delete.sql を実行してください','error');
+    }else{
+      showToast('取消エラー: '+msg,'error');
+    }
+  }
 }
 
 
