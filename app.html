@@ -40,6 +40,12 @@ body.view-desktop #manage-tab-bar .manage-tab-btn{flex:1 1 auto!important;min-wi
 /* 出席名簿：PC幅で報告(左)＋名簿(右)の2カラム */
 body.view-desktop .att-2col{display:grid;grid-template-columns:minmax(0,360px) minmax(0,1fr);gap:20px;align-items:start}
 body.view-desktop .att-2col #att-report-box{margin-bottom:0;position:sticky;top:12px}
+/* 面談カルテ：既定は1カラム。PC幅では画面を広げて2カラム表示 */
+#karte-grid{display:block}
+body.view-desktop #screen-interview-karte{width:100vw;max-width:100vw;margin-left:calc(-50vw + 50%);margin-right:calc(-50vw + 50%);background:var(--bg)}
+body.view-desktop #karte-content{max-width:1200px;margin:0 auto;width:100%;box-sizing:border-box;padding-left:16px;padding-right:16px}
+body.view-desktop #karte-grid{column-count:2;column-gap:20px}
+body.view-desktop #karte-grid > .karte-sec{break-inside:avoid;-webkit-column-break-inside:avoid;display:inline-block;width:100%}
 /* スタッフホーム：PC幅で 左=カレンダー / 右=その他 の2カラム */
 body.view-desktop #screen-staff{width:100vw;max-width:100vw;margin-left:calc(-50vw + 50%);margin-right:calc(-50vw + 50%)}
 body.view-desktop #screen-staff .staff-content{display:grid;grid-template-columns:minmax(0,1fr) 360px;grid-template-areas:"exec exec" "cal right" "stu stu";gap:16px 22px;align-content:start;max-width:1320px;margin:0 auto;width:100%;box-sizing:border-box;padding-left:16px;padding-right:16px}
@@ -1995,9 +2001,10 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <!-- ===== 面談カルテ画面（面談タブ・生徒詳細の両方から開く） ===== -->
 <div class="screen" id="screen-interview-karte">
-  <div class="staff-content" style="padding-bottom:40px">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+  <div class="staff-content" id="karte-content" style="padding-bottom:40px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
       <button onclick="backFromKarte()" class="page-btn" style="padding:6px 12px;flex:0 0 auto">‹ 戻る</button>
+      <div id="karte-avatar" style="flex:0 0 auto;width:52px;height:52px;border-radius:50%;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:var(--muted);overflow:hidden"></div>
       <div style="flex:1;min-width:0">
         <div id="karte-name" style="font-size:17px;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">－</div>
         <div id="karte-meta" style="font-size:11px;color:var(--muted)"></div>
@@ -2006,13 +2013,16 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     </div>
     <!-- 表示切替チップ -->
     <div id="karte-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
-    <!-- 各セクション -->
-    <div id="karte-sec-checkins" class="karte-sec"></div>
-    <div id="karte-sec-attendance" class="karte-sec"></div>
-    <div id="karte-sec-interviews" class="karte-sec"></div>
-    <div id="karte-sec-quiz" class="karte-sec"></div>
-    <div id="karte-sec-goals" class="karte-sec"></div>
-    <div id="karte-sec-appusage" class="karte-sec"></div>
+    <!-- 各セクション（PCでは2カラム） -->
+    <div id="karte-grid">
+      <div id="karte-sec-profile" class="karte-sec"></div>
+      <div id="karte-sec-checkins" class="karte-sec"></div>
+      <div id="karte-sec-attendance" class="karte-sec"></div>
+      <div id="karte-sec-interviews" class="karte-sec"></div>
+      <div id="karte-sec-quiz" class="karte-sec"></div>
+      <div id="karte-sec-goals" class="karte-sec"></div>
+      <div id="karte-sec-appusage" class="karte-sec"></div>
+    </div>
   </div>
 </div>
 
@@ -3154,7 +3164,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702i';
+const APP_VERSION = '20260702j';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16967,6 +16977,7 @@ let karteBackTo = 'interview'; // 'interview' | 'detail'
 
 // カルテのセクション定義（チップ・表示制御に使う）
 const KARTE_SECTIONS = [
+  { key: 'profile',     label: '👤 プロフィール' },
   { key: 'checkins',    label: '📅 来塾率' },
   { key: 'attendance',  label: '✅ 授業出席' },
   { key: 'interviews',  label: '🗣 面談記録' },
@@ -17023,18 +17034,32 @@ function toggleKarteSection(key) {
 async function openInterviewKarte(studentId, backTo) {
   karteStudentId = studentId;
   karteBackTo = backTo || 'interview';
-  // 生徒情報を取得（面談タブの ivStudents にあれば流用、なければ単発取得）
-  let s = (typeof ivStudents !== 'undefined' && ivStudents) ? ivStudents.find(x => x.id === studentId) : null;
+  // 生徒情報を全カラム取得（プロフィール表示に必要）。失敗時は一覧から最低限を流用。
+  let s = null;
+  try {
+    const rows = await sbGet('students', 'id=eq.' + studentId + '&select=*');
+    s = (rows && rows[0]) ? rows[0] : null;
+  } catch (e) { s = null; }
   if (!s) {
-    try {
-      const rows = await sbGet('students', 'id=eq.' + studentId + '&select=id,name,school,grade');
-      s = (rows && rows[0]) ? rows[0] : null;
-    } catch (e) { s = null; }
+    s = (typeof ivStudents !== 'undefined' && ivStudents) ? ivStudents.find(x => x.id === studentId) : null;
   }
   if (!s) { showToast('生徒が見つかりません', 'error'); return; }
   karteStudent = s;
   document.getElementById('karte-name').textContent = s.name || '－';
   document.getElementById('karte-meta').textContent = [s.school, s.grade].filter(Boolean).join(' ');
+  // 顔写真（あれば表示・タップで拡大、なければ頭文字）
+  const av = document.getElementById('karte-avatar');
+  if (av) {
+    if (s.photo_url) {
+      av.innerHTML = '<img src="' + s.photo_url + '" style="width:100%;height:100%;object-fit:cover">';
+      av.style.cursor = 'zoom-in';
+      av.onclick = () => openPhotoModal(s.photo_url, s.name || '');
+    } else {
+      av.textContent = (s.name || '?').slice(0, 1);
+      av.style.cursor = 'default';
+      av.onclick = null;
+    }
+  }
   renderKarteChips();
   // 各セクションを「読み込み中」に
   KARTE_SECTIONS.forEach(sec => {
@@ -17043,6 +17068,7 @@ async function openInterviewKarte(studentId, backTo) {
   });
   showScreen('screen-interview-karte');
   // 非同期で各セクションをロード（順次・失敗は握りつぶし）
+  karteLoadProfile(s);
   karteLoadCheckins(studentId);
   karteLoadAttendance(studentId);
   karteLoadInterviews(studentId);
@@ -17064,6 +17090,59 @@ function karteSecShell(title, inner) {
   return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px">' +
     '<div style="font-size:13px;font-weight:800;color:var(--text);margin-bottom:10px">' + title + '</div>' +
     inner + '</div>';
+}
+
+// ---- ⓪ プロフィール（基本情報・属性・志望校） ----
+function karteLoadProfile(s) {
+  const el = document.getElementById('karte-sec-profile');
+  if (!el) return;
+  // 1行分のHTML（ラベル＋値）。値が空なら「未登録」薄色。
+  const row = (label, val) => {
+    const has = val !== undefined && val !== null && String(val).trim() !== '';
+    return '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:5px 0;border-bottom:1px solid var(--border)">' +
+      '<div style="font-size:11px;color:var(--muted);white-space:nowrap">' + label + '</div>' +
+      '<div style="font-size:12px;font-weight:600;color:' + (has ? 'var(--text)' : 'var(--muted)') + ';text-align:right;min-width:0;word-break:break-word">' + (has ? escapeHtml(String(val)) : '未登録') + '</div>' +
+    '</div>';
+  };
+  // 会員種別の表示整形
+  const memLabel = (s.membership_status === '時期別のみ') ? '時期別のみ'
+    : (s.membership_status === '退塾') ? '退塾' : '通常';
+  // 在籍状態
+  let statusLabel = '在籍中';
+  if (s.is_active === false) statusLabel = (s.inactive_reason === '卒業') ? '卒業' : (s.inactive_reason || '退会');
+  // 志望校（第1〜3、空は飛ばす）
+  const univs = [];
+  [[s.univ1, s.faculty1], [s.univ2, s.faculty2], [s.univ3, s.faculty3]].forEach((u, i) => {
+    if (u[0]) univs.push('第' + (i + 1) + '：' + u[0] + (u[1] ? ' ' + u[1] : ''));
+  });
+
+  // --- 基本情報 ---
+  let html = '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:2px">基本情報</div>';
+  html += row('学校', s.school);
+  html += row('学年', s.grade ? s.grade + '年' : '');
+  if (s.school_detail) html += row('学校詳細', s.school_detail);
+  html += row('会員種別', memLabel);
+  html += row('在籍状態', statusLabel);
+  html += row('入塾日', s.enroll_date ? ivFmtDate(s.enroll_date) : '');
+  html += row('メール', s.email);
+
+  // --- 属性 ---
+  html += '<div style="font-size:11px;font-weight:700;color:var(--muted);margin:10px 0 2px">属性</div>';
+  html += row('性別', s.gender);
+  html += row('文理', s.course_track);
+  html += row('部活', s.club);
+  html += row('誕生日', s.birthday ? ivFmtDate(s.birthday) : '');
+
+  // --- 志望校・希望科目 ---
+  html += '<div style="font-size:11px;font-weight:700;color:var(--muted);margin:10px 0 2px">志望校・希望科目</div>';
+  if (univs.length) {
+    html += univs.map(u => '<div style="font-size:12px;color:var(--text);padding:3px 0">🎓 ' + escapeHtml(u) + '</div>').join('');
+  } else {
+    html += '<div style="font-size:12px;color:var(--muted);padding:3px 0">志望校は未登録</div>';
+  }
+  html += row('希望科目', s.desired_subjects);
+
+  el.innerHTML = karteSecShell('👤 プロフィール', html);
 }
 
 // ---- ① 来塾率（直近30日・年度累計） ----
