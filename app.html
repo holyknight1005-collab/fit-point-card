@@ -3328,7 +3328,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702q';
+const APP_VERSION = '20260702r';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -7039,6 +7039,40 @@ async function insertStudentWithEnrollDate(body, enrollDate) {
     }
     throw e; // 重複(duplicate)など他のエラーはそのまま投げる
   }
+}
+
+// 名簿生INSERT用：スキーマ差異に強い挿入。
+// students に gender / course_track / roster_only 列が無い環境では
+// PostgREST が 400(PGRST204等)を返すため、任意カラムを1つずつ外して再試行する。
+// 返り値：{ ok, savedDate, droppedRosterOnly } 。重複など schema 以外のエラーはそのまま throw。
+async function insertStudentTolerant(base, enrollDate) {
+  // 外してよい任意カラム（この順で落としていく）。基本カラム(name/school/grade/points/streak)は温存。
+  const optional = ['course_track', 'gender', 'roster_only'];
+  let body = Object.assign({}, base);
+  let droppedRosterOnly = false;
+  for (let attempt = 0; attempt <= optional.length; attempt++) {
+    try {
+      const savedDate = await insertStudentWithEnrollDate(body, enrollDate);
+      return { ok: true, savedDate: savedDate, droppedRosterOnly: droppedRosterOnly };
+    } catch (e) {
+      const msg = String(e && e.message || e);
+      const schemaish = /column|schema|PGRST|does not exist|400/i.test(msg);
+      // duplicate/unique 等はそのまま投げる（呼び出し側で処理）
+      if (/duplicate|unique/i.test(msg) || !schemaish) throw e;
+      // まだ外せる任意カラムがあれば1つ外して再試行
+      const next = optional[attempt];
+      if (next && Object.prototype.hasOwnProperty.call(body, next)) {
+        if (next === 'roster_only') droppedRosterOnly = true;
+        const b2 = Object.assign({}, body); delete b2[next];
+        body = b2;
+        continue;
+      }
+      // 外せる列が尽きたら諦めて throw
+      throw e;
+    }
+  }
+  // ここには到達しない想定
+  throw new Error('insertStudentTolerant: 挿入に失敗しました');
 }
 
 async function approveApplication(id, name, email, school, grade) {
@@ -23520,7 +23554,7 @@ async function registerRosterStudent(rosterId) {
       return;
     }
 
-    // students へ INSERT（roster_only=true・メール/PINなし）。roster_only 列が無ければ外して再試行。
+    // students へ INSERT（roster_only=true・メール/PINなし）。gender/course_track/roster_only 列が無くても順次外して成功させる。
     const base = {
       name: r.name,
       school: r.school || null,
@@ -23532,17 +23566,14 @@ async function registerRosterStudent(rosterId) {
       roster_only: true
     };
     try {
-      await insertStudentWithEnrollDate(base, r.enroll_date || null);
-    } catch (e) {
-      const msg = String(e && e.message || e);
-      if (/roster_only|column|schema|PGRST|400/i.test(msg)) {
-        const b2 = Object.assign({}, base); delete b2.roster_only;
-        await insertStudentWithEnrollDate(b2, r.enroll_date || null);
+      const res = await insertStudentTolerant(base, r.enroll_date || null);
+      if (res.droppedRosterOnly) {
         hideLoading();
         showToast('⚠️ roster_only 列が未作成です。add_roster_only.sql を実行してください', 'error');
         loadRosterList();
         return;
       }
+    } catch (e) {
       throw e;
     }
 
@@ -23618,23 +23649,12 @@ async function bulkRegisterRosterStudents() {
       roster_only: true
     };
     try {
-      await insertStudentWithEnrollDate(base, r.enroll_date || null);
+      const res = await insertStudentTolerant(base, r.enroll_date || null);
+      if (res.droppedRosterOnly) rosterOnlyMissing = true;
       existKeys.add(key);
       done++;
     } catch (e) {
-      const em = String(e && e.message || e);
-      // roster_only 列が無い環境：列を外して再試行し、フラグを立てる（後でまとめて案内）
-      if (/roster_only|column|schema|PGRST|400/i.test(em)) {
-        try {
-          const b2 = Object.assign({}, base); delete b2.roster_only;
-          await insertStudentWithEnrollDate(b2, r.enroll_date || null);
-          existKeys.add(key);
-          done++;
-          rosterOnlyMissing = true;
-        } catch (e2) { failed++; failNames.push(r.name); }
-      } else {
-        failed++; failNames.push(r.name);
-      }
+      failed++; failNames.push(r.name);
     }
     showLoading('一括登録中... ' + (done + skipped + failed) + '/' + targets.length);
   }
