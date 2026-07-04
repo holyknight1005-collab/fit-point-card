@@ -2571,11 +2571,12 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <!-- マトリクス表ビュー -->
       <div id="att-matrix-view" style="display:none">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px">
-          <span style="font-size:11px;color:var(--muted);flex:1">セルをタップで ○出席 → ✕欠席 → <span style="color:#6B4FA0;font-weight:700">◐補習</span> の順に切替、下の保存で確定。</span>
+          <span style="font-size:11px;color:var(--muted);flex:1">🔵青セル（来塾から自動）は1タップでそのまま○確定。違う子だけ、もう一度タップで ✕欠席 → <span style="color:#6B4FA0;font-weight:700">◐補習</span> に。下の「🔵全員そのまま確定」で青を一括確定、「保存」で確定。</span>
           <span onclick="toggleAttGroupBySchool()" id="att-groupbtn" style="font-size:11px;color:var(--orange-d);cursor:pointer;white-space:nowrap;border:1px solid var(--border);border-radius:6px;padding:4px 8px">🏫 学校別 ▢</span>
         </div>
         <div style="font-size:10px;color:#185FA5;margin-bottom:8px">🔵 青いセルは来塾記録からの自動推定（未保存）です。タップ・保存で正式記録になります。</div>
         <div id="att-matrix-wrap" style="overflow-x:auto;border:1px solid var(--border);border-radius:8px"></div>
+        <button id="att-matrix-confirm-checkins" onclick="confirmAllCheckins()" style="display:none;width:100%;margin-top:12px;padding:11px;background:#E6F1FB;border:1.5px solid #9FC4E8;border-radius:8px;color:#185FA5;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔵 来塾者を全員そのまま確定</button>
         <button id="att-matrix-save" onclick="saveAttMatrix()" style="display:none;width:100%;margin-top:12px;padding:12px;background:linear-gradient(135deg,#3B6D11,#5A9E3C);border:none;border-radius:8px;color:white;font-size:14px;font-weight:700;cursor:pointer">💾 変更を保存</button>
       </div>
 
@@ -3328,7 +3329,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702v';
+const APP_VERSION = '20260702w';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16419,6 +16420,11 @@ function toggleAttCell(sid, k) {
     // 推定不可セル（時間未設定）→ タップで出席から手動作成
     cell = { status: 'present', auto: false, dirty: true };
     attMatrix.cells[cellKey] = cell;
+  } else if (cell.auto) {
+    // 青セル（来塾からの自動推定・未保存）→ 1タップ目はサイクルを回さず「そのまま確定」。
+    // これで来塾どおりの○出席は1タップで保存対象になる。違う子だけ、確定後にもう一度タップして✕/◐へ。
+    cell.auto = false;
+    cell.dirty = true;
   } else {
     cell.status = nextStatus[cell.status] || 'present';
     cell.auto = false;   // 手動操作したら自動フラグ解除
@@ -16427,9 +16433,26 @@ function toggleAttCell(sid, k) {
   renderAttMatrix();
 }
 
+// 表示中の青セル（来塾から自動推定された未保存の出席）をまとめて「そのまま確定」（保存対象化）する。
+// 来塾どおりでOKな大多数をボタン1つで片付け、あとは違う子のセルだけ個別に直す運用。
+function confirmAllCheckins() {
+  if (!attMatrix || !attMatrix.cells) return;
+  let n = 0;
+  Object.values(attMatrix.cells).forEach(c => {
+    if (c && c.auto) { c.auto = false; c.dirty = true; n++; }
+  });
+  if (!n) { showToast('確定できる来塾セル（青）がありません', 'info'); return; }
+  renderAttMatrix();
+  showToast(n + '件を確定対象にしました。下の「保存」で確定します', 'success');
+}
+
 function updateAttMatrixSaveBtn() {
   const hasDirty = Object.values(attMatrix.cells).some(c => c.dirty);
   document.getElementById('att-matrix-save').style.display = hasDirty ? 'block' : 'none';
+  // 青セル（未保存の来塾推定）が1つでもあれば一括確定ボタンを出す
+  const hasAuto = Object.values(attMatrix.cells).some(c => c && c.auto);
+  const cbtn = document.getElementById('att-matrix-confirm-checkins');
+  if (cbtn) cbtn.style.display = hasAuto ? 'block' : 'none';
 }
 
 async function saveAttMatrix() {
