@@ -3328,7 +3328,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702s';
+const APP_VERSION = '20260702t';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -7045,6 +7045,16 @@ async function insertStudentWithEnrollDate(body, enrollDate) {
 // students に無い列があると PostgREST が 400(PGRST204: Could not find the 'xxx' column ...) を返す。
 // エラー本文から欠落カラム名を読み取り、その列だけを外して再試行する（列名を決め打ちしない）。
 // name は必須のため外さない。返り値：{ ok, savedDate, droppedRosterOnly }。duplicate 等はそのまま throw。
+// 名簿生/手入力生の email プレースホルダ。
+// students.email は NOT NULL 制約があるため、ログイン用メールを持たない生徒には
+// 一意なダミーを入れて制約を満たす（本人がアプリ登録すると approveApplication が実メールに上書き）。
+// UNIQUE(email) が張られていても衝突しないよう時刻＋乱数で一意化。
+function rosterPlaceholderEmail(seed) {
+  const s = String(seed || '').replace(/[^A-Za-z0-9]/g, '') || 'x';
+  const uniq = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  return 'roster+' + s + '-' + uniq + '@fit.local';
+}
+
 async function insertStudentTolerant(base, enrollDate) {
   let body = Object.assign({}, base);
   let droppedRosterOnly = false;
@@ -19372,6 +19382,7 @@ async function saveNewStudent() {
   try {
     const savedDate = await insertStudentWithEnrollDate({
       name, pin,
+      email: rosterPlaceholderEmail(name),
       student_no: pin,
       school: v('sadd-school') || null,
       grade: v('sadd-grade') || null,
@@ -23559,6 +23570,7 @@ async function registerRosterStudent(rosterId) {
     // students へ INSERT（roster_only=true・メール/PINなし）。gender/course_track/roster_only 列が無くても順次外して成功させる。
     const base = {
       name: r.name,
+      email: rosterPlaceholderEmail(r.name),
       school: r.school || null,
       grade: r.grade || null,
       gender: r.gender || null,
@@ -23643,6 +23655,7 @@ async function bulkRegisterRosterStudents() {
 
     const base = {
       name: r.name,
+      email: rosterPlaceholderEmail(r.name),
       school: r.school || null,
       grade: r.grade || null,
       gender: r.gender || null,
