@@ -3130,7 +3130,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702g';
+const APP_VERSION = '20260702h';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -6872,8 +6872,16 @@ async function approveApplication(id, name, email, school, grade) {
       }
     } catch (e) { /* roster_only 列が無い等は無視して通常INSERTへ */ }
 
-    // studentsテーブルに追加（入塾日＝承認日。enroll_date 列が無ければ自動で省いて再試行）
+    // studentsテーブルに追加。
+    // 入塾日は「今日」ではなく、同名・同校の名簿(roster)に入塾日があればそれを採用。
+    // 名簿に無ければ空欄のまま（後からCSV・手動で入れる運用）。
     if (!promoted) {
+      let enrollFromRoster = null;
+      try {
+        const rr = await sbGet('roster', 'is_active=eq.true&select=name,school,enroll_date') || [];
+        const hitR = rr.find(r => r.enroll_date && rosterKey(r.name, r.school) === rosterKey(name, school));
+        if (hitR) enrollFromRoster = hitR.enroll_date;
+      } catch (e) { /* roster 未取得なら空欄で続行 */ }
       await insertStudentWithEnrollDate({
         name, email, pin,
         student_no: pin,
@@ -6881,7 +6889,7 @@ async function approveApplication(id, name, email, school, grade) {
         school_detail: schoolDetail,
         points: 0,
         streak: 0
-      }, getTodayJST());
+      }, enrollFromRoster);
     }
 
     // 申請ステータスを承認済みに
@@ -21795,12 +21803,12 @@ async function registerRosterStudent(rosterId) {
       roster_only: true
     };
     try {
-      await insertStudentWithEnrollDate(base, r.enroll_date || getTodayJST());
+      await insertStudentWithEnrollDate(base, r.enroll_date || null);
     } catch (e) {
       const msg = String(e && e.message || e);
       if (/roster_only|column|schema|PGRST|400/i.test(msg)) {
         const b2 = Object.assign({}, base); delete b2.roster_only;
-        await insertStudentWithEnrollDate(b2, r.enroll_date || getTodayJST());
+        await insertStudentWithEnrollDate(b2, r.enroll_date || null);
         hideLoading();
         showToast('⚠️ roster_only 列が未作成です。add_roster_only.sql を実行してください', 'error');
         loadRosterList();
@@ -21881,7 +21889,7 @@ async function bulkRegisterRosterStudents() {
       roster_only: true
     };
     try {
-      await insertStudentWithEnrollDate(base, r.enroll_date || getTodayJST());
+      await insertStudentWithEnrollDate(base, r.enroll_date || null);
       existKeys.add(key);
       done++;
     } catch (e) {
@@ -21890,7 +21898,7 @@ async function bulkRegisterRosterStudents() {
       if (/roster_only|column|schema|PGRST|400/i.test(em)) {
         try {
           const b2 = Object.assign({}, base); delete b2.roster_only;
-          await insertStudentWithEnrollDate(b2, r.enroll_date || getTodayJST());
+          await insertStudentWithEnrollDate(b2, r.enroll_date || null);
           existKeys.add(key);
           done++;
           rosterOnlyMissing = true;
