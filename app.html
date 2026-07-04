@@ -408,6 +408,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
     <input class="form-input-sm" type="text" id="enroll-search" placeholder="🔍 名前で検索" oninput="renderEnrollList()" style="margin-bottom:8px">
     <div id="enroll-school-filter" class="filter-bar" style="margin-bottom:8px"></div>
+    <div id="enroll-grade-filter" class="filter-bar" style="margin-bottom:8px"></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">タップで受講登録/解除。✓が現在の受講生です。</div>
     <div id="enroll-list" style="display:flex;flex-direction:column;gap:5px;max-height:46vh;overflow-y:auto"></div>
   </div>
@@ -2538,7 +2539,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
     <!-- 授業出欠タブ -->
     <div id="smcontent-attendance" style="display:none">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">授業と授業日を選ぶと名簿が表示されます。来塾を初期値に、タップで出欠を切り替えて保存できます。</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">まず<b>教科</b>と<b>学年</b>で絞ると授業が探しやすくなります。授業と授業日を選ぶと名簿が表示され、来塾を初期値に、タップで出欠を切り替えて保存できます。</div>
       <div style="display:flex;gap:6px;margin-bottom:8px">
         <select class="form-select" id="att-subject-select" onchange="onAttSubjectChange()" style="flex:1;font-size:13px">
           <option value="">教科すべて</option>
@@ -2657,6 +2658,14 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <!-- 授業分析タブ -->
     <div id="smcontent-classanalysis" style="display:none">
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px">授業を選ぶと、出席率・推移・生徒別の出席状況・連続欠席アラートが見られます。</div>
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <select class="form-select" id="ca-subject-select" onchange="onCaSubjectChange()" style="flex:1;font-size:13px">
+          <option value="">教科すべて</option>
+        </select>
+        <select class="form-select" id="ca-grade-select" onchange="onCaGradeChange()" style="flex:1;font-size:13px">
+          <option value="">学年すべて</option>
+        </select>
+      </div>
       <select id="ca-class-select" onchange="onCaClassChange()" class="form-select" style="width:100%;margin-bottom:10px;font-size:13px">
         <option value="">📚 授業を選択</option>
       </select>
@@ -3329,7 +3338,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702w';
+const APP_VERSION = '20260702x';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -12271,6 +12280,7 @@ let enrollModalClassId = null;
 let enrollCurrentSet = new Set();   // 現在この授業を受講している student_id
 let enrollIdMap = {};               // student_id -> enrollment_id（解除用）
 let enrollSchoolFilter = '全員';
+let enrollGradeFilter = '全学年';
 
 async function openEnrollStudents(classId) {
   enrollModalClassId = classId;
@@ -12278,6 +12288,7 @@ async function openEnrollStudents(classId) {
   document.getElementById('enroll-class-name').textContent = cm ? (cm.name + ' の受講生') : '';
   document.getElementById('enroll-search').value = '';
   enrollSchoolFilter = '全員';
+  enrollGradeFilter = '全学年';
   document.getElementById('enroll-modal').style.display = 'flex';
   document.getElementById('enroll-list').innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">読み込み中...</div>';
   // 生徒一覧
@@ -12291,6 +12302,7 @@ async function openEnrollStudents(classId) {
     rows.forEach(r => { enrollCurrentSet.add(r.student_id); enrollIdMap[r.student_id] = r.id; });
   } catch(e) {}
   renderEnrollSchoolFilter();
+  renderEnrollGradeFilter();
   renderEnrollList();
 }
 
@@ -12311,6 +12323,20 @@ function setEnrollSchool(sc) {
   renderEnrollList();
 }
 
+function renderEnrollGradeFilter() {
+  const bar = document.getElementById('enroll-grade-filter');
+  if (!bar) return;
+  const grades = ['全学年', '1年', '2年', '3年'];
+  bar.innerHTML = grades.map(g =>
+    '<button onclick="setEnrollGrade(\'' + g + '\')" style="padding:4px 10px;font-size:11px;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;border:1.5px solid ' + (enrollGradeFilter === g ? 'var(--orange)' : 'var(--border)') + ';background:' + (enrollGradeFilter === g ? 'var(--orange)' : 'var(--surface)') + ';color:' + (enrollGradeFilter === g ? '#fff' : 'var(--muted)') + '">' + g + '</button>'
+  ).join('');
+}
+function setEnrollGrade(g) {
+  enrollGradeFilter = g;
+  renderEnrollGradeFilter();
+  renderEnrollList();
+}
+
 function renderEnrollList() {
   const list = document.getElementById('enroll-list');
   if (!list) return;
@@ -12318,6 +12344,11 @@ function renderEnrollList() {
   const filtered = (staffStudents || []).filter(s => {
     if (s.is_active === false) return false;
     if (enrollSchoolFilter !== '全員' && (s.school || '') !== enrollSchoolFilter) return false;
+    if (enrollGradeFilter !== '全学年') {
+      const want = enrollGradeFilter.replace(/[^0-9]/g, '');
+      const has = String(s.grade || '').replace(/[^0-9]/g, '');
+      if (want !== has) return false;
+    }
     if (kw && !(s.name || '').toLowerCase().includes(kw)) return false;
     return true;
   });
@@ -24116,6 +24147,8 @@ let caSelectedClassId = null;
 let caPeriod = 'all';          // 'month' | 'term'(3ヶ月) | 'all'
 let caClassName = '';
 
+let caAllMasters = []; // 授業分析用の全授業 [{id,name,subject,grade_level}]
+
 async function initClassAnalysis() {
   caSelectedClassId = null;
   caPeriod = 'all';
@@ -24123,10 +24156,70 @@ async function initClassAnalysis() {
   document.getElementById('ca-matrix-section').style.display = 'none';
   document.getElementById('ca-period-filter').style.display = 'none';
   const sel = document.getElementById('ca-class-select');
-  if (sel.options.length > 1) return; // 構築済みなら再構築しない
-  const masters = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject') || [];
+  if (caAllMasters.length) return; // 構築済みなら再構築しない
+  caAllMasters = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject,grade_level') || [];
+  renderCaSubjectOptions();
+  renderCaGradeOptions();
+  renderCaClassOptions();
+}
+
+// 教科プルダウン（caAllMasters の subject から重複なしで構築）
+function renderCaSubjectOptions() {
+  const subjects = [...new Set(caAllMasters.map(m => (m.subject || '').trim()).filter(Boolean))];
+  const sel = document.getElementById('ca-subject-select');
+  sel.innerHTML = '<option value="">教科すべて</option>' +
+    subjects.map(s => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('');
+}
+
+// 学年プルダウン（現在の教科で絞った授業の grade_level を分解して重複なし）
+function renderCaGradeOptions() {
+  const subj = document.getElementById('ca-subject-select').value;
+  const pool = subj ? caAllMasters.filter(m => (m.subject || '').trim() === subj) : caAllMasters;
+  const grades = new Set();
+  pool.forEach(m => {
+    (m.grade_level || '').split(',').map(g => g.trim()).filter(Boolean).forEach(g => grades.add(g));
+  });
+  const sorted = [...grades].sort((a, b) => (parseInt(a) || 0) - (parseInt(b) || 0));
+  const sel = document.getElementById('ca-grade-select');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">学年すべて</option>' +
+    sorted.map(g => '<option value="' + escapeHtml(g) + '">' + escapeHtml(g) + '年</option>').join('');
+  if (prev && sorted.includes(prev)) sel.value = prev;
+}
+
+// 授業プルダウン（教科・学年で絞り込み）
+function renderCaClassOptions() {
+  const subj = document.getElementById('ca-subject-select').value;
+  const grade = document.getElementById('ca-grade-select').value;
+  let pool = caAllMasters;
+  if (subj) pool = pool.filter(m => (m.subject || '').trim() === subj);
+  if (grade) {
+    pool = pool.filter(m => {
+      const gl = (m.grade_level || '').trim();
+      if (!gl) return false;
+      return gl.split(',').map(x => x.trim()).includes(grade);
+    });
+  }
+  const sel = document.getElementById('ca-class-select');
+  const prev = sel.value;
   sel.innerHTML = '<option value="">📚 授業を選択</option>' +
-    masters.map(m => '<option value="' + m.id + '">' + (m.subject ? '【' + escapeHtml(m.subject) + '】' : '') + escapeHtml(m.name) + '</option>').join('');
+    pool.map(m => '<option value="' + m.id + '">' + (m.subject ? '【' + escapeHtml(m.subject) + '】' : '') + escapeHtml(m.name) +
+      ((m.grade_level || '').trim() ? '（' + (m.grade_level).split(',').filter(Boolean).map(g => g + '年').join('・') + '）' : '') +
+      '</option>').join('');
+  if (prev && pool.some(m => m.id === prev)) {
+    sel.value = prev;
+  } else if (prev) {
+    sel.value = '';
+    onCaClassChange();
+  }
+}
+
+function onCaSubjectChange() {
+  renderCaGradeOptions();
+  renderCaClassOptions();
+}
+function onCaGradeChange() {
+  renderCaClassOptions();
 }
 
 function onCaClassChange() {
