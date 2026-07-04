@@ -3328,7 +3328,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702r';
+const APP_VERSION = '20260702s';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -7042,37 +7042,39 @@ async function insertStudentWithEnrollDate(body, enrollDate) {
 }
 
 // 名簿生INSERT用：スキーマ差異に強い挿入。
-// students に gender / course_track / roster_only 列が無い環境では
-// PostgREST が 400(PGRST204等)を返すため、任意カラムを1つずつ外して再試行する。
-// 返り値：{ ok, savedDate, droppedRosterOnly } 。重複など schema 以外のエラーはそのまま throw。
+// students に無い列があると PostgREST が 400(PGRST204: Could not find the 'xxx' column ...) を返す。
+// エラー本文から欠落カラム名を読み取り、その列だけを外して再試行する（列名を決め打ちしない）。
+// name は必須のため外さない。返り値：{ ok, savedDate, droppedRosterOnly }。duplicate 等はそのまま throw。
 async function insertStudentTolerant(base, enrollDate) {
-  // 外してよい任意カラム（この順で落としていく）。基本カラム(name/school/grade/points/streak)は温存。
-  const optional = ['course_track', 'gender', 'roster_only'];
   let body = Object.assign({}, base);
   let droppedRosterOnly = false;
-  for (let attempt = 0; attempt <= optional.length; attempt++) {
+  const maxTries = 12; // 無限ループ防止（外せる列の上限）
+  for (let attempt = 0; attempt < maxTries; attempt++) {
     try {
       const savedDate = await insertStudentWithEnrollDate(body, enrollDate);
       return { ok: true, savedDate: savedDate, droppedRosterOnly: droppedRosterOnly };
     } catch (e) {
       const msg = String(e && e.message || e);
-      const schemaish = /column|schema|PGRST|does not exist|400/i.test(msg);
       // duplicate/unique 等はそのまま投げる（呼び出し側で処理）
-      if (/duplicate|unique/i.test(msg) || !schemaish) throw e;
-      // まだ外せる任意カラムがあれば1つ外して再試行
-      const next = optional[attempt];
-      if (next && Object.prototype.hasOwnProperty.call(body, next)) {
-        if (next === 'roster_only') droppedRosterOnly = true;
-        const b2 = Object.assign({}, body); delete b2[next];
+      if (/duplicate|unique/i.test(msg)) throw e;
+      // エラー本文から欠落カラム名を抽出（PGRST204 の "Could not find the 'xxx' column" 等に対応）
+      let col = null;
+      let m = msg.match(/Could not find the '([^']+)' column/i);
+      if (m) col = m[1];
+      if (!col) { m = msg.match(/column\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\s+of/i); if (m) col = m[1]; }
+      if (!col) { m = msg.match(/'([A-Za-z_][A-Za-z0-9_]*)'\s+column/i); if (m) col = m[1]; }
+      // 抽出できた列が body にあり、かつ必須の name でなければ外して再試行
+      if (col && col !== 'name' && Object.prototype.hasOwnProperty.call(body, col)) {
+        if (col === 'roster_only') droppedRosterOnly = true;
+        const b2 = Object.assign({}, body); delete b2[col];
         body = b2;
         continue;
       }
-      // 外せる列が尽きたら諦めて throw
+      // 列名が読めない／必須列だった／既に外し済み → 諦めて throw
       throw e;
     }
   }
-  // ここには到達しない想定
-  throw new Error('insertStudentTolerant: 挿入に失敗しました');
+  throw new Error('insertStudentTolerant: 挿入に失敗しました（外せる列が尽きました）');
 }
 
 async function approveApplication(id, name, email, school, grade) {
@@ -23633,6 +23635,7 @@ async function bulkRegisterRosterStudents() {
   showLoading('一括登録中... 0/' + targets.length);
   let done = 0, skipped = 0, failed = 0;
   const failNames = [];
+  let firstError = '';
   for (const r of targets) {
     const key = rosterKey(r.name, r.school);
     // ループ中に同名を作ってしまわないよう、その場でキーを追加していく
@@ -23655,6 +23658,7 @@ async function bulkRegisterRosterStudents() {
       done++;
     } catch (e) {
       failed++; failNames.push(r.name);
+      if (!firstError) firstError = String(e && e.message || e);
     }
     showLoading('一括登録中... ' + (done + skipped + failed) + '/' + targets.length);
   }
@@ -23668,7 +23672,8 @@ async function bulkRegisterRosterStudents() {
     showToast('⚠️ roster_only 列が未作成のため通常生扱いで登録されました。add_roster_only.sql の実行を推奨します', 'error');
   }
   if (failed && failNames.length) {
-    alert('登録に失敗した生徒（' + failed + '人）：\n' + failNames.slice(0, 30).join('、') + (failNames.length > 30 ? ' ほか' : ''));
+    alert('登録に失敗した生徒（' + failed + '人）：\n' + failNames.slice(0, 30).join('、') + (failNames.length > 30 ? ' ほか' : '')
+      + (firstError ? '\n\n【エラー内容】\n' + firstError : ''));
   }
 
   // 一覧・スタッフ画面を更新
