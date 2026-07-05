@@ -447,7 +447,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <div style="flex:1">
         <div style="font-size:11px;color:var(--muted);margin-bottom:3px">状態</div>
         <select class="form-input-sm" id="prospect-status" style="width:100%">
-          <option>問合せ</option><option>体験</option><option>面談</option><option>入塾</option><option>見送り</option>
+          <option>問合せ</option><option>☆入塾書待ち</option><option>◎入塾濃厚</option><option>○入塾前向き</option><option>△あと追い継続</option><option>×見送り</option>
         </select>
       </div>
       <div style="flex:1">
@@ -2737,7 +2737,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <!-- 入退塾管理タブ（来塾管理：問合せ→体験→面談→入塾/見送り） -->
     <div id="smcontent-prospects" style="display:none">
       <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">
-        入塾前の見込み（来塾）を管理します。状態は <b>問合せ → 体験 → 面談 → 入塾 / 見送り</b> の順に進みます。
+        入塾前の見込み（来塾）を管理します。カード下部のチップで状態をタップ切替：<b>問合せ → ☆入塾書待ち → ◎入塾濃厚 → ○入塾前向き → △あと追い継続 → ×見送り</b>。前向き（☆◎○）なら「✅入塾させる」で生徒登録へ。
       </div>
       <div style="display:flex;gap:8px;margin-bottom:12px">
         <button onclick="openProspectModal()" style="flex:1;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋ 見込みを追加</button>
@@ -3338,7 +3338,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702x';
+const APP_VERSION = '20260702y';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -17047,14 +17047,38 @@ async function refreshTeamTaskBadge() {
 }
 // ============================================================
 // 入退塾管理（prospects）：来塾管理の見込み一覧
-// ステータス：問合せ → 体験 → 面談 → 入塾 / 見送り
+// ステータス（6段階トグル）：問合せ / ☆入塾書待ち / ◎入塾濃厚 / ○入塾前向き / △あと追い継続 / ×見送り
 // ※ step1 は読み取り専用（一覧表示＋ステータス絞り込み）。登録・編集は次バージョン。
 // 要 SQL: create_prospects.sql
 // ============================================================
-const PROSPECT_STATUSES = ['問合せ', '体験', '面談', '入塾', '見送り'];
+// 入来塾管理：6段階ステータス（トグル式）。
+// 問合せ → ☆入塾書待ち → ◎入塾濃厚 → ○入塾前向き → △あと追い継続 → ×見送り
+// （順序は左＝確度高。タップで直接その状態に切り替える）
+const PROSPECT_STATUSES = ['問合せ', '☆入塾書待ち', '◎入塾濃厚', '○入塾前向き', '△あと追い継続', '×見送り'];
 const PROSPECT_STATUS_COLOR = {
-  '問合せ': '#2980B9', '体験': '#8E44AD', '面談': '#E67E22', '入塾': '#27AE60', '見送り': '#7F8C8D'
+  '問合せ': '#2980B9',      // 青
+  '☆入塾書待ち': '#E1A100', // 黄
+  '◎入塾濃厚': '#C0392B',   // 赤
+  '○入塾前向き': '#27AE60', // 緑
+  '△あと追い継続': '#8E44AD', // 紫
+  '×見送り': '#7F8C8D'      // グレー
 };
+// 入塾に前向き（生徒登録へ進めてよい）とみなす状態
+const PROSPECT_POSITIVE = ['☆入塾書待ち', '◎入塾濃厚', '○入塾前向き'];
+
+// 旧ステータス（問合せ/体験/面談/入塾/見送り）→ 新6段階への読み替え。
+// 体験→○入塾前向き、面談→◎入塾濃厚、入塾→☆入塾書待ち、見送り→×見送り、問合せ→問合せ。
+function normalizeProspectStatus(st) {
+  const map = {
+    '体験': '○入塾前向き',
+    '面談': '◎入塾濃厚',
+    '入塾': '☆入塾書待ち',
+    '見送り': '×見送り'
+  };
+  if (!st) return '問合せ';
+  if (PROSPECT_STATUSES.indexOf(st) !== -1) return st; // 既に新形式
+  return map[st] || '問合せ';
+}
 let prospectsCache = [];      // 取得済みの見込みデータ
 let prospectsFilter = 'all';  // 表示中のステータス絞り込み（'all' or 各ステータス）
 let prospectsSearch = '';     // 検索キーワード（氏名・学校・連絡先・きっかけ・メモを対象）
@@ -17081,7 +17105,10 @@ async function initProspects() {
   if (area) area.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
   try {
     const rows = await sbGet('prospects', 'select=*&order=updated_at.desc');
-    prospectsCache = rows || [];
+    prospectsCache = (rows || []).map(p => {
+      p._status = normalizeProspectStatus(p.status); // 表示・判定は正規化済みの _status を使う
+      return p;
+    });
     renderProspectsStatusTabs();
     renderProspectsAssigneeFilter();
     renderProspectsList();
@@ -17100,7 +17127,7 @@ async function initProspects() {
 function renderProspectsStatusTabs() {
   const bar = document.getElementById('prospects-status-tabs');
   if (!bar) return;
-  const countOf = (st) => st === 'all' ? prospectsCache.length : prospectsCache.filter(p => (p.status || '問合せ') === st).length;
+  const countOf = (st) => st === 'all' ? prospectsCache.length : prospectsCache.filter(p => (p._status || normalizeProspectStatus(p.status)) === st).length;
   const mkBtn = (val, label, color) => {
     const on = prospectsFilter === val;
     const n = countOf(val);
@@ -17159,7 +17186,7 @@ function renderProspectsList() {
   const area = document.getElementById('prospects-list-area');
   if (!area) return;
   let list = prospectsCache.slice();
-  if (prospectsFilter !== 'all') list = list.filter(p => (p.status || '問合せ') === prospectsFilter);
+  if (prospectsFilter !== 'all') list = list.filter(p => (p._status || normalizeProspectStatus(p.status)) === prospectsFilter);
   // 担当別フィルタ
   if (prospectsAssignee === '__none__') list = list.filter(p => !p.assigned_to);
   else if (prospectsAssignee !== 'all') list = list.filter(p => p.assigned_to === prospectsAssignee);
@@ -17193,40 +17220,114 @@ function renderProspectsList() {
     return;
   }
   area.innerHTML = list.map(p => {
-    const st = p.status || '問合せ';
+    const st = p._status || normalizeProspectStatus(p.status);
     const color = PROSPECT_STATUS_COLOR[st] || '#7F8C8D';
     const meta = [p.school, p.grade].filter(Boolean).join(' ');
     const nextLabel = p.next_date ? ('次回 ' + String(p.next_date).slice(5).replace('-', '/')) : '';
     const sourceLabel = p.source ? ('きっかけ：' + escapeHtml(p.source)) : '';
     const assigneeLabel = p.assigned_to ? ('担当：' + escapeHtml(prospectsStaffMap[p.assigned_to] || p.assigned_to)) : '';
-    // 次の段階（問合せ→体験→面談）。面談まで来たら入塾/見送りボタンを出す。
-    const idx = PROSPECT_STATUSES.indexOf(st);
-    let advanceBtns = '';
-    if (st === '問合せ' || st === '体験') {
-      const next = PROSPECT_STATUSES[idx + 1];
-      advanceBtns = '<button onclick="advanceProspect(&quot;' + p.id + '&quot;,&quot;' + next + '&quot;)" style="flex:1;padding:7px;background:' + (PROSPECT_STATUS_COLOR[next] || '#888') + ';border:none;border-radius:6px;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + next + 'へ進む ›</button>';
-    } else if (st === '面談') {
-      advanceBtns = '<button onclick="advanceProspect(&quot;' + p.id + '&quot;,&quot;入塾&quot;)" style="flex:1;padding:7px;background:#27AE60;border:none;border-radius:6px;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">✅ 入塾</button>'
-        + '<button onclick="advanceProspect(&quot;' + p.id + '&quot;,&quot;見送り&quot;)" style="flex:1;padding:7px;background:#fff;border:1.5px solid #B0B0B0;border-radius:6px;color:#666;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">見送り</button>';
-    }
-    return '<div style="border:1px solid var(--border);border-radius:8px;background:#fff;padding:11px 12px;margin-bottom:8px">'
-      + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px">'
-      +   '<span style="font-size:14px;font-weight:700;color:var(--text)">' + escapeHtml(p.name || '(無名)') + '</span>'
-      +   '<span style="font-size:11px;font-weight:700;color:#fff;background:' + color + ';padding:2px 10px;border-radius:12px">' + escapeHtml(st) + '</span>'
+    const logs = parseProspectLogs(p);
+    const lastLog = logs.length ? logs[logs.length - 1] : null;
+    // 6段階トグルチップ（タップで即その状態へ）
+    const chips = PROSPECT_STATUSES.map(function(s){
+      var on = (s === st); var c = PROSPECT_STATUS_COLOR[s];
+      return '<button onclick="setProspectStatus(&quot;' + p.id + '&quot;,&quot;' + s + '&quot;)" '
+        + 'style="flex:0 0 auto;padding:5px 9px;border-radius:12px;font-size:10.5px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;'
+        + 'border:1.5px solid ' + c + ';background:' + (on ? c : '#fff') + ';color:' + (on ? '#fff' : c) + '">' + escapeHtml(s) + '</button>';
+    }).join('');
+    const enrollBtn = (PROSPECT_POSITIVE.indexOf(st) !== -1)
+      ? '<button onclick="advanceProspect(&quot;' + p.id + '&quot;,&quot;__enroll__&quot;)" style="flex:1;padding:8px;background:#27AE60;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">✅ 入塾させる（生徒登録）</button>'
+      : '';
+    return '<div style="border:1px solid var(--border);border-left:4px solid ' + color + ';border-radius:8px;background:#fff;padding:12px 13px;margin-bottom:8px">'
+      + '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:3px">'
+      +   '<div>'
+      +     '<div style="font-size:18px;font-weight:700;color:var(--text);line-height:1.2">' + escapeHtml(p.name || '(無名)') + '</div>'
+      +     (meta ? '<div style="font-size:13px;font-weight:700;color:var(--orange-d);margin-top:2px">' + escapeHtml(meta) + '</div>' : '')
+      +   '</div>'
+      +   '<span style="flex:0 0 auto;font-size:11px;font-weight:700;color:#fff;background:' + color + ';padding:3px 11px;border-radius:12px;white-space:nowrap">' + escapeHtml(st) + '</span>'
       + '</div>'
-      + (meta ? '<div style="font-size:12px;color:var(--muted);margin-bottom:2px">' + escapeHtml(meta) + '</div>' : '')
-      + (p.contact ? '<div style="font-size:12px;color:var(--text)">📞 ' + escapeHtml(p.contact) + '</div>' : '')
+      + (p.contact ? '<div style="font-size:12px;color:var(--text);margin-top:3px">📞 ' + escapeHtml(p.contact) + '</div>' : '')
       + (sourceLabel ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + sourceLabel + '</div>' : '')
       + (assigneeLabel ? '<div style="font-size:11px;color:#2D5FA6;margin-top:2px">👤 ' + assigneeLabel + '</div>' : '')
       + (nextLabel ? '<div style="font-size:11px;color:#C0392B;font-weight:700;margin-top:3px">📅 ' + nextLabel + '</div>' : '')
-      + (st === '見送り' && p.decline_reason ? '<div style="font-size:11px;color:#943126;background:#FDECEA;border-radius:6px;padding:5px 7px;margin-top:5px;white-space:pre-wrap">見送り理由：' + escapeHtml(p.decline_reason) + '</div>' : '')
+      + (st === '×見送り' && p.decline_reason ? '<div style="font-size:11px;color:#943126;background:#FDECEA;border-radius:6px;padding:5px 7px;margin-top:5px;white-space:pre-wrap">見送り理由：' + escapeHtml(p.decline_reason) + '</div>' : '')
       + (p.note ? '<div style="font-size:11px;color:var(--muted);margin-top:4px;white-space:pre-wrap">' + escapeHtml(p.note) + '</div>' : '')
-      + '<div style="display:flex;gap:6px;margin-top:9px">'
-      +   advanceBtns
-      +   '<button onclick="openProspectModal(&quot;' + p.id + '&quot;)" style="flex:0 0 auto;padding:7px 12px;background:#fff;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">✏️ 編集</button>'
+      + (lastLog ? '<div style="font-size:11px;color:#555;background:#F5F3EE;border-radius:6px;padding:5px 8px;margin-top:5px">📝 ' + escapeHtml(lastLog.date) + '　' + escapeHtml(lastLog.text) + (logs.length > 1 ? '　<span style="color:var(--muted)">ほか' + (logs.length - 1) + '件</span>' : '') + '</div>' : '')
+      + '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:9px">' + chips + '</div>'
+      + '<div style="display:flex;gap:6px;margin-top:8px">'
+      +   enrollBtn
+      +   '<button onclick="openProspectLog(&quot;' + p.id + '&quot;)" style="flex:0 0 auto;padding:8px 11px;background:#fff;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📝 あと追い記録</button>'
+      +   '<button onclick="openProspectModal(&quot;' + p.id + '&quot;)" style="flex:0 0 auto;padding:8px 11px;background:#fff;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">✏️ 編集</button>'
       + '</div>'
       + '</div>';
   }).join('');
+}
+
+// あと追い記録の保存先：prospects.logs（JSON文字列）優先、無ければ note に蓄積。返り値は古い順 [{date,text}]
+function parseProspectLogs(p) {
+  const out = [];
+  if (p.logs) {
+    try {
+      const arr = JSON.parse(p.logs);
+      if (Array.isArray(arr)) { arr.forEach(function(e){ if (e && e.text) out.push({ date: e.date || '', text: e.text }); }); return out; }
+    } catch (e) {}
+  }
+  if (p.note) {
+    p.note.split('\n').forEach(function(line){
+      var m = line.match(/^【あと追い\s*([0-9\/]+)】\s*(.*)$/);
+      if (m) out.push({ date: m[1], text: m[2] });
+    });
+  }
+  return out;
+}
+
+// あと追い記録モーダル：日付つきメモを1件追記
+async function openProspectLog(id) {
+  const p = prospectsCache.find(function(x){ return x.id === id; });
+  if (!p) return;
+  const logs = parseProspectLogs(p);
+  const history = logs.length ? logs.slice().reverse().map(function(e){ return '・' + e.date + '　' + e.text; }).join('\n') : '（まだ記録はありません）';
+  const text = (prompt('📝 あと追い記録を追記\n\n【これまでの記録】\n' + history + '\n\n──────────\n今回の記録を入力（例：LINEで返信待ち／保護者と電話済み）：', '') || '').trim();
+  if (!text) return;
+  const today = getTodayJST();
+  const mmdd = today.slice(5).replace('-', '/');
+  logs.push({ date: mmdd, text: text });
+  showLoading('記録中...');
+  const nowIso = new Date().toISOString();
+  try {
+    await sbPatch('prospects', 'id=eq.' + id, { logs: JSON.stringify(logs), updated_at: nowIso });
+    p.logs = JSON.stringify(logs);
+    hideLoading(); showToast('あと追い記録を追加しました', 'success'); renderProspectsList();
+  } catch (e) {
+    try {
+      let note = p.note || '';
+      note = (note ? note + '\n' : '') + '【あと追い ' + mmdd + '】' + text;
+      await sbPatch('prospects', 'id=eq.' + id, { note: note, updated_at: nowIso });
+      p.note = note;
+      hideLoading(); showToast('あと追い記録を追加しました（メモ欄に記録）', 'success'); renderProspectsList();
+    } catch (e2) {
+      hideLoading(); showToast('記録に失敗しました: ' + (e2.message || e2), 'error');
+    }
+  }
+}
+
+// ステータスを直接切り替える（トグルチップ）。×見送りのみ確認。
+async function setProspectStatus(id, newStatus) {
+  const p = prospectsCache.find(function(x){ return x.id === id; });
+  if (!p) return;
+  const cur = p._status || normalizeProspectStatus(p.status);
+  if (cur === newStatus) return;
+  if (newStatus === '×見送り') { if (!confirm((p.name || '') + 'さんを「×見送り」にしますか？')) return; }
+  showLoading('更新中...');
+  const patch = { status: newStatus, updated_at: new Date().toISOString() };
+  try {
+    await sbPatch('prospects', 'id=eq.' + id, patch);
+    p.status = newStatus; p._status = newStatus;
+    hideLoading(); showToast('「' + newStatus + '」に変更しました', 'success');
+    renderProspectsStatusTabs(); renderProspectsList();
+  } catch (e) {
+    hideLoading(); showToast('更新に失敗しました: ' + (e.message || e), 'error');
+  }
 }
 
 
@@ -19236,7 +19337,7 @@ async function openProspectModal(id) {
     setVal('prospect-grade', p.grade);
     setVal('prospect-contact', p.contact);
     setVal('prospect-source', p.source);
-    setVal('prospect-status', p.status || '問合せ');
+    setVal('prospect-status', normalizeProspectStatus(p.status));
     setVal('prospect-next-date', p.next_date);
     setVal('prospect-assigned', p.assigned_to);
     setVal('prospect-note', p.note);
@@ -19344,50 +19445,14 @@ async function checkProspectDuplicate(name, school) {
 // ステータスを1段進める／変更する。'入塾'は生徒登録へ引き継ぎ、'見送り'は理由入力つき。
 async function advanceProspect(id, newStatus) {
   const p = prospectsCache.find(x => x.id === id);
-  const label = p ? p.name : '';
-  // 「入塾」は生徒登録フォームへ引き継ぐ（プリフィル）。登録完了時に prospects を紐付け＆ステータス更新。
-  if (newStatus === '入塾') {
+  // 「✅入塾させる」→ 生徒登録フォームへ引き継ぐ（プリフィル）。登録完了時に prospects を紐付け＆状態更新。
+  if (newStatus === '__enroll__' || newStatus === '入塾') {
     enrollingProspectId = id;
     openStudentAddModal({ name: p && p.name, school: p && p.school, grade: p && p.grade });
     return;
   }
-  if (newStatus === '見送り') {
-    if (!confirm(label + 'さんを「見送り」に変更します。よろしいですか？')) return;
-    const reason = (prompt('見送り理由を入力してください（任意・後から編集可）', (p && p.decline_reason) || '') || '').trim();
-    showLoading('更新中...');
-    const patchBase = { status: newStatus, updated_at: new Date().toISOString() };
-    try {
-      // decline_reason 列がある場合はそこへ保存
-      await sbPatch('prospects', 'id=eq.' + id, Object.assign({}, patchBase, { decline_reason: reason }));
-      hideLoading();
-      showToast('「見送り」に変更しました', 'success');
-      await initProspects();
-    } catch (e) {
-      // decline_reason 列が未作成（HTTP400）→ note へ追記してフォールバック
-      try {
-        let note = (p && p.note) ? p.note : '';
-        if (reason) note = (note ? note + '\n' : '') + '【見送り理由】' + reason;
-        await sbPatch('prospects', 'id=eq.' + id, Object.assign({}, patchBase, { note: note }));
-        hideLoading();
-        showToast('「見送り」に変更しました（理由はメモへ記録。decline_reason列を作ると分離保存できます）', 'success');
-        await initProspects();
-      } catch (e2) {
-        hideLoading();
-        showToast('更新に失敗しました：' + (e2.message || e2), 'error');
-      }
-    }
-    return;
-  }
-  showLoading('更新中...');
-  try {
-    await sbPatch('prospects', 'id=eq.' + id, { status: newStatus, updated_at: new Date().toISOString() });
-    hideLoading();
-    showToast('「' + newStatus + '」に変更しました', 'success');
-    await initProspects();
-  } catch (e) {
-    hideLoading();
-    showToast('更新に失敗しました：' + (e.message || e), 'error');
-  }
+  // それ以外（後方互換）：状態を直接更新
+  await setProspectStatus(id, normalizeProspectStatus(newStatus));
 }
 
 
@@ -19457,7 +19522,7 @@ async function saveNewStudent() {
         // 登録した生徒のIDを pin で再取得（sbPost は return=minimal でIDを返さない。メールは扱わなくなったため student_no=pin で特定）
         const rows = await sbGet('students', 'student_no=eq.' + encodeURIComponent(pin) + '&select=id&order=created_at.desc&limit=1');
         const sid = (rows && rows[0]) ? rows[0].id : null;
-        const patch = { status: '入塾', updated_at: new Date().toISOString() };
+        const patch = { status: '☆入塾書待ち', updated_at: new Date().toISOString() };
         if (sid) patch.enrolled_student_id = sid;
         await sbPatch('prospects', 'id=eq.' + enrollingProspectId, patch);
         linkedFromProspect = true;
