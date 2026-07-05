@@ -445,6 +445,16 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <input class="form-input-sm" type="text" id="prospect-source" placeholder="紹介・チラシ・Web・通りがかり など" style="margin-bottom:8px">
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <div style="flex:1">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:3px">来塾日</div>
+        <input class="form-input-sm" type="date" id="prospect-visit-date" style="width:100%">
+      </div>
+      <div style="flex:1">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:3px">問合せ日</div>
+        <input class="form-input-sm" type="date" id="prospect-inquiry-date" style="width:100%">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <div style="flex:1">
         <div style="font-size:11px;color:var(--muted);margin-bottom:3px">状態</div>
         <select class="form-input-sm" id="prospect-status" style="width:100%">
           <option>問合せ</option><option>☆入塾書待ち</option><option>◎入塾濃厚</option><option>○入塾前向き</option><option>△あと追い継続</option><option>×見送り</option>
@@ -2743,6 +2753,13 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <button onclick="openProspectModal()" style="flex:1;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋ 見込みを追加</button>
         <button onclick="enrollingProspectId=null;openStudentAddModal()" style="flex:1;padding:11px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:var(--radius-sm);color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋ 新規生徒を登録</button>
       </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">
+        <div style="display:inline-flex;border:1.5px solid var(--border);border-radius:8px;overflow:hidden">
+          <button id="prospects-view-card" onclick="setProspectsView('card')" style="padding:7px 14px;border:none;background:var(--orange);color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🗂 カード</button>
+          <button id="prospects-view-table" onclick="setProspectsView('table')" style="padding:7px 14px;border:none;background:#fff;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📊 一覧</button>
+        </div>
+        <button id="prospects-manage-fields" onclick="openProspectFieldsModal()" style="display:none;padding:7px 12px;border:1px solid var(--border);border-radius:8px;background:#fff;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">⚙️ チェック項目を編集</button>
+      </div>
       <div id="prospects-status-tabs" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
       <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
         <input type="text" id="prospects-search" oninput="setProspectsSearch(this.value)" placeholder="🔍 氏名・学校・連絡先で検索" style="flex:1 1 180px;min-width:0;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'Noto Sans JP',sans-serif">
@@ -2755,6 +2772,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <select id="prospects-assignee" onchange="setProspectsAssignee(this.value)" style="flex:0 0 auto;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'Noto Sans JP',sans-serif;background:#fff;cursor:pointer"><option value="all">担当：すべて</option></select>
       </div>
       <div id="prospects-list-area"></div>
+      <div id="prospects-table-area" style="display:none;overflow-x:auto"></div>
     </div>
 
     <!-- 成績一斉依頼タブ（学校×学年で絞って一斉に成績入力を依頼） -->
@@ -3338,7 +3356,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702y';
+const APP_VERSION = '20260702z';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -17086,6 +17104,8 @@ let prospectsSort = 'updated_desc'; // 並び替え：updated_desc / name_asc / 
 let prospectsAssignee = 'all'; // 担当別フィルタ（'all' / '__none__'(未設定) / staff_id）
 let prospectsStaffMap = {};   // staff_id → 氏名（カード表示・フィルタ用）
 let enrollingProspectId = null; // 「入塾」引き継ぎ中の見込みID（生徒登録完了時に紐付け）
+let prospectsView = 'card';   // 'card' | 'table'
+let prospectFields = [];      // カスタムチェック項目の定義 [{id,label,field_type,sort_order,is_active}]
 
 async function initProspects() {
   prospectsFilter = 'all';
@@ -17100,6 +17120,10 @@ async function initProspects() {
     prospectsStaffMap = {};
     staff.forEach(s => { if (s.staff_id) prospectsStaffMap[s.staff_id] = s.name; });
   } catch (e) { prospectsStaffMap = {}; }
+  // カスタムチェック項目の定義を読み込む（テーブル未作成なら空でフォールバック）
+  try {
+    prospectFields = await sbGet('prospect_fields', 'is_active=eq.true&order=sort_order,created_at&select=*') || [];
+  } catch (e) { prospectFields = []; }
   renderProspectsStatusTabs();
   const area = document.getElementById('prospects-list-area');
   if (area) area.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
@@ -17111,7 +17135,7 @@ async function initProspects() {
     });
     renderProspectsStatusTabs();
     renderProspectsAssigneeFilter();
-    renderProspectsList();
+    applyProspectsView();
   } catch (e) {
     // テーブル未作成（HTTP 400）などのフォールバック
     prospectsCache = [];
@@ -17144,17 +17168,17 @@ function renderProspectsStatusTabs() {
 function setProspectsFilter(val) {
   prospectsFilter = val;
   renderProspectsStatusTabs();
-  renderProspectsList();
+  applyProspectsView();
 }
 
 function setProspectsSearch(val) {
   prospectsSearch = (val || '').trim().toLowerCase();
-  renderProspectsList();
+  applyProspectsView();
 }
 
 function setProspectsSort(val) {
   prospectsSort = val || 'updated_desc';
-  renderProspectsList();
+  applyProspectsView();
 }
 
 // prospects に登場する担当 staff_id から担当別フィルタの選択肢を作る
@@ -17179,7 +17203,7 @@ function renderProspectsAssigneeFilter() {
 
 function setProspectsAssignee(val) {
   prospectsAssignee = val || 'all';
-  renderProspectsList();
+  applyProspectsView();
 }
 
 function renderProspectsList() {
@@ -17324,10 +17348,288 @@ async function setProspectStatus(id, newStatus) {
     await sbPatch('prospects', 'id=eq.' + id, patch);
     p.status = newStatus; p._status = newStatus;
     hideLoading(); showToast('「' + newStatus + '」に変更しました', 'success');
-    renderProspectsStatusTabs(); renderProspectsList();
+    renderProspectsStatusTabs(); applyProspectsView();
   } catch (e) {
     hideLoading(); showToast('更新に失敗しました: ' + (e.message || e), 'error');
   }
+}
+
+// ============================================================
+// 入来塾管理：一覧（テーブル）表示 ＋ 自由に増やせるチェック項目
+//   ・感触（＝ステータス）を左端にボタンで配置
+//   ・来塾日／問合せ日／学校／学年 の固定列 ＋ prospect_fields のカスタム列
+//   ・カスタム列は check（済/未）または text（自由記入）。⚙️で追加・改名・並替・削除
+//   ・カスタム値は prospects.custom_values(JSON) に {field_id: 値} で保存
+//   ・検索は氏名・学校・全カスタム値を対象（件数が増えても絞れる）
+// ============================================================
+function setProspectsView(v) {
+  prospectsView = (v === 'table') ? 'table' : 'card';
+  // トグルの見た目
+  const cb = document.getElementById('prospects-view-card');
+  const tb = document.getElementById('prospects-view-table');
+  const mf = document.getElementById('prospects-manage-fields');
+  if (cb && tb) {
+    const on = 'var(--orange)', off = '#fff', onc = '#fff', offc = 'var(--muted)';
+    cb.style.background = prospectsView === 'card' ? on : off;
+    cb.style.color = prospectsView === 'card' ? onc : offc;
+    tb.style.background = prospectsView === 'table' ? on : off;
+    tb.style.color = prospectsView === 'table' ? onc : offc;
+  }
+  if (mf) mf.style.display = prospectsView === 'table' ? 'inline-block' : 'none';
+  applyProspectsView();
+}
+
+function applyProspectsView() {
+  const cardArea = document.getElementById('prospects-list-area');
+  const tableArea = document.getElementById('prospects-table-area');
+  const mf = document.getElementById('prospects-manage-fields');
+  if (mf) mf.style.display = prospectsView === 'table' ? 'inline-block' : 'none';
+  if (prospectsView === 'table') {
+    if (cardArea) cardArea.style.display = 'none';
+    if (tableArea) tableArea.style.display = 'block';
+    renderProspectsTable();
+  } else {
+    if (tableArea) tableArea.style.display = 'none';
+    if (cardArea) cardArea.style.display = 'block';
+    renderProspectsList();
+  }
+}
+
+// 現在のフィルタ・検索・並び替えを適用した見込みリストを返す（カード/テーブル共通）
+function getFilteredProspects() {
+  let list = prospectsCache.slice();
+  if (prospectsFilter !== 'all') list = list.filter(p => (p._status || normalizeProspectStatus(p.status)) === prospectsFilter);
+  if (prospectsAssignee === '__none__') list = list.filter(p => !p.assigned_to);
+  else if (prospectsAssignee !== 'all') list = list.filter(p => p.assigned_to === prospectsAssignee);
+  if (prospectsSearch) {
+    list = list.filter(p => {
+      let cv = '';
+      try { cv = Object.values(p.custom_values || {}).filter(Boolean).join(' '); } catch (e) {}
+      const hay = [p.name, p.school, p.grade, p.contact, p.source, p.note, p.assigned_to, cv].filter(Boolean).join(' ').toLowerCase();
+      return hay.indexOf(prospectsSearch) !== -1;
+    });
+  }
+  const cmpStr = (a, b) => String(a || '').localeCompare(String(b || ''), 'ja');
+  if (prospectsSort === 'name_asc') list.sort((a, b) => cmpStr(a.name, b.name));
+  else if (prospectsSort === 'next_asc') list.sort((a, b) => cmpStr(a.next_date || '9999-99-99', b.next_date || '9999-99-99'));
+  else if (prospectsSort === 'created_desc') list.sort((a, b) => cmpStr(b.created_at, a.created_at));
+  else list.sort((a, b) => cmpStr(b.updated_at, a.updated_at));
+  return list;
+}
+
+function fmtProspectDate(d) {
+  if (!d) return '';
+  const s = String(d);
+  return s.length >= 10 ? (s.slice(5, 7) + '/' + s.slice(8, 10)) : s;
+}
+
+function renderProspectsTable() {
+  const area = document.getElementById('prospects-table-area');
+  if (!area) return;
+  const list = getFilteredProspects();
+  if (!list.length) {
+    area.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">'
+      + (prospectsSearch ? '「' + escapeHtml(prospectsSearch) + '」に一致する見込みはいません。' : 'まだ見込みの登録がありません。') + '</div>';
+    return;
+  }
+  const th = (t, w) => '<th style="position:sticky;top:0;background:#F3EFE6;border:1px solid var(--border);padding:6px 8px;font-size:11px;font-weight:700;color:var(--text);white-space:nowrap' + (w ? ';min-width:' + w : '') + '">' + t + '</th>';
+  let head = '<tr>' + th('感触', '140px') + th('氏名', '90px') + th('来塾日') + th('問合せ日') + th('学校') + th('学年');
+  prospectFields.forEach(f => { head += th(escapeHtml(f.label), '90px'); });
+  head += th('', '48px') + '</tr>';
+
+  const rows = list.map(p => {
+    const st = p._status || normalizeProspectStatus(p.status);
+    const color = PROSPECT_STATUS_COLOR[st] || '#7F8C8D';
+    const td = (inner, extra) => '<td style="border:1px solid var(--border);padding:5px 7px;font-size:12px;' + (extra || '') + '">' + inner + '</td>';
+    // 感触：クリックで次の状態へ循環するボタン（＝1タップで感触を回せる）
+    const feel = '<button onclick="cycleProspectStatus(&quot;' + p.id + '&quot;)" style="width:100%;padding:5px 6px;border:1.5px solid ' + color + ';background:' + color + ';color:#fff;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">' + escapeHtml(st) + '</button>';
+    let row = '<tr>'
+      + td(feel)
+      + td('<span style="font-weight:700;cursor:pointer;color:var(--text)" onclick="openProspectModal(&quot;' + p.id + '&quot;)">' + escapeHtml(p.name || '(無名)') + '</span>')
+      + td('<span style="cursor:pointer" onclick="editProspectDate(&quot;' + p.id + '&quot;,&quot;visit_date&quot;)">' + (p.visit_date ? fmtProspectDate(p.visit_date) : '<span style=\'color:var(--muted)\'>＋</span>') + '</span>')
+      + td('<span style="cursor:pointer" onclick="editProspectDate(&quot;' + p.id + '&quot;,&quot;inquiry_date&quot;)">' + (p.inquiry_date ? fmtProspectDate(p.inquiry_date) : '<span style=\'color:var(--muted)\'>＋</span>') + '</span>')
+      + td(escapeHtml(p.school || ''))
+      + td(escapeHtml(p.grade || ''));
+    // カスタム列
+    prospectFields.forEach(f => {
+      const val = (p.custom_values && p.custom_values[f.id] != null) ? p.custom_values[f.id] : '';
+      if (f.field_type === 'check') {
+        const done = (val === true || val === '済' || val === 1 || val === '1');
+        row += td('<button onclick="toggleProspectCheck(&quot;' + p.id + '&quot;,&quot;' + f.id + '&quot;)" style="width:100%;padding:4px;border:1px solid ' + (done ? '#5A9E3C' : 'var(--border)') + ';background:' + (done ? '#E5F3DC' : '#fff') + ';color:' + (done ? '#2E6B12' : 'var(--muted)') + ';border-radius:5px;font-size:12px;cursor:pointer;font-weight:700">' + (done ? '済' : '−') + '</button>', 'text-align:center');
+      } else {
+        row += td('<span style="cursor:pointer;display:block;min-height:16px" onclick="editProspectText(&quot;' + p.id + '&quot;,&quot;' + f.id + '&quot;)">' + (val ? escapeHtml(String(val)) : '<span style=\'color:var(--muted)\'>＋</span>') + '</span>');
+      }
+    });
+    row += td('<button onclick="openProspectModal(&quot;' + p.id + '&quot;)" style="border:none;background:none;cursor:pointer;font-size:13px">✏️</button>', 'text-align:center');
+    row += '</tr>';
+    return row;
+  }).join('');
+
+  area.innerHTML = '<table style="border-collapse:collapse;width:100%;background:#fff">'
+    + '<thead>' + head + '</thead><tbody>' + rows + '</tbody></table>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:6px">感触のボタンをタップで状態が進みます。日付・テキスト欄はタップで編集。列は「⚙️ チェック項目を編集」で増やせます。</div>';
+}
+
+// 感触ボタン：タップで次の状態へ循環（問合せ→☆→◎→○→△→×→問合せ…）
+async function cycleProspectStatus(id) {
+  const p = prospectsCache.find(x => x.id === id);
+  if (!p) return;
+  const cur = p._status || normalizeProspectStatus(p.status);
+  const idx = PROSPECT_STATUSES.indexOf(cur);
+  const next = PROSPECT_STATUSES[(idx + 1) % PROSPECT_STATUSES.length];
+  await setProspectStatus(id, next);
+}
+
+// 日付セルの編集（来塾日/問合せ日）
+async function editProspectDate(id, col) {
+  const p = prospectsCache.find(x => x.id === id);
+  if (!p) return;
+  const cur = p[col] ? String(p[col]).slice(0, 10) : '';
+  const val = (prompt((col === 'visit_date' ? '来塾日' : '問合せ日') + 'を入力（YYYY-MM-DD、空で消去）', cur) || '').trim();
+  if (val === cur) return;
+  const patch = {}; patch[col] = val || null; patch.updated_at = new Date().toISOString();
+  showLoading('保存中...');
+  try {
+    await sbPatch('prospects', 'id=eq.' + id, patch);
+    p[col] = val || null;
+    hideLoading(); renderProspectsTable();
+  } catch (e) { hideLoading(); showToast('保存に失敗: ' + (e.message || e), 'error'); }
+}
+
+// カスタム check セルのトグル（済 ⇄ 未）
+async function toggleProspectCheck(id, fieldId) {
+  const p = prospectsCache.find(x => x.id === id);
+  if (!p) return;
+  const cv = Object.assign({}, p.custom_values || {});
+  const done = (cv[fieldId] === true || cv[fieldId] === '済' || cv[fieldId] === 1 || cv[fieldId] === '1');
+  cv[fieldId] = done ? false : true;
+  showLoading('保存中...');
+  try {
+    await sbPatch('prospects', 'id=eq.' + id, { custom_values: cv, updated_at: new Date().toISOString() });
+    p.custom_values = cv;
+    hideLoading(); renderProspectsTable();
+  } catch (e) { hideLoading(); showToast('保存に失敗（add_prospect_table_view.sql 未実行の可能性）: ' + (e.message || e), 'error'); }
+}
+
+// カスタム text セルの編集
+async function editProspectText(id, fieldId) {
+  const p = prospectsCache.find(x => x.id === id);
+  if (!p) return;
+  const cv = Object.assign({}, p.custom_values || {});
+  const cur = cv[fieldId] != null ? String(cv[fieldId]) : '';
+  const val = (prompt('内容を入力（空で消去）', cur) || '').trim();
+  if (val === cur) return;
+  if (val) cv[fieldId] = val; else delete cv[fieldId];
+  showLoading('保存中...');
+  try {
+    await sbPatch('prospects', 'id=eq.' + id, { custom_values: cv, updated_at: new Date().toISOString() });
+    p.custom_values = cv;
+    hideLoading(); renderProspectsTable();
+  } catch (e) { hideLoading(); showToast('保存に失敗（add_prospect_table_view.sql 未実行の可能性）: ' + (e.message || e), 'error'); }
+}
+
+// ---- チェック項目（列）の管理モーダル ----
+function openProspectFieldsModal() {
+  let m = document.getElementById('prospect-fields-modal');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = 'prospect-fields-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px';
+    m.innerHTML = '<div style="background:#fff;border-radius:12px;max-width:440px;width:100%;max-height:85vh;overflow:auto;padding:18px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+      +   '<div style="font-size:15px;font-weight:700;color:var(--orange-d)">⚙️ チェック項目を編集</div>'
+      +   '<button onclick="document.getElementById(\'prospect-fields-modal\').remove()" style="border:none;background:none;font-size:18px;cursor:pointer;color:var(--muted)">✕</button>'
+      + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.5">一覧の右側に増やす列を管理します。「チェック式」は済/未の2状態、「テキスト式」は自由記入。↑↓で並び替え、🗑で削除。</div>'
+      + '<div id="prospect-fields-list"></div>'
+      + '<div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">'
+      +   '<div style="display:flex;gap:6px;margin-bottom:6px">'
+      +     '<input id="new-field-label" type="text" placeholder="項目名（例：保護者面談）" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:\'Noto Sans JP\',sans-serif">'
+      +     '<select id="new-field-type" style="flex:0 0 auto;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:#fff"><option value="check">チェック式</option><option value="text">テキスト式</option></select>'
+      +   '</div>'
+      +   '<button onclick="addProspectField()" style="width:100%;padding:9px;background:var(--orange);border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">＋ 項目を追加</button>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(m);
+  }
+  m.style.display = 'flex';
+  renderProspectFieldsList();
+}
+
+function renderProspectFieldsList() {
+  const el = document.getElementById('prospect-fields-list');
+  if (!el) return;
+  if (!prospectFields.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">まだ項目がありません。下から追加してください。</div>';
+    return;
+  }
+  el.innerHTML = prospectFields.map((f, i) => {
+    return '<div style="display:flex;align-items:center;gap:6px;padding:7px 0;border-bottom:1px solid var(--border)">'
+      + '<span style="flex:1;font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(f.label) + '</span>'
+      + '<span style="font-size:10px;color:#fff;background:' + (f.field_type === 'check' ? '#5A9E3C' : '#2D5FA6') + ';padding:2px 7px;border-radius:8px">' + (f.field_type === 'check' ? 'チェック' : 'テキスト') + '</span>'
+      + '<button onclick="moveProspectField(' + i + ',-1)" style="border:1px solid var(--border);background:#fff;border-radius:5px;padding:3px 7px;cursor:pointer;font-size:11px"' + (i === 0 ? ' disabled' : '') + '>↑</button>'
+      + '<button onclick="moveProspectField(' + i + ',1)" style="border:1px solid var(--border);background:#fff;border-radius:5px;padding:3px 7px;cursor:pointer;font-size:11px"' + (i === prospectFields.length - 1 ? ' disabled' : '') + '>↓</button>'
+      + '<button onclick="renameProspectField(&quot;' + f.id + '&quot;)" style="border:1px solid var(--border);background:#fff;border-radius:5px;padding:3px 7px;cursor:pointer;font-size:11px">✏️</button>'
+      + '<button onclick="deleteProspectField(&quot;' + f.id + '&quot;)" style="border:1px solid #E8B4B4;background:#fff;border-radius:5px;padding:3px 7px;cursor:pointer;font-size:11px">🗑</button>'
+      + '</div>';
+  }).join('');
+}
+
+async function addProspectField() {
+  const label = (document.getElementById('new-field-label').value || '').trim();
+  const type = document.getElementById('new-field-type').value || 'check';
+  if (!label) { showToast('項目名を入力してください', 'info'); return; }
+  const sort = prospectFields.length ? Math.max.apply(null, prospectFields.map(f => f.sort_order || 0)) + 1 : 0;
+  showLoading('追加中...');
+  try {
+    const rows = await sbPostReturn('prospect_fields', { label: label, field_type: type, sort_order: sort, is_active: true });
+    const created = (rows && rows[0]) ? rows[0] : { id: (rows && rows.id), label: label, field_type: type, sort_order: sort, is_active: true };
+    prospectFields.push(created);
+    document.getElementById('new-field-label').value = '';
+    hideLoading();
+    renderProspectFieldsList();
+    renderProspectsTable();
+  } catch (e) { hideLoading(); showToast('追加に失敗（add_prospect_table_view.sql 未実行の可能性）: ' + (e.message || e), 'error'); }
+}
+
+async function renameProspectField(id) {
+  const f = prospectFields.find(x => x.id === id);
+  if (!f) return;
+  const label = (prompt('項目名を変更', f.label) || '').trim();
+  if (!label || label === f.label) return;
+  showLoading('更新中...');
+  try {
+    await sbPatch('prospect_fields', 'id=eq.' + id, { label: label, updated_at: new Date().toISOString() });
+    f.label = label;
+    hideLoading(); renderProspectFieldsList(); renderProspectsTable();
+  } catch (e) { hideLoading(); showToast('更新に失敗: ' + (e.message || e), 'error'); }
+}
+
+async function moveProspectField(i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= prospectFields.length) return;
+  const a = prospectFields[i], b = prospectFields[j];
+  const ao = a.sort_order, bo = b.sort_order;
+  showLoading('並び替え中...');
+  try {
+    await sbPatch('prospect_fields', 'id=eq.' + a.id, { sort_order: bo });
+    await sbPatch('prospect_fields', 'id=eq.' + b.id, { sort_order: ao });
+    a.sort_order = bo; b.sort_order = ao;
+    prospectFields.sort((x, y) => (x.sort_order || 0) - (y.sort_order || 0));
+    hideLoading(); renderProspectFieldsList(); renderProspectsTable();
+  } catch (e) { hideLoading(); showToast('並び替えに失敗: ' + (e.message || e), 'error'); }
+}
+
+async function deleteProspectField(id) {
+  const f = prospectFields.find(x => x.id === id);
+  if (!f) return;
+  if (!confirm('「' + f.label + '」を削除しますか？（各見込みに入力済みの値は残りますが、列は非表示になります）')) return;
+  showLoading('削除中...');
+  try {
+    await sbPatch('prospect_fields', 'id=eq.' + id, { is_active: false, updated_at: new Date().toISOString() });
+    prospectFields = prospectFields.filter(x => x.id !== id);
+    hideLoading(); renderProspectFieldsList(); renderProspectsTable();
+  } catch (e) { hideLoading(); showToast('削除に失敗: ' + (e.message || e), 'error'); }
 }
 
 
@@ -19339,6 +19641,8 @@ async function openProspectModal(id) {
     setVal('prospect-source', p.source);
     setVal('prospect-status', normalizeProspectStatus(p.status));
     setVal('prospect-next-date', p.next_date);
+    setVal('prospect-visit-date', p.visit_date ? String(p.visit_date).slice(0,10) : '');
+    setVal('prospect-inquiry-date', p.inquiry_date ? String(p.inquiry_date).slice(0,10) : '');
     setVal('prospect-assigned', p.assigned_to);
     setVal('prospect-note', p.note);
   } else {
@@ -19351,6 +19655,8 @@ async function openProspectModal(id) {
     setVal('prospect-source', '');
     setVal('prospect-status', '問合せ');
     setVal('prospect-next-date', '');
+    setVal('prospect-visit-date', '');
+    setVal('prospect-inquiry-date', '');
     setVal('prospect-assigned', currentStaff ? (currentStaff.staff_id || '') : '');
     setVal('prospect-note', '');
   }
@@ -19380,6 +19686,8 @@ async function saveProspect() {
     source: v('prospect-source') || null,
     status: v('prospect-status') || '問合せ',
     next_date: v('prospect-next-date') || null,
+    visit_date: v('prospect-visit-date') || null,
+    inquiry_date: v('prospect-inquiry-date') || null,
     assigned_to: v('prospect-assigned') || null,
     note: v('prospect-note') || null,
     updated_at: new Date().toISOString()
@@ -19392,12 +19700,20 @@ async function saveProspect() {
   }
 
   showLoading('保存中...');
+  const saveWith = async (b) => {
+    if (id) { await sbPatch('prospects', 'id=eq.' + id, b); }
+    else { b.created_by = currentStaff ? (currentStaff.staff_id || null) : null; await sbPost('prospects', b); }
+  };
   try {
-    if (id) {
-      await sbPatch('prospects', 'id=eq.' + id, body);
-    } else {
-      body.created_by = currentStaff ? (currentStaff.staff_id || null) : null;
-      await sbPost('prospects', body);
+    try {
+      await saveWith(body);
+    } catch (e1) {
+      // visit_date/inquiry_date 列が未作成（add_prospect_table_view.sql 未実行）なら外して再試行
+      const msg = String(e1 && e1.message || e1);
+      if (/visit_date|inquiry_date|column|schema|PGRST|400/i.test(msg)) {
+        const b2 = Object.assign({}, body); delete b2.visit_date; delete b2.inquiry_date;
+        await saveWith(b2);
+      } else { throw e1; }
     }
     hideLoading();
     closeProspectModal();
