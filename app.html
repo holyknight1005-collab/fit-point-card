@@ -2913,7 +2913,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <div style="flex:1">
           <div class="form-label" style="font-size:11px">学年</div>
           <select class="form-select" id="bexam-grade" style="width:100%;font-size:13px" onchange="bexamCountTargets()">
-            <option value="">すべて</option><option value="1">1年</option><option value="2">2年</option><option value="3">3年</option>
+            <option value="">すべて</option><option value="1年">1年</option><option value="2年">2年</option><option value="3年">3年</option>
           </select>
         </div>
       </div>
@@ -3456,7 +3456,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702al';
+const APP_VERSION = '20260702an';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -19103,7 +19103,7 @@ async function bexamCountTargets() {
   try {
     const rows = await sbGet('students', q) || [];
     _bexamStudents = rows;
-    if (label) label.textContent = '対象：' + rows.length + '名' + (rows.length ? '（' + school + (grade ? ' ' + grade + '年' : '') + '）' : '');
+    if (label) label.textContent = '対象：' + rows.length + '名' + (rows.length ? '（' + school + (grade ? ' ' + grade : '') + '）' : '');
   } catch (e) {
     if (label) label.textContent = '対象の取得に失敗しました';
   }
@@ -24048,6 +24048,42 @@ function rosterKey(name, school) {
   return normalizeName(name) + '|' + normalizeSchool(school);
 }
 
+// 名簿由来の仮アカウント判定：メールが roster+...@fit.local（名簿生登録で自動生成）
+// かつ ポイントが0（本人がまだ使っていない）。二重登録の除外候補。
+function isPlaceholderAccount(s) {
+  const email = String(s.email || '').toLowerCase();
+  const isRosterMail = /^roster\+.*@fit\.local$/.test(email);
+  const zeroPts = (!s.points || s.points === 0);
+  return isRosterMail && zeroPts;
+}
+
+// 仮アカウント（重複）をワンタップ除外：is_active=false + inactive_reason='除外'
+// 除外後は照合対象から外れ、警告が消える。念のため受講データの有無を確認して警告。
+async function excludeDuplicateStudent(studentId, name) {
+  // 受講講座が紐づいていないか確認（0ptでも念のため）
+  let enrollCount = 0;
+  try {
+    const enr = await sbGet('class_enrollments', 'student_id=eq.' + studentId + '&select=id') || [];
+    enrollCount = enr.length;
+  } catch (e) { enrollCount = 0; }
+  let msg = '「' + name + '」を集計から除外します（名簿由来の仮アカウントとして論理削除）。\n本人の実アカウント（ポイントや受講がある方）は残ります。';
+  if (enrollCount > 0) {
+    msg += '\n\n⚠️ この仮アカウントには受講講座が ' + enrollCount + ' 件ひも付いています。除外するとそれらも集計から外れます。続けますか？';
+  }
+  if (!confirm(msg)) return;
+  showLoading('除外中...');
+  try {
+    await sbPatch('students', 'id=eq.' + studentId, { is_active: false, inactive_at: new Date().toISOString(), inactive_reason: '除外' });
+    hideLoading();
+    showToast('仮アカウントを除外しました', 'success');
+    // 名簿照合を再読込して警告を更新
+    if (typeof loadRosterList === 'function') loadRosterList();
+  } catch (e) {
+    hideLoading();
+    showToast('除外に失敗しました：' + (e && e.message ? e.message : e), 'error');
+  }
+}
+
 // 受講科目文字列の正規化：区切り（, 、 ・ 　 / 空白）を半角カンマに統一し、重複除去
 function normalizeSubjectsStr(s) {
   s = String(s == null ? '' : s).trim();
@@ -24282,7 +24318,7 @@ async function loadRosterList() {
   }
 
   // アプリ生(students)を全件取得（退塾含む）。生徒分析の母数判定は退塾も含めた全員で照合するため。
-  const students = await sbGet('students', 'select=id,name,school,grade,roster_only,is_active,inactive_reason') || [];
+  const students = await sbGet('students', 'select=id,name,school,grade,roster_only,is_active,inactive_reason,email,points') || [];
   const appKeys = new Set();      // 氏名＋学校
   const appNameOnly = new Set();  // 氏名のみ
   const stuByKey = new Map();
@@ -24326,7 +24362,13 @@ async function loadRosterList() {
   Object.values(nameGroups).forEach(g => {
     if (g.length < 2) return;
     const schools = [...new Set(g.map(s => (s.school || '（未設定）')))];
-    dupWarnings.push({ name: g[0].name, count: g.length, schools: schools });
+    // 各メンバーに仮アカ判定を付ける（roster+...@fit.local かつ points が実質0）
+    const members = g.map(s => ({
+      id: s.id, name: s.name, school: s.school || '', grade: s.grade || '',
+      email: s.email || '', points: s.points || 0,
+      isPlaceholder: isPlaceholderAccount(s)
+    }));
+    dupWarnings.push({ name: g[0].name, count: g.length, schools: schools, members: members });
   });
 
   rcRosterCache = roster;
@@ -24457,30 +24499,48 @@ function renderRosterList() {
     return !rosterKeySet.has(rosterKey(s.name, s.school)) && !rosterNameSet.has(normalizeName(s.name));
   });
   if (onlyInApp.length) {
-    let list = onlyInApp.slice(0, 30).map(s =>
-      '<div style="padding:3px 0;border-bottom:1px dashed #C9D8E8">'
-      + '<b>' + escapeHtml(s.name) + '</b>　' + escapeHtml(s.school || '学校未設定') + '／' + escapeHtml(s.grade || '学年未設定')
-      + '</div>'
-    ).join('');
+    let list = onlyInApp.slice(0, 30).map(s => {
+      const ph = isPlaceholderAccount(s);
+      const tag = ph ? '<span style="font-size:10px;color:#A0631E;background:#FBEFDD;border-radius:8px;padding:1px 6px;margin-left:6px">仮アカ・' + (s.points || 0) + 'pt</span>' : '';
+      const btn = ph ? '<button onclick="excludeDuplicateStudent(&quot;' + s.id + '&quot;,&quot;' + escapeHtml(s.name).replace(/"/g,'') + '&quot;)" style="margin-left:auto;padding:3px 9px;background:#fff;border:1px solid #C0392B;border-radius:6px;color:#C0392B;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🚫 仮アカを除外</button>' : '';
+      return '<div style="padding:4px 0;border-bottom:1px dashed #C9D8E8;display:flex;align-items:center;gap:6px">'
+        + '<b>' + escapeHtml(s.name) + '</b>　<span style="color:var(--muted);font-size:11px">' + escapeHtml(s.school || '学校未設定') + '／' + escapeHtml(s.grade || '学年未設定') + '</span>' + tag + btn
+        + '</div>';
+    }).join('');
     if (onlyInApp.length > 30) list += '<div style="padding:3px 0;color:#1A4D80">…ほか ' + (onlyInApp.length - 30) + ' 名</div>';
     html += '<div style="background:#F0F6FC;border:1px solid #B8D2EC;border-radius:8px;padding:10px;margin-bottom:14px">'
       + '<div style="font-size:12px;font-weight:700;color:#1A4D80;margin-bottom:6px">📲 アプリ生だが名簿に無い子（' + escapeHtml(scopeLabel) + '・' + onlyInApp.length + '名）</div>'
-      + '<div style="font-size:10px;color:#3A5A7E;line-height:1.6;margin-bottom:8px">この子たちは人数表（アプリ生）には数えられますが、名簿（CSV）に該当行が見つかりません。名簿側に未登録か、氏名の表記ゆれの可能性があります。人数表と名簿照合の差の原因になります。</div>'
+      + '<div style="font-size:10px;color:#3A5A7E;line-height:1.6;margin-bottom:8px">この子たちは人数表（アプリ生）には数えられますが、名簿（CSV）に該当行が見つかりません。名簿側に未登録か、氏名の表記ゆれの可能性があります。名簿由来の仮アカ（roster+…@fit.local・0pt）が本人と重複しているときは「🚫 仮アカを除外」で消せます。</div>'
       + '<div style="font-size:12px;color:var(--text)">' + list + '</div>'
       + '</div>';
   }
 
   // students 側の同姓同名警告（全体・フィルタ非依存）
   if (dupWarnings.length) {
-    let warnList = dupWarnings.slice(0, 15).map(w =>
-      '<div style="padding:3px 0;border-bottom:1px dashed #E8C4C4">'
-      + '<b>' + escapeHtml(w.name) + '</b>（' + w.count + '名）　学校：' + escapeHtml(w.schools.join(' / '))
-      + '</div>'
-    ).join('');
+    let warnList = dupWarnings.slice(0, 15).map(w => {
+      let inner = '<div style="padding:5px 0;border-bottom:1px dashed #E8C4C4">'
+        + '<b>' + escapeHtml(w.name) + '</b>（' + w.count + '名）　学校：' + escapeHtml(w.schools.join(' / '));
+      // メンバー内訳＋仮アカ除外ボタン
+      if (w.members && w.members.length) {
+        inner += '<div style="margin-top:4px;display:flex;flex-direction:column;gap:4px">';
+        w.members.forEach(m => {
+          const tag = m.isPlaceholder
+            ? '<span style="font-size:10px;color:#A0631E;background:#FBEFDD;border-radius:8px;padding:1px 6px">仮アカ・' + m.points + 'pt</span>'
+            : '<span style="font-size:10px;color:#2E6B12;background:#E5F3DC;border-radius:8px;padding:1px 6px">' + m.points + 'pt</span>';
+          inner += '<div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted)">'
+            + '<span>' + escapeHtml(m.school || '学校未設定') + '</span>' + tag
+            + (m.isPlaceholder ? '<button onclick="excludeDuplicateStudent(&quot;' + m.id + '&quot;,&quot;' + escapeHtml(m.name).replace(/"/g,'') + '&quot;)" style="margin-left:auto;padding:3px 9px;background:#fff;border:1px solid #C0392B;border-radius:6px;color:#C0392B;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🚫 仮アカを除外</button>' : '')
+            + '</div>';
+        });
+        inner += '</div>';
+      }
+      inner += '</div>';
+      return inner;
+    }).join('');
     if (dupWarnings.length > 15) warnList += '<div style="padding:3px 0;color:#A04040">…ほか ' + (dupWarnings.length - 15) + ' 名</div>';
     html += '<div style="background:#FDF6F0;border:1px solid #E8C9A0;border-radius:8px;padding:10px;margin-bottom:14px">'
       + '<div style="font-size:12px;font-weight:700;color:#A0631E;margin-bottom:6px">⚠️ アプリ生に同姓同名があります（' + dupWarnings.length + '名・全校）</div>'
-      + '<div style="font-size:10px;color:#8A6A3E;line-height:1.6;margin-bottom:8px">同姓同名がいると、名簿照合が「氏名のみ一致」で誤ってスキップ／重複する場合があります。学校違いは転校・表記ゆれの可能性も。人数ずれの原因になりやすい箇所です。</div>'
+      + '<div style="font-size:10px;color:#8A6A3E;line-height:1.6;margin-bottom:8px">同姓同名がいると、名簿照合が「氏名のみ一致」で誤ってスキップ／重複する場合があります。学校違いは転校・表記ゆれの可能性も。名簿由来の仮アカ（roster+…@fit.local・0pt）が本人と重複しているときは「🚫 仮アカを除外」で消せます。</div>'
       + '<div style="font-size:12px;color:var(--text)">' + warnList + '</div>'
       + '</div>';
   }
