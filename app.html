@@ -3456,7 +3456,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702an';
+const APP_VERSION = '20260702ao';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -19563,9 +19563,50 @@ async function karteLoadInterviews(sid) {
       histHtml = '<div style="font-size:11px;color:var(--muted);margin-top:8px">面談記録はまだありません。</div>';
     }
 
-    el.innerHTML = karteSecShell('🗣 面談', form + goalsHtml + histHtml);
+    // --- この生徒へのノルマ設定（check_items に target_student_id 固定で作成） ---
+    let normaHtml = '';
+    try {
+      const myNormas = await sbGet('check_items', 'target_student_id=eq.' + sid + '&is_active=eq.true&order=created_at.desc&select=id,title,type,points,schedule_mode,weekdays') || [];
+      let listHtml = '';
+      if (myNormas.length) {
+        listHtml = '<div style="font-size:11px;font-weight:700;color:var(--muted);margin:6px 0 4px">この生徒だけの設定中ノルマ（' + myNormas.length + '件）</div>' +
+          myNormas.map(n => {
+            const typeLbl = n.type === 'reading' ? '🗣音読' : n.type === 'review' ? '📖復習' : '📌ノルマ';
+            const sched = n.schedule_mode === 'weekdays' ? '曜日指定' : '毎日';
+            const pt = (n.points > 0) ? ' ' + n.points + 'pt' : '';
+            return '<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">' +
+              '<div style="flex:1;min-width:0;font-size:12px;color:var(--text)">' + typeLbl + ' ' + escapeHtml(n.title || '') + '<span style="font-size:10px;color:var(--muted);margin-left:4px">' + sched + pt + '</span></div>' +
+              '<button onclick="karteDeleteNorma(\'' + n.id + '\')" style="background:none;border:none;color:#C75050;font-size:10px;cursor:pointer;padding:0 4px">削除</button>' +
+            '</div>';
+          }).join('');
+      }
+      normaHtml =
+        '<div style="background:var(--surface2);border-radius:10px;padding:12px;margin-bottom:14px">' +
+          '<div style="font-size:12px;font-weight:800;color:var(--orange-d);margin-bottom:4px">📌 この生徒へのノルマ</div>' +
+          '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">毎日の習慣タスクです。生徒ホームの「今日のノルマ」に出て、チェックするとポイントが付きます（この生徒だけに配信）。</div>' +
+          '<input class="form-input-sm" type="text" id="karte-norma-title" placeholder="例：毎日 英単語30個 ／ 数学の課題を1ページ" style="width:100%;margin-bottom:8px">' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">' +
+            '<div style="flex:1 1 46%;min-width:0"><div style="font-size:10px;color:var(--muted);margin-bottom:2px">出すタイミング</div>' +
+              '<select class="form-input-sm" id="karte-norma-schedule" style="width:100%"><option value="daily">毎日</option><option value="weekdays">曜日を指定</option></select></div>' +
+            '<div style="flex:1 1 46%;min-width:0"><div style="font-size:10px;color:var(--muted);margin-bottom:2px">獲得ポイント</div>' +
+              '<input class="form-input-sm" type="number" id="karte-norma-pts" value="1" min="0" style="width:100%"></div>' +
+          '</div>' +
+          '<div id="karte-norma-weekdays" style="display:none;margin-bottom:8px">' +
+            '<div style="font-size:10px;color:var(--muted);margin-bottom:4px">曜日（複数選択可）</div>' +
+            '<div id="karte-norma-weekday-btns" style="display:flex;gap:6px;flex-wrap:wrap"></div>' +
+          '</div>' +
+          '<button onclick="karteSaveNorma()" style="width:100%;padding:10px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:6px">📌 ノルマを設定する</button>' +
+          listHtml +
+        '</div>';
+    } catch (e) { normaHtml = ''; }
+
+    el.innerHTML = karteSecShell('🗣 面談', form + goalsHtml + normaHtml + histHtml);
     // 目標入力欄を1行用意
     karteAddGoalRow();
+    // ノルマの曜日ボタン初期化＋タイミング切替
+    karteInitNormaWeekdays();
+    const kns = document.getElementById('karte-norma-schedule');
+    if (kns) kns.onchange = function(){ const w = document.getElementById('karte-norma-weekdays'); if (w) w.style.display = (this.value === 'weekdays') ? 'block' : 'none'; };
   } catch (e) {
     el.style.display = 'none';
     el.innerHTML = '';
@@ -19577,13 +19618,79 @@ function karteAddGoalRow(title, due, pts) {
   const wrap = document.getElementById('karte-iv-goals');
   if (!wrap) return;
   const row = document.createElement('div');
-  row.style.cssText = 'display:flex;gap:5px;align-items:center';
+  row.style.cssText = 'display:flex;gap:5px;align-items:center;flex-wrap:wrap';
   row.innerHTML =
-    '<input class="form-input-sm kiv-goal-title" type="text" placeholder="例：英単語を毎日30個" value="' + escapeHtml(title || '') + '" style="flex:2;min-width:0">' +
-    '<input class="form-input-sm kiv-goal-due" type="date" value="' + (due || '') + '" title="締切" style="flex:1;min-width:0">' +
-    '<input class="form-input-sm kiv-goal-pts" type="number" min="0" value="' + (pts != null ? pts : 0) + '" title="達成pt" style="width:48px;text-align:center">' +
+    '<input class="form-input-sm kiv-goal-title" type="text" placeholder="' + goalPlaceholderExample() + '" value="' + escapeHtml(title || '') + '" style="flex:2 1 140px;min-width:0">' +
+    '<input class="form-input-sm kiv-goal-due" type="date" value="' + (due || '') + '" title="締切" style="flex:1 1 110px;min-width:0">' +
+    '<div style="display:flex;align-items:center;gap:3px;background:#FFF6E9;border:1px solid #F0C98A;border-radius:8px;padding:2px 8px;flex:0 0 auto">' +
+    '<span style="font-size:11px;color:var(--orange-d);font-weight:700">達成</span>' +
+    '<input class="form-input-sm kiv-goal-pts" type="number" min="0" value="' + (pts != null ? pts : 0) + '" title="達成時にもらえるポイント" style="width:40px;text-align:center;border:none;background:transparent;padding:2px 0;font-weight:700">' +
+    '<span style="font-size:11px;color:var(--orange-d);font-weight:700">pt</span></div>' +
     '<button type="button" onclick="this.parentNode.remove()" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;line-height:1;padding:0 2px;flex:0 0 auto">×</button>';
   wrap.appendChild(row);
+}
+
+// カルテのノルマ設定：曜日ボタン
+let karteNormaWeekdays = new Set();
+function karteInitNormaWeekdays() {
+  karteNormaWeekdays = new Set();
+  const box = document.getElementById('karte-norma-weekday-btns');
+  if (!box) return;
+  karteRenderNormaWeekdays();
+}
+function karteRenderNormaWeekdays() {
+  const box = document.getElementById('karte-norma-weekday-btns');
+  if (!box) return;
+  const labels = ['日','月','火','水','木','金','土'];
+  box.innerHTML = labels.map((lab, i) => {
+    const on = karteNormaWeekdays.has(i);
+    return '<button type="button" onclick="karteToggleNormaWeekday(' + i + ')" style="width:38px;height:38px;border-radius:8px;border:1.5px solid ' + (on?'var(--orange)':'var(--border)') + ';background:' + (on?'var(--orange)':'white') + ';color:' + (on?'white':'var(--muted)') + ';font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + lab + '</button>';
+  }).join('');
+}
+function karteToggleNormaWeekday(i) {
+  if (karteNormaWeekdays.has(i)) karteNormaWeekdays.delete(i);
+  else karteNormaWeekdays.add(i);
+  karteRenderNormaWeekdays();
+}
+// カルテのノルマ保存：この生徒(target_student_id)固定で check_items に作成
+async function karteSaveNorma() {
+  if (!karteStudentId) { showToast('生徒が選択されていません', 'error'); return; }
+  const title = (document.getElementById('karte-norma-title').value || '').trim();
+  if (!title) { showToast('ノルマの内容を入力してください', 'error'); return; }
+  const schedule = document.getElementById('karte-norma-schedule').value;
+  const pts = parseInt(document.getElementById('karte-norma-pts').value) || 0;
+  const data = {
+    title: title, type: 'norma', schedule_mode: schedule, points: pts, is_active: true,
+    target_student_id: karteStudentId, target_school: null, target_grade: null,
+    weekdays: null, specific_dates: null
+  };
+  if (schedule === 'weekdays') {
+    if (karteNormaWeekdays.size === 0) { showToast('曜日を選択してください', 'error'); return; }
+    data.weekdays = Array.from(karteNormaWeekdays).sort();
+  }
+  showLoading('設定中...');
+  try {
+    await sbPost('check_items', data);
+    hideLoading();
+    showToast('📌 ノルマを設定しました', 'success');
+    karteLoadInterviews(karteStudentId);  // 再描画して一覧更新
+  } catch (e) {
+    hideLoading();
+    showToast('設定に失敗しました：' + (e && e.message ? e.message : e), 'error');
+  }
+}
+async function karteDeleteNorma(id) {
+  if (!confirm('このノルマを解除しますか？（今後この生徒に出なくなります）')) return;
+  showLoading('解除中...');
+  try {
+    await sbPatch('check_items', 'id=eq.' + id, { is_active: false });
+    hideLoading();
+    showToast('ノルマを解除しました', 'success');
+    karteLoadInterviews(karteStudentId);
+  } catch (e) {
+    hideLoading();
+    showToast('解除に失敗しました', 'error');
+  }
 }
 
 // 面談ハブ：保存
@@ -19992,15 +20099,33 @@ async function openInterviewModal(studentId) {
 }
 
 // 目標入力行を1つ追加（内容＋達成pt）
+// 目標入力欄のプレースホルダー例文（具体的な目標の書き方を促す）
+function goalPlaceholderExample() {
+  const examples = [
+    '例：数学のテストで平均点以上',
+    '例：夏休みの課題を2周する',
+    '例：英単語帳を1冊やりきる',
+    '例：次の模試で偏差値を5上げる',
+    '例：毎週の小テストで満点を取る',
+    '例：苦手な化学を克服する'
+  ];
+  return examples[Math.floor(Math.random() * examples.length)];
+}
+
 function addGoalInputRow(title, pts) {
   const wrap = document.getElementById('interview-goal-inputs');
   if (!wrap) return;
   const row = document.createElement('div');
   row.style.cssText = 'display:flex;gap:6px;align-items:center';
+  const ph = 'GOAL_PLACEHOLDER';
   row.innerHTML =
-    '<input class="form-input-sm iv-goal-title" type="text" placeholder="例：英単語を毎日30個" value="' + escapeHtml(title || '') + '" style="flex:1">' +
-    '<input class="form-input-sm iv-goal-pts" type="number" min="0" value="' + (pts != null ? pts : 0) + '" style="width:56px;text-align:center" title="達成pt">' +
+    '<input class="form-input-sm iv-goal-title" type="text" placeholder="' + ph + '" value="' + escapeHtml(title || '') + '" style="flex:1">' +
+    '<div style="display:flex;align-items:center;gap:3px;background:#FFF6E9;border:1px solid #F0C98A;border-radius:8px;padding:2px 8px;flex:0 0 auto">' +
+    '<span style="font-size:11px;color:var(--orange-d);font-weight:700">達成</span>' +
+    '<input class="form-input-sm iv-goal-pts" type="number" min="0" value="' + (pts != null ? pts : 0) + '" style="width:42px;text-align:center;border:none;background:transparent;padding:2px 0;font-weight:700" title="達成時にもらえるポイント">' +
+    '<span style="font-size:11px;color:var(--orange-d);font-weight:700">pt</span></div>' +
     '<button type="button" onclick="this.parentNode.remove()" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;line-height:1;padding:0 4px">×</button>';
+  row.querySelector('.iv-goal-title').placeholder = goalPlaceholderExample();
   wrap.appendChild(row);
 }
 
