@@ -538,6 +538,35 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
   </div>
 </div>
 
+<!-- 名簿台帳 行編集モーダル -->
+<div id="rosteredit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:673;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:420px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div style="font-size:16px;font-weight:700;color:var(--orange-d)">✏️ 名簿を編集</div>
+      <button onclick="closeRosterEdit()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <input type="hidden" id="re-id">
+    <div style="font-size:11px;color:var(--muted);margin-bottom:3px">氏名</div>
+    <input class="form-input-sm" type="text" id="re-name" style="width:100%;margin-bottom:10px">
+    <div style="font-size:11px;color:var(--muted);margin-bottom:3px">学校</div>
+    <input class="form-input-sm" type="text" id="re-school" list="re-school-list" style="width:100%;margin-bottom:10px">
+    <datalist id="re-school-list">
+      <option value="松山東"></option><option value="松山南"></option><option value="松山北"></option><option value="松山中央"></option><option value="松山西"></option><option value="愛大附属"></option><option value="済美"></option><option value="SSS"></option><option value="その他"></option>
+    </datalist>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">学年</div><input class="form-input-sm" type="text" id="re-grade" style="width:100%"></div>
+      <div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">性別</div><input class="form-input-sm" type="text" id="re-gender" style="width:100%"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">文理</div><input class="form-input-sm" type="text" id="re-course" style="width:100%"></div>
+      <div style="flex:1"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">部活</div><input class="form-input-sm" type="text" id="re-club" style="width:100%"></div>
+    </div>
+    <div id="re-match-preview" style="font-size:11px;margin-bottom:10px;padding:8px 10px;border-radius:8px;background:#F4F1EA;line-height:1.5"></div>
+    <div id="re-error" style="font-size:12px;color:#C0392B;margin-bottom:8px;display:none"></div>
+    <button onclick="saveRosterEdit()" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">保存して再判定</button>
+  </div>
+</div>
+
 <!-- 面談記録モーダル（在籍生徒の面談を1件記録） -->
 <div id="interview-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
@@ -3427,7 +3456,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702aj';
+const APP_VERSION = '20260702al';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -5394,15 +5423,17 @@ async function loadTodayTasks() {
 
     // 並行取得：自分宛の未完了ToDo / 本日の授業 / 講師名マップ /
     //           自分の担当授業の過去〜今日のセッション / 既存の class_reports
+    // 報告書タスクの起点日：この日より前の未記入セッションはカウントしない（7月本格運用の線引き）
+    const REPORT_TASK_SINCE = '2026-07-01';
     const [myTodos, todaySessions, staffList, mySessionsAll, myReportsAll] = await Promise.all([
       sbGet('staff_todos', 'to_staff_id=eq.' + currentStaff.id + '&is_done=eq.false&select=id,due_date'),
       sbGet('class_sessions', 'session_date=eq.' + today + '&select=class_master_id,period,start_time,end_time&order=period'),
       sbGet('staff', 'select=id,name'),
       myClassIds.length
-        ? sbGet('class_sessions', 'class_master_id=in.(' + myClassIds.join(',') + ')&session_date=lte.' + today + '&select=class_master_id,session_date,period&order=session_date.desc')
+        ? sbGet('class_sessions', 'class_master_id=in.(' + myClassIds.join(',') + ')&session_date=gte.' + REPORT_TASK_SINCE + '&session_date=lte.' + today + '&select=class_master_id,session_date,period&order=session_date.desc')
         : Promise.resolve([]),
       myClassIds.length
-        ? sbGet('class_reports', 'class_master_id=in.(' + myClassIds.join(',') + ')&session_date=lte.' + today + '&select=class_master_id,session_date,theme,content,student_notes')
+        ? sbGet('class_reports', 'class_master_id=in.(' + myClassIds.join(',') + ')&session_date=gte.' + REPORT_TASK_SINCE + '&session_date=lte.' + today + '&select=class_master_id,session_date,theme,content,student_notes')
         : Promise.resolve([])
     ]);
 
@@ -24230,6 +24261,8 @@ let rcRosterCache = [];      // 分類済みroster（_status/_withdrawn/_reflect
 let rcStuByKey = new Map();  // 氏名＋学校 -> student
 let rcStuAll = [];           // アプリ生（除外以外）全件：照合ニアミス検出用
 let rcDupWarnings = [];      // アプリ生の同姓同名
+let rcAppKeys = new Set();       // アプリ生の氏名＋学校キー（編集後の再判定用）
+let rcAppNameOnly = new Set();   // アプリ生の氏名のみキー（編集後の再判定用）
 let rcFilter = { school: '全校', grade: '全学年' };
 
 async function loadRosterList() {
@@ -24259,6 +24292,8 @@ async function loadRosterList() {
     appNameOnly.add(normalizeName(s.name));
     stuByKey.set(rosterKey(s.name, s.school), s);
   });
+  rcAppKeys = appKeys;
+  rcAppNameOnly = appNameOnly;
 
   const todayJST = getTodayJST();
   const rosterWithdrawn = (r) => {
@@ -24530,7 +24565,9 @@ function renderRosterList() {
       + '<td style="padding:6px 8px;color:var(--muted);white-space:nowrap">' + subjLabel + '</td>'
       + '<td style="padding:6px 6px;text-align:center">' + stateCell + '</td>'
       + '<td style="padding:6px 6px;text-align:center">' + reflectCell + '</td>'
-      + '<td style="padding:6px 6px;text-align:center">' + actionCell + '</td>'
+      + '<td style="padding:6px 6px;text-align:center;white-space:nowrap">' + actionCell
+      + ' <button onclick="openRosterEdit(\'' + r.id + '\')" style="padding:5px 7px;background:#fff;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;cursor:pointer;font-family:inherit" title="氏名・学校などを編集">✏️</button>'
+      + '</td>'
       + '</tr>';
   });
   html += '</tbody></table></div>';
@@ -24540,6 +24577,99 @@ function renderRosterList() {
 
 function saRosterMsg(text, color) {
   return '<div style="font-size:12px;color:' + color + ';padding:12px;background:#FAFAF8;border-radius:8px">' + escapeHtml(text) + '</div>';
+}
+
+// 1行の照合ステータス(_status/_reflect/_withdrawn)を、現在のアプリ生キャッシュで再判定
+function recomputeRosterRow(r) {
+  const todayJST = getTodayJST();
+  const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+  r._withdrawn = isOut ? (r.withdraw_date ? (todayJST > r.withdraw_date) : true) : false;
+  if (rcAppKeys.has(rosterKey(r.name, r.school))) r._status = 'ok';
+  else if (rcAppNameOnly.has(normalizeName(r.name))) r._status = 'name_only';
+  else r._status = 'none';
+  const isDup = rcAppKeys.has(rosterKey(r.name, r.school)) || rcAppNameOnly.has(normalizeName(r.name));
+  if (isDup) r._reflect = 'dup';
+  else if (r._withdrawn) r._reflect = 'out';
+  else r._reflect = 'count';
+  return r;
+}
+
+// 名簿編集モーダルを開く
+function openRosterEdit(rid) {
+  const r = rcRosterCache.find(x => String(x.id) === String(rid));
+  if (!r) { showToast('対象の名簿が見つかりません', 'error'); return; }
+  document.getElementById('re-id').value = r.id;
+  document.getElementById('re-name').value = r.name || '';
+  document.getElementById('re-school').value = r.school || '';
+  document.getElementById('re-grade').value = r.grade || '';
+  document.getElementById('re-gender').value = r.gender || '';
+  document.getElementById('re-course').value = r.course_track || '';
+  document.getElementById('re-club').value = r.club || '';
+  const err = document.getElementById('re-error'); if (err) { err.style.display = 'none'; err.textContent = ''; }
+  // 氏名・学校を変えるたびに照合プレビューを更新
+  const nm = document.getElementById('re-name');
+  const sc = document.getElementById('re-school');
+  nm.oninput = updateRosterMatchPreview;
+  sc.oninput = updateRosterMatchPreview;
+  updateRosterMatchPreview();
+  document.getElementById('rosteredit-modal').style.display = 'flex';
+}
+function closeRosterEdit() {
+  const m = document.getElementById('rosteredit-modal'); if (m) m.style.display = 'none';
+}
+// 入力中の氏名・学校で、アプリ生と一致するかをその場でプレビュー
+function updateRosterMatchPreview() {
+  const box = document.getElementById('re-match-preview');
+  if (!box) return;
+  const name = (document.getElementById('re-name').value || '').trim();
+  const school = (document.getElementById('re-school').value || '').trim();
+  if (!name) { box.style.background = '#F4F1EA'; box.innerHTML = '氏名を入力してください'; return; }
+  const keyFull = rosterKey(name, school);
+  const nn = normalizeName(name);
+  if (rcAppKeys.has(keyFull)) {
+    const s = rcStuByKey.get(keyFull);
+    box.style.background = '#E5F3DC';
+    box.innerHTML = '✅ アプリ生「' + escapeHtml(s ? s.name : name) + '（' + escapeHtml(s && s.school ? s.school : school) + '）」と<b>完全一致</b>します。保存すると「登録済（集計は重複除外）」になります。';
+  } else if (rcAppNameOnly.has(nn)) {
+    box.style.background = '#FBEFDD';
+    box.innerHTML = '❓ 氏名は一致しますが学校が違います。学校を正しく合わせると✅完全一致になります（別人の同姓同名ならこのままでOK）。';
+  } else {
+    box.style.background = '#FDECEC';
+    box.innerHTML = '⚠️ アプリ生に一致する子がいません。保存後は「未登録（名簿のみ）」として母数に入ります。アプリにいる子なら氏名・学校を正しく直してください。';
+  }
+}
+// 保存 → DB更新 → キャッシュ更新 → 1行再判定 → 再描画
+async function saveRosterEdit() {
+  const err = document.getElementById('re-error');
+  const showErr = (m) => { if (err) { err.textContent = m; err.style.display = 'block'; } };
+  const id = document.getElementById('re-id').value;
+  const r = rcRosterCache.find(x => String(x.id) === String(id));
+  if (!r) { showErr('対象が見つかりません'); return; }
+  const name = (document.getElementById('re-name').value || '').trim();
+  if (!name) { showErr('氏名を入力してください'); return; }
+  const patch = {
+    name: name,
+    school: (document.getElementById('re-school').value || '').trim() || null,
+    grade: (document.getElementById('re-grade').value || '').trim() || null,
+    gender: (document.getElementById('re-gender').value || '').trim() || null,
+    course_track: (document.getElementById('re-course').value || '').trim() || null,
+    club: (document.getElementById('re-club').value || '').trim() || null
+  };
+  showLoading('保存中...');
+  try {
+    await sbPatch('roster', 'id=eq.' + id, patch);
+    // ローカルキャッシュ更新
+    Object.assign(r, patch);
+    // このアプリ生キャッシュで1行を即再判定
+    recomputeRosterRow(r);
+    hideLoading();
+    closeRosterEdit();
+    renderRosterList();  // 即・再描画（バッジ・反映列が更新される）
+    showToast('保存して再判定しました', 'success');
+  } catch (e) {
+    hideLoading();
+    showErr('保存に失敗しました：' + (e && e.message ? e.message : e));
+  }
 }
 
 // ===== 未登録の名簿を一括リセット（論理削除 is_active=false）=====
