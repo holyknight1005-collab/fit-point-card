@@ -465,8 +465,10 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <input class="form-input-sm" type="date" id="prospect-next-date" style="width:100%">
       </div>
     </div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:3px">担当スタッフ</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:3px">メイン担当</div>
     <select class="form-input-sm" id="prospect-assigned" style="width:100%;margin-bottom:8px"><option value="">未設定</option></select>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:3px">サポート担当（複数可）</div>
+    <div id="prospect-support-staff" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;max-height:120px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px"></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:3px">メモ</div>
     <textarea class="form-input-sm" id="prospect-note" rows="3" placeholder="体験の感想・検討状況など" style="margin-bottom:12px;resize:vertical"></textarea>
     <div id="prospect-modal-error" style="font-size:12px;color:#C0392B;margin-bottom:8px;display:none"></div>
@@ -3356,7 +3358,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702z';
+const APP_VERSION = '20260702ab';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -17187,8 +17189,10 @@ function renderProspectsAssigneeFilter() {
   if (!sel) return;
   const ids = []; let hasNone = false;
   prospectsCache.forEach(p => {
+    const sup = parseSupportStaff(p);
     if (p.assigned_to) { if (ids.indexOf(p.assigned_to) === -1) ids.push(p.assigned_to); }
-    else hasNone = true;
+    sup.forEach(sid => { if (ids.indexOf(sid) === -1) ids.push(sid); });
+    if (!p.assigned_to && sup.length === 0) hasNone = true;
   });
   ids.sort((a, b) => String(prospectsStaffMap[a] || a).localeCompare(String(prospectsStaffMap[b] || b), 'ja'));
   let h = '<option value="all">担当：すべて</option>';
@@ -17212,8 +17216,8 @@ function renderProspectsList() {
   let list = prospectsCache.slice();
   if (prospectsFilter !== 'all') list = list.filter(p => (p._status || normalizeProspectStatus(p.status)) === prospectsFilter);
   // 担当別フィルタ
-  if (prospectsAssignee === '__none__') list = list.filter(p => !p.assigned_to);
-  else if (prospectsAssignee !== 'all') list = list.filter(p => p.assigned_to === prospectsAssignee);
+  if (prospectsAssignee === '__none__') list = list.filter(p => !p.assigned_to && parseSupportStaff(p).length === 0);
+  else if (prospectsAssignee !== 'all') list = list.filter(p => p.assigned_to === prospectsAssignee || parseSupportStaff(p).indexOf(prospectsAssignee) !== -1);
   // 検索：氏名・学校・学年・連絡先・きっかけ・メモ・担当を対象に部分一致
   if (prospectsSearch) {
     list = list.filter(p => {
@@ -17250,6 +17254,8 @@ function renderProspectsList() {
     const nextLabel = p.next_date ? ('次回 ' + String(p.next_date).slice(5).replace('-', '/')) : '';
     const sourceLabel = p.source ? ('きっかけ：' + escapeHtml(p.source)) : '';
     const assigneeLabel = p.assigned_to ? ('担当：' + escapeHtml(prospectsStaffMap[p.assigned_to] || p.assigned_to)) : '';
+    const supIds = parseSupportStaff(p);
+    const supportLabel = supIds.length ? ('サポート：' + supIds.map(id => escapeHtml(prospectsStaffMap[id] || id)).join('・')) : '';
     const logs = parseProspectLogs(p);
     const lastLog = logs.length ? logs[logs.length - 1] : null;
     // 6段階トグルチップ（タップで即その状態へ）
@@ -17273,6 +17279,7 @@ function renderProspectsList() {
       + (p.contact ? '<div style="font-size:12px;color:var(--text);margin-top:3px">📞 ' + escapeHtml(p.contact) + '</div>' : '')
       + (sourceLabel ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + sourceLabel + '</div>' : '')
       + (assigneeLabel ? '<div style="font-size:11px;color:#2D5FA6;margin-top:2px">👤 ' + assigneeLabel + '</div>' : '')
+      + (supportLabel ? '<div style="font-size:11px;color:#5B7A9E;margin-top:1px">🤝 ' + supportLabel + '</div>' : '')
       + (nextLabel ? '<div style="font-size:11px;color:#C0392B;font-weight:700;margin-top:3px">📅 ' + nextLabel + '</div>' : '')
       + (st === '×見送り' && p.decline_reason ? '<div style="font-size:11px;color:#943126;background:#FDECEA;border-radius:6px;padding:5px 7px;margin-top:5px;white-space:pre-wrap">見送り理由：' + escapeHtml(p.decline_reason) + '</div>' : '')
       + (p.note ? '<div style="font-size:11px;color:var(--muted);margin-top:4px;white-space:pre-wrap">' + escapeHtml(p.note) + '</div>' : '')
@@ -17285,6 +17292,17 @@ function renderProspectsList() {
       + '</div>'
       + '</div>';
   }).join('');
+}
+
+// サポート担当（support_staff）を staff_id 配列として取り出す。jsonb配列/文字列どちらでも対応。
+function parseSupportStaff(p) {
+  if (!p) return [];
+  const v = p.support_staff;
+  if (Array.isArray(v)) return v.filter(Boolean);
+  if (typeof v === 'string' && v.trim()) {
+    try { const a = JSON.parse(v); return Array.isArray(a) ? a.filter(Boolean) : []; } catch (e) { return []; }
+  }
+  return [];
 }
 
 // あと追い記録の保存先：prospects.logs（JSON文字列）優先、無ければ note に蓄積。返り値は古い順 [{date,text}]
@@ -17399,8 +17417,8 @@ function applyProspectsView() {
 function getFilteredProspects() {
   let list = prospectsCache.slice();
   if (prospectsFilter !== 'all') list = list.filter(p => (p._status || normalizeProspectStatus(p.status)) === prospectsFilter);
-  if (prospectsAssignee === '__none__') list = list.filter(p => !p.assigned_to);
-  else if (prospectsAssignee !== 'all') list = list.filter(p => p.assigned_to === prospectsAssignee);
+  if (prospectsAssignee === '__none__') list = list.filter(p => !p.assigned_to && parseSupportStaff(p).length === 0);
+  else if (prospectsAssignee !== 'all') list = list.filter(p => p.assigned_to === prospectsAssignee || parseSupportStaff(p).indexOf(prospectsAssignee) !== -1);
   if (prospectsSearch) {
     list = list.filter(p => {
       let cv = '';
@@ -17433,7 +17451,7 @@ function renderProspectsTable() {
     return;
   }
   const th = (t, w) => '<th style="position:sticky;top:0;background:#F3EFE6;border:1px solid var(--border);padding:6px 8px;font-size:11px;font-weight:700;color:var(--text);white-space:nowrap' + (w ? ';min-width:' + w : '') + '">' + t + '</th>';
-  let head = '<tr>' + th('感触', '140px') + th('氏名', '90px') + th('来塾日') + th('問合せ日') + th('学校') + th('学年');
+  let head = '<tr>' + th('感触', '190px') + th('氏名', '90px') + th('来塾日') + th('問合せ日') + th('学校') + th('学年') + th('担当', '110px');
   prospectFields.forEach(f => { head += th(escapeHtml(f.label), '90px'); });
   head += th('', '48px') + '</tr>';
 
@@ -17441,15 +17459,28 @@ function renderProspectsTable() {
     const st = p._status || normalizeProspectStatus(p.status);
     const color = PROSPECT_STATUS_COLOR[st] || '#7F8C8D';
     const td = (inner, extra) => '<td style="border:1px solid var(--border);padding:5px 7px;font-size:12px;' + (extra || '') + '">' + inner + '</td>';
-    // 感触：クリックで次の状態へ循環するボタン（＝1タップで感触を回せる）
-    const feel = '<button onclick="cycleProspectStatus(&quot;' + p.id + '&quot;)" style="width:100%;padding:5px 6px;border:1.5px solid ' + color + ';background:' + color + ';color:#fff;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">' + escapeHtml(st) + '</button>';
+    // 感触：6段階チップを並べて直接選択（現在の状態だけ塗り、他は枠線のみ）。コンパクト・中央揃え。
+    const feelChips = PROSPECT_STATUSES.map(function(s){
+      var on = (s === st); var c = PROSPECT_STATUS_COLOR[s];
+      return '<button onclick="setProspectStatus(&quot;' + p.id + '&quot;,&quot;' + s + '&quot;)" '
+        + 'style="padding:3px 6px;border-radius:9px;font-size:9.5px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;line-height:1.15;'
+        + 'border:1px solid ' + c + ';background:' + (on ? c : '#fff') + ';color:' + (on ? '#fff' : c) + '">' + escapeHtml(s) + '</button>';
+    }).join('');
+    const feel = '<div style="display:flex;flex-wrap:wrap;gap:3px;justify-content:center;align-items:center">' + feelChips + '</div>';
     let row = '<tr>'
-      + td(feel)
+      + td(feel, 'text-align:center')
       + td('<span style="font-weight:700;cursor:pointer;color:var(--text)" onclick="openProspectModal(&quot;' + p.id + '&quot;)">' + escapeHtml(p.name || '(無名)') + '</span>')
       + td('<span style="cursor:pointer" onclick="editProspectDate(&quot;' + p.id + '&quot;,&quot;visit_date&quot;)">' + (p.visit_date ? fmtProspectDate(p.visit_date) : '<span style=\'color:var(--muted)\'>＋</span>') + '</span>')
       + td('<span style="cursor:pointer" onclick="editProspectDate(&quot;' + p.id + '&quot;,&quot;inquiry_date&quot;)">' + (p.inquiry_date ? fmtProspectDate(p.inquiry_date) : '<span style=\'color:var(--muted)\'>＋</span>') + '</span>')
       + td(escapeHtml(p.school || ''))
-      + td(escapeHtml(p.grade || ''));
+      + td(escapeHtml(p.grade || ''))
+      + td((function(){
+          var main = p.assigned_to ? (prospectsStaffMap[p.assigned_to] || p.assigned_to) : '';
+          var sup = parseSupportStaff(p).map(function(id){ return prospectsStaffMap[id] || id; });
+          var out = main ? '<span style="font-weight:700">' + escapeHtml(main) + '</span>' : '<span style="color:var(--muted)">−</span>';
+          if (sup.length) out += '<br><span style="font-size:10px;color:#5B7A9E">🤝' + escapeHtml(sup.join('・')) + '</span>';
+          return out;
+        })(), 'font-size:11px');
     // カスタム列
     prospectFields.forEach(f => {
       const val = (p.custom_values && p.custom_values[f.id] != null) ? p.custom_values[f.id] : '';
@@ -17467,7 +17498,7 @@ function renderProspectsTable() {
 
   area.innerHTML = '<table style="border-collapse:collapse;width:100%;background:#fff">'
     + '<thead>' + head + '</thead><tbody>' + rows + '</tbody></table>'
-    + '<div style="font-size:10px;color:var(--muted);margin-top:6px">感触のボタンをタップで状態が進みます。日付・テキスト欄はタップで編集。列は「⚙️ チェック項目を編集」で増やせます。</div>';
+    + '<div style="font-size:10px;color:var(--muted);margin-top:6px">感触のチップをタップで直接その状態に。日付・テキスト欄はタップで編集。列は「⚙️ チェック項目を編集」で増やせます。</div>';
 }
 
 // 感触ボタン：タップで次の状態へ循環（問合せ→☆→◎→○→△→×→問合せ…）
@@ -19615,8 +19646,11 @@ async function openProspectModal(id) {
   const errEl = document.getElementById('prospect-modal-error');
   if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
 
-  // 担当スタッフ候補を読み込む（staff_id を value に）
+  // 担当スタッフ候補を読み込む（メイン=select、サポート=チェックボックス）
   const sel = document.getElementById('prospect-assigned');
+  const supBox = document.getElementById('prospect-support-staff');
+  const editing = id ? prospectsCache.find(x => x.id === id) : null;
+  const curSupport = editing ? parseSupportStaff(editing) : [];
   if (sel) {
     sel.innerHTML = '<option value="">未設定</option>';
     try {
@@ -19626,6 +19660,14 @@ async function openProspectModal(id) {
         o.value = s.staff_id; o.textContent = s.name + '（' + s.staff_id + '）';
         sel.appendChild(o);
       });
+      // サポート担当チェックボックス
+      if (supBox) {
+        supBox.innerHTML = staff.map(s => {
+          const on = curSupport.indexOf(s.staff_id) !== -1;
+          return '<label style="display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:4px 8px;border:1px solid ' + (on ? 'var(--orange)' : 'var(--border)') + ';border-radius:12px;cursor:pointer;background:' + (on ? '#FDF3E7' : '#fff') + '">'
+            + '<input type="checkbox" class="prospect-support-cb" value="' + escapeHtml(s.staff_id) + '"' + (on ? ' checked' : '') + ' style="margin:0"> ' + escapeHtml(s.name) + '</label>';
+        }).join('');
+      }
     } catch (e) { /* 取得失敗でも未設定で続行 */ }
   }
 
@@ -19689,6 +19731,8 @@ async function saveProspect() {
     visit_date: v('prospect-visit-date') || null,
     inquiry_date: v('prospect-inquiry-date') || null,
     assigned_to: v('prospect-assigned') || null,
+    support_staff: Array.prototype.slice.call(document.querySelectorAll('.prospect-support-cb'))
+      .filter(cb => cb.checked).map(cb => cb.value),
     note: v('prospect-note') || null,
     updated_at: new Date().toISOString()
   };
@@ -19708,10 +19752,10 @@ async function saveProspect() {
     try {
       await saveWith(body);
     } catch (e1) {
-      // visit_date/inquiry_date 列が未作成（add_prospect_table_view.sql 未実行）なら外して再試行
+      // 新カラム（visit_date/inquiry_date/support_staff）が未作成なら外して再試行
       const msg = String(e1 && e1.message || e1);
-      if (/visit_date|inquiry_date|column|schema|PGRST|400/i.test(msg)) {
-        const b2 = Object.assign({}, body); delete b2.visit_date; delete b2.inquiry_date;
+      if (/visit_date|inquiry_date|support_staff|column|schema|PGRST|400/i.test(msg)) {
+        const b2 = Object.assign({}, body); delete b2.visit_date; delete b2.inquiry_date; delete b2.support_staff;
         await saveWith(b2);
       } else { throw e1; }
     }
