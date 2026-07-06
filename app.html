@@ -580,8 +580,11 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <input class="form-input-sm" type="date" id="interview-date" style="width:100%;margin-bottom:8px">
     <div style="font-size:11px;color:var(--muted);margin-bottom:3px">担当スタッフ</div>
     <select class="form-input-sm" id="interview-interviewer" style="width:100%;margin-bottom:8px"><option value="">未設定</option></select>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:3px">メモ</div>
-    <textarea class="form-input-sm" id="interview-note" rows="3" placeholder="面談の内容・要望など" style="margin-bottom:12px;resize:vertical"></textarea>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:3px">📝 スタッフメモ（内部用・生徒/保護者には出ません）</div>
+    <textarea class="form-input-sm" id="interview-note" rows="3" placeholder="面談の内容・要望・所感など（内部記録）" style="margin-bottom:8px;resize:vertical"></textarea>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:3px">💬 生徒に共有するメモ（生徒アプリ「面談で話したこと」に表示）</div>
+    <textarea class="form-input-sm" id="interview-snote" rows="3" placeholder="生徒に向けて残す言葉・約束したことなど" style="margin-bottom:6px;resize:vertical"></textarea>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text);margin-bottom:12px;cursor:pointer"><input type="checkbox" id="interview-parent" style="width:16px;height:16px;cursor:pointer"><span>👪 保護者向け印刷に載せる</span></label>
     <!-- 面談で決めた目標（生徒に共有・達成報告→承認） -->
     <div style="font-size:11px;color:var(--muted);margin-bottom:3px;border-top:1px solid var(--border);padding-top:10px">🎯 今回決めた目標（生徒に共有されます）</div>
     <div id="interview-goal-inputs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px"></div>
@@ -1748,6 +1751,12 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <div id="detail-summary" class="history-summary"></div>
         <div id="detail-list" class="history-list"></div>
       </div>
+    </div>
+
+    <!-- 面談で話したこと（生徒共有メモ） -->
+    <div id="student-interview-shared" style="display:none">
+      <div class="section-title">🗣 面談で話したこと</div>
+      <div id="student-interview-shared-list" class="card-box" style="padding:12px"></div>
     </div>
 
     <!-- 勉強記録セクション -->
@@ -3456,7 +3465,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702ap';
+const APP_VERSION = '20260702aq';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -4560,6 +4569,7 @@ function initStudentScreen() {
   loadUnifiedCalendar();
   loadStudentAnnouncements();
   loadStudentDashboard();
+  loadStudentInterviewShared();
   myAttPeriod = 'month';
   loadMyAttendance();
   const today = getTodayJSTString();
@@ -8506,6 +8516,27 @@ async function autoCheckMissions() {
 
 // ===== 学習ダッシュボード（生徒側） =====
 const DASH_SUBJ_COLORS = {'英語':'#2D5FA6','国語':'#8B2020','数学':'#7B2D8B','理科':'#1A7340','社会':'#8B6020','その他':'#5A5A5A'};
+
+// 生徒ホーム：面談で話したこと（生徒共有メモ student_note を時系列で表示）
+async function loadStudentInterviewShared() {
+  const box = document.getElementById('student-interview-shared');
+  const list = document.getElementById('student-interview-shared-list');
+  if (!box || !list || !currentStudent) return;
+  let rows = [];
+  try {
+    rows = await sbGet('student_interviews', 'student_id=eq.' + currentStudent.id + '&student_note=not.is.null&select=interview_date,student_note&order=interview_date.desc') || [];
+  } catch (e) { box.style.display = 'none'; return; }
+  rows = rows.filter(r => r.student_note && String(r.student_note).trim());
+  if (!rows.length) { box.style.display = 'none'; return; }
+  list.innerHTML = rows.slice(0, 10).map(r => {
+    const dt = String(r.interview_date || '').replace(/-/g, '/');
+    return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">' +
+      '<div style="font-size:12px;font-weight:700;color:var(--orange-d);margin-bottom:3px">📅 ' + escapeHtml(dt) + '</div>' +
+      '<div style="font-size:13px;color:var(--text);white-space:pre-wrap;line-height:1.6">' + escapeHtml(r.student_note) + '</div>' +
+    '</div>';
+  }).join('');
+  box.style.display = 'block';
+}
 
 async function loadStudentDashboard() {
   const box = document.getElementById('student-dashboard-box');
@@ -19492,7 +19523,7 @@ async function karteLoadInterviews(sid) {
     // 面談履歴
     let rows = [];
     try {
-      rows = await sbGet('student_interviews', 'student_id=eq.' + sid + '&select=id,interview_date,interviewer,note,created_at&order=interview_date.desc') || [];
+      rows = await sbGet('student_interviews', 'student_id=eq.' + sid + '&select=id,interview_date,interviewer,note,student_note,share_to_parent,created_at&order=interview_date.desc') || [];
     } catch (e) {
       el.style.display = 'none'; el.innerHTML = ''; return;
     }
@@ -19519,8 +19550,12 @@ async function karteLoadInterviews(sid) {
           '<div style="flex:1 1 46%;min-width:0"><div style="font-size:10px;color:var(--muted);margin-bottom:2px">担当</div>' +
             '<select class="form-input-sm" id="karte-iv-staff" style="width:100%">' + staffOpts + '</select></div>' +
         '</div>' +
-        '<div style="font-size:10px;color:var(--muted);margin-bottom:2px">メモ</div>' +
-        '<textarea class="form-input-sm" id="karte-iv-note" rows="3" placeholder="面談の内容・要望など" style="width:100%;resize:vertical;margin-bottom:8px"></textarea>' +
+        '<div style="font-size:10px;color:var(--muted);margin-bottom:2px">📝 スタッフメモ（内部用・生徒/保護者には出ません）</div>' +
+        '<textarea class="form-input-sm" id="karte-iv-note" rows="3" placeholder="面談の内容・要望・所感など（内部記録）" style="width:100%;resize:vertical;margin-bottom:8px"></textarea>' +
+        '<div style="font-size:10px;color:var(--muted);margin-bottom:2px">💬 生徒に共有するメモ（生徒アプリ「面談で話したこと」に表示）</div>' +
+        '<textarea class="form-input-sm" id="karte-iv-snote" rows="3" placeholder="生徒に向けて残す言葉・約束したことなど" style="width:100%;resize:vertical;margin-bottom:6px"></textarea>' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text);margin-bottom:10px;cursor:pointer">' +
+          '<input type="checkbox" id="karte-iv-parent" style="width:16px;height:16px;cursor:pointer"><span>👪 保護者向け印刷に載せる</span></label>' +
         '<div style="font-size:10px;color:var(--muted);margin-bottom:4px">🎯 今回決めた目標（締切・達成ptを設定／生徒に共有）</div>' +
         '<div id="karte-iv-goals" style="display:flex;flex-direction:column;gap:6px;margin-bottom:6px"></div>' +
         '<button type="button" onclick="karteAddGoalRow()" style="width:100%;padding:7px;background:var(--surface);border:1px dashed var(--orange);border-radius:8px;color:var(--orange-d);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:8px">＋ 目標を追加</button>' +
@@ -19549,14 +19584,22 @@ async function karteLoadInterviews(sid) {
     // --- 面談履歴 ---
     let histHtml = '';
     if (rows.length) {
-      histHtml = '<div style="font-size:11px;font-weight:700;color:var(--muted);margin:12px 0 6px">これまでの面談（' + rows.length + '件）</div>' +
+      histHtml = '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:12px 0 6px">' +
+          '<div style="font-size:11px;font-weight:700;color:var(--muted)">これまでの面談（' + rows.length + '件）</div>' +
+          '<button onclick="printParentInterviews(\'' + sid + '\')" style="padding:5px 10px;background:#fff;border:1px solid var(--orange);border-radius:6px;color:var(--orange-d);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">🖨 保護者向け印刷</button>' +
+        '</div>' +
         rows.map(r => {
           const who = (r.interviewer && staffMap[r.interviewer]) ? '<span style="font-size:10px;color:var(--muted)">担当 ' + escapeHtml(staffMap[r.interviewer]) + '</span>' : (r.interviewer ? '<span style="font-size:10px;color:var(--muted)">担当 ' + escapeHtml(r.interviewer) + '</span>' : '');
+          const parentBadge = r.share_to_parent ? '<span style="font-size:9px;color:#1B5E8A;background:#EAF3FB;border:1px solid #B9D6EE;border-radius:8px;padding:1px 6px;margin-left:6px">👪保護者公開</span>' : '';
+          const staffMemo = '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">' + escapeHtml(r.note || '（スタッフメモなし）') + '</div>';
+          const studentMemo = r.student_note
+            ? '<div style="font-size:11px;color:#2E6B12;background:#F1F8ED;border-radius:6px;padding:6px 8px;margin-top:4px;white-space:pre-wrap;line-height:1.5">💬 生徒共有：' + escapeHtml(r.student_note) + '</div>'
+            : '';
           return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">' +
             '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:2px">' +
-              '<div style="font-size:12px;font-weight:700;color:var(--text)">' + ivFmtDate(r.interview_date) + '</div>' + who +
+              '<div style="font-size:12px;font-weight:700;color:var(--text)">' + ivFmtDate(r.interview_date) + parentBadge + '</div>' + who +
             '</div>' +
-            '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">' + escapeHtml(r.note || '（記録なし）') + '</div>' +
+            staffMemo + studentMemo +
           '</div>';
         }).join('');
     } else {
@@ -19694,6 +19737,54 @@ async function karteDeleteNorma(id) {
   }
 }
 
+// 保護者向け面談記録の印刷：share_to_parent=true の面談だけを印刷用ウィンドウに出す
+async function printParentInterviews(sid) {
+  showLoading('印刷準備中...');
+  let stu = null, rows = [];
+  try {
+    const stuRows = await sbGet('students', 'id=eq.' + sid + '&select=name,school,grade') || [];
+    stu = stuRows[0] || null;
+    rows = await sbGet('student_interviews', 'student_id=eq.' + sid + '&share_to_parent=eq.true&select=interview_date,student_note,note&order=interview_date.desc') || [];
+  } catch (e) {
+    hideLoading();
+    showToast('印刷データの取得に失敗しました', 'error');
+    return;
+  }
+  hideLoading();
+  if (!rows.length) {
+    showToast('保護者公開に設定された面談がありません', 'info');
+    return;
+  }
+  const esc = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const stuName = stu ? esc(stu.name) : '';
+  const stuInfo = stu ? (esc(stu.school || '') + ' ' + esc(stu.grade || '')) : '';
+  const body = rows.map(r => {
+    const dt = esc(String(r.interview_date || '').replace(/-/g, '/'));
+    // 保護者向けは生徒共有メモを優先。無ければスタッフメモは載せない（内部用のため）。
+    const content = r.student_note ? esc(r.student_note) : '（この回の共有メモはありません）';
+    return '<div class="iv"><div class="dt">' + dt + '</div><div class="ct">' + content.replace(/\n/g,'<br>') + '</div></div>';
+  }).join('');
+  const html = '<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>面談記録 ' + stuName + '</title>' +
+    '<style>' +
+    'body{font-family:"Noto Sans JP",sans-serif;color:#333;padding:32px;max-width:760px;margin:0 auto;line-height:1.7}' +
+    'h1{font-size:20px;margin:0 0 4px}.sub{color:#666;font-size:13px;margin-bottom:24px}' +
+    '.iv{border:1px solid #ddd;border-radius:8px;padding:14px 16px;margin-bottom:14px;page-break-inside:avoid}' +
+    '.dt{font-weight:700;font-size:14px;color:#B5651D;margin-bottom:6px;border-bottom:1px solid #eee;padding-bottom:4px}' +
+    '.ct{font-size:14px;white-space:pre-wrap}' +
+    '.foot{margin-top:24px;color:#999;font-size:11px;text-align:right}' +
+    '@media print{body{padding:0}}' +
+    '</style></head><body>' +
+    '<h1>面談記録のご報告</h1>' +
+    '<div class="sub">' + stuName + ' さん' + (stuInfo ? '（' + stuInfo + '）' : '') + '　／　fit塾</div>' +
+    body +
+    '<div class="foot">この記録は保護者向けに共有された内容です。</div>' +
+    '<' + 'script>window.onload=function(){window.print();}<' + '/script>' +
+    '</body></html>';
+  const w = window.open('', '_blank');
+  if (!w) { showToast('ポップアップがブロックされました。許可してください', 'error'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+}
+
 // 面談ハブ：保存
 async function karteSaveInterview() {
   if (!karteStudentId) { showToast('生徒が選択されていません', 'error'); return; }
@@ -19704,6 +19795,8 @@ async function karteSaveInterview() {
     interview_date: date,
     interviewer: (document.getElementById('karte-iv-staff').value || '').trim() || null,
     note: (document.getElementById('karte-iv-note').value || '').trim() || null,
+    student_note: (document.getElementById('karte-iv-snote') ? document.getElementById('karte-iv-snote').value : '').trim() || null,
+    share_to_parent: !!(document.getElementById('karte-iv-parent') && document.getElementById('karte-iv-parent').checked),
     created_by: (typeof currentStaff !== 'undefined' && currentStaff) ? (currentStaff.staff_id || null) : null,
     updated_at: new Date().toISOString()
   };
@@ -20184,6 +20277,8 @@ async function saveInterview() {
     interview_date: date,
     interviewer: (document.getElementById('interview-interviewer').value || '').trim() || null,
     note: (document.getElementById('interview-note').value || '').trim() || null,
+    student_note: (document.getElementById('interview-snote') ? document.getElementById('interview-snote').value : '').trim() || null,
+    share_to_parent: !!(document.getElementById('interview-parent') && document.getElementById('interview-parent').checked),
     created_by: currentStaff ? (currentStaff.staff_id || null) : null,
     updated_at: new Date().toISOString()
   };
