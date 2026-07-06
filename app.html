@@ -3224,8 +3224,11 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <button class="form-btn" onclick="confirmSessions()" style="background:linear-gradient(135deg,#3B6D11,#5A9E3C)">✅ 確定して登録する</button>
         <button onclick="document.getElementById('cs-preview').style.display='none'" style="width:100%;padding:10px;background:transparent;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--muted);font-size:13px;cursor:pointer;font-family:'Noto Sans JP',sans-serif;margin-top:6px">修正する</button>
       </div>
-      <div class="section-title">登録済み授業日（直近）</div>
-      <div id="cs-list" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <div class="section-title" style="margin:0">登録済み授業日</div>
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);cursor:pointer"><input type="checkbox" id="cs-show-past" onchange="loadSessionList()" style="width:15px;height:15px;cursor:pointer"><span>過去の授業日も表示（削除用）</span></label>
+      </div>
+      <div id="cs-list" style="display:flex;flex-direction:column;gap:8px;margin-top:8px"></div>
     </div>
 
     <!-- チェック項目（ノルマ・音読・復習） -->
@@ -3465,7 +3468,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702aq';
+const APP_VERSION = '20260702ar';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -13099,7 +13102,16 @@ async function confirmSessions() {
 
 async function loadSessionList() {
   const today = getTodayJST();
-  query = 'session_date=gte.' + today + '&order=session_date,period&select=*,class_master(name,subject,teacher_staff_id)&limit=20';
+  const showPast = !!(document.getElementById('cs-show-past') && document.getElementById('cs-show-past').checked);
+  let query;
+  if (showPast) {
+    // 過去60日〜未来を新しい順で表示（間違えて入れた過去の授業日を削除するため）
+    const d = new Date(); d.setDate(d.getDate() - 60);
+    const since = toJSTDateStr ? toJSTDateStr(d) : d.toISOString().slice(0,10);
+    query = 'session_date=gte.' + since + '&order=session_date.desc,period&select=*,class_master(name,subject,teacher_staff_id)&limit=60';
+  } else {
+    query = 'session_date=gte.' + today + '&order=session_date,period&select=*,class_master(name,subject,teacher_staff_id)&limit=20';
+  }
   const sessions = await sbGet('class_sessions', query) || [];
   const el = document.getElementById('cs-list');
   if (!sessions.length) {
@@ -13128,13 +13140,14 @@ async function loadSessionList() {
 }
 
 async function deleteSession(id) {
-  if (!confirm('この授業日を削除しますか？')) return;
-  await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/class_sessions?id=eq.' + id, {
-    method: 'DELETE',
-    headers: { 'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU', 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU' }
-  });
-  showToast('削除しました', 'info');
-  loadSessionList();
+  if (!confirm('この授業日を削除しますか？\n\n※出席の記録がすでにある場合、その記録は残る可能性があります（間違えて登録しただけならそのまま削除でOK）。')) return;
+  try {
+    await sbDelete('class_sessions', 'id=eq.' + id);
+    showToast('削除しました', 'info');
+    loadSessionList();
+  } catch (e) {
+    showToast('削除に失敗しました：' + (e && e.message ? e.message : e), 'error');
+  }
 }
 
 
