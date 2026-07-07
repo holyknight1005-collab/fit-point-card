@@ -130,9 +130,18 @@
     <button class="icon-btn" onclick="backToStudent()">戻る</button>
   </div>
   <div class="wrap">
+    <div id="solve-timer" style="display:none;position:sticky;top:0;z-index:6;background:var(--bg);padding:8px 0 10px;margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+        <span style="font-size:12px;font-weight:700;color:var(--ink)">⏱ 制限時間</span>
+        <span id="solve-timer-label" style="font-size:14px;font-weight:800;color:var(--ink)">--</span>
+      </div>
+      <div style="height:8px;background:var(--line);border-radius:5px;overflow:hidden">
+        <div id="solve-timer-fill" style="height:100%;width:100%;background:var(--green-ok);border-radius:5px;transition:width 1s linear,background .3s"></div>
+      </div>
+    </div>
     <div id="solve-progress" class="muted" style="margin-bottom:10px"></div>
     <div id="solve-questions"></div>
-    <button id="solve-submit" class="btn btn-primary btn-block" style="margin-top:8px" onclick="submitSolve()">答え合わせ</button>
+    <button id="solve-submit" class="btn btn-primary btn-block" style="margin-top:8px" onclick="onSolveSubmitClick()">答え合わせ</button>
     <div id="solve-result" style="display:none;margin-top:14px"></div>
   </div>
 </div>
@@ -175,6 +184,19 @@
           <option value="国語">国語</option>
           <option value="その他">その他</option>
         </select>
+
+        <label class="field-label">⏱ 時間制限</label>
+        <select id="cr-time-mode" class="sel" style="margin-bottom:10px" onchange="onTimeModeChange()">
+          <option value="none">制限なし</option>
+          <option value="total">全体で制限（全問まとめて）</option>
+          <option value="per_q">問題ごとに制限</option>
+        </select>
+        <div id="cr-total-time-wrap" style="display:none;margin-bottom:4px">
+          <label class="field-label">全体の制限時間（分）</label>
+          <input type="number" id="cr-total-min" class="inp" min="1" step="1" placeholder="例：10" value="10">
+          <div class="muted" style="margin-top:4px">0になると自動で提出されます。</div>
+        </div>
+        <div id="cr-perq-hint" style="display:none;margin-bottom:4px" class="muted">各問題カードで「制限（秒）」を設定してください。0や空欄の問は無制限になります。</div>
       </div>
 
       <!-- AI貼り付け取り込み -->
@@ -219,7 +241,7 @@
 // デプロイのたびにこの値を上げ、quiz_version.txt の中身と一致させること。
 // app.html とは独立管理（quiz_version.txt を参照）。app側の更新で quiz が巻き込まれない。
 // ============================================================
-const QUIZ_VERSION = '20260702f';
+const QUIZ_VERSION = '20260702g';
 
 // quiz_version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkQuizVersion(){
@@ -510,6 +532,9 @@ function resetCreateForm(toCreateTab){
   const jsonEl = document.getElementById('cr-json'); if(jsonEl) jsonEl.value = '';
   document.getElementById('cr-edit-banner').style.display = 'none';
   document.getElementById('cr-save-btn').textContent = '💾 テストを保存';
+  const tmEl = document.getElementById('cr-time-mode'); if(tmEl){ tmEl.value = 'none'; }
+  const tmin = document.getElementById('cr-total-min'); if(tmin){ tmin.value = '10'; }
+  onTimeModeChange();
   renderCrQuestions();
   if(toCreateTab) staffTab('create');
 }
@@ -532,13 +557,18 @@ async function editSet(setId){
         ch = [q.answer].concat(ch.filter(c=>c!==q.answer));
         while(ch.length<6) ch.push('');
         ch = ch.slice(0,6);
-        return {type:'choice', text:String(q.text), answer:String(q.answer), choices:ch};
+        return {type:'choice', text:String(q.text), answer:String(q.answer), choices:ch, time_limit_sec:(q.time_limit_sec!=null?q.time_limit_sec:null)};
       }
-      return {type:'number', text:String(q.text), answer:String(q.answer), choices:null};
+      return {type:'number', text:String(q.text), answer:String(q.answer), choices:null, time_limit_sec:(q.time_limit_sec!=null?q.time_limit_sec:null)};
     });
     // フォームに反映
     document.getElementById('cr-title').value = s.title || '';
     document.getElementById('cr-subject').value = s.subject || 'その他';
+    // 時間設定
+    const tm = s.time_mode || 'none';
+    document.getElementById('cr-time-mode').value = tm;
+    if(tm==='total' && s.time_limit_sec) document.getElementById('cr-total-min').value = Math.round(s.time_limit_sec/60);
+    onTimeModeChange();
     document.getElementById('cr-edit-name').textContent = s.title || '';
     document.getElementById('cr-edit-banner').style.display = 'flex';
     document.getElementById('cr-save-btn').textContent = '💾 変更を保存';
@@ -588,6 +618,12 @@ function renderCrQuestions(){
       body = '<div class="muted" style="margin:6px 0 4px">正解の数値（ダミーは自動生成）</div>' +
         '<input type="text" class="inp" style="font-size:13px;max-width:140px" placeholder="例：4" value="'+esc(q.answer)+'" oninput="crSet('+i+',\'answer\',this.value)">';
     }
+    // 問題ごと制限モードのときだけ、この問の制限秒数を入力
+    const isPerQ = document.getElementById('cr-time-mode') && document.getElementById('cr-time-mode').value === 'per_q';
+    const perqField = isPerQ
+      ? '<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)"><span class="muted" style="margin-right:6px">⏱ この問の制限（秒）</span>'+
+        '<input type="number" class="inp" style="font-size:13px;max-width:110px;display:inline-block" min="0" step="5" placeholder="例：30" value="'+(q.time_limit_sec!=null?esc(String(q.time_limit_sec)):'')+'" oninput="crSet('+i+',\'time_limit_sec\',this.value===\'\'?null:parseInt(this.value))"></div>'
+      : '';
     return '<div class="card">'+
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
         '<span style="font-size:12px;font-weight:700">問'+(i+1)+' '+pill+'</span>'+
@@ -599,8 +635,17 @@ function renderCrQuestions(){
       '</div>'+
       '<input type="text" class="inp" style="font-size:13px" placeholder="問題文" value="'+esc(q.text)+'" oninput="crSet('+i+',\'text\',this.value)">'+
       body+
+      perqField+
     '</div>';
   }).join('');
+}
+
+// 時間モード切替：全体制限の分入力・問題ごとヒントの表示を切り替え、問題カードを再描画
+function onTimeModeChange(){
+  const mode = document.getElementById('cr-time-mode').value;
+  document.getElementById('cr-total-time-wrap').style.display = (mode==='total') ? 'block' : 'none';
+  document.getElementById('cr-perq-hint').style.display = (mode==='per_q') ? 'block' : 'none';
+  renderCrQuestions(); // per_q の秒数入力の出し入れを反映
 }
 
 // AI貼り付け取り込み
@@ -709,9 +754,21 @@ async function saveQuizSet(){
   const title = document.getElementById('cr-title').value.trim();
   const subject = document.getElementById('cr-subject').value;
   if(!title){ showToast('テスト名を入力してください','error'); return; }
+  // 時間設定を収集
+  const timeMode = (document.getElementById('cr-time-mode') && document.getElementById('cr-time-mode').value) || 'none';
+  let totalLimitSec = null;
+  if(timeMode==='total'){
+    const min = parseFloat(document.getElementById('cr-total-min').value);
+    if(!(min>0)){ showToast('全体の制限時間（分）を入力してください','error'); return; }
+    totalLimitSec = Math.round(min*60);
+  }
   // 入力チェック
   const valid = crQuestions.filter(q=>q.text && q.answer);
   if(!valid.length){ showToast('問題を1問以上入力してください','error'); return; }
+  if(timeMode==='per_q'){
+    const noLimit = valid.some(q=>!(q.time_limit_sec>0));
+    if(noLimit && !confirm('制限秒数が未設定（0または空欄）の問題があります。その問は無制限になります。このまま保存しますか？')) return;
+  }
   for(const q of valid){
     if(q.type==='choice'){
       const filled = q.choices.filter(c=>c && c.trim());
@@ -726,11 +783,12 @@ async function saveQuizSet(){
   try{
     if(crEditSetId){
       // 編集モード：set を更新 → 既存問題を全削除 → 全INSERT（全置換）
-      await sbPatch('mini_quiz_sets','id=eq.'+crEditSetId,{ title:title, subject:subject });
+      await sbPatch('mini_quiz_sets','id=eq.'+crEditSetId,{ title:title, subject:subject, time_mode:timeMode, time_limit_sec:totalLimitSec });
       await sbDelete('mini_quiz_questions','quiz_set_id=eq.'+crEditSetId);
       const rows = valid.map((q,idx)=>({
         quiz_set_id:crEditSetId, q_order:idx, q_type:q.type, text:q.text, answer:q.answer,
-        choices: q.type==='choice' ? q.choices.filter(c=>c && c.trim()) : null
+        choices: q.type==='choice' ? q.choices.filter(c=>c && c.trim()) : null,
+        time_limit_sec: (timeMode==='per_q' && q.time_limit_sec>0) ? q.time_limit_sec : null
       }));
       await sbPost('mini_quiz_questions', rows, 'return=minimal');
       hideLoading();
@@ -739,11 +797,12 @@ async function saveQuizSet(){
       staffTab('list');
       return;
     }
-    const set = await sbPost('mini_quiz_sets', { title:title, subject:subject, created_by:staffId });
+    const set = await sbPost('mini_quiz_sets', { title:title, subject:subject, created_by:staffId, time_mode:timeMode, time_limit_sec:totalLimitSec });
     const setId = Array.isArray(set)?set[0].id:set.id;
     const rows = valid.map((q,idx)=>({
       quiz_set_id:setId, q_order:idx, q_type:q.type, text:q.text, answer:q.answer,
-      choices: q.type==='choice' ? q.choices.filter(c=>c && c.trim()) : null
+      choices: q.type==='choice' ? q.choices.filter(c=>c && c.trim()) : null,
+      time_limit_sec: (timeMode==='per_q' && q.time_limit_sec>0) ? q.time_limit_sec : null
     }));
     await sbPost('mini_quiz_questions', rows, 'return=minimal');
     hideLoading();
@@ -1004,7 +1063,14 @@ async function loadStudentQuizzes(){
 let solveState=null; // {assignId, setId, questions:[{...,shuffled:[]}], given:[]}
 
 function shuffle(arr){ const a=arr.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
-
+// 秒数を「◯分◯秒」表記に（60未満は「◯秒」）
+function fmtElapsed(sec){
+  if(sec==null || isNaN(sec)) return '';
+  const s = Math.max(0, Math.round(sec));
+  if(s < 60) return s + '秒';
+  const m = Math.floor(s/60), r = s%60;
+  return m + '分' + (r ? r + '秒' : '');
+}
 // 数値問題のダミー選択肢を自動生成（正解の周辺値）
 function genNumberChoices(answer){
   const n = parseFloat(answer);
@@ -1032,20 +1098,90 @@ async function startSolve(assignId, setId){
     if(exist && exist.length){ hideLoading(); showToast('この小テストは提出済みです','info'); loadStudentQuizzes(); return; }
     const qs = await sbGet('mini_quiz_questions','quiz_set_id=eq.'+setId+'&order=q_order&select=*');
     if(!qs.length){ hideLoading(); showToast('問題がありません','error'); return; }
-    const set = await sbGet('mini_quiz_sets','id=eq.'+setId+'&select=title');
-    solveState={ assignId, setId, questions: qs.map(q=>{
+    const set = await sbGet('mini_quiz_sets','id=eq.'+setId+'&select=title,time_mode,time_limit_sec');
+    const timeMode = (set[0] && set[0].time_mode) || 'none';
+    const totalLimitSec = (set[0] && set[0].time_limit_sec) || null;
+    solveState={ assignId, setId, timeMode, totalLimitSec, startedAt: Date.now(), questions: qs.map(q=>{
       let display=null;
       if(q.q_type==='choice'){ display = shuffle((q.choices||[]).filter(c=>c&&String(c).trim())); }
       else { display = genNumberChoices(q.answer); }
-      return { id:q.id, type:q.q_type, text:q.text, answer:q.answer, display:display };
-    }), given:{} };
+      return { id:q.id, type:q.q_type, text:q.text, answer:q.answer, display:display, time_limit_sec:(q.time_limit_sec!=null?q.time_limit_sec:null) };
+    }), given:{}, curQ:0 };
     hideLoading();
     document.getElementById('solve-title').textContent = (set[0]&&set[0].title)||'小テスト';
-    renderSolve();
     document.getElementById('solve-result').style.display='none';
     document.getElementById('solve-submit').style.display='block';
     showScreen('screen-solve');
+    if(timeMode==='per_q'){ startPerQuestion(0); }
+    else { renderSolve(); if(timeMode==='total'){ startTotalTimer(totalLimitSec); } }
   }catch(e){ hideLoading(); showToast('エラー: '+e.message,'error'); }
+}
+
+// ============================================================
+// タイマー：全体制限（total）
+// ============================================================
+let quizTimer = null;
+function clearQuizTimer(){ if(quizTimer){ clearInterval(quizTimer); quizTimer=null; } }
+
+function startTotalTimer(limitSec){
+  clearQuizTimer();
+  const bar = document.getElementById('solve-timer');
+  bar.style.display = 'block';
+  let remain = limitSec;
+  const label = document.getElementById('solve-timer-label');
+  const fill = document.getElementById('solve-timer-fill');
+  function paint(){
+    const mm = Math.floor(remain/60), ss = remain%60;
+    label.textContent = '残り ' + mm + ':' + String(ss).padStart(2,'0');
+    const pct = Math.max(0, Math.round(remain/limitSec*100));
+    fill.style.width = pct + '%';
+    fill.style.background = remain<=10 ? 'var(--red)' : (remain<=30 ? 'var(--orange, #E0A96F)' : 'var(--green-ok)');
+  }
+  paint();
+  quizTimer = setInterval(()=>{
+    remain--;
+    if(remain<=0){ paint(); clearQuizTimer(); showToast('時間切れです。自動提出します','info'); submitSolve(true); return; }
+    paint();
+  }, 1000);
+}
+
+// ============================================================
+// タイマー：問題ごと制限（per_q）— 1問ずつ表示、戻れない、時間切れで次へ／最終問で自動提出
+// ============================================================
+function startPerQuestion(idx){
+  const st = solveState;
+  st.curQ = idx;
+  clearQuizTimer();
+  renderSolveSingle(idx);
+  const q = st.questions[idx];
+  const limit = (q.time_limit_sec>0) ? q.time_limit_sec : null;
+  const bar = document.getElementById('solve-timer');
+  if(!limit){ bar.style.display='none'; return; } // 無制限の問は次へボタンのみ
+  bar.style.display='block';
+  let remain = limit;
+  const label = document.getElementById('solve-timer-label');
+  const fill = document.getElementById('solve-timer-fill');
+  function paint(){
+    label.textContent = '残り ' + remain + '秒';
+    const pct = Math.max(0, Math.round(remain/limit*100));
+    fill.style.width = pct + '%';
+    fill.style.background = remain<=3 ? 'var(--red)' : (remain<=8 ? 'var(--orange, #E0A96F)' : 'var(--green-ok)');
+  }
+  paint();
+  quizTimer = setInterval(()=>{
+    remain--;
+    if(remain<=0){ paint(); clearQuizTimer(); nextPerQuestion(); return; }
+    paint();
+  }, 1000);
+}
+
+// per_q：次の問題へ（最終問なら提出）
+function nextPerQuestion(){
+  const st = solveState;
+  clearQuizTimer();
+  const next = st.curQ + 1;
+  if(next >= st.questions.length){ submitSolve(true); return; }
+  startPerQuestion(next);
 }
 
 // ============================================================
@@ -1133,6 +1269,8 @@ function previewGrade(){
 
 // プレビュー終了：スタッフ画面へ戻る
 function exitPreview(){
+  clearQuizTimer();
+  const tb = document.getElementById('solve-timer'); if(tb) tb.style.display='none';
   const wasList = (solveState && solveState.fromList);
   solveState=null;
   showScreen('screen-staff');
@@ -1156,6 +1294,29 @@ function renderSolve(){
   }).join('');
 }
 
+// per_q：1問だけ表示（進捗と「次へ」ボタン付き、戻る操作なし）
+function renderSolveSingle(idx){
+  const st = solveState;
+  const q = st.questions[idx];
+  const total = st.questions.length;
+  document.getElementById('solve-progress').textContent = '問 ' + (idx+1) + ' / ' + total + '　※前の問題には戻れません';
+  const opts = q.display.map(c=>{
+    const selp = (st.given[q.id]===String(c))?' sel':'';
+    return '<div class="choice-opt'+selp+'" onclick="pickAnswer(this)" data-qid="'+esc(q.id)+'" data-val="'+esc(String(c))+'">'+mathHTML(c)+'</div>';
+  }).join('');
+  const typeLabel = q.type==='number' ? '<span class="pill pill-num">数値</span>' : '<span class="pill pill-choice">6択</span>';
+  document.getElementById('solve-questions').innerHTML =
+    '<div class="card" data-qid="'+q.id+'">'+
+      '<div style="font-size:11px;color:var(--green-d);margin-bottom:3px">問'+(idx+1)+' '+typeLabel+'</div>'+
+      '<div style="font-size:15px;font-weight:500;margin-bottom:10px">'+mathHTML(q.text)+'</div>'+
+      opts+
+    '</div>';
+  // 提出ボタンのラベルを「次へ／提出する」に（動作は onSolveSubmitClick が分岐）
+  const btn = document.getElementById('solve-submit');
+  btn.style.display = 'block';
+  btn.textContent = (idx+1>=total) ? '提出する' : '次の問題へ →';
+}
+
 function pickAnswer(elDom){
   const qid = elDom.getAttribute('data-qid');
   const val = elDom.getAttribute('data-val');
@@ -1166,12 +1327,26 @@ function pickAnswer(elDom){
   elDom.classList.add('sel');
 }
 
-async function submitSolve(){
+// 提出ボタンの統一ハンドラ：モードに応じて分岐
+function onSolveSubmitClick(){
+  const st = solveState;
+  if(!st){ return; }
+  if(st.preview){ previewGrade(); return; }
+  if(st.timeMode==='per_q'){ nextPerQuestion(); return; } // 次へ／最終問なら提出
+  submitSolve(false);
+}
+
+async function submitSolve(auto){
   const st=solveState;
   // プレビュー中は採点だけローカルで表示（DBに書かない）
   if(st && st.preview){ previewGrade(); return; }
-  const unanswered = st.questions.filter(q=>st.given[q.id]==null);
-  if(unanswered.length){ if(!confirm(unanswered.length+'問 未回答です。提出しますか？')) return; }
+  clearQuizTimer();
+  // 自動提出（時間切れ）のときは未回答確認をスキップ
+  if(!auto){
+    const unanswered = st.questions.filter(q=>st.given[q.id]==null);
+    if(unanswered.length){ if(!confirm(unanswered.length+'問 未回答です。提出しますか？')) return; }
+  }
+  const elapsedSec = st.startedAt ? Math.max(0, Math.round((Date.now()-st.startedAt)/1000)) : null;
   showLoading('採点中...');
   try{
     let correct=0;
@@ -1184,7 +1359,8 @@ async function submitSolve(){
     // 1人1回：UNIQUE制約で二重提出を弾く
     await sbPost('mini_quiz_results',{
       quiz_assignment_id:st.assignId, student_id:currentStudent.id,
-      answers:answers, correct_count:correct, total_count:st.questions.length
+      answers:answers, correct_count:correct, total_count:st.questions.length,
+      elapsed_sec:elapsedSec
     },'return=minimal');
     hideLoading();
     showSolveResult(correct, st.questions.length, answers);
@@ -1199,9 +1375,25 @@ async function submitSolve(){
 }
 
 async function showSolveResult(correct, total, answers){
+  clearQuizTimer();
+  document.getElementById('solve-timer').style.display='none';
   document.getElementById('solve-submit').style.display='none';
-  // 各問題の正誤を画面に反映
   const st=solveState;
+  // per_q モードは1問ずつ表示だったので、結果画面では全問を並べ直してから正誤を反映
+  if(st.timeMode==='per_q'){
+    document.getElementById('solve-progress').textContent = '全'+st.questions.length+'問の結果';
+    document.getElementById('solve-questions').innerHTML = st.questions.map((q,i)=>{
+      const opts = q.display.map(c=>{
+        const selp = (st.given[q.id]===String(c))?' sel':'';
+        return '<div class="choice-opt'+selp+'" data-qid="'+esc(q.id)+'" data-val="'+esc(String(c))+'">'+mathHTML(c)+'</div>';
+      }).join('');
+      const typeLabel = q.type==='number' ? '<span class="pill pill-num">数値</span>' : '<span class="pill pill-choice">6択</span>';
+      return '<div class="card" data-qid="'+q.id+'">'+
+        '<div style="font-size:11px;color:var(--green-d);margin-bottom:3px">問'+(i+1)+' '+typeLabel+'</div>'+
+        '<div style="font-size:15px;font-weight:500;margin-bottom:10px">'+mathHTML(q.text)+'</div>'+opts+'</div>';
+    }).join('');
+  }
+  // 各問題の正誤を画面に反映
   const ansMap={}; answers.forEach(a=>ansMap[a.question_id]=a);
   st.questions.forEach(q=>{
     const card=document.querySelector('.card[data-qid="'+q.id+'"]');
@@ -1224,12 +1416,13 @@ async function showSolveResult(correct, total, answers){
     }
   }catch(e){}
   const rate = total?Math.round(correct/total*100):0;
+  const elapsedLabel = st.startedAt ? fmtElapsed(Math.round((Date.now()-st.startedAt)/1000)) : '';
   const box=document.getElementById('solve-result');
   box.style.display='block';
   box.innerHTML='<div style="background:var(--green-ok-l);border-radius:12px;padding:16px;text-align:center">'+
     '<div style="font-size:13px;color:var(--green-ok);font-weight:700">提出完了</div>'+
     '<div style="font-size:28px;font-weight:900;color:var(--green-ok)">'+correct+' / '+total+' 正解</div>'+
-    '<div class="muted">正答率 '+rate+'%</div>'+avgHtml+
+    '<div class="muted">正答率 '+rate+'%'+(elapsedLabel?'　⏱ '+elapsedLabel:'')+'</div>'+avgHtml+
     '<button class="btn btn-primary btn-block" style="margin-top:12px" onclick="backToStudent()">一覧に戻る</button>'+
   '</div>';
   box.scrollIntoView({behavior:'smooth'});
@@ -1244,6 +1437,7 @@ async function viewMyResult(assignId){
     const r=res[0];
     hideLoading();
     const rate=r.total_count?Math.round(r.correct_count/r.total_count*100):0;
+    const elapsedLabel = fmtElapsed(r.elapsed_sec);
     document.getElementById('solve-title').textContent='結果';
     document.getElementById('solve-progress').textContent='';
     document.getElementById('solve-questions').innerHTML='';
@@ -1253,14 +1447,14 @@ async function viewMyResult(assignId){
     box.innerHTML='<div style="background:var(--green-ok-l);border-radius:12px;padding:16px;text-align:center">'+
       '<div style="font-size:13px;color:var(--green-ok);font-weight:700">提出済み</div>'+
       '<div style="font-size:28px;font-weight:900;color:var(--green-ok)">'+r.correct_count+' / '+r.total_count+' 正解</div>'+
-      '<div class="muted">正答率 '+rate+'%</div>'+
+      '<div class="muted">正答率 '+rate+'%'+(elapsedLabel?'　⏱ '+elapsedLabel:'')+'</div>'+
       '<button class="btn btn-primary btn-block" style="margin-top:12px" onclick="backToStudent()">一覧に戻る</button>'+
     '</div>';
     showScreen('screen-solve');
   }catch(e){ hideLoading(); showToast('エラー: '+e.message,'error'); }
 }
 
-function backToStudent(){ if(solveState && solveState.preview){ exitPreview(); return; } solveState=null; showScreen('screen-student'); loadStudentQuizzes(); }
+function backToStudent(){ clearQuizTimer(); document.getElementById('solve-timer').style.display='none'; if(solveState && solveState.preview){ exitPreview(); return; } solveState=null; showScreen('screen-student'); loadStudentQuizzes(); }
 
 // ============================================================
 // スタッフ：集計（正答率）
@@ -1336,10 +1530,12 @@ async function loadStats(){
       sorted.map(r=>{
         const nm=esc(nameMap[r.student_id]||'(生徒)');
         const sc=(r.correct_count!=null?r.correct_count:'-')+'/'+(r.total_count!=null?r.total_count:'-');
+        const el=fmtElapsed(r.elapsed_sec);
         return '<div style="border-top:1px solid var(--border)">'+
           '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:6px 0;cursor:pointer" onclick="toggleStatStudent(\''+r.id+'\')">'+
             '<span>▸ '+nm+'</span>'+
             '<span style="display:flex;gap:10px;align-items:center">'+
+              (el?'<span class="muted" style="font-size:11px">⏱ '+el+'</span>':'')+
               '<span style="font-weight:700">'+sc+'</span>'+
               '<button class="btn btn-ghost" style="padding:3px 8px;font-size:11px;color:var(--red)" onclick="event.stopPropagation();deleteResult(\''+r.id+'\')">取消</button>'+
             '</span>'+
