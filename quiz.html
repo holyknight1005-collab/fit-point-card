@@ -83,6 +83,9 @@
   .choice-opt.wrong{border-color:var(--red);background:var(--red-l)}
   .bar-bg{height:8px;background:var(--bg);border-radius:4px;overflow:hidden}
   .bar-fill{height:100%;border-radius:4px}
+  /* 長い数式が枠をはみ出す場合、途中改行で崩さず横スクロールで見せる */
+  .katex{white-space:nowrap}
+  .katex-scroll{max-width:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
 </style>
 </head>
 <body>
@@ -241,7 +244,7 @@
 // デプロイのたびにこの値を上げ、quiz_version.txt の中身と一致させること。
 // app.html とは独立管理（quiz_version.txt を参照）。app側の更新で quiz が巻き込まれない。
 // ============================================================
-const QUIZ_VERSION = '20260702g';
+const QUIZ_VERSION = '20260702h';
 
 // quiz_version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkQuizVersion(){
@@ -325,12 +328,20 @@ function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,
 // KaTeX できれいに描画する。$...$ で囲んだ箇所は LaTeX としてそのまま扱う。
 // ============================================================
 
+// 全角記号 → 半角（数式化の前に正規化。全角スペースも半角へ）
+const MATH_NORMALIZE = [
+  ['＞','>'],['＜','<'],['＝','='],['＋','+'],['－','-'],['−','-'],['ー','-'],
+  ['（','('],['）',')'],['　',' ']
+];
+
 // ギリシャ文字・記号 → LaTeX
+// LaTeX コマンド（\word 形式）は直後に英字が続くと \geqqe のように衝突するため、
+// 置換先の末尾に必ず半角スペースを入れて区切る。上付き（^..）系は付けない。
 const MATH_SYMBOLS = [
-  ['≦','\\leqq'],['≧','\\geqq'],['≤','\\le'],['≥','\\ge'],['≠','\\neq'],
-  ['×','\\times'],['÷','\\div'],['±','\\pm'],['√','\\sqrt'],['∞','\\infty'],
-  ['°','^\\circ'],['π','\\pi'],['θ','\\theta'],['α','\\alpha'],['β','\\beta'],
-  ['γ','\\gamma'],['Δ','\\Delta'],['Σ','\\sum'],['∫','\\int'],
+  ['≦','\\leqq '],['≧','\\geqq '],['≤','\\le '],['≥','\\ge '],['≠','\\neq '],
+  ['×','\\times '],['÷','\\div '],['±','\\pm '],['√','\\sqrt '],['∞','\\infty '],
+  ['°','^\\circ'],['π','\\pi '],['θ','\\theta '],['α','\\alpha '],['β','\\beta '],
+  ['γ','\\gamma '],['Δ','\\Delta '],['Σ','\\sum '],['∫','\\int '],
   ['²','^2'],['³','^3'],['⁴','^4']
 ];
 
@@ -340,6 +351,8 @@ const MATH_FUNCS = ['sin','cos','tan','log','ln','lim','sec','csc','cot'];
 // プレーン式 → LaTeX 文字列
 function toLatex(raw){
   let s = String(raw==null?'':raw);
+  // 全角記号を半角へ正規化（数式化の前に）
+  MATH_NORMALIZE.forEach(([from,to])=>{ s = s.split(from).join(to); });
   // 記号を LaTeX に置換
   MATH_SYMBOLS.forEach(([from,to])=>{ s = s.split(from).join(to); });
   // 関数名を \sin 等に（既に \ が付くものは触らない／lookbehind不使用でiOS旧版も安全）
