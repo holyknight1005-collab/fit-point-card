@@ -3331,6 +3331,53 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       </div>
       <div class="section-title">登録済み授業</div>
       <div id="cm-list" style="display:flex;flex-direction:column;gap:8px"></div>
+
+    <!-- 講習の一括受講登録（講座を軸に、受けた子をまとめてチェック） -->
+    <div id="manage-course-batch" style="display:flex;flex-direction:column;gap:10px;margin-top:16px;padding-top:16px;border-top:2px dashed var(--border)">
+      <div class="section-title">☀️ 講習の一括受講登録</div>
+      <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:2px">
+        春期・夏期・冬期・共通テスト対策などの講座を選び、受けた生徒をまとめてチェックして登録します。過去分は開始日・終了日を入れてください（終了日を入れると完了扱いで履歴に残ります）。
+      </div>
+      <div class="add-points-form" style="gap:8px">
+        <div style="display:flex;gap:8px">
+          <div style="flex:1">
+            <div class="form-label">区分</div>
+            <select class="form-select" id="cb-category" onchange="cbRenderClassOptions()">
+              <option value="summer">☀️ 夏期講習</option>
+              <option value="winter">⛄ 冬期講習</option>
+              <option value="spring">🌸 春期講習</option>
+              <option value="common_test">🎯 共通テスト対策</option>
+              <option value="other">📚 その他講習</option>
+              <option value="kosotsu">🎓 高卒生</option>
+              <option value="normal">📘 通常</option>
+            </select>
+          </div>
+          <div style="width:110px">
+            <div class="form-label">年度</div>
+            <select class="form-select" id="cb-year" onchange="cbRenderClassOptions()"><option value="">すべて</option></select>
+          </div>
+        </div>
+        <div>
+          <div class="form-label">講座</div>
+          <select class="form-select" id="cb-class" onchange="cbLoadRoster()"><option value="">講座を選択してください</option></select>
+        </div>
+        <div id="cb-period-row" style="display:none">
+          <div style="display:flex;gap:8px">
+            <div style="flex:1"><div class="form-label">開始日</div><input type="date" id="cb-started" class="form-input-sm" style="width:100%"></div>
+            <div style="flex:1"><div class="form-label">終了日（空=継続中）</div><input type="date" id="cb-ended" class="form-input-sm" style="width:100%"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;margin-top:8px">
+            <input type="checkbox" id="cb-include-inactive" onchange="cbLoadRoster()" style="cursor:pointer">
+            <label for="cb-include-inactive" style="font-size:11px;color:var(--muted);cursor:pointer">卒業・退塾した生徒も表示する（過去分の入力用）</label>
+          </div>
+        </div>
+      </div>
+      <div id="cb-roster" style="display:flex;flex-direction:column;gap:6px"></div>
+      <div id="cb-save-row" style="display:none">
+        <button class="form-btn" onclick="cbSaveBatch()">チェックした生徒に反映する</button>
+      </div>
+    </div>
+
     <!-- 授業日登録 -->
     <div id="manage-class-session" style="display:flex;flex-direction:column;gap:10px;margin-top:16px;padding-top:16px;border-top:2px dashed var(--border)">
       <div class="section-title">📅 授業日登録</div>
@@ -12635,6 +12682,207 @@ let csClassOptsHtml = '<option value="">授業を選択</option>'; // 後方互�
 let csMasters = [];   // 授業マスターのキャッシュ（grade_level含む）
 let csSubjects = [];  // マスターに実在する科目一覧
 
+// ===== 講習の一括受講登録（講座を軸に受講生徒をまとめて紐づけ） =====
+let cbMasters = [];        // 講座マスターのキャッシュ（区分・年度で絞る前の全件）
+let cbRosterStudents = []; // 現在の講座で表示中の生徒一覧
+let cbExistingByStudent = {}; // student_id -> 既存 enrollment 行（この講座）
+
+// タブ初期化時に呼ぶ。区分と年度の選択肢を用意して講座リストを描く。
+async function cbInit() {
+  try {
+    cbMasters = await sbGet('class_master',
+      'is_active=eq.true&order=school_year.desc.nullslast,subject,name&select=id,name,subject,category,school_year,grade_level') || [];
+  } catch (e) {
+    cbMasters = [];
+  }
+  // 年度セレクトを実在する年度から生成
+  const years = [...new Set(cbMasters.map(m => m.school_year).filter(Boolean))].sort((a, b) => b - a);
+  const ySel = document.getElementById('cb-year');
+  if (ySel) {
+    ySel.innerHTML = '<option value="">すべて</option>' +
+      years.map(y => '<option value="' + y + '">' + y + '年度</option>').join('');
+    // 直近の年度を初期選択（あれば）
+    if (years.length) ySel.value = String(years[0]);
+  }
+  cbRenderClassOptions();
+}
+
+// 区分・年度の選択に応じて講座セレクトを描き直す
+function cbRenderClassOptions() {
+  const cat = document.getElementById('cb-category').value;
+  const yr = document.getElementById('cb-year').value;
+  const filtered = cbMasters.filter(m => {
+    if ((m.category || 'normal') !== cat) return false;
+    if (yr && String(m.school_year || '') !== yr) return false;
+    return true;
+  });
+  const sel = document.getElementById('cb-class');
+  if (!filtered.length) {
+    sel.innerHTML = '<option value="">該当する講座がありません</option>';
+  } else {
+    const subjGroups = {};
+    filtered.forEach(m => { (subjGroups[m.subject || 'その他'] = subjGroups[m.subject || 'その他'] || []).push(m); });
+    sel.innerHTML = '<option value="">講座を選択してください</option>' +
+      Object.entries(subjGroups).map(([s, list]) =>
+        '<optgroup label="── ' + escapeHtml(s) + ' ──">' +
+        list.map(m => '<option value="' + m.id + '">' + escapeHtml(m.name) +
+          (m.school_year ? '（' + m.school_year + '年度）' : '') + '</option>').join('') +
+        '</optgroup>').join('');
+  }
+  // 講座が変わったのでロースターと期間欄を隠す
+  document.getElementById('cb-roster').innerHTML = '';
+  document.getElementById('cb-period-row').style.display = 'none';
+  document.getElementById('cb-save-row').style.display = 'none';
+}
+
+// 選択した講座について、生徒一覧＋既存受講の紐づけ状況を読み込む
+async function cbLoadRoster() {
+  const classId = document.getElementById('cb-class').value;
+  const rosterEl = document.getElementById('cb-roster');
+  const periodRow = document.getElementById('cb-period-row');
+  const saveRow = document.getElementById('cb-save-row');
+  if (!classId) {
+    rosterEl.innerHTML = '';
+    periodRow.style.display = 'none';
+    saveRow.style.display = 'none';
+    return;
+  }
+  periodRow.style.display = 'block';
+  saveRow.style.display = 'none';
+  rosterEl.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">読み込み中…</div>';
+
+  const includeInactive = document.getElementById('cb-include-inactive').checked;
+
+  try {
+    // 生徒一覧（在籍のみ or 全員）
+    let sQuery = 'select=id,name,school,grade,is_active,inactive_reason&order=school,grade,name';
+    if (!includeInactive) sQuery = 'is_active=eq.true&' + sQuery;
+    const students = await sbGet('students', sQuery) || [];
+    cbRosterStudents = students.filter(s => s.inactive_reason !== '除外');
+
+    // この講座の既存 enrollment（active + ended 両方）
+    const enrolls = await sbGet('class_enrollments',
+      'class_master_id=eq.' + encodeURIComponent(classId) + '&select=id,student_id,started_on,ended_on') || [];
+    cbExistingByStudent = {};
+    enrolls.forEach(e => {
+      // 同一生徒に複数あれば、継続中を優先、無ければ最新開始を採用
+      const cur = cbExistingByStudent[e.student_id];
+      if (!cur) { cbExistingByStudent[e.student_id] = e; return; }
+      const curOngoing = cur.ended_on == null, eOngoing = e.ended_on == null;
+      if (eOngoing && !curOngoing) cbExistingByStudent[e.student_id] = e;
+      else if (eOngoing === curOngoing && (e.started_on || '') > (cur.started_on || '')) cbExistingByStudent[e.student_id] = e;
+    });
+
+    cbRenderRoster();
+    saveRow.style.display = 'block';
+  } catch (e) {
+    rosterEl.innerHTML = '<div style="font-size:12px;color:var(--red);padding:10px">読み込みに失敗しました（' + escapeHtml(e.message || '') + '）</div>';
+  }
+}
+
+function cbRenderRoster() {
+  const rosterEl = document.getElementById('cb-roster');
+  if (!cbRosterStudents.length) {
+    rosterEl.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:10px">対象の生徒がいません</div>';
+    return;
+  }
+  const enrolledCount = Object.keys(cbExistingByStudent).length;
+  // 学校ごとにグループ化
+  const groups = {};
+  cbRosterStudents.forEach(s => { (groups[s.school || '（学校未設定）'] = groups[s.school || '（学校未設定）'] || []).push(s); });
+  const schoolKeys = Object.keys(groups).sort((a, b) => a.localeCompare(b, 'ja'));
+
+  let html = '<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 2px 6px">' +
+    '<div style="font-size:11px;color:var(--muted)">受講登録済み <b>' + enrolledCount + '</b> 人</div>' +
+    '<div style="display:flex;gap:8px">' +
+      '<button onclick="cbToggleAll(true)" style="font-size:10px;padding:3px 10px;border-radius:12px;border:1px solid var(--border);background:var(--surface);color:var(--muted);cursor:pointer">全選択</button>' +
+      '<button onclick="cbToggleAll(false)" style="font-size:10px;padding:3px 10px;border-radius:12px;border:1px solid var(--border);background:var(--surface);color:var(--muted);cursor:pointer">全解除</button>' +
+    '</div></div>';
+
+  schoolKeys.forEach(sk => {
+    html += '<div style="font-size:11px;font-weight:700;color:var(--muted);margin:6px 2px 3px">' + escapeHtml(sk) + '</div>';
+    groups[sk].forEach(s => {
+      const ex = cbExistingByStudent[s.id];
+      const checked = ex ? 'checked' : '';
+      const inactiveTag = (s.is_active === false)
+        ? '<span style="font-size:9px;color:#d32f2f;font-weight:700;margin-left:4px">' + (s.inactive_reason === '退塾' ? '🚪退塾' : '🎓卒業') + '</span>' : '';
+      let statusTag = '';
+      if (ex) {
+        const range = (ex.started_on || '？') + '〜' + (ex.ended_on == null ? '継続中' : ex.ended_on);
+        statusTag = '<span style="font-size:10px;color:var(--muted);margin-left:auto">' + range + '</span>';
+      }
+      html += '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface2);border-radius:8px;cursor:pointer">' +
+        '<input type="checkbox" class="cb-stu" data-sid="' + s.id + '" data-existing="' + (ex ? '1' : '0') + '" ' + checked + ' style="cursor:pointer">' +
+        '<span style="font-size:12px;color:#456;min-width:24px">' + escapeHtml((s.grade != null ? s.grade : '')) + '</span>' +
+        '<span style="font-size:13px;color:var(--text)">' + escapeHtml(s.name || '') + inactiveTag + '</span>' +
+        statusTag +
+      '</label>';
+    });
+  });
+  rosterEl.innerHTML = html;
+}
+
+function cbToggleAll(state) {
+  document.querySelectorAll('#cb-roster .cb-stu').forEach(cb => { cb.checked = state; });
+}
+
+// チェック状態を既存の紐づけと突き合わせて反映する。
+// ・未紐づけ→チェックあり = 新規登録（started_on / ended_on を適用）
+// ・紐づけ済み→チェックなし = 論理終了（endEnrollment）
+// ・既存でチェックありのまま、既存でチェックなしのまま = 何もしない
+async function cbSaveBatch() {
+  const classId = document.getElementById('cb-class').value;
+  if (!classId) { showToast('講座を選択してください', 'error'); return; }
+  const started = document.getElementById('cb-started').value || null;
+  const ended = document.getElementById('cb-ended').value || null;
+  if (started && ended && ended < started) { showToast('終了日は開始日より後にしてください', 'error'); return; }
+
+  const boxes = Array.from(document.querySelectorAll('#cb-roster .cb-stu'));
+  const toAdd = [];    // 新規登録する student_id
+  const toRemove = []; // 論理終了する student_id
+  boxes.forEach(cb => {
+    const sid = cb.getAttribute('data-sid');
+    const wasExisting = cb.getAttribute('data-existing') === '1';
+    if (cb.checked && !wasExisting) toAdd.push(sid);
+    if (!cb.checked && wasExisting) toRemove.push(sid);
+  });
+
+  if (!toAdd.length && !toRemove.length) { showToast('変更はありません', 'info'); return; }
+
+  // 過去分（開始日あり）は日付必須ではないが、終了日だけあって開始日が無いのは不自然なので軽く確認
+  if (!started && ended) {
+    if (!confirm('開始日が空のまま終了日だけ登録します。よろしいですか？')) return;
+  }
+
+  const confirmMsg = '登録 ' + toAdd.length + '人 / 解除 ' + toRemove.length + '人 を反映します。よろしいですか？';
+  if (!confirm(confirmMsg)) return;
+
+  showLoading('反映中...');
+  let okAdd = 0, okRemove = 0, failed = 0;
+  // 新規登録
+  for (const sid of toAdd) {
+    try {
+      await sbPost('class_enrollments', { class_master_id: classId, student_id: sid, started_on: started, ended_on: ended });
+      okAdd++;
+    } catch (e) { failed++; }
+  }
+  // 論理終了（既存の endEnrollment を流用：継続中の行に ended_on=今日 を入れる）
+  for (const sid of toRemove) {
+    try {
+      await endEnrollment(classId, sid);
+      okRemove++;
+    } catch (e) { failed++; }
+  }
+  hideLoading();
+  if (failed) {
+    showToast('反映：登録' + okAdd + '・解除' + okRemove + '（' + failed + '件失敗）', 'error');
+  } else {
+    showToast('✅ 反映しました（登録' + okAdd + '・解除' + okRemove + '）', 'success');
+  }
+  // 再読み込みして最新状態にする
+  cbLoadRoster();
+}
+
 async function loadClassMasterList() {
   // 自分の授業のみ（管理者は全部）
   let query = 'is_active=eq.true&order=subject,name&select=*,staff(name)';
@@ -17498,7 +17746,7 @@ function switchManageTab(tab, el) {
     toggleManageMenu('close');
   }
   // ローダー呼び出し
-  if (tab === 'class-master') { loadClassMasterList(); loadClassMasterSelect(); initSessionDefaults(); clearSessionFilter(); }
+  if (tab === 'class-master') { loadClassMasterList(); loadClassMasterSelect(); initSessionDefaults(); clearSessionFilter(); cbInit(); }
   if (tab === 'check-item') { initCheckItemForm(); loadCheckItemList(); }
   if (tab === 'mission') { loadMgMissions(); loadMgStudentSelect(); }
   if (tab === 'quiz') { loadMgQuizzes(); loadMgClassSelect(); }
