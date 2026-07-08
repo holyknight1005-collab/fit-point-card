@@ -2311,17 +2311,21 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       </div>
       <div style="flex:1 1 46%;min-width:0">
         <div class="form-label" style="font-size:11px">種別</div>
-        <select class="form-select" id="exam-type" style="width:100%;font-size:13px">
+        <select class="form-select" id="exam-type" style="width:100%;font-size:13px" onchange="examTypeChanged()">
           <option value="teiki">定期テスト</option>
-          <option value="jitsuryoku">実力テスト</option>
-          <option value="moshi">外部模試</option>
-          <option value="kyotsu">共通テスト系</option>
-          <option value="other">その他</option>
+          <option value="moshi">模試</option>
+          <option value="other">その他テスト</option>
         </select>
+        <input class="form-input-sm" id="exam-type-other" type="text" placeholder="種別名を入力（例：校内実力テスト）" style="width:100%;margin-top:4px;display:none">
       </div>
       <div style="flex:1 1 46%;min-width:0">
-        <div class="form-label" style="font-size:11px">実施日</div>
-        <input class="form-input-sm" id="exam-date" type="date" style="width:100%">
+        <div class="form-label" style="font-size:11px">実施日（期間）</div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <input class="form-input-sm" id="exam-date" type="date" style="flex:1;min-width:0">
+          <span style="font-size:12px;color:var(--muted)">〜</span>
+          <input class="form-input-sm" id="exam-date-end" type="date" style="flex:1;min-width:0">
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">1日で終わる場合は終了日は空でOK</div>
       </div>
     </div>
 
@@ -3061,17 +3065,21 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         </div>
         <div style="flex:1 1 30%;min-width:0">
           <div class="form-label" style="font-size:11px">種別</div>
-          <select class="form-select" id="bexam-type" style="width:100%;font-size:13px">
+          <select class="form-select" id="bexam-type" style="width:100%;font-size:13px" onchange="bexamTypeChanged()">
             <option value="teiki">定期テスト</option>
-            <option value="jitsuryoku">実力テスト</option>
-            <option value="moshi">外部模試</option>
-            <option value="kyotsu">共通テスト系</option>
-            <option value="other">その他</option>
+            <option value="moshi">模試</option>
+            <option value="other">その他テスト</option>
           </select>
+          <input class="form-input-sm" id="bexam-type-other" type="text" placeholder="種別名を入力（例：校内実力テスト）" style="width:100%;margin-top:4px;display:none">
         </div>
-        <div style="flex:1 1 30%;min-width:0">
-          <div class="form-label" style="font-size:11px">実施日</div>
-          <input class="form-input-sm" id="bexam-date" type="date" style="width:100%">
+        <div style="flex:1 1 60%;min-width:0">
+          <div class="form-label" style="font-size:11px">実施日（期間）</div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input class="form-input-sm" id="bexam-date" type="date" style="flex:1;min-width:0">
+            <span style="font-size:12px;color:var(--muted)">〜</span>
+            <input class="form-input-sm" id="bexam-date-end" type="date" style="flex:1;min-width:0">
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">1日で終わる場合は終了日は空でOK</div>
         </div>
       </div>
 
@@ -3634,7 +3642,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702bf';
+const APP_VERSION = '20260702bg';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -19545,7 +19553,22 @@ const EXAM_TYPE_META = {
   kyotsu:     { label: '共通', color: '#B5651D' },
   other:      { label: 'その他', color: '#5A5A5A' }
 };
-function examTypeMeta(t) { return EXAM_TYPE_META[t || 'teiki'] || EXAM_TYPE_META.other; }
+function examTypeMeta(t) {
+  if (!t) return EXAM_TYPE_META.teiki;
+  if (EXAM_TYPE_META[t]) return EXAM_TYPE_META[t];
+  // 辞書にない値（「その他テスト」で自由入力された種別名）は、その文字列自体をラベルに
+  return { label: t, color: EXAM_TYPE_META.other.color };
+}
+
+// 実施日ラベル：開始日のみ→「7/1」、開始〜終了→「7/1〜7/5」
+function examDateRangeLabel(ex) {
+  if (!ex || !ex.exam_date) return '';
+  const start = ivFmtDate(ex.exam_date);
+  if (ex.exam_end_date && ex.exam_end_date !== ex.exam_date) {
+    return start + '〜' + ivFmtDate(ex.exam_end_date);
+  }
+  return start;
+}
 
 // 数値整形（小数第1位まで・整数はそのまま）
 function examNum(v) {
@@ -19612,7 +19635,7 @@ function karteExamCard(ex, scores) {
     if (av != null) { sumAvg += av; cntAvg++; }
   });
   const totalDiff = (hasScore && cntAvg > 0) ? (sumScore - sumAvg) : null;
-  const dateLabel = ex.exam_date ? ivFmtDate(ex.exam_date) : '';
+  const dateLabel = examDateRangeLabel(ex);
   const rankLabel = (ex.overall_rank != null)
     ? '<span style="font-size:11px;color:var(--text);font-weight:700;margin-left:8px">🏅 ' + ex.overall_rank + (ex.rank_of ? ' / ' + ex.rank_of : '') + '位</span>'
     : '';
@@ -19683,7 +19706,10 @@ function openExamModal(examId) {
   // リセット
   document.getElementById('exam-name').value = '';
   document.getElementById('exam-type').value = 'teiki';
+  document.getElementById('exam-type-other').value = '';
+  document.getElementById('exam-type-other').style.display = 'none';
   document.getElementById('exam-date').value = '';
+  document.getElementById('exam-date-end').value = '';
   document.getElementById('exam-use-average').checked = true;
   document.getElementById('exam-use-deviation').checked = false;
   document.getElementById('exam-use-rank').checked = false;
@@ -19711,8 +19737,22 @@ async function loadExamForEdit(examId) {
     const ex = rows && rows[0];
     if (!ex) return;
     document.getElementById('exam-name').value = ex.exam_name || '';
-    document.getElementById('exam-type').value = ex.exam_type || 'teiki';
+    // 種別：セレクトの選択肢(teiki/moshi/other)に無い値は「その他テスト」＋記述欄へ
+    const typeSel = document.getElementById('exam-type');
+    const typeOther = document.getElementById('exam-type-other');
+    const knownOpts = Array.from(typeSel.options).map(o => o.value);
+    const t = ex.exam_type || 'teiki';
+    if (t === 'other' || knownOpts.indexOf(t) === -1) {
+      typeSel.value = 'other';
+      typeOther.style.display = 'block';
+      typeOther.value = (t === 'other') ? '' : t;
+    } else {
+      typeSel.value = t;
+      typeOther.style.display = 'none';
+      typeOther.value = '';
+    }
     document.getElementById('exam-date').value = ex.exam_date || '';
+    document.getElementById('exam-date-end').value = ex.exam_end_date || '';
     document.getElementById('exam-use-average').checked = ex.use_average !== false;
     document.getElementById('exam-use-deviation').checked = !!ex.use_deviation;
     document.getElementById('exam-use-rank').checked = !!ex.use_rank;
@@ -19872,6 +19912,9 @@ async function initExamRequestTab() {
     schoolSel.innerHTML = '<option value="">学校を選択</option>' + schools.map(s => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('');
   }
   document.getElementById('bexam-date').value = '';
+  document.getElementById('bexam-date-end').value = '';
+  const bto = document.getElementById('bexam-type-other');
+  if (bto) { bto.value = ''; bto.style.display = 'none'; }
   // 科目行を初期化（1行）
   const sub = document.getElementById('bexam-subjects');
   if (sub && !sub.children.length) bexamAddSubject();
@@ -19983,6 +20026,20 @@ async function saveExamTemplate() {
 }
 
 // ---- 一斉依頼の実行 ----
+// テスト種別セレクト：「その他テスト」選択時のみ自由記述欄を表示
+function bexamTypeChanged() {
+  const sel = document.getElementById('bexam-type');
+  const other = document.getElementById('bexam-type-other');
+  if (!sel || !other) return;
+  other.style.display = (sel.value === 'other') ? 'block' : 'none';
+}
+function examTypeChanged() {
+  const sel = document.getElementById('exam-type');
+  const other = document.getElementById('exam-type-other');
+  if (!sel || !other) return;
+  other.style.display = (sel.value === 'other') ? 'block' : 'none';
+}
+
 async function submitBulkExamRequest() {
   const name = document.getElementById('bexam-name').value.trim();
   if (!name) { showToast('テスト名を入力してください', 'error'); return; }
@@ -19992,8 +20049,17 @@ async function submitBulkExamRequest() {
   const useAvg = document.getElementById('bexam-use-average').checked;
   const useDev = document.getElementById('bexam-use-deviation').checked;
   const useRk  = document.getElementById('bexam-use-rank').checked;
-  const examType = document.getElementById('bexam-type').value;
+  let examType = document.getElementById('bexam-type').value;
+  if (examType === 'other') {
+    const otherName = (document.getElementById('bexam-type-other').value || '').trim();
+    if (!otherName) { showToast('「その他テスト」の種別名を入力してください', 'error'); return; }
+    examType = otherName;
+  }
   const examDate = document.getElementById('bexam-date').value || null;
+  const examEndDate = document.getElementById('bexam-date-end').value || null;
+  if (examDate && examEndDate && examEndDate < examDate) {
+    showToast('終了日は開始日以降にしてください', 'error'); return;
+  }
 
   if (!confirm(_bexamStudents.length + '名に「' + name + '」の入力を一斉依頼します。よろしいですか？')) return;
 
@@ -20008,6 +20074,7 @@ async function submitBulkExamRequest() {
           exam_name: name,
           exam_type: examType,
           exam_date: examDate,
+          exam_end_date: examEndDate,
           use_average: useAvg, use_deviation: useDev, use_rank: useRk,
           status: 'requested',
           entered_by: (typeof currentStaff !== 'undefined' && currentStaff) ? (currentStaff.id || null) : null
@@ -20052,13 +20119,25 @@ async function requestExamFromStudent() {
     rows.push({ subject: subject, sort_order: i });
   });
   if (!rows.length) { showToast('依頼する教科を1つ以上入力してください', 'error'); return; }
+  let examType = document.getElementById('exam-type').value;
+  if (examType === 'other') {
+    const otherName = (document.getElementById('exam-type-other').value || '').trim();
+    if (!otherName) { showToast('「その他テスト」の種別名を入力してください', 'error'); return; }
+    examType = otherName;
+  }
+  const examDate = document.getElementById('exam-date').value || null;
+  const examEndDate = document.getElementById('exam-date-end').value || null;
+  if (examDate && examEndDate && examEndDate < examDate) {
+    showToast('終了日は開始日以降にしてください', 'error'); return;
+  }
   if (!confirm(name + ' の入力を生徒に依頼します。よろしいですか？')) return;
 
   const parent = {
     student_id: karteStudentId,
     exam_name: name,
-    exam_type: document.getElementById('exam-type').value,
-    exam_date: document.getElementById('exam-date').value || null,
+    exam_type: examType,
+    exam_date: examDate,
+    exam_end_date: examEndDate,
     use_average: useAvg, use_deviation: useDev, use_rank: useRk,
     status: 'requested',
     entered_by: (typeof currentStaff !== 'undefined' && currentStaff ? currentStaff.id : null)
@@ -20144,7 +20223,7 @@ function stexamCard(ex, scores) {
       inputs +
     '</div>';
   }).join('');
-  const dateLabel = ex.exam_date ? ivFmtDate(ex.exam_date) : '';
+  const dateLabel = examDateRangeLabel(ex);
   return '<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px">' +
     '<div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:8px">' + escapeHtml(ex.exam_name || '') +
       (dateLabel ? '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + dateLabel + '</span>' : '') + '</div>' +
@@ -20233,7 +20312,7 @@ async function loadExamApprovals() {
       '<div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:2px">' + escapeHtml(st.name || '?') +
         '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + [st.school, st.grade].filter(Boolean).join(' ') + '</span></div>' +
       '<div style="font-size:12px;color:var(--orange-d);font-weight:700;margin-bottom:6px">' + escapeHtml(ex.exam_name || '') +
-        (ex.exam_date ? '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + ivFmtDate(ex.exam_date) + '</span>' : '') + '</div>' +
+        (examDateRangeLabel(ex) ? '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + examDateRangeLabel(ex) + '</span>' : '') + '</div>' +
       '<div style="margin-bottom:8px">' + (rowsTxt || '<span style="font-size:11px;color:var(--muted)">教科なし</span>') + '</div>' +
       '<div style="display:flex;gap:8px">' +
         '<button onclick="rejectExam(&quot;' + ex.id + '&quot;)" style="flex:1;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">差し戻し</button>' +
