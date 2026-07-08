@@ -83,9 +83,12 @@
   .choice-opt.wrong{border-color:var(--red);background:var(--red-l)}
   .bar-bg{height:8px;background:var(--bg);border-radius:4px;overflow:hidden}
   .bar-fill{height:100%;border-radius:4px}
-  /* 長い数式が枠をはみ出す場合、途中改行で崩さず横スクロールで見せる */
-  .katex{white-space:nowrap}
-  .katex-scroll{max-width:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
+  /* 数式そのものは途中改行で崩さない。ただし問題文（日本語＋数式）は折り返せるようにする。
+     .katex を inline-block にして「1つの塊」として扱い、塊の内部は改行しない。
+     塊と塊のあいだ、および日本語テキスト部分は通常どおり折り返す。 */
+  .katex{white-space:nowrap;display:inline-block;max-width:100%;vertical-align:middle}
+  .q-jp{white-space:normal;word-break:break-all}
+  .q-text,.choice-opt{overflow-wrap:break-word;word-break:normal;line-height:1.9}
 </style>
 </head>
 <body>
@@ -368,13 +371,27 @@ function toLatex(raw){
   s = s.replace(/\^\s*(\([^()]*\)|[+\-]?[0-9A-Za-z.]+|\\[a-zA-Z]+)/g, function(m, exp){
     return '^{'+exp+'}';
   });
-  // 「分子/分母」を \frac に変換。
+  // 指数の中身（^{...}）は、分数を2階建てにすると縦に膨らんで枠をはみ出す。
+  // 指数内はスラッシュ表記のままにしたいので、分数変換の前にプレースホルダへ退避する。
+  const expStash = [];
+  s = s.replace(/\^\{([^{}]*)\}/g, function(m, inner){
+    // 指数内の余計な丸括弧は外す（(π/2) → π/2 で見た目すっきり）
+    let e = inner;
+    if(/^\(.*\)$/.test(e)){ e = e.slice(1,-1); }
+    expStash.push(e);
+    return '\u0001'+(expStash.length-1)+'\u0002';
+  });
+  // 「分子/分母」を \dfrac に変換（指数の外側のみ。指数内は退避済みなので影響なし）。
   // 分子：数字・\pi・\theta・ギリシャ・英字・( ) の連なり、分母：同様。
-  // 例: 5\pi/6 → \frac{5\pi}{6} , 1/2 → \frac{1}{2} , (x+1)/2 → \frac{(x+1)}{2}
+  // 例: 5\pi/6 → \dfrac{5\pi}{6} , 1/2 → \dfrac{1}{2} , (x+1)/2 → \dfrac{(x+1)}{2}
   const term = '(?:\\\\[a-zA-Z]+|[0-9A-Za-z]|\\([^()]*\\))+';
   const fracRe = new RegExp('('+term+')\\s*/\\s*('+term+')','g');
   s = s.replace(fracRe, function(m, num, den){
     return '\\dfrac{'+num+'}{'+den+'}';
+  });
+  // 退避した指数を復元（中のスラッシュはそのまま＝1行に収まる）
+  s = s.replace(/\u0001(\d+)\u0002/g, function(m, idx){
+    return '^{'+expStash[+idx]+'}';
   });
   return s;
 }
@@ -399,8 +416,25 @@ function mathHTML(raw){
       }
       return out;
     }
-    // $ が無い＝式全体を自動変換して描画
-    return katex.renderToString(toLatex(s),{throwOnError:false,displayMode:false});
+    // $ が無い場合：日本語（かな・漢字等）はテキストとして出し、
+    // 数式になりうる区間だけを KaTeX 化する。こうすると日本語の切れ目で自然に折り返せる。
+    if(!/[\u3040-\u30FF\u3400-\u9FFF]/.test(s)){
+      // 日本語を含まない＝全体を数式として描画
+      return katex.renderToString(toLatex(s),{throwOnError:false,displayMode:false});
+    }
+    let out=''; let last=0; let m2;
+    const re=/[\u3040-\u309F\u30A0-\u30FF\u3400-\u9FFF\u3000\u3001\u3002\u300C\u300D\u300E\u300F\uFF01\uFF1F]+/g;
+    while((m2=re.exec(s))!==null){
+      const before=s.slice(last, m2.index);
+      if(before.trim()!==''){ out+=katex.renderToString(toLatex(before),{throwOnError:false,displayMode:false}); }
+      else { out+=esc(before); }
+      out+='<span class="q-jp">'+esc(m2[0])+'</span>';
+      last=m2.index+m2[0].length;
+    }
+    const tail=s.slice(last);
+    if(tail.trim()!==''){ out+=katex.renderToString(toLatex(tail),{throwOnError:false,displayMode:false}); }
+    else { out+=esc(tail); }
+    return out;
   }catch(e){
     return esc(s);
   }
