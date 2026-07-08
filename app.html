@@ -3120,6 +3120,16 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       <button onclick="bexamAddSubject()" style="margin-top:6px;padding:6px 12px;background:var(--surface2);border:1px dashed var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;width:100%">＋ 科目を追加</button>
 
       <button onclick="submitBulkExamRequest()" style="width:100%;margin-top:14px;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">📨 一斉に依頼する</button>
+
+      <!-- 依頼済みテストの管理（一括取り消し・科目削除） -->
+      <div style="margin-top:20px;padding-top:16px;border-top:2px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <div style="font-size:13px;font-weight:800;color:var(--text)">📋 依頼済みテストの管理</div>
+          <button onclick="loadBulkExamManage()" style="padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;color:var(--text);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">🔄 更新</button>
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:10px;line-height:1.5">一斉依頼したテストの一覧です。間違えた科目を全員から消したり、テストごと取り消せます。点数入力済みがある場合は警告が出ます。</div>
+        <div id="bexam-manage-list" style="display:flex;flex-direction:column;gap:8px"></div>
+      </div>
     </div>
 
     <!-- 面談タブ：在籍生徒の面談記録＋締切（キャンペーン）の進捗見える化 -->
@@ -3642,7 +3652,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702bg';
+const APP_VERSION = '20260702bh';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -17614,7 +17624,7 @@ function switchManageTab(tab, el) {
   if (tab === 'teamtask') loadTeamTasks();
   if (tab === 'yesterday') loadYesterdayAttendance();
   if (tab === 'makeup') { loadExamApprovals(); loadReviewApprovals(); loadMakeupApprovals(); }
-  if (tab === 'examreq') initExamRequestTab();
+  if (tab === 'examreq') { initExamRequestTab(); loadBulkExamManage(); }
   if (tab === 'student-view') loadStudentSelectForView();
   if (tab === 'birthday') loadStudentBirthdays();
   if (tab === 'calendar') loadStaffCalendar();
@@ -20098,9 +20108,142 @@ async function submitBulkExamRequest() {
     showToast('📨 ' + ok + '名に依頼しました' + (fail ? '（失敗' + fail + '名）' : ''), fail ? 'info' : 'success');
     // フォームを軽くリセット（テスト名だけ残す）
     if (typeof loadPendingSummary === 'function') { try { loadPendingSummary(); } catch (e) {} }
+    if (typeof loadBulkExamManage === 'function') { try { loadBulkExamManage(); } catch (e) {} }
   } catch (e) {
     hideLoading();
     showToast('エラー: ' + e.message, 'error');
+  }
+}
+
+// ===== 依頼済みテストの管理（一括取り消し・科目一括削除） =====
+// 一斉依頼は同じ exam_name（＋exam_date）で複数生徒に配られる。
+// それを1つの「テスト」として束ねて表示し、科目単位／テスト単位で一括削除する。
+let _bexamManageCache = {};
+
+async function loadBulkExamManage() {
+  const box = document.getElementById('bexam-manage-list');
+  if (!box) return;
+  box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">読み込み中...</div>';
+  try {
+    const exams = await sbGet('student_exams',
+      'status=in.(requested,reported)&select=id,exam_name,exam_date,exam_type,created_at&order=created_at.desc') || [];
+    if (!exams.length) {
+      box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">管理対象の依頼中テストはありません。</div>';
+      _bexamManageCache = {};
+      return;
+    }
+    const groups = {};
+    exams.forEach(e => {
+      const key = (e.exam_name || '') + '||' + (e.exam_date || '');
+      if (!groups[key]) groups[key] = { exam_name: e.exam_name || '(名称なし)', exam_date: e.exam_date || null, exam_type: e.exam_type, examIds: [], created_at: e.created_at };
+      groups[key].examIds.push(e.id);
+    });
+    _bexamManageCache = {};
+    const keys = Object.keys(groups);
+    for (const key of keys) {
+      const g = groups[key];
+      g.studentCount = g.examIds.length;
+      let scores = [];
+      try {
+        scores = await sbGet('student_exam_scores',
+          'exam_id=in.(' + g.examIds.join(',') + ')&select=subject,score,sort_order') || [];
+      } catch (e) { scores = []; }
+      const subjMap = {};
+      scores.forEach(s => {
+        const name = s.subject || '(空)';
+        if (!subjMap[name]) subjMap[name] = { subject: name, count: 0, scored: 0 };
+        subjMap[name].count++;
+        if (s.score !== null && s.score !== undefined && s.score !== '') subjMap[name].scored++;
+      });
+      g.subjects = Object.values(subjMap).sort((a, b) => a.subject.localeCompare(b.subject, 'ja'));
+      _bexamManageCache[key] = g;
+    }
+    renderBulkExamManage();
+  } catch (e) {
+    box.innerHTML = '<div style="font-size:12px;color:#C75050;padding:8px">読み込みに失敗しました: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderBulkExamManage() {
+  const box = document.getElementById('bexam-manage-list');
+  if (!box) return;
+  const keys = Object.keys(_bexamManageCache);
+  if (!keys.length) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">管理対象の依頼中テストはありません。</div>';
+    return;
+  }
+  box.innerHTML = keys.map(key => {
+    const g = _bexamManageCache[key];
+    const meta = examTypeMeta(g.exam_type);
+    const dateLabel = g.exam_date ? ivFmtDate(g.exam_date) : '日付なし';
+    const subjChips = g.subjects.map(s => {
+      const warn = s.scored > 0 ? ' style="background:#FFF3DC;border-color:#E0A94D"' : '';
+      const scoredBadge = s.scored > 0 ? '<span style="color:#B5651D;font-weight:700"> ✎' + s.scored + '</span>' : '';
+      return '<span class="bexam-subj-chip"' + warn + ' style="display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;margin:2px">' +
+        escapeHtml(s.subject) + '<span style="color:var(--muted)">(' + s.count + ')</span>' + scoredBadge +
+        '<button onclick="deleteBulkExamSubject(&quot;' + encodeURIComponent(key) + '&quot;,&quot;' + encodeURIComponent(s.subject) + '&quot;)" style="background:none;border:none;color:#C75050;font-size:13px;font-weight:700;cursor:pointer;padding:0 0 0 2px;line-height:1">×</button>' +
+      '</span>';
+    }).join('');
+    return '<div style="border:1px solid var(--border);border-radius:10px;padding:10px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px">' +
+        '<div style="flex:1;min-width:0">' +
+          '<span style="font-size:10px;padding:1px 7px;border-radius:9px;background:' + meta.color + '20;color:' + meta.color + ';font-weight:700;margin-right:6px">' + escapeHtml(meta.label) + '</span>' +
+          '<span style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(g.exam_name) + '</span>' +
+          '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + dateLabel + '・' + g.studentCount + '名</span>' +
+        '</div>' +
+        '<button onclick="deleteBulkExamWhole(&quot;' + encodeURIComponent(key) + '&quot;)" style="flex:0 0 auto;padding:5px 9px;background:#FBEAEA;border:1px solid #E0A0A0;border-radius:7px;color:#B03030;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">🗑 取り消し</button>' +
+      '</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:2px">' + (subjChips || '<span style="font-size:11px;color:var(--muted)">科目なし</span>') + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function deleteBulkExamSubject(keyEnc, subjectEnc) {
+  const key = decodeURIComponent(keyEnc);
+  const subject = decodeURIComponent(subjectEnc);
+  const g = _bexamManageCache[key];
+  if (!g) return;
+  const subj = g.subjects.find(s => s.subject === subject);
+  if (!subj) return;
+  let msg = '「' + g.exam_name + '」から科目「' + subject + '」を全員分（' + subj.count + '件）削除します。よろしいですか？';
+  if (subj.scored > 0) {
+    msg = '⚠️ 注意：この科目はすでに ' + subj.scored + '名が点数を入力しています。\n\n' + msg + '\n\n入力済みの点数も消えます。本当に削除しますか？';
+  }
+  if (!confirm(msg)) return;
+  showLoading('削除中...');
+  try {
+    await sbDelete('student_exam_scores',
+      'exam_id=in.(' + g.examIds.join(',') + ')&subject=eq.' + encodeURIComponent(subject));
+    hideLoading();
+    showToast('✅ 科目「' + subject + '」を削除しました', 'success');
+    loadBulkExamManage();
+  } catch (e) {
+    hideLoading();
+    showToast('削除に失敗: ' + e.message, 'error');
+  }
+}
+
+async function deleteBulkExamWhole(keyEnc) {
+  const key = decodeURIComponent(keyEnc);
+  const g = _bexamManageCache[key];
+  if (!g) return;
+  const totalScored = g.subjects.reduce((a, s) => a + s.scored, 0);
+  let msg = '「' + g.exam_name + '」を ' + g.studentCount + '名分まるごと取り消します。よろしいですか？';
+  if (totalScored > 0) {
+    msg = '⚠️ 注意：このテストはすでに点数入力が ' + totalScored + '件あります。\n\n' + msg + '\n\n入力済みの点数もすべて消えます。本当に取り消しますか？';
+  }
+  if (!confirm(msg)) return;
+  showLoading('取り消し中...');
+  try {
+    await sbDelete('student_exam_scores', 'exam_id=in.(' + g.examIds.join(',') + ')');
+    await sbDelete('student_exams', 'id=in.(' + g.examIds.join(',') + ')');
+    hideLoading();
+    showToast('✅ 「' + g.exam_name + '」を取り消しました', 'success');
+    loadBulkExamManage();
+    if (typeof loadPendingSummary === 'function') { try { loadPendingSummary(); } catch (e) {} }
+  } catch (e) {
+    hideLoading();
+    showToast('取り消しに失敗: ' + e.message, 'error');
   }
 }
 
