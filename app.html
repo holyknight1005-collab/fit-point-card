@@ -3621,7 +3621,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702bd';
+const APP_VERSION = '20260702be';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -20184,6 +20184,10 @@ async function karteLoadInterviews(sid) {
     } catch (e) {
       el.style.display = 'none'; el.innerHTML = ''; return;
     }
+    // 編集用に面談レコードと生徒IDをキャッシュ
+    window._karteIvRows = {};
+    rows.forEach(r => { window._karteIvRows[r.id] = r; });
+    window._karteIvSid = sid;
 
     // 既存の目標（締切つき）
     let goals = [];
@@ -20252,11 +20256,15 @@ async function karteLoadInterviews(sid) {
           const studentMemo = r.student_note
             ? '<div style="font-size:11px;color:#2E6B12;background:#F1F8ED;border-radius:6px;padding:6px 8px;margin-top:4px;white-space:pre-wrap;line-height:1.5">💬 生徒共有：' + escapeHtml(r.student_note) + '</div>'
             : '';
-          return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">' +
+          return '<div style="padding:8px 0;border-bottom:1px solid var(--border)" id="karte-iv-row-' + r.id + '">' +
             '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:2px">' +
-              '<div style="font-size:12px;font-weight:700;color:var(--text)">' + ivFmtDate(r.interview_date) + parentBadge + '</div>' + who +
+              '<div style="font-size:12px;font-weight:700;color:var(--text)">' + ivFmtDate(r.interview_date) + parentBadge + '</div>' +
+              '<div style="display:flex;align-items:center;gap:8px">' + who +
+                '<button onclick="karteEditInterview(' + r.id + ')" style="background:none;border:none;color:var(--orange-d);font-size:11px;font-weight:700;cursor:pointer;padding:0 2px;white-space:nowrap">✏️ 編集</button>' +
+              '</div>' +
             '</div>' +
-            staffMemo + studentMemo +
+            '<div id="karte-iv-view-' + r.id + '">' + staffMemo + studentMemo + '</div>' +
+            '<div id="karte-iv-edit-' + r.id + '" style="display:none"></div>' +
           '</div>';
         }).join('');
     } else {
@@ -20505,6 +20513,77 @@ async function karteDeleteGoal(goalId) {
     karteLoadInterviews(karteStudentId);
     if (typeof loadPendingSummary === 'function') { try { loadPendingSummary(); } catch (e) {} }
   } catch (e) { showToast('削除に失敗しました', 'error'); }
+}
+
+// 面談ハブ：既存面談レコードの編集フォームを開く
+function karteEditInterview(id) {
+  const r = (window._karteIvRows && window._karteIvRows[id]) ? window._karteIvRows[id] : null;
+  if (!r) { showToast('編集対象が見つかりません', 'error'); return; }
+  const viewEl = document.getElementById('karte-iv-view-' + id);
+  const editEl = document.getElementById('karte-iv-edit-' + id);
+  if (!editEl) return;
+  const staffMap = window._karteStaffMap || {};
+  const staffOpts = '<option value="">未設定</option>' +
+    Object.keys(staffMap).map(k => '<option value="' + k + '"' + (k === r.interviewer ? ' selected' : '') + '>' + escapeHtml(staffMap[k]) + '（' + k + '）</option>').join('');
+  editEl.innerHTML =
+    '<div style="background:var(--surface2);border-radius:8px;padding:10px;margin-top:6px">' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">' +
+        '<div style="flex:1 1 46%;min-width:0"><div style="font-size:10px;color:var(--muted);margin-bottom:2px">面談日</div>' +
+          '<input class="form-input-sm" type="date" id="karte-ive-date-' + id + '" value="' + escapeHtml(r.interview_date || '') + '" style="width:100%"></div>' +
+        '<div style="flex:1 1 46%;min-width:0"><div style="font-size:10px;color:var(--muted);margin-bottom:2px">担当</div>' +
+          '<select class="form-input-sm" id="karte-ive-staff-' + id + '" style="width:100%">' + staffOpts + '</select></div>' +
+      '</div>' +
+      '<div style="font-size:10px;color:var(--muted);margin-bottom:2px">📝 スタッフメモ（内部用・生徒/保護者には出ません）</div>' +
+      '<textarea class="form-input-sm" id="karte-ive-note-' + id + '" rows="4" style="width:100%;resize:vertical;margin-bottom:8px">' + escapeHtml(r.note || '') + '</textarea>' +
+      '<div style="font-size:10px;color:var(--muted);margin-bottom:2px">💬 生徒に共有するメモ（生徒アプリ「面談で話したこと」に表示）</div>' +
+      '<textarea class="form-input-sm" id="karte-ive-snote-' + id + '" rows="4" style="width:100%;resize:vertical;margin-bottom:8px">' + escapeHtml(r.student_note || '') + '</textarea>' +
+      '<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text);margin-bottom:10px;cursor:pointer">' +
+        '<input type="checkbox" id="karte-ive-parent-' + id + '"' + (r.share_to_parent ? ' checked' : '') + ' style="width:16px;height:16px;cursor:pointer"><span>👪 保護者向け印刷に載せる</span></label>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button onclick="karteSaveEditInterview(' + id + ')" style="flex:1;padding:9px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">保存する</button>' +
+        '<button onclick="karteCancelEditInterview(' + id + ')" style="flex:0 0 auto;padding:9px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">キャンセル</button>' +
+      '</div>' +
+    '</div>';
+  if (viewEl) viewEl.style.display = 'none';
+  editEl.style.display = 'block';
+}
+
+// 面談ハブ：編集フォームを閉じる
+function karteCancelEditInterview(id) {
+  const viewEl = document.getElementById('karte-iv-view-' + id);
+  const editEl = document.getElementById('karte-iv-edit-' + id);
+  if (editEl) { editEl.style.display = 'none'; editEl.innerHTML = ''; }
+  if (viewEl) viewEl.style.display = 'block';
+}
+
+// 面談ハブ：編集内容を保存
+async function karteSaveEditInterview(id) {
+  const dateEl = document.getElementById('karte-ive-date-' + id);
+  const date = (dateEl && dateEl.value || '').trim();
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) { showToast('面談日を入力してください', 'error'); return; }
+  const staffEl = document.getElementById('karte-ive-staff-' + id);
+  const noteEl = document.getElementById('karte-ive-note-' + id);
+  const snoteEl = document.getElementById('karte-ive-snote-' + id);
+  const parentEl = document.getElementById('karte-ive-parent-' + id);
+  const body = {
+    interview_date: date,
+    interviewer: (staffEl && staffEl.value || '').trim() || null,
+    note: (noteEl && noteEl.value || '').trim() || null,
+    student_note: (snoteEl && snoteEl.value || '').trim() || null,
+    share_to_parent: !!(parentEl && parentEl.checked),
+    updated_at: new Date().toISOString()
+  };
+  showLoading('保存中...');
+  try {
+    await sbPatch('student_interviews', 'id=eq.' + id, body);
+    hideLoading();
+    showToast('✅ 面談を更新しました', 'success');
+    const sid = window._karteIvSid || (typeof karteStudentId !== 'undefined' ? karteStudentId : null);
+    if (sid) karteLoadInterviews(sid);
+  } catch (e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
 }
 
 // ---- ④ 小テスト成績推移（mini_quiz_results 時系列） ----
