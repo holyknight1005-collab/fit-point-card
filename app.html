@@ -2912,6 +2912,19 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <!-- 教科アプリ使用状況タブ -->
     <div id="smcontent-appusage" style="display:none">
       <button onclick="openAppDeliveryModal()" style="width:100%;padding:10px;margin-bottom:10px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📤 アプリ配信設定（誰に出すか）</button>
+
+      <!-- 公開クラス設定（math/chem を開けるクラスを絞る） -->
+      <div style="background:var(--surface2);border-radius:10px;padding:12px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:800;color:var(--orange-d);margin-bottom:4px">🔒 アプリ公開クラス設定</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.5">チェックしたクラスの<b>現役生徒だけ</b>がそのアプリを開けます。1つも選ばなければ<b>全生徒に開放</b>されます。スタッフは「理系」タグ付きのみ閲覧できます。</div>
+        <div style="display:flex;gap:6px;margin-bottom:10px">
+          <button id="acfilter-math" onclick="setAccessAppTab('math',this)" class="ac-app-btn active" style="flex:1;padding:8px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer">📐 数学アプリ</button>
+          <button id="acfilter-chem" onclick="setAccessAppTab('chem',this)" class="ac-app-btn" style="flex:1;padding:8px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);cursor:pointer">🧪 化学アプリ</button>
+        </div>
+        <div id="ac-class-list" style="display:flex;flex-direction:column;gap:4px;max-height:280px;overflow-y:auto;margin-bottom:10px"></div>
+        <button onclick="saveAccessClasses()" style="width:100%;padding:9px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">この内容で保存する</button>
+      </div>
+
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px">生徒ごとの数学・化学アプリの利用状況です。回数・合計ポイント・最終利用日を表示します。</div>
       <div style="display:flex;gap:6px;margin-bottom:10px">
         <button onclick="setAppUsageFilter('all',this)" class="au-filter-btn active" style="flex:1;padding:8px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer">すべて</button>
@@ -3621,7 +3634,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702be';
+const APP_VERSION = '20260702bf';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16348,6 +16361,93 @@ function toggleQsStudent(resultId) {
 let auUsageCache = null;   // { studentId: { math:{count,points,last}, chem:{...} } }
 let auFilter = 'all';
 
+// ===== アプリ公開クラス設定（app_access_classes） =====
+let acCurrentApp = 'math';           // 編集中のアプリ
+let acAllClasses = [];               // class_master 一覧キャッシュ
+let acAllowByApp = { math: new Set(), chem: new Set() }; // アプリ別の許可class_master_id
+
+async function loadAccessClasses() {
+  try {
+    // クラス一覧（有効なもの）
+    acAllClasses = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject') || [];
+    // 現在の許可設定
+    const rows = await sbGet('app_access_classes', 'app_key=in.(math,chem)&select=app_key,class_master_id') || [];
+    acAllowByApp = { math: new Set(), chem: new Set() };
+    rows.forEach(r => {
+      if (acAllowByApp[r.app_key]) acAllowByApp[r.app_key].add(r.class_master_id);
+    });
+  } catch (e) {
+    acAllClasses = [];
+    acAllowByApp = { math: new Set(), chem: new Set() };
+  }
+  renderAccessClassList();
+}
+
+function setAccessAppTab(app, el) {
+  acCurrentApp = app;
+  document.querySelectorAll('.ac-app-btn').forEach(b => {
+    b.classList.remove('active');
+    b.style.background = 'var(--surface)';
+    b.style.color = 'var(--muted)';
+  });
+  if (el) {
+    el.classList.add('active');
+    el.style.background = 'var(--orange-l)';
+    el.style.color = 'var(--orange-d)';
+  }
+  renderAccessClassList();
+}
+
+function renderAccessClassList() {
+  const box = document.getElementById('ac-class-list');
+  if (!box) return;
+  if (!acAllClasses.length) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">有効なクラスがありません。</div>';
+    return;
+  }
+  const allow = acAllowByApp[acCurrentApp] || new Set();
+  box.innerHTML = acAllClasses.map(c => {
+    const checked = allow.has(c.id) ? ' checked' : '';
+    const subj = c.subject ? '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + escapeHtml(c.subject) + '</span>' : '';
+    return '<label style="display:flex;align-items:center;gap:8px;padding:7px 8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;cursor:pointer">' +
+      '<input type="checkbox" class="ac-cls-chk" data-cid="' + c.id + '"' + checked + ' style="width:16px;height:16px;cursor:pointer">' +
+      '<span style="font-size:13px;color:var(--text);flex:1;min-width:0">' + escapeHtml(c.name || '') + subj + '</span>' +
+    '</label>';
+  }).join('');
+}
+
+async function saveAccessClasses() {
+  const app = acCurrentApp;
+  // 現在チェックされているクラスIDを収集（class_master.id は uuid 文字列）
+  const checked = new Set(
+    Array.from(document.querySelectorAll('.ac-cls-chk'))
+      .filter(chk => chk.checked)
+      .map(chk => chk.getAttribute('data-cid'))
+      .filter(v => v)
+  );
+  const prev = acAllowByApp[app] || new Set();
+  // 追加分・削除分を差分計算
+  const toAdd = [...checked].filter(id => !prev.has(id));
+  const toDel = [...prev].filter(id => !checked.has(id));
+
+  showLoading('保存中...');
+  try {
+    for (const id of toAdd) {
+      await sbPost('app_access_classes', { app_key: app, class_master_id: id });
+    }
+    for (const id of toDel) {
+      await sbDelete('app_access_classes', 'app_key=eq.' + encodeURIComponent(app) + '&class_master_id=eq.' + encodeURIComponent(id));
+    }
+    acAllowByApp[app] = checked;
+    hideLoading();
+    const appLabel = (app === 'math') ? '数学' : '化学';
+    showToast('✅ ' + appLabel + 'アプリの公開クラスを保存しました（' + checked.size + 'クラス）', 'success');
+  } catch (e) {
+    hideLoading();
+    showToast('保存に失敗しました: ' + e.message, 'error');
+  }
+}
+
 async function loadAppUsage() {
   const wrap = document.getElementById('au-list');
   if (!wrap) return;
@@ -17514,7 +17614,7 @@ function switchManageTab(tab, el) {
   if (tab === 'announce') { loadAnnouncementsStaff(); initAnnounceForm(); }
   if (tab === 'attendance') initAttendanceTab();
   if (tab === 'quizstatus') loadQuizStatusClasses();
-  if (tab === 'appusage') loadAppUsage();
+  if (tab === 'appusage') { loadAppUsage(); loadAccessClasses(); }
   if (tab === 'classanalysis') initClassAnalysis();
   if (tab === 'studentanalysis') { saItem = null; saChartType = 'bar'; loadStudentAnalysis(); }
   if (tab === 'rostercheck') initRosterCheck();

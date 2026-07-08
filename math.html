@@ -771,6 +771,38 @@ async function sbPatch(table, query, body){
   if(!res.ok) throw new Error(await res.text());
 }
 
+/* ===== アクセス制御 =====
+   このアプリの app_key。chem.html では 'chem' にする。 */
+const APP_KEY = 'math';
+/* このアプリを開ける人か判定。
+   スタッフ: staff.tags に '理系' を含むこと。
+   生徒: 自分の現役 class_enrollments が app_access_classes(APP_KEY) の許可クラスに含まれること。
+         ただし許可クラスが 0 件なら「制限なし（全生徒開放）」。
+   通信失敗時は締め出さない（false陽性を避け、開放側に倒す）。
+   戻り値: { ok:boolean, reason:string } */
+async function checkAppAccess(){
+  try{
+    if(isStaff){
+      const tags = Array.isArray(currentStaffTags) ? currentStaffTags : [];
+      if(tags.indexOf('理系') !== -1) return { ok:true, reason:'' };
+      return { ok:false, reason:'このアプリは理系担当スタッフのみ閲覧できます。' };
+    }
+    // 生徒：許可クラス一覧を取得
+    const allow = await sbGet('app_access_classes','app_key=eq.'+encodeURIComponent(APP_KEY)+'&select=class_master_id');
+    const allowIds = (allow||[]).map(a=>a.class_master_id);
+    if(!allowIds.length) return { ok:true, reason:'' }; // 未設定＝全開放
+    // 自分の現役受講クラス
+    const enr = await sbGet('class_enrollments','student_id=eq.'+encodeURIComponent(currentStudent.id)+'&ended_on=is.null&select=class_master_id');
+    const myIds = (enr||[]).map(e=>e.class_master_id);
+    const hit = myIds.some(id => allowIds.indexOf(id) !== -1);
+    if(hit) return { ok:true, reason:'' };
+    return { ok:false, reason:'このアプリは対象クラスの生徒のみ利用できます。' };
+  }catch(e){
+    // 通信・設定エラー時は締め出さない
+    return { ok:true, reason:'' };
+  }
+}
+
 /* ===== UI部品 ===== */
 function showLoading(t){ document.getElementById('loading-text').textContent=t||'読み込み中...'; document.getElementById('loading').classList.remove('hidden'); }
 function hideLoading(){ document.getElementById('loading').classList.add('hidden'); }
@@ -787,6 +819,7 @@ function getTodayJST(){
 /* ===== 認証（本体と同じ fit_email / fit_pin を共有） ===== */
 let currentStudent = null;
 let isStaff = false; // スタッフ閲覧モード（ポイント・記録は保存しない）
+let currentStaffTags = []; // スタッフの tags（'理系' 判定用）
 
 // PINハッシュ（app.html / chem.html と同一仕様：salt = 'fit-juku::'+staffId(小文字)+'::'）
 async function hashPin(staffId, pin){
@@ -816,6 +849,7 @@ async function tryStaffLogin(idOrEmail, pin){
   }
   if(!ok) return false;
   isStaff = true;
+  currentStaffTags = Array.isArray(st.tags) ? st.tags : [];
   currentStudent = { id: st.id, name: st.name + '（スタッフ）', points: 0 };
   localStorage.setItem('fit_staff_id', staffId);
   localStorage.setItem('fit_staff_hash', hash || st.pin_hash || '');
@@ -836,6 +870,7 @@ async function autoLogin(){
         if(data&&data.length&&data[0].pin_hash&&data[0].pin_hash===shash){
           const st=data[0];
           isStaff=true;
+          currentStaffTags = Array.isArray(st.tags) ? st.tags : [];
           currentStudent={ id:st.id, name:st.name+'（スタッフ）', points:0 };
           await afterLogin();
           return;
@@ -883,6 +918,17 @@ async function doLogin(){
 function logout(){ currentStudent=null; isStaff=false; clearLoginState(); showScreen('screen-login'); }
 
 async function afterLogin(){
+  // アクセス制御：許可されない場合はログイン画面に戻す
+  const acc = await checkAppAccess();
+  if(!acc.ok){
+    hideLoading();
+    isStaff=false; currentStudent=null; currentStaffTags=[];
+    clearLoginState();
+    const err=document.getElementById('login-error');
+    if(err){ err.textContent=acc.reason||'このアプリは利用できません。'; err.classList.add('show'); }
+    showScreen('screen-login');
+    return;
+  }
   hideLoading();
   document.getElementById('home-hello').textContent=(currentStudent.name||'')+'さん、こんにちは';
   document.getElementById('student-points').textContent=(currentStudent.points||0).toLocaleString();
