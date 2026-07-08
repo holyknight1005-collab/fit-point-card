@@ -124,8 +124,8 @@
 <!-- ===== 受講していない場合 ===== -->
 <div id="screen-denied" class="screen">
   <div style="font-size:48px">🔒</div>
-  <div style="font-size:17px;font-weight:700;color:var(--green-d)">化学の授業を受けている人だけが使えます</div>
-  <div style="font-size:13px;color:var(--muted);line-height:1.7">化学を受講しているのに表示されない場合は、<br>講師に伝えてください。</div>
+  <div id="denied-msg" style="font-size:17px;font-weight:700;color:var(--green-d)">このアプリは対象クラスの生徒のみ利用できます。</div>
+  <div style="font-size:13px;color:var(--muted);line-height:1.7">対象なのに表示されない場合は、<br>講師に伝えてください。</div>
   <button class="home-logout" onclick="logout()" style="margin-top:8px;padding:9px 18px">ログアウト</button>
 </div>
 
@@ -309,7 +309,14 @@ async function doStaffLogin(){
 }
 
 async function afterStaffLogin(){
+  const acc = await checkAppAccess();
   hideLoading();
+  if(!acc.ok){
+    const dm=document.getElementById('denied-msg');
+    if(dm) dm.textContent = acc.reason || 'このアプリは利用できません。';
+    showScreen('screen-denied');
+    return;
+  }
   document.getElementById('staff-hello').textContent=(currentStaff.name||'スタッフ')+'さん（スタッフ）';
   showScreen('screen-staff');
   await staffLoadAnalysis();
@@ -397,27 +404,45 @@ function staffOpenPractice(){
   renderHomeCards();
 }
 
-/* ===== 受講判定：教科「化学」のクラスを受講しているか ===== */
-async function isChemEnrolled(){
+const APP_KEY = 'chem';
+/* このアプリを開ける人か判定（math.html と統一）。
+   スタッフ: staff.tags に '理系' を含むこと。
+   生徒: 自分の現役 class_enrollments が app_access_classes(APP_KEY) の許可クラスに含まれること。
+         ただし許可クラスが 0 件なら「制限なし（全生徒開放）」。
+   通信失敗時は締め出さない（false陽性を避け、開放側に倒す）。
+   戻り値: { ok:boolean, reason:string } */
+async function checkAppAccess(){
   try{
-    const enrolls=await sbGet('class_enrollments',
-      'student_id=eq.'+currentStudent.id+'&select=class_master(name,subject)');
-    if(!enrolls||!enrolls.length) return false;
-    return enrolls.some(e=>{
-      const cm=e.class_master;
-      if(!cm) return false;
-      const subj=(cm.subject||'');
-      const name=(cm.name||'');
-      // 教科が「化学」または授業名に「化学」を含む場合に許可
-      return subj.indexOf('化学')>=0 || name.indexOf('化学')>=0;
-    });
-  }catch(e){ console.error('enroll check error',e); return false; }
+    if(currentStaff){
+      const tags = Array.isArray(currentStaff.tags) ? currentStaff.tags : [];
+      if(tags.indexOf('理系') !== -1) return { ok:true, reason:'' };
+      return { ok:false, reason:'このアプリは理系担当スタッフのみ閲覧できます。' };
+    }
+    // 生徒：許可クラス一覧を取得
+    const allow = await sbGet('app_access_classes','app_key=eq.'+encodeURIComponent(APP_KEY)+'&select=class_master_id');
+    const allowIds = (allow||[]).map(a=>a.class_master_id);
+    if(!allowIds.length) return { ok:true, reason:'' }; // 未設定＝全開放
+    // 自分の現役受講クラス
+    const enr = await sbGet('class_enrollments','student_id=eq.'+encodeURIComponent(currentStudent.id)+'&ended_on=is.null&select=class_master_id');
+    const myIds = (enr||[]).map(e=>e.class_master_id);
+    const hit = myIds.some(id => allowIds.indexOf(id) !== -1);
+    if(hit) return { ok:true, reason:'' };
+    return { ok:false, reason:'このアプリは対象クラスの生徒のみ利用できます。' };
+  }catch(e){
+    // 通信・設定エラー時は締め出さない
+    return { ok:true, reason:'' };
+  }
 }
 
 async function afterLogin(){
-  const ok=await isChemEnrolled();
+  const acc = await checkAppAccess();
   hideLoading();
-  if(!ok){ showScreen('screen-denied'); return; }
+  if(!acc.ok){
+    const dm=document.getElementById('denied-msg');
+    if(dm) dm.textContent = acc.reason || 'このアプリは利用できません。';
+    showScreen('screen-denied');
+    return;
+  }
   document.getElementById('home-hello').textContent=(currentStudent.name||'')+'さん、こんにちは';
   document.getElementById('student-points').textContent=(currentStudent.points||0).toLocaleString();
   showScreen('screen-home');
