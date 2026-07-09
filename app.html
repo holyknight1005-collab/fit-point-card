@@ -2933,6 +2933,17 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         <button onclick="saveAccessClasses()" style="width:100%;padding:9px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">この内容で保存する</button>
       </div>
 
+      <!-- 授業別 数学単元設定（この授業でやった単元を紐づける） -->
+      <div style="background:var(--surface2);border-radius:10px;padding:12px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:800;color:var(--orange-d);margin-bottom:4px">📐 授業別 数学単元設定</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.5">授業を選び、その授業でやった単元にチェックを入れて保存します。生徒は数学アプリの「範囲えらんで演習」で、自分の受講授業をタップするとここで設定した単元だけを復習できます（未設定の授業は一覧に出ません）。</div>
+        <select id="cmu-class-sel" onchange="onCmuClassChange()" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;margin-bottom:10px;background:var(--surface)">
+          <option value="">-- 授業を選ぶ --</option>
+        </select>
+        <div id="cmu-unit-list" style="display:flex;flex-direction:column;gap:4px;max-height:260px;overflow-y:auto;margin-bottom:10px"></div>
+        <button onclick="saveClassMathUnits()" id="cmu-save-btn" disabled style="width:100%;padding:9px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;opacity:.5">この授業の単元を保存する</button>
+      </div>
+
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px">生徒ごとの数学・化学アプリの利用状況です。回数・合計ポイント・最終利用日を表示します。</div>
       <div style="display:flex;gap:6px;margin-bottom:10px">
         <button onclick="setAppUsageFilter('all',this)" class="au-filter-btn active" style="flex:1;padding:8px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer">すべて</button>
@@ -3657,7 +3668,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702bj';
+const APP_VERSION = '20260702bk';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -16482,6 +16493,89 @@ async function saveAccessClasses() {
   }
 }
 
+// ===== 授業別 数学単元設定（class_math_units） =====
+let cmuAllUnits = [];              // 全数学単元 [{id,name,sort_order}]
+let cmuCurrentLinks = new Set();   // 選択中の授業に現在紐づく unit_id
+
+async function loadClassMathUnits() {
+  const sel = document.getElementById('cmu-class-sel');
+  if (!sel) return;
+  try {
+    // 単元一覧
+    cmuAllUnits = await sbGet('math_units', 'is_active=eq.true&order=sort_order.asc&select=id,name,sort_order') || [];
+    // 授業一覧（有効なもの）
+    const classes = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject') || [];
+    sel.innerHTML = '<option value="">-- 授業を選ぶ --</option>' +
+      classes.map(c => '<option value="' + c.id + '">' + escapeHtml(c.name || '(名称未設定)') + (c.subject ? '（' + escapeHtml(c.subject) + '）' : '') + '</option>').join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">読み込み失敗</option>';
+  }
+  document.getElementById('cmu-unit-list').innerHTML = '';
+  const btn = document.getElementById('cmu-save-btn');
+  btn.disabled = true; btn.style.opacity = '0.5';
+}
+
+async function onCmuClassChange() {
+  const classId = document.getElementById('cmu-class-sel').value;
+  const listEl = document.getElementById('cmu-unit-list');
+  const btn = document.getElementById('cmu-save-btn');
+  if (!classId) {
+    listEl.innerHTML = '';
+    btn.disabled = true; btn.style.opacity = '0.5';
+    return;
+  }
+  try {
+    showLoading('読み込み中...');
+    const links = await sbGet('class_math_units', 'class_master_id=eq.' + encodeURIComponent(classId) + '&select=unit_id') || [];
+    cmuCurrentLinks = new Set(links.map(l => l.unit_id));
+    hideLoading();
+    if (!cmuAllUnits.length) {
+      listEl.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">数学単元がありません。</div>';
+      btn.disabled = true; btn.style.opacity = '0.5';
+      return;
+    }
+    listEl.innerHTML = cmuAllUnits.map(u => {
+      const checked = cmuCurrentLinks.has(u.id) ? ' checked' : '';
+      return '<label style="display:flex;align-items:center;gap:8px;padding:7px 8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;cursor:pointer">' +
+        '<input type="checkbox" class="cmu-unit-chk" data-uid="' + u.id + '"' + checked + ' style="width:16px;height:16px;cursor:pointer">' +
+        '<span style="font-size:13px;color:var(--text);flex:1;min-width:0">' + escapeHtml(u.name || '') + '</span></label>';
+    }).join('');
+    btn.disabled = false; btn.style.opacity = '1';
+  } catch (e) {
+    hideLoading();
+    listEl.innerHTML = '<div style="font-size:12px;color:var(--red);padding:8px">読み込みに失敗しました: ' + escapeHtml(e.message) + '</div>';
+    btn.disabled = true; btn.style.opacity = '0.5';
+  }
+}
+
+async function saveClassMathUnits() {
+  const classId = document.getElementById('cmu-class-sel').value;
+  if (!classId) { showToast('授業を選んでください', 'info'); return; }
+  const checked = new Set(
+    Array.from(document.querySelectorAll('.cmu-unit-chk'))
+      .filter(chk => chk.checked)
+      .map(chk => parseInt(chk.getAttribute('data-uid'), 10))
+      .filter(v => !isNaN(v))
+  );
+  const toAdd = [...checked].filter(id => !cmuCurrentLinks.has(id));
+  const toDel = [...cmuCurrentLinks].filter(id => !checked.has(id));
+  showLoading('保存中...');
+  try {
+    for (const id of toAdd) {
+      await sbPost('class_math_units', { class_master_id: classId, unit_id: id });
+    }
+    for (const id of toDel) {
+      await sbDelete('class_math_units', 'class_master_id=eq.' + encodeURIComponent(classId) + '&unit_id=eq.' + id);
+    }
+    cmuCurrentLinks = checked;
+    hideLoading();
+    showToast('✅ この授業の単元を保存しました（' + checked.size + '単元）', 'success');
+  } catch (e) {
+    hideLoading();
+    showToast('保存に失敗しました: ' + e.message, 'error');
+  }
+}
+
 async function loadAppUsage() {
   const wrap = document.getElementById('au-list');
   if (!wrap) return;
@@ -17648,7 +17742,7 @@ function switchManageTab(tab, el) {
   if (tab === 'announce') { loadAnnouncementsStaff(); initAnnounceForm(); }
   if (tab === 'attendance') initAttendanceTab();
   if (tab === 'quizstatus') loadQuizStatusClasses();
-  if (tab === 'appusage') { loadAppUsage(); loadAccessClasses(); }
+  if (tab === 'appusage') { loadAppUsage(); loadAccessClasses(); loadClassMathUnits(); }
   if (tab === 'classanalysis') initClassAnalysis();
   if (tab === 'studentanalysis') { saItem = null; saChartType = 'bar'; loadStudentAnalysis(); }
   if (tab === 'rostercheck') initRosterCheck();
