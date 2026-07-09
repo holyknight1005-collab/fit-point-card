@@ -2405,6 +2405,44 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
   </div>
 </div>
 
+<!-- ===== スタッフ用：入力済み点数の確認＋CSV書き出し（取り消し前の控え用・20260702bp） ===== -->
+<div id="exam-scores-modal" style="display:none;position:fixed;inset:0;z-index:436;background:rgba(0,0,0,0.5);align-items:flex-start;justify-content:center;overflow-y:auto;padding:20px 10px">
+  <div style="background:#fff;width:100%;max-width:640px;border-radius:16px;padding:18px 16px 24px;box-shadow:0 8px 30px rgba(0,0,0,0.2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-size:15px;font-weight:800;color:var(--text)">📋 入力済み点数の確認</div>
+      <button onclick="closeExamScoresView()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="exam-scores-sub" style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5"></div>
+    <div style="margin-bottom:10px">
+      <button onclick="downloadExamScoresCsv()" style="padding:8px 14px;background:linear-gradient(135deg,#4B8B3B,#3A6E2D);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">📥 CSVで書き出す</button>
+    </div>
+    <div id="exam-scores-table" style="overflow-x:auto"></div>
+    <div style="display:flex;margin-top:14px">
+      <button onclick="closeExamScoresView()" style="flex:1;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== スタッフ用：個別に依頼を取り消し（チェックで複数選択・20260702bq） ===== -->
+<div id="exam-cancel-modal" style="display:none;position:fixed;inset:0;z-index:437;background:rgba(0,0,0,0.5);align-items:flex-start;justify-content:center;overflow-y:auto;padding:20px 10px">
+  <div style="background:#fff;width:100%;max-width:480px;border-radius:16px;padding:18px 16px 24px;box-shadow:0 8px 30px rgba(0,0,0,0.2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-size:15px;font-weight:800;color:var(--text)">🗑 生徒を選んで依頼を取り消し</div>
+      <button onclick="closeExamCancelPicker()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="exam-cancel-sub" style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5"></div>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <button onclick="examCancelSelectAll(true)" style="padding:5px 10px;background:var(--surface);border:1px solid var(--border);border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;color:var(--text)">すべて選択</button>
+      <button onclick="examCancelSelectAll(false)" style="padding:5px 10px;background:var(--surface);border:1px solid var(--border);border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;color:var(--text)">選択解除</button>
+    </div>
+    <div id="exam-cancel-list" style="max-height:340px;overflow-y:auto;border:1px solid var(--border);border-radius:8px"></div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button onclick="closeExamCancelPicker()" style="flex:1;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">キャンセル</button>
+      <button onclick="cancelSelectedExamRequests()" style="flex:2;padding:10px;background:linear-gradient(135deg,#C0392B,#992D22);border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">選択した依頼を取り消す</button>
+    </div>
+  </div>
+</div>
+
 
 <!-- ===== 定型ボタン：記録方法の選択モーダル ===== -->
 <div id="preset-modal" style="display:none;position:fixed;inset:0;z-index:400;background:rgba(0,0,0,0.4);align-items:flex-end;justify-content:center">
@@ -3698,7 +3736,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702bo';
+const APP_VERSION = '20260702bq';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -20307,17 +20345,28 @@ async function loadBulkExamManage() {
   box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">読み込み中...</div>';
   try {
     const exams = await sbGet('student_exams',
-      'status=in.(requested,reported)&select=id,exam_name,exam_date,exam_type,created_at&order=created_at.desc') || [];
+      'status=in.(requested,reported)&select=id,student_id,exam_name,exam_date,exam_type,status,created_at&order=created_at.desc') || [];
     if (!exams.length) {
       box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">管理対象の依頼中テストはありません。</div>';
       _bexamManageCache = {};
       return;
     }
+    // 生徒名を引く（このタブに出る生徒だけまとめて取得）
+    const sidSet = Array.from(new Set(exams.map(e => e.student_id).filter(Boolean)));
+    const sidName = {};
+    if (sidSet.length) {
+      try {
+        const studs = await sbGet('students', 'id=in.(' + sidSet.join(',') + ')&select=id,name,course_track') || [];
+        studs.forEach(s => { sidName[s.id] = { name: s.name, course_track: s.course_track || null }; });
+      } catch (e) { /* 取得失敗時は名前なしで続行 */ }
+    }
     const groups = {};
     exams.forEach(e => {
       const key = (e.exam_name || '') + '||' + (e.exam_date || '');
-      if (!groups[key]) groups[key] = { exam_name: e.exam_name || '(名称なし)', exam_date: e.exam_date || null, exam_type: e.exam_type, examIds: [], created_at: e.created_at };
+      if (!groups[key]) groups[key] = { exam_name: e.exam_name || '(名称なし)', exam_date: e.exam_date || null, exam_type: e.exam_type, examIds: [], members: [], created_at: e.created_at };
       groups[key].examIds.push(e.id);
+      const info = sidName[e.student_id] || {};
+      groups[key].members.push({ exam_id: e.id, student_id: e.student_id, name: info.name || '(不明)', course_track: info.course_track || null, status: e.status });
     });
     _bexamManageCache = {};
     const keys = Object.keys(groups);
@@ -20376,6 +20425,8 @@ function renderBulkExamManage() {
       '</div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:2px">' + (subjChips || '<span style="font-size:11px;color:var(--muted)">科目なし</span>') + '</div>' +
       '<button onclick="openExamAverageEditor(&quot;' + encodeURIComponent(key) + '&quot;)" style="margin-top:8px;width:100%;padding:8px;background:#EAF3FB;border:1px solid #A9CCE8;border-radius:8px;color:#1E5C96;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">📊 学年平均を入力（全員に反映）</button>' +
+      '<button onclick="openExamScoresView(&quot;' + encodeURIComponent(key) + '&quot;)" style="margin-top:6px;width:100%;padding:8px;background:#F0EEF9;border:1px solid #C3B9E6;border-radius:8px;color:#5A4A9E;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">📋 入力済みを確認・CSV書き出し</button>' +
+      '<button onclick="openExamCancelPicker(&quot;' + encodeURIComponent(key) + '&quot;)" style="margin-top:6px;width:100%;padding:8px;background:#FBEEEA;border:1px solid #E6B9A9;border-radius:8px;color:#9E4A2E;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">🗑 生徒を選んで依頼を取り消し</button>' +
     '</div>';
   }).join('');
 }
@@ -20539,6 +20590,206 @@ async function saveExamAverage() {
   } catch (e) {
     hideLoading();
     if (errEl) { errEl.textContent = '反映に失敗しました：' + (e.message || e); errEl.style.display = 'block'; }
+  }
+}
+
+// ===== 入力済み点数の確認＋CSV書き出し（取り消し前の控え） =====
+let _examScoresCtx = null;
+
+async function openExamScoresView(keyEnc) {
+  const key = decodeURIComponent(keyEnc);
+  const g = _bexamManageCache[key];
+  if (!g) { showToast('テスト情報が見つかりません', 'error'); return; }
+  const modal = document.getElementById('exam-scores-modal');
+  const sub = document.getElementById('exam-scores-sub');
+  const tableBox = document.getElementById('exam-scores-table');
+  const dateLabel = g.exam_date ? ivFmtDate(g.exam_date) : '日付なし';
+  sub.innerHTML = '<b>' + escapeHtml(g.exam_name) + '</b>（' + dateLabel + '・' + g.studentCount + '名）<br>取り消す前に、この内容をCSVで控えておけば、作り直した依頼に見ながら入力し直せます。';
+  tableBox.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">読み込み中…</div>';
+  modal.style.display = 'flex';
+
+  try {
+    // このテスト束の全スコアを取得（教科・点数・偏差値・順位・平均）
+    const scores = await sbGet('student_exam_scores',
+      'exam_id=in.(' + g.examIds.join(',') + ')&select=exam_id,subject,score,average,deviation,subject_rank,sort_order') || [];
+    // exam_id → 生徒名/文理
+    const examInfo = {};
+    (g.members || []).forEach(m => { examInfo[m.exam_id] = m; });
+    // 教科の並び（sort_order優先）
+    const subjOrder = {};
+    scores.forEach(s => { if (!(s.subject in subjOrder)) subjOrder[s.subject] = (s.sort_order != null ? s.sort_order : 99); });
+    const subjects = Object.keys(subjOrder).sort((a, b) => (subjOrder[a] - subjOrder[b]) || a.localeCompare(b, 'ja'));
+    // 生徒（exam_id）ごとに教科→点数をまとめる
+    const byExam = {};
+    scores.forEach(s => {
+      if (!byExam[s.exam_id]) byExam[s.exam_id] = {};
+      byExam[s.exam_id][s.subject] = s;
+    });
+    // 行データ（生徒名でソート、members順ベース）
+    const memberRows = (g.members || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ja'));
+
+    _examScoresCtx = { key: key, g: g, subjects: subjects, byExam: byExam, memberRows: memberRows };
+
+    if (!scores.length) {
+      tableBox.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">まだ点数の入力はありません。</div>';
+      return;
+    }
+
+    // 画面表示（生徒×教科の点数。偏差値・順位があれば小さく併記）
+    let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+    html += '<thead><tr><th style="text-align:left;padding:5px 8px;border-bottom:2px solid var(--border);white-space:nowrap">生徒</th>';
+    html += '<th style="text-align:center;padding:5px 6px;border-bottom:2px solid var(--border);white-space:nowrap">文理</th>';
+    subjects.forEach(sj => { html += '<th style="text-align:center;padding:5px 6px;border-bottom:2px solid var(--border);white-space:nowrap">' + escapeHtml(sj) + '</th>'; });
+    html += '</tr></thead><tbody>';
+    memberRows.forEach(m => {
+      const row = byExam[m.exam_id] || {};
+      html += '<tr><td style="padding:5px 8px;border-bottom:1px solid var(--border);font-weight:600;white-space:nowrap">' + escapeHtml(m.name) + '</td>';
+      html += '<td style="padding:5px 6px;border-bottom:1px solid var(--border);text-align:center;color:var(--muted)">' + escapeHtml(m.course_track || '—') + '</td>';
+      subjects.forEach(sj => {
+        const cell = row[sj];
+        let disp = '<span style="color:var(--muted)">—</span>';
+        if (cell && cell.score !== null && cell.score !== undefined && cell.score !== '') {
+          disp = '<b>' + escapeHtml(String(cell.score)) + '</b>';
+          const extra = [];
+          if (cell.deviation !== null && cell.deviation !== undefined && cell.deviation !== '') extra.push('偏' + cell.deviation);
+          if (cell.subject_rank !== null && cell.subject_rank !== undefined && cell.subject_rank !== '') extra.push(cell.subject_rank + '位');
+          if (extra.length) disp += '<br><span style="font-size:10px;color:var(--muted)">' + extra.join('/') + '</span>';
+        }
+        html += '<td style="padding:5px 6px;border-bottom:1px solid var(--border);text-align:center">' + disp + '</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    tableBox.innerHTML = html;
+  } catch (e) {
+    tableBox.innerHTML = '<div style="font-size:12px;color:#C0392B;padding:8px">読み込みに失敗しました：' + escapeHtml(e.message || String(e)) + '</div>';
+  }
+}
+
+function closeExamScoresView() {
+  document.getElementById('exam-scores-modal').style.display = 'none';
+  _examScoresCtx = null;
+}
+
+function downloadExamScoresCsv() {
+  if (!_examScoresCtx) { showToast('データがありません', 'error'); return; }
+  const { g, subjects, byExam, memberRows } = _examScoresCtx;
+  const esc = (v) => {
+    const s = (v === null || v === undefined) ? '' : String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  // ヘッダ：生徒,文理,教科ごとに 点数/偏差値/順位
+  const header = ['生徒', '文理'];
+  subjects.forEach(sj => { header.push(sj + '_点数', sj + '_偏差値', sj + '_順位'); });
+  const lines = [header.map(esc).join(',')];
+  memberRows.forEach(m => {
+    const row = byExam[m.exam_id] || {};
+    const cells = [m.name, m.course_track || ''];
+    subjects.forEach(sj => {
+      const c = row[sj] || {};
+      cells.push(c.score != null ? c.score : '');
+      cells.push(c.deviation != null ? c.deviation : '');
+      cells.push(c.subject_rank != null ? c.subject_rank : '');
+    });
+    lines.push(cells.map(esc).join(','));
+  });
+  const csv = '\uFEFF' + lines.join('\r\n') + '\r\n';
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const dl = (g.exam_name || 'テスト') + (g.exam_date ? '_' + g.exam_date : '');
+  a.href = url;
+  a.download = dl.replace(/[\\/:*?"<>|]/g, '_') + '_入力済み点数.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast('CSVを書き出しました', 'success');
+}
+
+// ===== 個別に依頼を取り消し（チェックで複数選択） =====
+let _examCancelCtx = null;
+
+async function openExamCancelPicker(keyEnc) {
+  const key = decodeURIComponent(keyEnc);
+  const g = _bexamManageCache[key];
+  if (!g) { showToast('テスト情報が見つかりません', 'error'); return; }
+  const modal = document.getElementById('exam-cancel-modal');
+  const sub = document.getElementById('exam-cancel-sub');
+  const listBox = document.getElementById('exam-cancel-list');
+  const dateLabel = g.exam_date ? ivFmtDate(g.exam_date) : '日付なし';
+  sub.innerHTML = '<b>' + escapeHtml(g.exam_name) + '</b>（' + dateLabel + '）<br>取り消したい生徒にチェックを入れてください。選んだ生徒の依頼と入力済み点数が削除されます。';
+
+  // 入力済み件数を生徒ごとに把握（警告用）
+  let scoredByExam = {};
+  try {
+    const scores = await sbGet('student_exam_scores',
+      'exam_id=in.(' + g.examIds.join(',') + ')&select=exam_id,score') || [];
+    scores.forEach(s => {
+      if (s.score !== null && s.score !== undefined && s.score !== '') {
+        scoredByExam[s.exam_id] = (scoredByExam[s.exam_id] || 0) + 1;
+      }
+    });
+  } catch (e) { /* 取れなくても続行 */ }
+
+  const members = (g.members || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ja'));
+  _examCancelCtx = { key: key, members: members };
+
+  if (!members.length) {
+    listBox.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:10px">対象の生徒がいません。</div>';
+  } else {
+    listBox.innerHTML = members.map(m => {
+      const scored = scoredByExam[m.exam_id] || 0;
+      const scoredBadge = scored > 0
+        ? '<span style="font-size:10px;color:#B5651D;font-weight:700;margin-left:6px">✎入力済み' + scored + '件</span>'
+        : '<span style="font-size:10px;color:var(--muted);margin-left:6px">未入力</span>';
+      const trackBadge = m.course_track
+        ? '<span style="font-size:10px;color:var(--muted);margin-left:4px">(' + escapeHtml(m.course_track) + ')</span>'
+        : '';
+      return '<label style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid var(--border);cursor:pointer">' +
+        '<input type="checkbox" class="exam-cancel-cb" data-exam-id="' + m.exam_id + '" style="width:17px;height:17px;flex:0 0 auto">' +
+        '<span style="flex:1;font-size:13px;font-weight:600;color:var(--text)">' + escapeHtml(m.name) + trackBadge + scoredBadge + '</span>' +
+      '</label>';
+    }).join('');
+  }
+  modal.style.display = 'flex';
+}
+
+function closeExamCancelPicker() {
+  document.getElementById('exam-cancel-modal').style.display = 'none';
+  _examCancelCtx = null;
+}
+
+function examCancelSelectAll(state) {
+  document.querySelectorAll('.exam-cancel-cb').forEach(cb => { cb.checked = !!state; });
+}
+
+async function cancelSelectedExamRequests() {
+  if (!_examCancelCtx) return;
+  const checked = Array.from(document.querySelectorAll('.exam-cancel-cb')).filter(cb => cb.checked);
+  if (!checked.length) { showToast('取り消す生徒を選んでください', 'error'); return; }
+  const examIds = checked.map(cb => cb.getAttribute('data-exam-id')).filter(Boolean);
+  const names = checked.map(cb => {
+    const m = (_examCancelCtx.members || []).find(x => String(x.exam_id) === cb.getAttribute('data-exam-id'));
+    return m ? m.name : '';
+  }).filter(Boolean);
+
+  let msg = examIds.length + '名の依頼を取り消します。\n\n' + names.join('、') + '\n\n入力済みの点数も一緒に削除されます。よろしいですか？';
+  if (!confirm(msg)) return;
+
+  showLoading('取り消し中...');
+  try {
+    // 先に子（点数）→ 親（依頼）の順で削除
+    await sbDelete('student_exam_scores', 'exam_id=in.(' + examIds.join(',') + ')');
+    await sbDelete('student_exams', 'id=in.(' + examIds.join(',') + ')');
+    hideLoading();
+    showToast('✅ ' + examIds.length + '名の依頼を取り消しました', 'success');
+    closeExamCancelPicker();
+    loadBulkExamManage();
+    if (typeof loadPendingSummary === 'function') { try { loadPendingSummary(); } catch (e) {} }
+  } catch (e) {
+    hideLoading();
+    showToast('取り消しに失敗: ' + (e.message || e), 'error');
   }
 }
 
