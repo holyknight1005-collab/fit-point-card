@@ -305,20 +305,8 @@
     <button onclick="closeBank()" style="background:none;border:1px solid #E0D0E8;color:#7A7770;font-size:12px;cursor:pointer;padding:5px 10px;border-radius:8px">← 戻る</button>
   </div>
 
-  <!-- 授業えらび（自分の受講授業→紐づく単元へ） -->
-  <div id="bank-classpick" style="flex:1;display:none;flex-direction:column;padding:18px;gap:8px;overflow-y:auto">
-    <div style="font-size:15px;font-weight:700;color:#4A1060;margin-bottom:2px">どの授業の復習をする？</div>
-    <div style="font-size:12px;color:#7A7770;margin-bottom:8px">受けている授業をえらぶと、その授業でやった単元だけ出ます。</div>
-    <div id="bank-class-list" style="display:flex;flex-direction:column;gap:8px"></div>
-    <button onclick="openBankAll()" style="width:100%;padding:14px;margin-top:10px;background:#fff;border:1.5px solid #B85C9E;border-radius:12px;color:#6A2D5A;font-size:15px;font-weight:700;cursor:pointer">📚 全範囲から選ぶ（復習）</button>
-  </div>
-
   <!-- 範囲選択 -->
   <div id="bank-setup" style="flex:1;display:none;flex-direction:column;padding:18px;gap:8px;overflow-y:auto">
-    <div id="bank-setup-ctx" style="display:none;align-items:center;gap:8px;background:#F0E8F4;border-radius:8px;padding:8px 11px;margin-bottom:2px">
-      <span style="font-size:12px;color:#4A1060;font-weight:700;flex:1" id="bank-setup-ctx-label"></span>
-      <button onclick="openBank()" style="background:#fff;border:1px solid #C8A0D8;color:#6A2D5A;font-size:11px;font-weight:700;cursor:pointer;padding:4px 10px;border-radius:7px">授業をえらび直す</button>
-    </div>
     <div style="font-size:15px;font-weight:700;color:#4A1060;margin-bottom:2px">どこから出す？</div>
     <div style="font-size:12px;color:#7A7770;margin-bottom:8px">単元をえらぶと、その範囲からランダムに5問出ます。</div>
     <div class="range-toggle" id="bank-range-toggle">
@@ -365,7 +353,7 @@
       <div id="b-r-review-list"></div>
     </div>
     <button onclick="bankAgain()" style="width:100%;padding:14px;background:linear-gradient(135deg,#B85C9E,#6A2D5A);border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:700;cursor:pointer">🔁 もう1セット（同じ範囲）</button>
-    <button onclick="backToBankSetup()" style="width:100%;padding:12px;background:#fff;border:1.5px solid #E0D0E8;border-radius:10px;color:#7A7770;font-size:13px;cursor:pointer">範囲を変える</button>
+    <button onclick="openBank()" style="width:100%;padding:12px;background:#fff;border:1.5px solid #E0D0E8;border-radius:10px;color:#7A7770;font-size:13px;cursor:pointer">範囲を変える</button>
     <button onclick="closeBank()" style="width:100%;padding:12px;background:transparent;border:none;color:#B0AAA5;font-size:13px;cursor:pointer">ホームに戻る</button>
   </div>
 </div>
@@ -499,10 +487,7 @@ function mathHTML(raw){
    Supabase: math_units / math_problems
    既存の平方完成・2次関数決定エンジンとは独立
    ============================================================ */
-let bankUnits=[];            // 現在の選択対象単元（授業で絞り込み後 or 全単元）
-let bankAllUnits=[];         // 全単元キャッシュ [{id,code,name,sort_order}]
-let bankClasses=[];          // 自分の受講授業（単元紐付けあり）[{id,name,subject,unitIds}]
-let bankCurrentClass=null;   // 選択中の授業（null=全範囲）
+let bankUnits=[];            // [{id,code,name,sort_order}]
 let bankSelMode='cumulative';// 'cumulative' | 'single'
 let bankSelIds=new Set();    // 選択中の unit id
 let bankQs=[], bIdx=0, bOK=0, bNG=0, bHistory=[], bTimer=null, bTimeLeft=0, bAnswered=false;
@@ -524,110 +509,35 @@ function normAns(s){
 // 単元リスト取得
 async function loadBankUnits(){
   const rows=await sbGet('math_units','is_active=eq.true&order=sort_order.asc&select=id,code,name,sort_order');
-  bankAllUnits=rows||[];
+  bankUnits=rows||[];
 }
 
-// 自分の受講授業を取得（現役のみ）。スタッフは空。
-async function loadBankClasses(){
-  if(isStaff){ bankClasses=[]; return; }
-  try{
-    const enr=await sbGet('class_enrollments','student_id=eq.'+encodeURIComponent(currentStudent.id)+'&ended_on=is.null&select=class_master_id,class_master(id,name,subject)');
-    // 授業↔単元の紐付けを取得
-    const links=await sbGet('class_math_units','select=class_master_id,unit_id');
-    const byClass={};
-    (links||[]).forEach(l=>{ (byClass[l.class_master_id]=byClass[l.class_master_id]||[]).push(l.unit_id); });
-    // 数学に関係する授業だけ（紐付けが1件以上ある授業）に絞る
-    const seen=new Set();
-    bankClasses=[];
-    (enr||[]).forEach(e=>{
-      const cm=e.class_master; if(!cm) return;
-      const unitIds=byClass[cm.id]||[];
-      if(unitIds.length===0) return;      // 単元が紐づいていない授業は出さない
-      if(seen.has(cm.id)) return; seen.add(cm.id);
-      bankClasses.push({ id:cm.id, name:cm.name||'(名称未設定)', subject:cm.subject||'', unitIds });
-    });
-  }catch(e){ bankClasses=[]; }
-}
-
-// バンク画面を開く（入口：授業えらび）
+// バンク画面を開く
 async function openBank(){
   document.getElementById('screen-bank').style.display='flex';
-  document.getElementById('bank-classpick').style.display='none';
-  document.getElementById('bank-setup').style.display='none';
+  document.getElementById('bank-setup').style.display='flex';
   document.getElementById('bank-quiz').style.display='none';
   document.getElementById('bank-result').style.display='none';
   document.getElementById('bank-header').textContent='範囲えらんで演習';
   bankSelIds=new Set();
-  bankCurrentClass=null;
-  try{
-    showLoading('読み込み中...');
-    await loadBankUnits();
-    await loadBankClasses();
-    hideLoading();
-    // 受講授業（単元紐付けあり）が無ければ、そのまま全範囲へ
-    if(!bankClasses.length){ openBankAll(); return; }
-    renderClassList();
-    document.getElementById('bank-classpick').style.display='flex';
-  }catch(e){
-    hideLoading(); console.error(e);
-    showToast('読み込みに失敗しました','error');
-    openBankAll();
-  }
-}
-
-// 授業リスト描画
-function renderClassList(){
-  const box=document.getElementById('bank-class-list');
-  if(!box) return;
-  box.innerHTML=bankClasses.map(c=>{
-    const subj=c.subject?('<span style="font-size:11px;color:#9A8AA5;margin-left:6px">'+esc(c.subject)+'</span>'):'';
-    return '<div onclick="pickBankClass(\''+c.id+'\')" style="background:#fff;border:1.5px solid #E0D0E8;border-radius:12px;padding:14px 16px;cursor:pointer;display:flex;align-items:center;gap:10px">'+
-      '<span style="font-size:20px">📖</span>'+
-      '<div style="flex:1"><div style="font-size:14px;font-weight:700;color:#2C2C2A">'+esc(c.name)+subj+'</div>'+
-      '<div style="font-size:11px;color:#7A7770;margin-top:2px">'+c.unitIds.length+'単元</div></div>'+
-      '<span style="font-size:16px;color:#B85C9E">›</span></div>';
-  }).join('');
-}
-
-// 授業を選んで、その授業に紐づく単元だけで範囲選択へ
-function pickBankClass(classId){
-  const c=bankClasses.find(x=>String(x.id)===String(classId));
-  if(!c){ openBankAll(); return; }
-  bankCurrentClass=c;
-  bankUnits=bankAllUnits.filter(u=>c.unitIds.indexOf(u.id)!==-1);
-  bankSelIds=new Set();
-  const ctx=document.getElementById('bank-setup-ctx');
-  ctx.style.display='flex';
-  document.getElementById('bank-setup-ctx-label').textContent='📖 '+c.name;
-  showBankSetup();
-}
-
-// 全範囲（授業の枠を外して全単元から選ぶ）
-function openBankAll(){
-  bankCurrentClass=null;
-  bankUnits=bankAllUnits.slice();
-  bankSelIds=new Set();
-  const ctx=document.getElementById('bank-setup-ctx');
-  if(bankClasses.length){ ctx.style.display='flex'; document.getElementById('bank-setup-ctx-label').textContent='📚 全範囲（復習）'; }
-  else { ctx.style.display='none'; }
-  showBankSetup();
-}
-
-// 範囲選択画面を表示
-function showBankSetup(){
-  document.getElementById('bank-classpick').style.display='none';
-  document.getElementById('bank-quiz').style.display='none';
-  document.getElementById('bank-result').style.display='none';
   const listEl=document.getElementById('bank-unit-list');
-  if(bankUnits.length===0){
-    document.getElementById('bank-setup').style.display='flex';
-    if(listEl) listEl.innerHTML='<div style="font-size:13px;color:#B0AAA5;padding:14px;text-align:center;border:1px dashed #E0D0E8;border-radius:10px">単元がまだありません。</div>';
-    document.getElementById('bank-start-btn').disabled=true;
-    document.getElementById('bank-start-btn').style.opacity='0.5';
-    return;
+  try{
+    showLoading('単元を読み込み中...');
+    if(listEl) listEl.innerHTML='';
+    await loadBankUnits();
+    hideLoading();
+    if(bankUnits.length===0){
+      if(listEl) listEl.innerHTML='<div style="font-size:13px;color:#B0AAA5;padding:14px;text-align:center;border:1px dashed #E0D0E8;border-radius:10px">単元がまだありません。SQL（add_math_bank.sql）の実行を確認してください。</div>';
+      return;
+    }
+    renderUnitList();
+  }catch(e){
+    hideLoading();
+    console.error(e);
+    const msg=(e&&e.message)?String(e.message).slice(0,180):'不明なエラー';
+    if(listEl) listEl.innerHTML='<div style="font-size:12px;color:#D94040;padding:14px;border:1px solid #F3C0C0;border-radius:10px;word-break:break-all">単元の取得に失敗しました。<br>'+esc(msg)+'</div>';
+    showToast('単元の取得に失敗しました','error');
   }
-  renderUnitList();
-  document.getElementById('bank-setup').style.display='flex';
 }
 function closeBank(){
   clearInterval(bTimer);
@@ -845,11 +755,6 @@ function bankAgain(){
   document.getElementById('bank-result').style.display='none';
   startBank();
 }
-// 結果画面→単元選択（授業/全範囲のコンテキストは保持）
-function backToBankSetup(){
-  bankSelIds=new Set();
-  showBankSetup();
-}
 
 
 async function sbGet(table, query){
@@ -1030,10 +935,6 @@ async function afterLogin(){
   if(isStaff){
     const pill=document.querySelector('.point-pill');
     if(pill) pill.innerHTML='👀 閲覧モード';
-  } else {
-    // 生徒は自分の学年タブを初期選択（他学年タブは残るので下の学年の復習も可能）
-    const gnum = parseInt(String(currentStudent.grade||'').replace(/[^0-9]/g,''),10);
-    if(gnum>=1 && gnum<=3) selectGrade(gnum);
   }
   showScreen('screen-home');
 }
