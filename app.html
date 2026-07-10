@@ -338,6 +338,20 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
       </select>
       <select class="form-select" id="my-club-name" style="width:100%;font-size:13px;margin-bottom:6px;display:none"></select>
       <input type="text" class="form-select" id="my-club-free" placeholder="部活名を入力" style="width:100%;font-size:13px;display:none">
+      <div id="my-club2-wrap" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px">部活②（兼部している場合）</div>
+        <select class="form-select" id="my2-club-cat" onchange="onClubCategoryChange('my2')" style="width:100%;font-size:13px;margin-bottom:6px">
+          <option value="">カテゴリを選択</option>
+          <option value="運動部">運動部</option>
+          <option value="文化部">文化部</option>
+          <option value="愛媛の特色">愛媛の特色ある部活</option>
+          <option value="マネージャー">マネージャー</option>
+          <option value="その他">その他（自由入力）</option>
+        </select>
+        <select class="form-select" id="my2-club-name" style="width:100%;font-size:13px;margin-bottom:6px;display:none"></select>
+        <input type="text" class="form-select" id="my2-club-free" placeholder="部活名を入力" style="width:100%;font-size:13px;display:none">
+      </div>
+      <button type="button" id="my-club2-toggle" onclick="toggleClub2('my')" style="margin-top:6px;background:none;border:none;color:var(--orange-d);font-size:11px;font-weight:700;cursor:pointer;padding:0;font-family:inherit">＋ 兼部を追加</button>
     </div>
 
     <div style="margin-bottom:18px">
@@ -3736,7 +3750,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702bq';
+const APP_VERSION = '20260702bs';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -4602,6 +4616,56 @@ function getClubValue(prefix) {
   return '';
 }
 
+// 部活①②を「・」で連結して1つの文字列に（②が空なら①のみ。①が無所属なら①のみ）
+const CLUB_SEP = '・';
+function getClubCombined(prefix) {
+  const c1 = getClubValue(prefix);
+  // 兼部欄が開いていれば②も取得
+  const wrap = document.getElementById(prefix + '-club2-wrap');
+  const open = wrap && wrap.style.display !== 'none';
+  let c2 = '';
+  if (open && document.getElementById(prefix + '2-club-cat')) {
+    c2 = getClubValue(prefix + '2');
+  }
+  if (c1 === '無所属' || !c1) return c1 || null; // 無所属や未入力なら②は無視
+  if (c2 && c2 !== c1) return c1 + CLUB_SEP + c2;
+  return c1;
+}
+
+// 兼部欄の開閉
+function toggleClub2(prefix) {
+  const wrap = document.getElementById(prefix + '-club2-wrap');
+  const btn = document.getElementById(prefix + '-club2-toggle');
+  if (!wrap) return;
+  const willOpen = (wrap.style.display === 'none');
+  wrap.style.display = willOpen ? 'block' : 'none';
+  if (btn) btn.textContent = willOpen ? '－ 兼部を削除' : '＋ 兼部を追加';
+  if (!willOpen) {
+    // 閉じたら②をクリア
+    const c = document.getElementById(prefix + '2-club-cat');
+    if (c) { c.value = ''; onClubCategoryChange(prefix + '2'); }
+  }
+}
+
+// 連結値を①②に分けてUI復元
+function setClubCombined(prefix, clubValue) {
+  // まず①②をリセット
+  setClubUI(prefix, '');
+  const wrap = document.getElementById(prefix + '-club2-wrap');
+  const btn = document.getElementById(prefix + '-club2-toggle');
+  if (wrap) wrap.style.display = 'none';
+  if (btn) btn.textContent = '＋ 兼部を追加';
+  if (document.getElementById(prefix + '2-club-cat')) setClubUI(prefix + '2', '');
+  if (!clubValue) return;
+  const parts = clubValue.split(CLUB_SEP).map(s => s.trim()).filter(Boolean);
+  setClubUI(prefix, parts[0] || '');
+  if (parts.length > 1 && wrap && document.getElementById(prefix + '2-club-cat')) {
+    wrap.style.display = 'block';
+    if (btn) btn.textContent = '－ 兼部を削除';
+    setClubUI(prefix + '2', parts[1]);
+  }
+}
+
 // 誕生日セレクトの選択肢を用意（年は現在から-25〜-5年程度）
 function initBirthdaySelects(prefix) {
   const y = document.getElementById(prefix + '-bday-y');
@@ -4642,6 +4706,61 @@ function isProfileComplete() {
   return !!(currentStudent.gender) && !!(currentStudent.course_track) && !!(currentStudent.club) && !!(currentStudent.birthday);
 }
 
+// プロフィール未完了なら、生徒ホームでプロフィール入力以外を隠して完全ロックする。
+// 完了していればロック解除して通常表示に戻す。
+function applyProfileGate() {
+  const content = document.querySelectorAll('.student-content');
+  if (!content || !content.length) return;
+  const locked = !isProfileComplete();
+  // 生徒ホーム（1つ目の student-content）を対象にする
+  const home = content[0];
+  if (!home) return;
+  const section = document.getElementById('profile-section');
+  const anchor = document.getElementById('profile-section-top-anchor');
+  const banner = ensureProfileGateBanner();
+  const pointHero = home.querySelector('.point-hero');
+
+  Array.from(home.children).forEach(child => {
+    // プロフィール本体・上部アンカー・ゲート案内・ポイント表示は常に表示
+    if (child === section || child === anchor || child === banner || child === pointHero) {
+      child.style.display = '';
+      return;
+    }
+    if (locked) {
+      // ロック中：元のdisplayを退避して隠す
+      if (child.getAttribute('data-gate-hidden') !== '1') {
+        child.setAttribute('data-gate-prev', child.style.display || '');
+        child.setAttribute('data-gate-hidden', '1');
+      }
+      child.style.display = 'none';
+    } else {
+      // 解除：退避したdisplayを復元
+      if (child.getAttribute('data-gate-hidden') === '1') {
+        child.style.display = child.getAttribute('data-gate-prev') || '';
+        child.removeAttribute('data-gate-hidden');
+        child.removeAttribute('data-gate-prev');
+      }
+    }
+  });
+  banner.style.display = locked ? 'block' : 'none';
+}
+
+// ロック中の案内バナーを（無ければ）作ってプロフィールの上に置く
+function ensureProfileGateBanner() {
+  let banner = document.getElementById('profile-gate-banner');
+  if (banner) return banner;
+  banner = document.createElement('div');
+  banner.id = 'profile-gate-banner';
+  banner.style.cssText = 'display:none;background:linear-gradient(135deg,#FFF3E0,#FFE7C7);border:1.5px solid var(--orange);border-radius:12px;padding:14px 16px;margin-bottom:4px';
+  banner.innerHTML = '<div style="font-size:14px;font-weight:800;color:var(--orange-d);margin-bottom:4px">🧑‍🎓 まずプロフィールを入力してください</div>' +
+    '<div style="font-size:12px;color:#7A5A2A;line-height:1.6">性別・文理・部活・誕生日をすべて入力すると、アプリのすべての機能が使えるようになります。</div>';
+  const anchor = document.getElementById('profile-section-top-anchor');
+  if (anchor && anchor.parentNode) {
+    anchor.parentNode.insertBefore(banner, anchor);
+  }
+  return banner;
+}
+
 // 未設定なら上（point-hero直下）、設定済みなら最下部にプロフィールボタンを移動
 function placeProfileButton() {
   const section = document.getElementById('profile-section');
@@ -4663,6 +4782,8 @@ function placeProfileButton() {
     const anchor = document.getElementById('profile-section-top-anchor');
     if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(section, anchor);
   }
+  // プロフィールの入力状況に応じてロックを適用/解除
+  applyProfileGate();
 }
 
 function openProfileModal() {
@@ -4670,7 +4791,7 @@ function openProfileModal() {
   document.getElementById('my-gender').value = currentStudent.gender || '';
   const ct = document.getElementById('my-course-track');
   if (ct) ct.value = currentStudent.course_track || '';
-  setClubUI('my', currentStudent.club);
+  setClubCombined('my', currentStudent.club);
   setBirthdayUI('my', currentStudent.birthday);
   document.getElementById('profile-modal').style.display = 'flex';
 }
@@ -4683,7 +4804,7 @@ async function saveMyProfile() {
   if (!currentStudent) return;
   const gender = document.getElementById('my-gender').value;
   const courseTrack = document.getElementById('my-course-track').value;
-  const club = getClubValue('my');
+  const club = getClubCombined('my');
   const birthday = getBirthdayValue('my');
   showLoading('保存中...');
   try {
