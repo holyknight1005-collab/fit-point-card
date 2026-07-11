@@ -3795,7 +3795,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702bx';
+const APP_VERSION = '20260702by';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -18731,6 +18731,7 @@ let prospectsView = 'table';   // 'card' | 'table' | 'event'（デフォルト�
 let prospectFields = [];      // カスタムチェック項目の定義 [{id,label,field_type,sort_order,is_active}]
 let prospectEventsCache = []; // 来塾イベント枠 [{id,name,event_date,note,sort_order,is_active}]
 let prospectVisitsCache = []; // 来塾ログ [{id,prospect_id,event_id,visit_date,status,note}]
+let prospectTrialsCache = []; // 体験ログ [{id,prospect_id,trial_date,subject,attended}]（一覧表示用に全件キャッシュ）
 let prospectsEventFilter = 'all'; // イベントビューで選択中のイベントid（'all'=未選択の一覧）
 
 async function initProspects() {
@@ -18757,6 +18758,9 @@ async function initProspects() {
   try {
     prospectVisitsCache = await sbGet('prospect_visits', 'order=visit_date.desc,created_at.desc&select=*') || [];
   } catch (e) { prospectVisitsCache = []; }
+  try {
+    prospectTrialsCache = await sbGet('prospect_trials', 'select=*&order=trial_date') || [];
+  } catch (e) { prospectTrialsCache = []; }
   renderProspectsStatusTabs();
   const area = document.getElementById('prospects-list-area');
   if (area) area.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
@@ -19108,7 +19112,8 @@ function renderProspectsTable() {
     return;
   }
   const th = (t, w) => '<th style="position:sticky;top:0;background:#F3EFE6;border:1px solid var(--border);padding:6px 8px;font-size:11px;font-weight:700;color:var(--text);white-space:nowrap;text-align:center' + (w ? ';min-width:' + w : '') + '">' + t + '</th>';
-  let head = '<tr>' + th('感触', '72px') + th('氏名', '90px') + th('来塾日') + th('問合せ日') + th('学校') + th('学年') + th('担当', '110px');
+  let head = '<tr>' + th('感触', '72px') + th('氏名', '90px') + th('来塾日') + th('問合せ日') + th('学校') + th('学年') + th('担当', '110px')
+    + th('LINE', '54px') + th('面談', '54px') + th('保護者<br>面談', '54px') + th('体験', '70px');
   prospectFields.forEach(f => { head += th(escapeHtml(f.label), '90px'); });
   head += th('', '48px') + '</tr>';
 
@@ -19137,6 +19142,33 @@ function renderProspectsTable() {
           if (sup.length) out += '<br><span style="font-size:10px;color:#5B7A9E">🤝' + escapeHtml(sup.join('・')) + '</span>';
           return out;
         })(), 'font-size:11px');
+    // 進捗チェック（LINE/面談/保護者面談）：タップで今日ON/OFF切替。日付があれば小さく表示。
+    const chk = (field) => {
+      const dv = p[field];
+      const on = !!dv;
+      const dateSmall = on ? '<br><span style="font-size:9px;color:#2E6B12">' + fmtProspectDate(dv) + '</span>' : '';
+      return td('<button onclick="toggleProspectProgress(&quot;' + p.id + '&quot;,&quot;' + field + '&quot;)" style="width:100%;padding:3px 1px;border:1px solid ' + (on ? '#5A9E3C' : 'var(--border)') + ';background:' + (on ? '#E5F3DC' : '#fff') + ';color:' + (on ? '#2E6B12' : 'var(--muted)') + ';border-radius:5px;font-size:12px;cursor:pointer;font-weight:700;line-height:1.2">' + (on ? '✅' : '−') + dateSmall + '</button>', 'text-align:center;padding:3px');
+    };
+    row += chk('line_registered_date') + chk('interview_date') + chk('parent_interview_date');
+    // 体験：件数サマリー（予定/出席/欠席）。タップでモーダルを開いて編集。
+    row += td((function(){
+      const trials = prospectTrialsCache.filter(t => String(t.prospect_id) === String(p.id));
+      if (!trials.length) return '<span style="cursor:pointer;color:var(--muted)" onclick="openProspectModal(&quot;' + p.id + '&quot;)">＋</span>';
+      const today = (typeof getTodayJST === 'function') ? getTodayJST() : new Date().toISOString().slice(0,10);
+      let plan=0, att=0, abs=0;
+      trials.forEach(t => {
+        const past = t.trial_date && String(t.trial_date).slice(0,10) < today;
+        if (!past) plan++;
+        else if (t.attended === true) att++;
+        else if (t.attended === false) abs++;
+        else plan++; // 過去だが未確認は予定扱い
+      });
+      const parts = [];
+      if (plan) parts.push('<span style="color:var(--orange-d)">予' + plan + '</span>');
+      if (att) parts.push('<span style="color:#2E6B12">出' + att + '</span>');
+      if (abs) parts.push('<span style="color:#C0392B">欠' + abs + '</span>');
+      return '<span style="cursor:pointer;font-size:11px;font-weight:700" onclick="openProspectModal(&quot;' + p.id + '&quot;)">' + parts.join(' ') + '</span>';
+    })(), 'text-align:center');
     // カスタム列
     prospectFields.forEach(f => {
       const val = (p.custom_values && p.custom_values[f.id] != null) ? p.custom_values[f.id] : '';
@@ -19520,6 +19552,20 @@ async function toggleProspectCheck(id, fieldId) {
     p.custom_values = cv;
     hideLoading(); renderProspectsTable();
   } catch (e) { hideLoading(); showToast('保存に失敗（add_prospect_table_view.sql 未実行の可能性）: ' + (e.message || e), 'error'); }
+}
+
+// 進捗チェック（LINE登録日/面談日/保護者面談日）を一覧上でタップ切替：空→今日、値あり→null
+async function toggleProspectProgress(id, field) {
+  const p = prospectsCache.find(x => x.id === id);
+  if (!p) return;
+  const today = (typeof getTodayJST === 'function') ? getTodayJST() : new Date().toISOString().slice(0, 10);
+  const newVal = p[field] ? null : today;
+  showLoading('保存中...');
+  try {
+    await sbPatch('prospects', 'id=eq.' + id, { [field]: newVal, updated_at: new Date().toISOString() });
+    p[field] = newVal;
+    hideLoading(); renderProspectsTable();
+  } catch (e) { hideLoading(); showToast('保存に失敗（add_prospect_form_fields.sql 未実行の可能性）: ' + (e.message || e), 'error'); }
 }
 
 // カスタム text セルの編集
