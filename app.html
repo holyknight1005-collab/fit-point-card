@@ -3795,7 +3795,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702bv';
+const APP_VERSION = '20260702bw';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -4757,37 +4757,65 @@ function applyProfileGate() {
   const content = document.querySelectorAll('.student-content');
   if (!content || !content.length) return;
   const locked = !isProfileComplete();
-  // 生徒ホーム（1つ目の student-content）を対象にする
   const home = content[0];
   if (!home) return;
-  const section = document.getElementById('profile-section');
-  const anchor = document.getElementById('profile-section-top-anchor');
-  const banner = ensureProfileGateBanner();
-  const pointHero = home.querySelector('.point-hero');
 
+  // 以前の方式（display:noneで隠す）の名残を完全に除去して復旧する
   Array.from(home.children).forEach(child => {
-    // プロフィール本体・上部アンカー・ゲート案内・ポイント表示は常に表示
-    if (child === section || child === anchor || child === banner || child === pointHero) {
+    if (child.getAttribute('data-gate-hidden') === '1') {
       child.style.display = '';
-      return;
-    }
-    if (locked) {
-      // ロック中：元のdisplayを退避して隠す
-      if (child.getAttribute('data-gate-hidden') !== '1') {
-        child.setAttribute('data-gate-prev', child.style.display || '');
-        child.setAttribute('data-gate-hidden', '1');
-      }
-      child.style.display = 'none';
-    } else {
-      // 解除：退避したdisplayを復元
-      if (child.getAttribute('data-gate-hidden') === '1') {
-        child.style.display = child.getAttribute('data-gate-prev') || '';
-        child.removeAttribute('data-gate-hidden');
-        child.removeAttribute('data-gate-prev');
-      }
+      child.removeAttribute('data-gate-hidden');
+      child.removeAttribute('data-gate-prev');
     }
   });
+
+  const banner = ensureProfileGateBanner();
   banner.style.display = locked ? 'block' : 'none';
+
+  // ロック中は、プロフィール以外を触れないようオーバーレイで覆う。
+  // 要素のdisplayは一切変えないので、解除後に表示状態が壊れない。
+  const section = document.getElementById('profile-section');
+  let overlay = document.getElementById('profile-gate-overlay');
+  if (locked) {
+    // プロフィールセクションを最前面＋操作可能にする
+    if (section) {
+      section.style.position = 'relative';
+      section.style.zIndex = '30';
+    }
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'profile-gate-overlay';
+      overlay.style.cssText = 'position:absolute;left:0;right:0;background:rgba(250,249,247,0.72);z-index:20;cursor:not-allowed';
+      overlay.title = 'プロフィールを入力すると使えるようになります';
+      overlay.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        showToast('先にプロフィールを入力してください', 'error');
+      });
+      home.style.position = 'relative';
+      home.appendChild(overlay);
+    }
+    positionProfileGateOverlay();
+  } else {
+    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    if (section) { section.style.zIndex = ''; }
+  }
+}
+
+// オーバーレイの範囲を、プロフィールセクションの下端〜ホーム下端に合わせる
+function positionProfileGateOverlay() {
+  const overlay = document.getElementById('profile-gate-overlay');
+  const home = document.querySelectorAll('.student-content')[0];
+  const section = document.getElementById('profile-section');
+  if (!overlay || !home) return;
+  const homeRect = home.getBoundingClientRect();
+  // プロフィールの下端から覆う（プロフィールは操作可能に残す）
+  let top = 0;
+  if (section) {
+    const secRect = section.getBoundingClientRect();
+    top = secRect.bottom - homeRect.top;
+  }
+  overlay.style.top = top + 'px';
+  overlay.style.height = (home.scrollHeight - top) + 'px';
 }
 
 // ロック中の案内バナーを（無ければ）作ってプロフィールの上に置く
