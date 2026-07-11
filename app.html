@@ -612,6 +612,20 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
   </div>
 </div>
 
+<!-- 対応履歴モーダル（20260702bz） -->
+<div id="prospect-history-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:674;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:460px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div id="prospect-history-title" style="font-size:15px;font-weight:800;color:var(--orange-d)">対応履歴</div>
+      <button onclick="closeProspectHistory()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="prospect-history-body"></div>
+    <div style="display:flex;margin-top:14px">
+      <button onclick="closeProspectHistory()" style="flex:1;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">閉じる</button>
+    </div>
+  </div>
+</div>
+
 <!-- 教科アプリ配信設定モーダル -->
 <div id="appdelivery-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:672;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
@@ -3166,8 +3180,13 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
           <option value="created_desc">登録が新しい順</option>
           <option value="name_asc">氏名（あいうえお順）</option>
           <option value="next_asc">次回予定が近い順</option>
+          <option value="school_asc">学校で並べる</option>
+          <option value="visit_desc">来塾日が新しい順</option>
+          <option value="latest_desc">最新来塾日が新しい順</option>
+          <option value="inquiry_desc">問合せ日が新しい順</option>
         </select>
         <select id="prospects-assignee" onchange="setProspectsAssignee(this.value)" style="flex:0 0 auto;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'Noto Sans JP',sans-serif;background:#fff;cursor:pointer"><option value="all">担当：すべて</option></select>
+        <button onclick="downloadProspectsListCsv()" style="flex:0 0 auto;padding:8px 12px;border:none;border-radius:8px;background:linear-gradient(135deg,#4B8B3B,#3A6E2D);color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📥 CSV書き出し</button>
       </div>
       <div id="prospects-list-area"></div>
       <div id="prospects-table-area" style="display:none;overflow-x:auto"></div>
@@ -3795,7 +3814,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702by';
+const APP_VERSION = '20260702ca';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -15807,9 +15826,20 @@ function renderUnifiedMonth() {
       marks += '<span class="u-band' + posCls + '" style="background:' + (b.color || '#F5A623') + '" title="' + safe + '">' + (showText ? safe : '&nbsp;') + '</span>';
     }
 
+    // 授業名（スタッフ表示に合わせて時刻＋授業名を小さく表示）
+    let classLabel = '';
+    if (sess && sess.classes && sess.classes.length) {
+      const c0 = sess.classes[0];
+      const tm = c0.start_time ? String(c0.start_time).slice(0,5) + ' ' : '';
+      const nm = c0.name || '';
+      const more = sess.classes.length > 1 ? ' 他' + (sess.classes.length - 1) : '';
+      const safeNm = (tm + nm + more).replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      classLabel = '<div style="font-size:8px;line-height:1.15;font-weight:700;margin-top:1px;padding:0 1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:' + st.color + '">' + safeNm + '</div>';
+    }
+
     html += '<div class="cal-day" title="' + title.replace(/"/g,'&quot;') + '"' + onclick +
       ' style="position:relative;background:' + st.bg + ';color:' + st.color + ';font-weight:' + (st.label?'700':'400') + ';' + cursor + border + '">' +
-      d + marks + '</div>';
+      '<div style="font-size:12px">' + d + '</div>' + classLabel + marks + '</div>';
   }
   document.getElementById('unified-cal-grid').innerHTML = html;
 }
@@ -19067,6 +19097,10 @@ function getFilteredProspects() {
   if (prospectsSort === 'name_asc') list.sort((a, b) => cmpStr(a.name, b.name));
   else if (prospectsSort === 'next_asc') list.sort((a, b) => cmpStr(a.next_date || '9999-99-99', b.next_date || '9999-99-99'));
   else if (prospectsSort === 'created_desc') list.sort((a, b) => cmpStr(b.created_at, a.created_at));
+  else if (prospectsSort === 'school_asc') list.sort((a, b) => cmpStr(a.school, b.school) || cmpStr(a.grade, b.grade) || cmpStr(a.name, b.name));
+  else if (prospectsSort === 'visit_desc') list.sort((a, b) => cmpStr(b.visit_date || '', a.visit_date || ''));
+  else if (prospectsSort === 'latest_desc') list.sort((a, b) => cmpStr(latestContactDate(b) || '', latestContactDate(a) || ''));
+  else if (prospectsSort === 'inquiry_desc') list.sort((a, b) => cmpStr(b.inquiry_date || '', a.inquiry_date || ''));
   else list.sort((a, b) => cmpStr(b.updated_at, a.updated_at));
   return list;
 }
@@ -19089,6 +19123,105 @@ function latestVisitDate(p) {
   if (vs.length) return vs[0].visit_date;
   return p.visit_date || '';
 }
+
+// 対応履歴を1本のリストに集約（来塾・体験・面談・保護者面談）。日付降順。
+// 返り値：[{date, kind, label, detail}]
+function getProspectHistory(p) {
+  const items = [];
+  // 来塾ログ
+  getProspectVisits(p.id).forEach(v => {
+    if (v.status === 'deleted') return;
+    if (!v.visit_date) return;
+    const evn = v.event_id ? eventName(v.event_id) : '';
+    const kindLabel = v.status === 'target' ? 'イベント対象' : '来塾';
+    let detail = [evn, v.reason, v.note].filter(Boolean).join(' / ');
+    items.push({ date: String(v.visit_date).slice(0,10), kind: 'visit', label: '🚪 ' + kindLabel, detail: detail });
+  });
+  // 体験
+  prospectTrialsCache.filter(t => String(t.prospect_id) === String(p.id)).forEach(t => {
+    if (!t.trial_date) return;
+    let att = (t.attended === true) ? '（出席）' : (t.attended === false) ? '（欠席）' : '';
+    items.push({ date: String(t.trial_date).slice(0,10), kind: 'trial', label: '📝 体験', detail: (t.subject || '') + att });
+  });
+  // 面談・保護者面談・LINE
+  if (p.interview_date) items.push({ date: String(p.interview_date).slice(0,10), kind: 'interview', label: '🗣 面談', detail: '' });
+  if (p.parent_interview_date) items.push({ date: String(p.parent_interview_date).slice(0,10), kind: 'parent', label: '👪 保護者面談', detail: '' });
+  if (p.line_registered_date) items.push({ date: String(p.line_registered_date).slice(0,10), kind: 'line', label: '💬 LINE登録', detail: '' });
+  // 問合せ
+  if (p.inquiry_date) items.push({ date: String(p.inquiry_date).slice(0,10), kind: 'inquiry', label: '📞 問合せ', detail: '' });
+  items.sort((a, b) => b.date.localeCompare(a.date));
+  return items;
+}
+
+// 最新来塾日＝来塾・体験・面談・保護者面談すべての中で一番新しい日（問合せ/LINEは含めない）
+function latestContactDate(p) {
+  const dates = [];
+  getProspectVisits(p.id).forEach(v => { if (v.status === 'visited' && v.visit_date) dates.push(String(v.visit_date).slice(0,10)); });
+  prospectTrialsCache.filter(t => String(t.prospect_id) === String(p.id)).forEach(t => { if (t.trial_date) dates.push(String(t.trial_date).slice(0,10)); });
+  if (p.interview_date) dates.push(String(p.interview_date).slice(0,10));
+  if (p.parent_interview_date) dates.push(String(p.parent_interview_date).slice(0,10));
+  if (!dates.length) return '';
+  return dates.sort().slice(-1)[0];
+}
+
+// 次の体験予定（今日以降で一番近い体験日）
+function nextTrialDate(p) {
+  const today = (typeof getTodayJST === 'function') ? getTodayJST() : new Date().toISOString().slice(0,10);
+  const future = prospectTrialsCache
+    .filter(t => String(t.prospect_id) === String(p.id) && t.trial_date && String(t.trial_date).slice(0,10) >= today)
+    .map(t => String(t.trial_date).slice(0,10)).sort();
+  return future.length ? future[0] : '';
+}
+
+// ネイティブのカレンダーで日付を選ばせる（promptの手打ちをやめる）
+function pickDate(currentVal, callback) {
+  const inp = document.createElement('input');
+  inp.type = 'date';
+  if (currentVal) inp.value = String(currentVal).slice(0, 10);
+  inp.style.cssText = 'position:fixed;left:-9999px;top:0';
+  document.body.appendChild(inp);
+  inp.addEventListener('change', function () {
+    const v = inp.value || '';
+    if (inp.parentNode) inp.parentNode.removeChild(inp);
+    callback(v);
+  });
+  // 閉じられた（変更なし）場合の後始末
+  inp.addEventListener('blur', function () {
+    setTimeout(function () { if (inp.parentNode) inp.parentNode.removeChild(inp); }, 300);
+  });
+  inp.focus();
+  if (inp.showPicker) { try { inp.showPicker(); } catch (e) { inp.click(); } }
+  else inp.click();
+}
+
+// 対応履歴モーダルを開く
+function openProspectHistory(id) {
+  const p = prospectsCache.find(x => x.id === id);
+  if (!p) return;
+  const hist = getProspectHistory(p);
+  let html = '<div style="max-height:60vh;overflow-y:auto">';
+  if (!hist.length) {
+    html += '<div style="font-size:13px;color:var(--muted);padding:12px;text-align:center">まだ対応履歴はありません。</div>';
+  } else {
+    html += hist.map(h => {
+      return '<div style="display:flex;gap:10px;padding:9px 4px;border-bottom:1px solid var(--border)">' +
+        '<div style="flex:0 0 auto;font-size:12px;font-weight:700;color:var(--text);width:56px">' + fmtProspectDate(h.date) + '</div>' +
+        '<div style="flex:1;min-width:0"><span style="font-size:13px;font-weight:700">' + h.label + '</span>' +
+        (h.detail ? '<br><span style="font-size:12px;color:var(--muted)">' + escapeHtml(h.detail) + '</span>' : '') + '</div>' +
+      '</div>';
+    }).join('');
+  }
+  html += '</div>';
+  const modal = document.getElementById('prospect-history-modal');
+  document.getElementById('prospect-history-title').textContent = (p.name || '(無名)') + ' さんの対応履歴';
+  document.getElementById('prospect-history-body').innerHTML = html;
+  modal.style.display = 'flex';
+}
+function closeProspectHistory() {
+  const m = document.getElementById('prospect-history-modal');
+  if (m) m.style.display = 'none';
+}
+
 // イベントid → イベント名
 function eventName(id) {
   if (!id) return '';
@@ -19112,10 +19245,10 @@ function renderProspectsTable() {
     return;
   }
   const th = (t, w) => '<th style="position:sticky;top:0;background:#F3EFE6;border:1px solid var(--border);padding:6px 8px;font-size:11px;font-weight:700;color:var(--text);white-space:nowrap;text-align:center' + (w ? ';min-width:' + w : '') + '">' + t + '</th>';
-  let head = '<tr>' + th('感触', '72px') + th('氏名', '90px') + th('来塾日') + th('問合せ日') + th('学校') + th('学年') + th('担当', '110px')
+  let head = '<tr>' + th('感触', '72px') + th('氏名', '90px') + th('問合せ日') + th('来塾日') + th('最新<br>来塾日') + th('次の<br>体験') + th('きっかけ', '80px') + th('学校') + th('学年') + th('担当', '110px')
     + th('LINE', '54px') + th('面談', '54px') + th('保護者<br>面談', '54px') + th('体験', '70px');
   prospectFields.forEach(f => { head += th(escapeHtml(f.label), '90px'); });
-  head += th('', '48px') + '</tr>';
+  head += th('', '72px') + '</tr>';
 
   const rows = list.map(p => {
     const st = p._status || normalizeProspectStatus(p.status);
@@ -19131,8 +19264,11 @@ function renderProspectsTable() {
     let row = '<tr>'
       + td(feel, 'text-align:center;padding-left:3px;padding-right:3px')
       + td('<span style="font-weight:700;cursor:pointer;color:var(--text)" onclick="openProspectModal(&quot;' + p.id + '&quot;)">' + escapeHtml(p.name || '(無名)') + '</span>')
-      + td((function(){ var lv = latestVisitDate(p); return '<span style="cursor:pointer" onclick="openProspectModal(&quot;' + p.id + '&quot;)">' + (lv ? fmtProspectDate(lv) : '<span style=\'color:var(--muted)\'>＋</span>') + '</span>'; })())
       + td('<span style="cursor:pointer" onclick="editProspectDate(&quot;' + p.id + '&quot;,&quot;inquiry_date&quot;)">' + (p.inquiry_date ? fmtProspectDate(p.inquiry_date) : '<span style=\'color:var(--muted)\'>＋</span>') + '</span>')
+      + td('<span style="cursor:pointer" onclick="editProspectDate(&quot;' + p.id + '&quot;,&quot;visit_date&quot;)">' + (p.visit_date ? fmtProspectDate(p.visit_date) : '<span style=\'color:var(--muted)\'>＋</span>') + '</span>')
+      + td((function(){ var lc = latestContactDate(p); return lc ? '<b style="color:var(--orange-d)">' + fmtProspectDate(lc) + '</b>' : '<span style="color:var(--muted)">−</span>'; })())
+      + td((function(){ var nt = nextTrialDate(p); return nt ? '<span style="color:#1E5C96;font-weight:700">' + fmtProspectDate(nt) + '</span>' : '<span style="color:var(--muted)">−</span>'; })())
+      + td(p.source ? escapeHtml(p.source) : '<span style="color:var(--muted)">−</span>', 'font-size:11px')
       + td(escapeHtml(p.school || ''))
       + td(escapeHtml(p.grade || ''))
       + td((function(){
@@ -19179,7 +19315,7 @@ function renderProspectsTable() {
         row += td('<span style="cursor:pointer;display:block;min-height:16px;text-align:center" onclick="editProspectText(&quot;' + p.id + '&quot;,&quot;' + f.id + '&quot;)">' + (val ? escapeHtml(String(val)) : '<span style=\'color:var(--muted)\'>＋</span>') + '</span>');
       }
     });
-    row += td('<button onclick="openProspectModal(&quot;' + p.id + '&quot;)" style="border:none;background:none;cursor:pointer;font-size:13px">✏️</button>', 'text-align:center');
+    row += td('<button onclick="openProspectHistory(&quot;' + p.id + '&quot;)" style="border:none;background:none;cursor:pointer;font-size:14px" title="対応履歴">🕒</button><button onclick="openProspectModal(&quot;' + p.id + '&quot;)" style="border:none;background:none;cursor:pointer;font-size:13px" title="編集">✏️</button>', 'text-align:center');
     row += '</tr>';
     return row;
   }).join('');
@@ -19528,15 +19664,16 @@ async function editProspectDate(id, col) {
   const p = prospectsCache.find(x => x.id === id);
   if (!p) return;
   const cur = p[col] ? String(p[col]).slice(0, 10) : '';
-  const val = (prompt((col === 'visit_date' ? '来塾日' : '問合せ日') + 'を入力（YYYY-MM-DD、空で消去）', cur) || '').trim();
-  if (val === cur) return;
-  const patch = {}; patch[col] = val || null; patch.updated_at = new Date().toISOString();
-  showLoading('保存中...');
-  try {
-    await sbPatch('prospects', 'id=eq.' + id, patch);
-    p[col] = val || null;
-    hideLoading(); renderProspectsTable();
-  } catch (e) { hideLoading(); showToast('保存に失敗: ' + (e.message || e), 'error'); }
+  pickDate(cur, async function (val) {
+    if (val === cur) return;
+    const patch = {}; patch[col] = val || null; patch.updated_at = new Date().toISOString();
+    showLoading('保存中...');
+    try {
+      await sbPatch('prospects', 'id=eq.' + id, patch);
+      p[col] = val || null;
+      hideLoading(); renderProspectsTable();
+    } catch (e) { hideLoading(); showToast('保存に失敗: ' + (e.message || e), 'error'); }
+  });
 }
 
 // カスタム check セルのトグル（済 ⇄ 未）
@@ -22794,6 +22931,57 @@ async function saveProspect() {
     hideLoading();
     showErr('保存に失敗しました：' + (e.message || e));
   }
+}
+
+// ===== 入来塾一覧 CSV書き出し（Excel用・現在の並び順で全項目） =====
+function downloadProspectsListCsv() {
+  const list = getFilteredProspects();
+  if (!list.length) { showToast('書き出す見込みがありません', 'error'); return; }
+  const esc = (v) => {
+    const s = (v === null || v === undefined) ? '' : String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const staffName = (id) => id ? (prospectsStaffMap[id] || id) : '';
+  const header = ['感触', '氏名', '学校', '学年', '問合せ日', '来塾日', '最新来塾日', '次の体験予定', 'きっかけ', '連絡先',
+    'メイン担当', 'サポート担当', 'LINE登録日', '面談日', '保護者面談日', '体験予定・実績', '対応履歴', 'メモ'];
+  const lines = [header.map(esc).join(',')];
+  list.forEach(p => {
+    const st = p._status || normalizeProspectStatus(p.status);
+    const sup = parseSupportStaff(p).map(staffName).join('・');
+    const trials = prospectTrialsCache.filter(t => String(t.prospect_id) === String(p.id))
+      .sort((a, b) => String(a.trial_date || '').localeCompare(String(b.trial_date || '')))
+      .map(t => {
+        const att = (t.attended === true) ? '出席' : (t.attended === false) ? '欠席' : '予定';
+        return (t.trial_date ? fmtProspectDate(t.trial_date) : '') + (t.subject ? '(' + t.subject + ')' : '') + att;
+      }).join(' / ');
+    const hist = getProspectHistory(p).map(h => fmtProspectDate(h.date) + h.label.replace(/^[^ ]+ /, '') + (h.detail ? '：' + h.detail : '')).join(' / ');
+    const row = [
+      st, p.name || '', p.school || '', p.grade || '',
+      p.inquiry_date ? fmtProspectDate(p.inquiry_date) : '',
+      p.visit_date ? fmtProspectDate(p.visit_date) : '',
+      latestContactDate(p) ? fmtProspectDate(latestContactDate(p)) : '',
+      nextTrialDate(p) ? fmtProspectDate(nextTrialDate(p)) : '',
+      p.source || '', p.contact || '',
+      staffName(p.assigned_to), sup,
+      p.line_registered_date ? fmtProspectDate(p.line_registered_date) : '',
+      p.interview_date ? fmtProspectDate(p.interview_date) : '',
+      p.parent_interview_date ? fmtProspectDate(p.parent_interview_date) : '',
+      trials, hist, p.note || ''
+    ];
+    lines.push(row.map(esc).join(','));
+  });
+  const csv = '\uFEFF' + lines.join('\r\n') + '\r\n';
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = (typeof getTodayJST === 'function' ? getTodayJST() : new Date().toISOString().slice(0,10)).replace(/-/g, '');
+  a.href = url;
+  a.download = '入来塾一覧_' + stamp + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast('CSVを書き出しました（' + list.length + '件）', 'success');
 }
 
 // ===== 入来塾管理 CSV一括投入 =====
