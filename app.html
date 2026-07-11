@@ -3296,6 +3296,18 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
         各生徒の受講科目数から月間売上を見積もります。科目数は受講科目のユニーク数（同じ科目の複数講座は1つ）で数えます。アプリ登録済みの生徒が対象です。
       </div>
       <div id="revenue-body"><div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div></div>
+
+      <!-- データバックアップ（admin専用・20260702bu） -->
+      <div class="section-title" style="margin-top:20px">💾 データバックアップ</div>
+      <div class="card-box" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px">
+        <div style="font-size:12px;color:var(--muted);line-height:1.6">
+          アプリの全データを一括ダウンロードします。万一に備えた定期バックアップ用です。<br>
+          ・<b>JSON</b>（復旧用の原本）と <b>ZIP</b>（テーブルごとのCSV・閲覧用）の2ファイルが保存されます。<br>
+          ・件数が多いと数分かかることがあります。完了までこの画面を閉じないでください。
+        </div>
+        <button id="backup-btn" onclick="runFullBackup()" style="width:100%;padding:12px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:var(--radius-sm);color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📦 全データをダウンロード</button>
+        <div id="backup-progress" style="display:none;font-size:12px;color:var(--text);line-height:1.7;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:220px;overflow-y:auto"></div>
+      </div>
     </div>
 
     <!-- 設定タブ -->
@@ -3750,7 +3762,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702bt';
+const APP_VERSION = '20260702bu';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -11845,6 +11857,191 @@ function renderBdayMonthList() {
   }
   el.innerHTML = list.map(s => bdayRow(s, '')).join('');
 }
+
+// ===== 全データバックアップ（admin専用・20260702bu） =====
+const BACKUP_TABLES = [
+  'students', 'staff', 'class_master', 'class_sessions', 'checkins',
+  'roster', 'video_makeups', 'student_exam_scores', 'student_exams', 'point_logs',
+  'class_enrollments', 'interview_goals', 'check_logs', 'check_items', 'prospects',
+  'staff_todos', 'team_tasks', 'session_attendance', 'team_task_assignees', 'events',
+  'student_interviews', 'class_teachers', 'annual_enrollment', 'prospect_visits', 'prospect_fields',
+  'class_reports', 'student_applications', 'staff_reports', 'staff_permissions', 'announcements',
+  'subject_app_targets', 'study_logs', 'staff_shortcuts', 'staff_routines', 'prospect_events',
+  'mini_quiz_assignments', 'interview_campaigns', 'quiz_questions', 'norma_templates', 'missions',
+  'exam_templates', 'class_quizzes', 'class_math_units', 'app_access_classes', 'staff_routine_checks',
+  'quiz_logs', 'mission_logs', 'mini_quiz_sets', 'mini_quiz_results', 'classes',
+  'subject_prices', 'review_logs', 'mini_quiz_questions', 'math_units', 'class_attendance'
+];
+
+async function backupFetchAll(table) {
+  const pageSize = 1000;
+  let from = 0;
+  let all = [];
+  for (;;) {
+    const to = from + pageSize - 1;
+    const url = SB_URL + '/rest/v1/' + table + '?select=*';
+    const res = await fetch(url, {
+      headers: {
+        'apikey': SB_KEY,
+        'Authorization': 'Bearer ' + SB_KEY,
+        'Range-Unit': 'items',
+        'Range': from + '-' + to
+      }
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const rows = await res.json();
+    all = all.concat(rows);
+    if (rows.length < pageSize) break;
+    from += pageSize;
+    if (from > 500000) break;
+  }
+  return all;
+}
+
+function backupLog(msg, color) {
+  const box = document.getElementById('backup-progress');
+  if (!box) return;
+  const line = document.createElement('div');
+  if (color) line.style.color = color;
+  line.innerHTML = msg;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+}
+
+function backupRowsToCsv(rows) {
+  if (!rows || !rows.length) return '';
+  const keySet = [];
+  const seen = {};
+  rows.forEach(r => {
+    Object.keys(r).forEach(k => { if (!seen[k]) { seen[k] = 1; keySet.push(k); } });
+  });
+  const esc = (v) => {
+    if (v === null || v === undefined) return '';
+    let s;
+    if (typeof v === 'object') s = JSON.stringify(v);
+    else s = String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const lines = [keySet.map(esc).join(',')];
+  rows.forEach(r => {
+    lines.push(keySet.map(k => esc(r[k])).join(','));
+  });
+  return lines.join('\r\n');
+}
+
+function backupTriggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+const _CRC_TABLE = (function () {
+  const t = [];
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function _crc32(bytes) {
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) crc = (_CRC_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8)) >>> 0;
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+function _strToUtf8(str) { return new TextEncoder().encode(str); }
+function _u32(n) { return [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF]; }
+function _u16(n) { return [n & 0xFF, (n >>> 8) & 0xFF]; }
+
+function buildZip(files) {
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  files.forEach(f => {
+    const nameBytes = _strToUtf8(f.name);
+    const crc = _crc32(f.bytes);
+    const size = f.bytes.length;
+    const local = [].concat(
+      _u32(0x04034b50), _u16(20), _u16(0x0800), _u16(0), _u16(0),
+      _u32(crc), _u32(size), _u32(size),
+      _u16(nameBytes.length), _u16(0)
+    );
+    const localHead = new Uint8Array(local);
+    chunks.push(localHead, nameBytes, f.bytes);
+    const cen = [].concat(
+      _u32(0x02014b50), _u16(20), _u16(20), _u16(0x0800), _u16(0), _u16(0), _u16(0),
+      _u32(crc), _u32(size), _u32(size),
+      _u16(nameBytes.length), _u16(0), _u16(0), _u16(0), _u16(0), _u32(0),
+      _u32(offset)
+    );
+    central.push({ head: new Uint8Array(cen), name: nameBytes });
+    offset += localHead.length + nameBytes.length + f.bytes.length;
+  });
+  const centralStart = offset;
+  let centralSize = 0;
+  central.forEach(c => { chunks.push(c.head, c.name); centralSize += c.head.length + c.name.length; });
+  const end = new Uint8Array([].concat(
+    _u32(0x06054b50), _u16(0), _u16(0), _u16(files.length), _u16(files.length),
+    _u32(centralSize), _u32(centralStart), _u16(0)
+  ));
+  chunks.push(end);
+  return new Blob(chunks, { type: 'application/zip' });
+}
+
+let _backupRunning = false;
+async function runFullBackup() {
+  if (!currentStaff || currentStaff.role !== 'admin') { showToast('管理者のみ操作できます', 'error'); return; }
+  if (_backupRunning) return;
+  _backupRunning = true;
+  const btn = document.getElementById('backup-btn');
+  const box = document.getElementById('backup-progress');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.textContent = '⏳ バックアップ中...'; }
+  if (box) { box.style.display = 'block'; box.innerHTML = ''; }
+
+  const stamp = (typeof getTodayJST === 'function' ? getTodayJST() : new Date().toISOString().slice(0, 10)).replace(/-/g, '');
+  const jsonObj = { _meta: { exported_at: new Date().toISOString(), app_version: APP_VERSION, tables: BACKUP_TABLES.length }, data: {} };
+  const csvFiles = [];
+  let okCount = 0, failCount = 0, totalRows = 0;
+
+  backupLog('開始：' + BACKUP_TABLES.length + 'テーブル', 'var(--muted)');
+  for (const table of BACKUP_TABLES) {
+    try {
+      const rows = await backupFetchAll(table);
+      jsonObj.data[table] = rows;
+      const csv = backupRowsToCsv(rows);
+      csvFiles.push({ name: table + '.csv', bytes: _strToUtf8('\uFEFF' + csv) });
+      okCount++; totalRows += rows.length;
+      backupLog('&#10003; ' + table + '（' + rows.length + '件）', 'var(--green-d)');
+    } catch (e) {
+      failCount++;
+      jsonObj.data[table] = { _error: String(e && e.message || e) };
+      backupLog('&#10007; ' + table + '（取得失敗：スキップ）', 'var(--red)');
+    }
+  }
+
+  try {
+    const jsonBlob = new Blob([JSON.stringify(jsonObj, null, 2)], { type: 'application/json' });
+    backupTriggerDownload(jsonBlob, 'fit_backup_' + stamp + '.json');
+    const zipBlob = buildZip(csvFiles);
+    backupTriggerDownload(zipBlob, 'fit_backup_' + stamp + '.zip');
+    backupLog('─────────', 'var(--muted)');
+    backupLog('完了：' + okCount + 'テーブル / ' + totalRows + '件' + (failCount ? '（失敗' + failCount + '）' : ''), 'var(--text)');
+    backupLog('JSON と ZIP をダウンロードしました。', 'var(--text)');
+    showToast('バックアップ完了（' + totalRows + '件）', 'success');
+  } catch (e) {
+    backupLog('ファイル生成に失敗：' + (e.message || e), 'var(--red)');
+    showToast('バックアップに失敗しました', 'error');
+  }
+
+  if (btn) { btn.disabled = false; btn.style.opacity = '1'; btn.textContent = '📦 全データをダウンロード'; }
+  _backupRunning = false;
+}
+
 
 async function changeStaffPassword() {
   const current = document.getElementById('pw-current').value.trim();
