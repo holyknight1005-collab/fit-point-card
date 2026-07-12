@@ -193,6 +193,19 @@
   .mini-row .mno{color:var(--muted);font-size:11px;width:32px;flex-shrink:0}
   .mini-row .men{font-weight:700;flex:1;min-width:0}
   .mini-row .mja{color:var(--muted);flex:1;min-width:0}
+
+  /* 対象設定モーダル */
+  .tm-overlay{position:fixed;inset:0;background:rgba(18,58,107,.35);display:flex;align-items:center;justify-content:center;z-index:700;padding:18px}
+  .tm-card{background:var(--surface);border-radius:18px;padding:22px 20px;width:100%;max-width:420px;box-shadow:0 12px 40px rgba(18,58,107,.28);max-height:88vh;overflow-y:auto}
+  .tm-title{font-size:18px;font-weight:800;color:var(--blue-d)}
+  .tm-sub{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.7}
+  .tm-sec-label{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.06em;margin:18px 2px 8px}
+  .tm-chips{display:flex;flex-wrap:wrap;gap:8px}
+  .tm-chip{border:1.5px solid var(--border);background:var(--surface);border-radius:20px;padding:8px 15px;font-size:13.5px;font-weight:700;color:var(--text);cursor:pointer;transition:.12s}
+  .tm-chip.on{border-color:var(--blue);background:var(--blue-l);color:var(--blue-d)}
+  .tm-actions{display:flex;gap:10px;margin-top:22px}
+  .tm-cancel{flex:1;border:1.5px solid var(--border);background:var(--surface);border-radius:12px;padding:13px;font-size:14px;font-weight:700;color:var(--muted);cursor:pointer}
+  .tm-save{flex:1.4;border:0;border-radius:12px;padding:13px;font-size:14px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--blue),var(--blue-d));cursor:pointer}
 </style>
 </head>
 <body>
@@ -381,9 +394,25 @@
     </div>
   </div>
 
+  <!-- ===== 対象設定モーダル（スタッフ用） ===== -->
+  <div id="target-modal" class="tm-overlay" style="display:none">
+    <div class="tm-card">
+      <div class="tm-title" id="tm-book-name">対象を設定</div>
+      <div class="tm-sub">この共有単語帳を表示する学校・学年を選びます。<br>何も選ばなければ「全校・全学年」に表示されます。</div>
+      <div class="tm-sec-label">学校</div>
+      <div class="tm-chips" id="tm-schools"></div>
+      <div class="tm-sec-label">学年</div>
+      <div class="tm-chips" id="tm-grades"></div>
+      <div class="tm-actions">
+        <button class="tm-cancel" onclick="closeTargetEditor()">キャンセル</button>
+        <button class="tm-save" onclick="saveTargetEditor()">保存</button>
+      </div>
+    </div>
+  </div>
+
 </div>
 <script>
-const APP_VERSION = '20260712a';
+const APP_VERSION = '20260712b';
 
 /* ==== Supabase ==== */
 const SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
@@ -541,17 +570,24 @@ async function loadBooks(){
   listEl.innerHTML='<div class="book-empty">読み込み中...</div>';
   books=[]; myBookId=null;
   try{
-    // 共有単語帳
-    const shared=await sbGet('eitango_books','owner_type=eq.shared&is_active=eq.true&select=id,name,note,sort_order&order=sort_order.asc,created_at.asc');
+    // 共有単語帳（対象の学校・学年つき）
+    const shared=await sbGet('eitango_books','owner_type=eq.shared&is_active=eq.true&select=id,name,note,sort_order,target_schools,target_grades&order=sort_order.asc,created_at.asc');
     let mine=[];
     if(!isStaff){
       mine=await sbGet('eitango_books','owner_type=eq.personal&owner_student_id=eq.'+encodeURIComponent(currentStudent.id)+'&is_active=eq.true&select=id,name,note,sort_order&order=created_at.asc');
     }
+    // 生徒は自分の学校・学年に合う共有単語帳だけ表示（スタッフは全部表示＝対象編集のため）
+    let sharedVisible = (shared||[]);
+    if(!isStaff){
+      const myS = (currentStudent.school||'').trim();
+      const myG = (currentStudent.grade||'').trim();
+      sharedVisible = sharedVisible.filter(b=>bookVisibleTo(b, myS, myG));
+    }
     // 各単語帳の語数を取得
-    const all=[...(shared||[]).map(b=>({...b,owner_type:'shared'})), ...(mine||[]).map(b=>({...b,owner_type:'personal'}))];
+    const all=[...sharedVisible.map(b=>({...b,owner_type:'shared'})), ...(mine||[]).map(b=>({...b,owner_type:'personal'}))];
     for(const b of all){
       try{
-        const cnt=await sbGet('eitango_words','book_id=eq.'+encodeURIComponent(b.id)+'&select=id&limit=1000');
+        const cnt=await sbGet('eitango_words','book_id=eq.'+encodeURIComponent(b.id)+'&select=id&limit=5000');
         b.word_count=(cnt||[]).length;
       }catch(e){ b.word_count=0; }
     }
@@ -562,19 +598,94 @@ async function loadBooks(){
     listEl.innerHTML='<div class="book-empty">単語帳の読み込みに失敗しました</div>';
   }
 }
+// 共有単語帳の対象判定（null/空＝全対象）
+function bookVisibleTo(b, school, grade){
+  const ts=b.target_schools, tg=b.target_grades;
+  const schoolOk = (!ts || !ts.length) ? true : ts.indexOf(school)!==-1;
+  const gradeOk  = (!tg || !tg.length) ? true : tg.indexOf(grade)!==-1;
+  return schoolOk && gradeOk;
+}
+function targetSummary(b){
+  const ts=b.target_schools, tg=b.target_grades;
+  const s=(!ts||!ts.length)?'全校':ts.join('・');
+  const g=(!tg||!tg.length)?'全学年':tg.join('・');
+  return s+' / '+g;
+}
+
+/* ==== 対象設定（スタッフ用） ==== */
+let tmBook=null, tmSchoolOpts=[], tmGradeOpts=[], tmSelSchools=new Set(), tmSelGrades=new Set();
+async function openTargetEditor(bookId){
+  const b=books.find(x=>x.id===bookId);
+  if(!b) return;
+  tmBook=b;
+  document.getElementById('tm-book-name').textContent=b.name+' の対象';
+  tmSelSchools=new Set(b.target_schools||[]);
+  tmSelGrades=new Set(b.target_grades||[]);
+  // 学校・学年の候補を生徒から取得
+  showLoading('読み込み中...');
+  try{
+    const rows=await sbGet('students','is_active=eq.true&select=school,grade&limit=5000');
+    const sset=new Set(), gset=new Set();
+    (rows||[]).forEach(r=>{ if(r.school) sset.add(r.school); if(r.grade) gset.add(r.grade); });
+    tmSchoolOpts=[...sset].sort();
+    tmGradeOpts=[...gset].sort();
+  }catch(e){ tmSchoolOpts=[]; tmGradeOpts=['1年','2年','3年']; }
+  hideLoading();
+  renderTargetChips();
+  document.getElementById('target-modal').style.display='flex';
+}
+function renderTargetChips(){
+  const sEl=document.getElementById('tm-schools');
+  const gEl=document.getElementById('tm-grades');
+  sEl.innerHTML=tmSchoolOpts.map(s=>`<span class="tm-chip${tmSelSchools.has(s)?' on':''}" onclick="toggleTmSchool('${escapeHtml(s).replace(/'/g,"\\'")}')">${escapeHtml(s)}</span>`).join('') || '<span style="font-size:12px;color:var(--muted)">学校データがありません</span>';
+  gEl.innerHTML=tmGradeOpts.map(g=>`<span class="tm-chip${tmSelGrades.has(g)?' on':''}" onclick="toggleTmGrade('${escapeHtml(g).replace(/'/g,"\\'")}')">${escapeHtml(g)}</span>`).join('');
+}
+function toggleTmSchool(s){ if(tmSelSchools.has(s)) tmSelSchools.delete(s); else tmSelSchools.add(s); renderTargetChips(); }
+function toggleTmGrade(g){ if(tmSelGrades.has(g)) tmSelGrades.delete(g); else tmSelGrades.add(g); renderTargetChips(); }
+function closeTargetEditor(){ document.getElementById('target-modal').style.display='none'; tmBook=null; }
+async function saveTargetEditor(){
+  if(!tmBook) return;
+  const schools=[...tmSelSchools];
+  const grades=[...tmSelGrades];
+  showLoading('保存中...');
+  try{
+    await sbPatch('eitango_books','id=eq.'+encodeURIComponent(tmBook.id), {
+      target_schools: schools.length?schools:null,
+      target_grades:  grades.length?grades:null
+    });
+    // ローカルにも反映
+    tmBook.target_schools=schools.length?schools:null;
+    tmBook.target_grades=grades.length?grades:null;
+    hideLoading();
+    closeTargetEditor();
+    showToast('対象を保存しました','success');
+    renderBookList();
+  }catch(e){ hideLoading(); showToast('保存に失敗しました','info'); }
+}
 function renderBookList(){
   const listEl=document.getElementById('book-list');
-  if(!books.length){ listEl.innerHTML='<div class="book-empty">まだ単語帳がありません。<br>下のボタンからマイ単語帳を作れます。</div>'; return; }
+  if(!books.length){
+    listEl.innerHTML= isStaff
+      ? '<div class="book-empty">共有単語帳がありません。</div>'
+      : '<div class="book-empty">まだ表示できる単語帳がありません。<br>下のボタンからマイ単語帳を作れます。</div>';
+    return;
+  }
   listEl.innerHTML=books.map(b=>{
     const mine=b.owner_type==='personal';
     const on=(selectedBook&&selectedBook.id===b.id)?' on':'';
+    // スタッフ：共有単語帳には対象と編集ボタンを表示
+    const staffTarget = (isStaff && b.owner_type==='shared')
+      ? `<div class="bk-meta" style="color:var(--blue-d)">対象：${escapeHtml(targetSummary(b))}</div>` : '';
+    const editBtn = (isStaff && b.owner_type==='shared')
+      ? `<span class="bk-tag" style="background:var(--blue-l);color:var(--blue-d);cursor:pointer" onclick="event.stopPropagation();openTargetEditor('${b.id}')">対象設定</span>` : '';
     return `<button class="book-item${mine?' mine':''}${on}" onclick="selectBook('${b.id}')">
       <div class="bk-ic">${mine?'★':'📘'}</div>
       <div class="bk-body">
         <div class="bk-name">${escapeHtml(b.name)}</div>
         <div class="bk-meta">${b.word_count||0}語${b.note?' ・ '+escapeHtml(b.note):''}</div>
+        ${staffTarget}
       </div>
-      ${mine?'<span class="bk-tag">マイ</span>':''}
+      ${mine?'<span class="bk-tag">マイ</span>':editBtn}
     </button>`;
   }).join('');
 }

@@ -3852,7 +3852,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702ch';
+const APP_VERSION = '20260702ci';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -15287,6 +15287,7 @@ async function openReportFromCalendar(dateISO) {
 let unifiedMonthOffset = 0;            // 0=今月, -1=先月, +1=来月
 let unifiedSessions = [];              // [{date, classes:[{id,name,subject}]}]
 let unifiedAttendedDates = new Set();  // 自分が来塾した日（ISO）
+let unifiedAttMap = {};                // 'classId|date' -> 'present'/'makeup'/'absent'（スタッフ手動記録）
 let unifiedMakeupMap = {};             // 'classId|date' -> 'pending'/'approved'
 let unifiedEvents = {};                // 'YYYY-MM-DD' -> [{title,detail,color}]
 let unifiedBirthdays = {};             // 'MM-DD' -> [{name,who}]  who:'staff'/'me'
@@ -15462,6 +15463,19 @@ async function loadUnifiedCalendar() {
       'student_id=eq.' + currentStudent.id + '&select=checkin_date') || [];
     unifiedAttendedDates = new Set(myCheckins.map(c => c.checkin_date));
   } catch(e) { unifiedAttendedDates = new Set(allCheckins ? [] : []); }
+
+  // --- スタッフ手動の出欠記録（session_attendance）。カレンダーの出席/欠席はこれを最優先 ---
+  unifiedAttMap = {};
+  try {
+    const myAtts = await sbGet('session_attendance',
+      'student_id=eq.' + currentStudent.id + '&select=class_master_id,session_date,status') || [];
+    myAtts.forEach(a => {
+      // 同日同クラスに複数記録があった場合は、出席寄り（present/makeup）を優先
+      const key = a.class_master_id + '|' + a.session_date;
+      const prev = unifiedAttMap[key];
+      if (!prev || prev === 'absent') unifiedAttMap[key] = a.status;
+    });
+  } catch(e) { /* テーブル未作成時などは無視 */ }
 
   // --- イベント ---
   unifiedEvents = {};
@@ -15779,13 +15793,23 @@ function getDayStatus(dateISO, sess, todayISO) {
   const attendedDay = unifiedAttendedDates.has(dateISO);
   if (sess) {
     const isPast = dateISO <= todayISO;
+    // スタッフ手動の出欠記録（session_attendance）を最優先で判定
+    // present/makeup が1つでもあれば「出席扱い」、なければ absent 記録があるかを見る
+    let manualPresent = false, manualAbsent = false;
+    sess.classes.forEach(c => {
+      const ms = unifiedAttMap[c.id + '|' + dateISO];
+      if (ms === 'present' || ms === 'makeup') manualPresent = true;
+      else if (ms === 'absent') manualAbsent = true;
+    });
+    // 出席扱い判定：来塾 or スタッフが present/makeup を記録
+    const treatedAttended = attendedDay || manualPresent;
     let makeupInvolved = false, allFilled = true, anyPending = false, anyInProgress = false;
     sess.classes.forEach(c => {
       const st = unifiedMakeupMap[c.id + '|' + dateISO];
       if (st === 'approved') { makeupInvolved = true; }
       else if (st === 'reported' || st === 'pending') { makeupInvolved = true; anyPending = true; allFilled = false; }
       else if (st === 'reserved') { makeupInvolved = true; anyInProgress = true; allFilled = false; }
-      else if (!attendedDay) { allFilled = false; }
+      else if (!treatedAttended) { allFilled = false; }
     });
     if (makeupInvolved) {
       if (allFilled) return { bg:'#F0E4F5', color:'#7B2D8B', band:'#7B2D8B', label:'補習完了', dashed:false, clickable:false };
@@ -15793,7 +15817,7 @@ function getDayStatus(dateISO, sess, todayISO) {
       return { bg:'#F0E4F5', color:'#7B2D8B', band:'#B583C7', label:lbl, dashed:true, clickable:isPast };
     }
     if (!isPast) return { bg:'#E8EDF3', color:'#4A6480', band:'#8FA3B8', label:'予定', dashed:false, clickable:false };
-    if (attendedDay) return { bg:'#E5F1DD', color:'#3A6E2D', band:'#4B8B3B', label:'出席', dashed:false, clickable:false };
+    if (treatedAttended) return { bg:'#E5F1DD', color:'#3A6E2D', band:'#4B8B3B', label:'出席', dashed:false, clickable:false };
     return { bg:'#F8E4E4', color:'#B03030', band:'#C75050', label:'欠席', dashed:false, clickable:true };
   }
   // 授業日でない → 来塾していればオレンジ
@@ -15816,10 +15840,18 @@ function renderUnifiedMonth() {
     if (dt.getFullYear() === year && dt.getMonth() === month) monthSessions[dt.getDate()] = s;
   });
 
-  // サマリー（出席/授業日数）
+  // サマリー（出席/授業日数）。来塾 or スタッフ手動 present/makeup を出席として数える
   let attendedCount = 0, pastCount = 0;
   Object.values(monthSessions).forEach(s => {
-    if (s.date <= todayISO) { pastCount++; if (unifiedAttendedDates.has(s.date)) attendedCount++; }
+    if (s.date <= todayISO) {
+      pastCount++;
+      let manualPresent = false;
+      (s.classes || []).forEach(c => {
+        const ms = unifiedAttMap[c.id + '|' + s.date];
+        if (ms === 'present' || ms === 'makeup') manualPresent = true;
+      });
+      if (unifiedAttendedDates.has(s.date) || manualPresent) attendedCount++;
+    }
   });
   const rate = pastCount ? Math.round(attendedCount / pastCount * 100) : 0;
   document.getElementById('unified-cal-summary').textContent =
