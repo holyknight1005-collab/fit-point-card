@@ -412,7 +412,7 @@
 
 </div>
 <script>
-const APP_VERSION = '20260712b';
+const APP_VERSION = '20260712c';
 
 /* ==== Supabase ==== */
 const SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
@@ -842,14 +842,65 @@ bindSeg('voice-pick','voice','voice');
 /* ==== ユーティリティ ==== */
 function shuffle(a){ a=a.slice(); for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
 
-/* ==== 音声（Web Speech API） ==== */
+/* ==== 音声（Web Speech API・高品質な英語音声を優先） ==== */
 let speechOK = ('speechSynthesis' in window);
+let bestVoice = null;      // 選ばれた英語音声
+let voicesReady = false;
+
+// 音声一覧から一番自然な英語音声を選ぶ（iOS優先）
+function pickBestVoice(){
+  if(!speechOK) return null;
+  let voices=[];
+  try{ voices=window.speechSynthesis.getVoices()||[]; }catch(e){ voices=[]; }
+  if(!voices.length) return null;
+  // 英語音声だけに絞る
+  const en=voices.filter(v=>/^en(-|_|$)/i.test(v.lang||''));
+  if(!en.length) return null;
+  const nameOf=v=>String(v.name||'').toLowerCase();
+  // iOSの高品質音声を名前で優先（Enhanced/Premium系）
+  const preferred=['samantha','ava','allison','susan','nicky','aaron','zoe','evan','nathan','tom'];
+  const score=v=>{
+    let s=0;
+    const n=nameOf(v);
+    // 高品質を示すキーワード
+    if(/enhanced|premium|siri|neural|natural/.test(n)) s+=100;
+    // よく知られた自然な音声名
+    const idx=preferred.findIndex(p=>n.includes(p));
+    if(idx>=0) s+=(50-idx);
+    // en-US を en-GB より少し優先（学習教材で一般的）
+    if(/en[-_]us/i.test(v.lang||'')) s+=10;
+    else if(/en[-_]gb/i.test(v.lang||'')) s+=6;
+    // ローカル音声（オフライン=iOSの内蔵高品質）を優先
+    if(v.localService) s+=5;
+    // 既定音声を少し優先
+    if(v.default) s+=2;
+    return s;
+  };
+  en.sort((a,b)=>score(b)-score(a));
+  return en[0]||null;
+}
+function refreshVoice(){
+  const v=pickBestVoice();
+  if(v){ bestVoice=v; voicesReady=true; }
+}
+if(speechOK){
+  refreshVoice();
+  // iOSは音声一覧が遅れて読み込まれるので、イベントで再取得
+  try{ window.speechSynthesis.onvoiceschanged=refreshVoice; }catch(e){}
+  // 保険：数回リトライ
+  let tries=0;
+  const iv=setInterval(()=>{ tries++; if(!voicesReady) refreshVoice(); if(voicesReady||tries>=8) clearInterval(iv); }, 250);
+}
 function speak(text){
   if(!speechOK) return;
   try{
     window.speechSynthesis.cancel();
+    if(!bestVoice) refreshVoice();
     const u=new SpeechSynthesisUtterance(String(text));
-    u.lang='en-US'; u.rate=0.9;
+    if(bestVoice){ u.voice=bestVoice; u.lang=bestVoice.lang; }
+    else { u.lang='en-US'; }
+    u.rate=0.85;   // 単語は少しゆっくりの方が聞き取りやすい
+    u.pitch=1.0;
     window.speechSynthesis.speak(u);
   }catch(e){}
 }
