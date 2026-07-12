@@ -155,6 +155,17 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 #unified-cal-grid .u-band.u-band-single{left:1px;right:1px;border-radius:3px}
 #unified-cal-grid .u-band.u-band-wkstart{left:1px;border-top-left-radius:3px;border-bottom-left-radius:3px}
 #unified-cal-grid .u-band.u-band-wkend{right:1px;border-top-right-radius:3px;border-bottom-right-radius:3px}
+/* 生徒カレンダー：縦長リッチセル（日付を上・ステータス・授業名バーを下に） */
+#unified-cal-grid .cal-day-rich{min-height:58px;display:flex;flex-direction:column;align-items:stretch;padding:3px 2px 4px;border-radius:8px}
+#unified-cal-grid .cal-day-rich .u-daynum{font-size:13px;font-weight:700;line-height:1.1;text-align:left;padding-left:2px}
+#unified-cal-grid .cal-day-rich .u-daystatus{font-size:8px;font-weight:700;line-height:1.1;text-align:left;padding-left:2px;opacity:0.95;margin-top:1px}
+#unified-cal-grid .cal-day-rich .u-classbar{margin-top:auto;display:flex;align-items:center;gap:2px;font-size:8px;font-weight:700;line-height:1.2;border-radius:4px;padding:2px 3px;overflow:hidden}
+#unified-cal-grid .cal-day-rich .u-items{margin-top:2px;display:flex;flex-direction:column;gap:1px;width:100%;min-width:0}
+#unified-cal-grid .cal-day-rich .u-sess-name{font-size:8px;line-height:1.25;font-weight:700;color:#fff;background:rgba(0,0,0,0.42);border-radius:3px;padding:0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#unified-cal-grid .cal-day-rich .u-more{font-size:7.5px;line-height:1.2;color:#fff;opacity:0.85;text-align:left;padding-left:3px}
+body.view-desktop #unified-cal-grid .cal-day-rich{min-height:88px}
+body.view-desktop #unified-cal-grid .cal-day-rich .u-daynum{font-size:14px}
+body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;line-height:1.35}
 /* スタッフホームカレンダー: 縦長セル。日付を上、授業名＋時間/イベント名を下に縦積み */
 #staff-home-cal-grid{gap:3px}
 .cal-filter-btn{background:var(--surface2);border:1.5px solid var(--border);color:var(--muted);transition:all .15s}
@@ -622,6 +633,19 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
     <div id="prospect-history-body"></div>
     <div style="display:flex;margin-top:14px">
       <button onclick="closeProspectHistory()" style="flex:1;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- 日付選択ミニモーダル（20260702cb） -->
+<div id="datepick-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:690;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:320px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div id="datepick-title" style="font-size:14px;font-weight:800;color:var(--text);margin-bottom:12px">日付を選択</div>
+    <input type="date" id="datepick-input" style="width:100%;padding:12px;border:1.5px solid var(--border);border-radius:10px;font-size:16px;font-family:inherit;box-sizing:border-box">
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button onclick="datepickClear()" style="flex:0 0 auto;padding:10px 12px;background:#FBEAEA;border:1px solid #E0A0A0;border-radius:8px;color:#B03030;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">クリア</button>
+      <button onclick="datepickCancel()" style="flex:1;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">キャンセル</button>
+      <button onclick="datepickConfirm()" style="flex:1;padding:10px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">決定</button>
     </div>
   </div>
 </div>
@@ -3814,7 +3838,7 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702ca';
+const APP_VERSION = '20260702cd';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -15826,20 +15850,30 @@ function renderUnifiedMonth() {
       marks += '<span class="u-band' + posCls + '" style="background:' + (b.color || '#F5A623') + '" title="' + safe + '">' + (showText ? safe : '&nbsp;') + '</span>';
     }
 
-    // 授業名（スタッフ表示に合わせて時刻＋授業名を小さく表示）
-    let classLabel = '';
+    // 授業名（スタッフの月カレンダーと同じ：授業ごとに色帯で縦に並べる）
+    let itemsHtml = '';
     if (sess && sess.classes && sess.classes.length) {
-      const c0 = sess.classes[0];
-      const tm = c0.start_time ? String(c0.start_time).slice(0,5) + ' ' : '';
-      const nm = c0.name || '';
-      const more = sess.classes.length > 1 ? ' 他' + (sess.classes.length - 1) : '';
-      const safeNm = (tm + nm + more).replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-      classLabel = '<div style="font-size:8px;line-height:1.15;font-weight:700;margin-top:1px;padding:0 1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:' + st.color + '">' + safeNm + '</div>';
+      const sorted = sess.classes.slice().sort((a, b) => {
+        const pa = a.period != null ? a.period : 99, pb = b.period != null ? b.period : 99;
+        if (pa !== pb) return pa - pb;
+        return String(a.start_time || '').localeCompare(String(b.start_time || ''));
+      });
+      const MAX = 6;
+      itemsHtml = '<div class="u-items">';
+      sorted.slice(0, MAX).forEach(c => {
+        const tm = c.start_time ? String(c.start_time).slice(0, 5) + ' ' : (c.period ? c.period + '限 ' : '');
+        const safe = (tm + (c.name || '')).replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        itemsHtml += '<span class="u-sess-name" title="' + safe + '">' + safe + '</span>';
+      });
+      if (sorted.length > MAX) itemsHtml += '<span class="u-more">+' + (sorted.length - MAX) + '</span>';
+      itemsHtml += '</div>';
     }
 
-    html += '<div class="cal-day" title="' + title.replace(/"/g,'&quot;') + '"' + onclick +
-      ' style="position:relative;background:' + st.bg + ';color:' + st.color + ';font-weight:' + (st.label?'700':'400') + ';' + cursor + border + '">' +
-      '<div style="font-size:12px">' + d + '</div>' + classLabel + marks + '</div>';
+    html += '<div class="cal-day cal-day-rich' + (sess ? ' has-class' : '') + '" title="' + title.replace(/"/g,'&quot;') + '"' + onclick +
+      ' style="position:relative;background:' + st.bg + ';color:' + st.color + ';' + cursor + border + '">' +
+      '<div class="u-daynum" style="color:' + st.color + '">' + d + '</div>' +
+      (st.label ? '<div class="u-daystatus" style="color:' + st.color + '">' + st.label + '</div>' : '') +
+      itemsHtml + marks + '</div>';
   }
   document.getElementById('unified-cal-grid').innerHTML = html;
 }
@@ -19173,25 +19207,36 @@ function nextTrialDate(p) {
   return future.length ? future[0] : '';
 }
 
-// ネイティブのカレンダーで日付を選ばせる（promptの手打ちをやめる）
-function pickDate(currentVal, callback) {
-  const inp = document.createElement('input');
-  inp.type = 'date';
-  if (currentVal) inp.value = String(currentVal).slice(0, 10);
-  inp.style.cssText = 'position:fixed;left:-9999px;top:0';
-  document.body.appendChild(inp);
-  inp.addEventListener('change', function () {
-    const v = inp.value || '';
-    if (inp.parentNode) inp.parentNode.removeChild(inp);
-    callback(v);
-  });
-  // 閉じられた（変更なし）場合の後始末
-  inp.addEventListener('blur', function () {
-    setTimeout(function () { if (inp.parentNode) inp.parentNode.removeChild(inp); }, 300);
-  });
-  inp.focus();
-  if (inp.showPicker) { try { inp.showPicker(); } catch (e) { inp.click(); } }
-  else inp.click();
+// 日付選択：見えるミニモーダルで選ばせる（画面外inputだと開かない端末があるため）
+let _datepickCallback = null;
+function pickDate(currentVal, callback, title) {
+  _datepickCallback = callback;
+  const inp = document.getElementById('datepick-input');
+  const ttl = document.getElementById('datepick-title');
+  if (ttl) ttl.textContent = title || '日付を選択';
+  if (inp) inp.value = currentVal ? String(currentVal).slice(0, 10) : '';
+  const modal = document.getElementById('datepick-modal');
+  if (modal) modal.style.display = 'flex';
+  // ネイティブのカレンダーもすぐ開く（対応端末のみ）
+  setTimeout(function () { if (inp && inp.showPicker) { try { inp.showPicker(); } catch (e) {} } }, 100);
+}
+function datepickConfirm() {
+  const inp = document.getElementById('datepick-input');
+  const v = inp ? (inp.value || '') : '';
+  const cb = _datepickCallback;
+  datepickClose();
+  if (cb) cb(v);
+}
+function datepickClear() {
+  const cb = _datepickCallback;
+  datepickClose();
+  if (cb) cb('');
+}
+function datepickCancel() { datepickClose(); }
+function datepickClose() {
+  const modal = document.getElementById('datepick-modal');
+  if (modal) modal.style.display = 'none';
+  _datepickCallback = null;
 }
 
 // 対応履歴モーダルを開く
@@ -19673,7 +19718,7 @@ async function editProspectDate(id, col) {
       p[col] = val || null;
       hideLoading(); renderProspectsTable();
     } catch (e) { hideLoading(); showToast('保存に失敗: ' + (e.message || e), 'error'); }
-  });
+  }, (col === 'visit_date' ? '来塾日を選択' : '問合せ日を選択'));
 }
 
 // カスタム check セルのトグル（済 ⇄ 未）
@@ -22990,8 +23035,8 @@ const PROSPECT_STATUS_VALUES = ['問合せ', '☆入塾書待ち', '◎入塾濃
 
 // テンプレCSVをダウンロード（ヘッダ＋記入例1行、UTF-8 BOM付きでExcel文字化け回避）
 function downloadProspectCsvTemplate() {
-  const header = ['氏名', '学校', '学年', '連絡先', '流入経路', '状態', '来塾日', '問合せ日', '次回予定日', 'メモ'];
-  const example = ['山田太郎', '松山東高校', '高2', '090-0000-0000', 'チラシ', '問合せ', '2026-07-01', '2026-06-28', '2026-07-15', '体験希望'];
+  const header = ['氏名', '学校', '学年', '連絡先', '流入経路', '状態', '来塾日', '問合せ日', '次回予定日', 'LINE登録日', '面談日', '保護者面談日', 'メモ'];
+  const example = ['山田太郎', '松山東高校', '高2', '090-0000-0000', 'チラシ', '問合せ', '2026-07-01', '2026-06-28', '2026-07-15', '', '', '', '体験希望'];
   const lines = [header.join(','), example.join(',')];
   const csv = '\uFEFF' + lines.join('\r\n') + '\r\n';
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -23018,7 +23063,7 @@ async function onProspectCsvSelected(event) {
     // ヘッダ判定＋列マッピング（ヘッダが無ければ既定の並びとみなす）
     let startIdx = 0;
     const head = rows[0].map(c => String(c).trim());
-    let col = { name: 0, school: 1, grade: 2, contact: 3, source: 4, status: 5, visit: 6, inquiry: 7, next: 8, note: 9 };
+    let col = { name: 0, school: 1, grade: 2, contact: 3, source: 4, status: 5, visit: 6, inquiry: 7, next: 8, line: -1, interview: -1, parent: -1, note: 9 };
     const headerHit = head.some(h => /氏名|名前|name/i.test(h));
     if (headerHit) {
       startIdx = 1;
@@ -23031,6 +23076,9 @@ async function onProspectCsvSelected(event) {
         else if (/状態|ステータス|status/i.test(h)) col.status = idx;
         else if (/来塾日|来塾|visit/i.test(h)) col.visit = idx;
         else if (/問合せ日|問合せ|問い合わせ|inquiry/i.test(h)) col.inquiry = idx;
+        else if (/保護者面談|parent/i.test(h)) col.parent = idx;
+        else if (/面談|interview/i.test(h)) col.interview = idx;
+        else if (/LINE|ライン|line/i.test(h)) col.line = idx;
         else if (/次回|予定|next/i.test(h)) col.next = idx;
         else if (/メモ|備考|note/i.test(h)) col.note = idx;
       });
@@ -23066,10 +23114,16 @@ async function onProspectCsvSelected(event) {
       const vd = parseCsvDateStrict(get(row, col.visit));
       const iq = parseCsvDateStrict(get(row, col.inquiry));
       const nx = parseCsvDateStrict(get(row, col.next));
+      const ln = parseCsvDateStrict(get(row, col.line));
+      const iv = parseCsvDateStrict(get(row, col.interview));
+      const pr = parseCsvDateStrict(get(row, col.parent));
       const dateErr = [];
       if (!vd.ok) dateErr.push('来塾日「' + vd.raw + '」');
       if (!iq.ok) dateErr.push('問合せ日「' + iq.raw + '」');
       if (!nx.ok) dateErr.push('次回予定日「' + nx.raw + '」');
+      if (!ln.ok) dateErr.push('LINE登録日「' + ln.raw + '」');
+      if (!iv.ok) dateErr.push('面談日「' + iv.raw + '」');
+      if (!pr.ok) dateErr.push('保護者面談日「' + pr.raw + '」');
       if (dateErr.length) {
         errors.push(rowNo + '行目（' + name + '）：日付が不正 ' + dateErr.join('、') + '（YYYY-MM-DD形式で入力）');
         continue;
@@ -23085,6 +23139,9 @@ async function onProspectCsvSelected(event) {
         visit_date: vd.value,
         inquiry_date: iq.value,
         next_date: nx.value,
+        line_registered_date: ln.value,
+        interview_date: iv.value,
+        parent_interview_date: pr.value,
         note: get(row, col.note) || null,
         updated_at: nowIso,
         created_by: staffId
@@ -23115,8 +23172,9 @@ async function onProspectCsvSelected(event) {
           await sbPost('prospects', body);
         } catch (e1) {
           const m = String(e1 && e1.message || e1);
-          if (/visit_date|inquiry_date|column|schema|PGRST|400/i.test(m)) {
+          if (/visit_date|inquiry_date|line_registered_date|interview_date|parent_interview_date|column|schema|PGRST|400/i.test(m)) {
             const b2 = Object.assign({}, body); delete b2.visit_date; delete b2.inquiry_date;
+            delete b2.line_registered_date; delete b2.interview_date; delete b2.parent_interview_date;
             await sbPost('prospects', b2);
           } else { throw e1; }
         }
