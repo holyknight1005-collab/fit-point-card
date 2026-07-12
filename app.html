@@ -3855,7 +3855,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702cj';
+const APP_VERSION = '20260702ck';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkAppVersion() {
@@ -13253,10 +13253,22 @@ let csMasters = [];   // 授業マスターのキャッシュ（grade_level含�
 let csSubjects = [];  // マスターに実在する科目一覧
 
 async function loadClassMasterList() {
-  // 自分の授業のみ（管理者は全部）
+  // 自分の授業のみ（管理者は全部）。主担当(teacher_staff_id) ∪ 追加担当(class_teachers)。
   let query = 'is_active=eq.true&order=subject,name&select=*,staff(name)';
   if (currentStaff && currentStaff.role !== 'admin') {
-    query += '&teacher_staff_id=eq.' + currentStaff.id;
+    // 追加担当として割り当てられた授業IDを先に取得
+    let assignedIds = [];
+    try {
+      const cts = await sbGet('class_teachers', 'staff_id=eq.' + currentStaff.id + '&select=class_master_id') || [];
+      assignedIds = cts.map(ct => ct.class_master_id).filter(Boolean);
+    } catch (e) { /* class_teachers 未作成なら主担当のみ */ }
+    if (assignedIds.length) {
+      // teacher_staff_id=自分 OR id in (追加担当の授業)
+      const idList = assignedIds.map(id => '"' + id + '"').join(',');
+      query += '&or=(teacher_staff_id.eq.' + currentStaff.id + ',id.in.(' + idList + '))';
+    } else {
+      query += '&teacher_staff_id=eq.' + currentStaff.id;
+    }
   }
   classMasterList = await sbGet('class_master', query) || [];
   const el = document.getElementById('cm-list');
