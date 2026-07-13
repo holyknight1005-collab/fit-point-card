@@ -82,12 +82,21 @@
 
   /* 範囲（複数選択） */
   .rng-hint{font-size:11.5px;color:var(--muted);margin:0 4px 8px}
-  .rng-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-  .rng-chip{border:1.5px solid var(--border);background:var(--surface);border-radius:12px;padding:11px 6px;text-align:center;cursor:pointer;transition:.12s;position:relative}
-  .rng-chip .rn{font-weight:700;font-size:13.5px;color:var(--blue-d)}
-  .rng-chip .rd{font-size:10px;color:var(--muted);margin-top:1px}
+  .rng-grid{display:flex;flex-direction:column;gap:8px}
+  .rng-block{display:flex;flex-direction:column;gap:6px}
+  .rng-chip{display:flex;align-items:stretch;border:1.5px solid var(--border);background:var(--surface);border-radius:12px;overflow:hidden;cursor:pointer;transition:.12s;position:relative}
+  .rng-chip-main{flex:1;padding:11px 12px;text-align:left}
+  .rng-chip .rn{font-weight:700;font-size:14px;color:var(--blue-d)}
+  .rng-chip .rd{font-size:10.5px;color:var(--muted);margin-top:1px}
   .rng-chip.on{border-color:var(--blue);background:var(--blue-l);box-shadow:0 2px 8px rgba(31,95,168,.16)}
-  .rng-chip.on::after{content:"✓";position:absolute;top:4px;right:7px;font-size:11px;color:var(--blue);font-weight:900}
+  .rng-chip.on .rng-chip-main::after{content:"✓";position:absolute;top:8px;right:44px;font-size:12px;color:var(--blue);font-weight:900}
+  .rng-expand{width:42px;border:0;border-left:1.5px solid var(--border);background:transparent;color:var(--muted);font-size:14px;cursor:pointer;flex-shrink:0}
+  .rng-chip.on .rng-expand{border-left-color:var(--blue)}
+  .rng-subs{display:flex;flex-wrap:wrap;gap:6px;padding:2px 2px 4px 10px}
+  .rng-sub{display:flex;align-items:center;gap:5px;border:1.3px solid var(--border);background:var(--surface);border-radius:9px;padding:6px 10px;font-size:11.5px;cursor:pointer;transition:.12s}
+  .rng-sub .rn{font-weight:700;color:var(--blue-d)}
+  .rng-sub .rd{color:var(--muted);font-size:10px}
+  .rng-sub.on{border-color:var(--blue);background:var(--blue-l)}
   .rng-tools{display:flex;gap:8px;margin-top:10px}
   .rng-tools button{flex:1;border:1px solid var(--border);background:var(--surface);border-radius:9px;padding:8px;font-size:12px;font-weight:700;color:var(--muted);cursor:pointer}
   .rng-summary{text-align:center;font-size:12.5px;font-weight:700;color:var(--blue-d);margin-top:12px;min-height:18px}
@@ -125,6 +134,8 @@
   .tb-rank{font-size:15px;font-weight:800;min-width:34px}
   .tb-name{flex:1;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tb-score{font-size:14px;font-weight:800;color:var(--vermilion)}
+  .ta-board-home{margin-top:18px}
+  .ta-board-toggle{width:100%;margin-top:6px;border:1px solid #e0cdc2;background:#fff;color:var(--vermilion);border-radius:10px;padding:9px;font-size:12.5px;font-weight:700;cursor:pointer}
 
   .ghost-line-btn{width:100%;margin-top:10px;border:1.5px solid var(--border);background:var(--surface);border-radius:12px;padding:12px;font-size:13.5px;font-weight:700;color:var(--blue-d);cursor:pointer}
 
@@ -346,6 +357,7 @@
           <div class="ta-ranges" id="ta-range-pick"></div>
         </div>
         <button class="ta-start-btn" id="ta-start-btn" onclick="startTimeAttack()">タイムアタック開始</button>
+        <div id="ta-board-home" class="ta-board-home"></div>
       </div>
     </div>
     <div class="foot">総合学習塾 fit ・ fit英単語テスト <span id="ver-tag"></span></div>
@@ -477,7 +489,7 @@
 
 </div>
 <script>
-const APP_VERSION = '20260713a';
+const APP_VERSION = '20260713b';
 
 /* ==== Supabase ==== */
 const SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
@@ -842,7 +854,8 @@ function startWeakReview(){
 
 /* ==== 設定・範囲 ==== */
 let GROUPS = [];
-const RANGE_CHUNK = 500; // 英単語（ターゲット）は500語ごと
+const RANGE_CHUNK = 500; // 大ブロック（ターゲット）は500語
+const SUB_CHUNK = 50;    // タップで開く小ブロックは50語
 function buildGroups(){
   GROUPS=[];
   const maxNo = WORDS.reduce((m,w)=>Math.max(m,w.no||0),0);
@@ -850,13 +863,21 @@ function buildGroups(){
   for(let g=0; g<blocks; g++){
     const lo=g*RANGE_CHUNK+1, hi=g*RANGE_CHUNK+RANGE_CHUNK;
     const list=WORDS.filter(w=>w.no>=lo && w.no<=hi);
-    if(list.length) GROUPS.push({idx:g, lo, hi, list});
+    if(!list.length) continue;
+    // 50語ごとの小ブロック
+    const subs=[];
+    for(let s=0; s*SUB_CHUNK<RANGE_CHUNK; s++){
+      const slo=lo+s*SUB_CHUNK, shi=lo+s*SUB_CHUNK+SUB_CHUNK-1;
+      const slist=list.filter(w=>w.no>=slo && w.no<=shi);
+      if(slist.length) subs.push({sidx:s, lo:slo, hi:Math.min(shi, hi), list:slist});
+    }
+    GROUPS.push({idx:g, lo, hi:Math.min(hi, maxNo), list, subs});
   }
-  // 番号が無い/連番でない場合のフォールバック：RANGE_CHUNK語ごとに分割
+  // 番号が無い/連番でない場合のフォールバック：RANGE_CHUNK語ごと（小ブロックなし）
   if(!GROUPS.length && WORDS.length){
     for(let g=0; g*RANGE_CHUNK<WORDS.length; g++){
       const list=WORDS.slice(g*RANGE_CHUNK,g*RANGE_CHUNK+RANGE_CHUNK);
-      GROUPS.push({idx:g, lo:g*RANGE_CHUNK+1, hi:g*RANGE_CHUNK+list.length, list});
+      GROUPS.push({idx:g, lo:g*RANGE_CHUNK+1, hi:g*RANGE_CHUNK+list.length, list, subs:[]});
     }
   }
 }
@@ -867,16 +888,73 @@ const SPEED = {
   slow:   { correct:2100, wrong:2900 }
 };
 
+function blockKey(g){ return 'g:'+g; }
+function subKey(g,s){ return 's:'+g+':'+s; }
 function buildRanges(){
   buildGroups();
   state.ranges=new Set();
   const grid=document.getElementById('rng-grid');
-  grid.innerHTML=GROUPS.map(g=>`<div class="rng-chip" data-g="${g.idx}"><div class="rn">${g.lo}–${g.hi}</div><div class="rd">${g.list.length}語</div></div>`).join('');
-  grid.querySelectorAll('.rng-chip').forEach(c=>{
-    c.onclick=()=>{
-      const g=parseInt(c.dataset.g,10);
-      if(state.ranges.has(g)){ state.ranges.delete(g); c.classList.remove('on'); }
-      else { state.ranges.add(g); c.classList.add('on'); }
+  const hasSubs=GROUPS.some(g=>g.subs&&g.subs.length>1);
+  grid.innerHTML=GROUPS.map(g=>{
+    const canExpand = hasSubs && g.subs && g.subs.length>1;
+    const subHtml = canExpand ? `<div class="rng-subs" id="rng-subs-${g.idx}" style="display:none">`+
+        g.subs.map(s=>`<div class="rng-sub" data-g="${g.idx}" data-s="${s.sidx}"><span class="rn">${s.lo}–${s.hi}</span><span class="rd">${s.list.length}</span></div>`).join('')+
+      `</div>` : '';
+    return `<div class="rng-block">
+      <div class="rng-chip" data-g="${g.idx}">
+        <div class="rng-chip-main"><div class="rn">${g.lo}–${g.hi}</div><div class="rd">${g.list.length}語</div></div>
+        ${canExpand?`<button class="rng-expand" type="button" data-exp="${g.idx}" aria-label="細かく選ぶ">▾</button>`:''}
+      </div>
+      ${subHtml}
+    </div>`;
+  }).join('');
+  // 大ブロック選択（本体タップ）
+  grid.querySelectorAll('.rng-chip-main').forEach(m=>{
+    m.onclick=()=>{
+      const chip=m.closest('.rng-chip');
+      const g=parseInt(chip.dataset.g,10);
+      const k=blockKey(g);
+      if(state.ranges.has(k)){ state.ranges.delete(k); chip.classList.remove('on'); }
+      else {
+        state.ranges.add(k); chip.classList.add('on');
+        // 大ブロックを選んだら、その小ブロック個別選択はクリア（重複回避・見た目統一）
+        GROUPS.find(x=>x.idx===g).subs.forEach(s=>state.ranges.delete(subKey(g,s.sidx)));
+        const sw=document.getElementById('rng-subs-'+g);
+        if(sw) sw.querySelectorAll('.rng-sub').forEach(el=>el.classList.remove('on'));
+      }
+      updateRangeSummary();
+    };
+  });
+  // 展開ボタン
+  grid.querySelectorAll('.rng-expand').forEach(btn=>{
+    btn.onclick=(e)=>{
+      e.stopPropagation();
+      const g=parseInt(btn.dataset.exp,10);
+      const sw=document.getElementById('rng-subs-'+g);
+      if(!sw) return;
+      const open=sw.style.display!=='none';
+      sw.style.display=open?'none':'flex';
+      btn.textContent=open?'▾':'▴';
+    };
+  });
+  // 小ブロック選択
+  grid.querySelectorAll('.rng-sub').forEach(el=>{
+    el.onclick=()=>{
+      const g=parseInt(el.dataset.g,10), s=parseInt(el.dataset.s,10);
+      // 小を選んだら、その大ブロックの一括選択は解除（個別選択モードへ）
+      const bk=blockKey(g);
+      if(state.ranges.has(bk)){
+        state.ranges.delete(bk);
+        const chip=document.querySelector('.rng-chip[data-g="'+g+'"]');
+        if(chip) chip.classList.remove('on');
+        // 大ブロックだった分を、その他の小ブロックの選択に展開（＝この小以外を全部on）
+        GROUPS.find(x=>x.idx===g).subs.forEach(sb=>{ if(sb.sidx!==s){ state.ranges.add(subKey(g,sb.sidx)); const se=document.querySelector('.rng-sub[data-g="'+g+'"][data-s="'+sb.sidx+'"]'); if(se) se.classList.add('on'); } });
+        updateRangeSummary();
+        return;
+      }
+      const k=subKey(g,s);
+      if(state.ranges.has(k)){ state.ranges.delete(k); el.classList.remove('on'); }
+      else { state.ranges.add(k); el.classList.add('on'); }
       updateRangeSummary();
     };
   });
@@ -884,26 +962,40 @@ function buildRanges(){
   renderTaPresets();
 }
 function rangeAll(){
-  state.ranges=new Set(GROUPS.map(g=>g.idx));
+  state.ranges=new Set(GROUPS.map(g=>blockKey(g.idx)));
   document.querySelectorAll('#rng-grid .rng-chip').forEach(c=>c.classList.add('on'));
+  document.querySelectorAll('#rng-grid .rng-sub').forEach(c=>c.classList.remove('on'));
   updateRangeSummary();
 }
 function rangeClear(){
   state.ranges.clear();
   document.querySelectorAll('#rng-grid .rng-chip').forEach(c=>c.classList.remove('on'));
+  document.querySelectorAll('#rng-grid .rng-sub').forEach(c=>c.classList.remove('on'));
   updateRangeSummary();
 }
 function selectedPool(){
-  let pool=[];
-  GROUPS.forEach(g=>{ if(state.ranges.has(g.idx)) pool=pool.concat(g.list); });
+  const seen=new Set(); const pool=[];
+  const addList=(list)=>list.forEach(w=>{ if(!seen.has(w.id)){ seen.add(w.id); pool.push(w); } });
+  GROUPS.forEach(g=>{
+    if(state.ranges.has(blockKey(g.idx))){ addList(g.list); return; }
+    g.subs.forEach(s=>{ if(state.ranges.has(subKey(g.idx,s.sidx))) addList(s.list); });
+  });
   return pool;
+}
+function selectedRangeCount(){
+  let blocks=0, subs=0;
+  GROUPS.forEach(g=>{
+    if(state.ranges.has(blockKey(g.idx))){ blocks++; return; }
+    g.subs.forEach(s=>{ if(state.ranges.has(subKey(g.idx,s.sidx))) subs++; });
+  });
+  return blocks+subs;
 }
 function updateRangeSummary(){
   const pool=selectedPool();
   const sum=document.getElementById('rng-summary');
   const btn=document.getElementById('start-btn');
   if(!pool.length){ sum.textContent='範囲を選んでください'; btn.disabled=true; }
-  else { sum.textContent=`選択中：${pool.length}語（${state.ranges.size}ブロック）`; btn.disabled=false; }
+  else { sum.textContent=`選択中：${pool.length}語（${selectedRangeCount()}ブロック）`; btn.disabled=false; }
 }
 
 /* セグメント */
@@ -931,6 +1023,7 @@ bindSeg('voice-pick','voice','voice');
       el.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
       b.classList.add('on');
       TA_STATE.sec=parseInt(b.dataset.sec,10);
+      if(WORDS.length) loadRanking('ta-board-home');
     };
   });
 })();
@@ -1287,8 +1380,10 @@ function renderTaPresets(){
       wrap.querySelectorAll('.ta-range-chip').forEach(b=>b.classList.remove('on'));
       btn.classList.add('on');
       TA_STATE.preset=presets.find(p=>p.key===btn.dataset.key)||presets[0];
+      loadRanking('ta-board-home');
     };
   });
+  loadRanking('ta-board-home');
 }
 function taPool(){
   if(!TA_STATE.preset) return WORDS.slice();
@@ -1425,26 +1520,54 @@ async function submitRanking(){
     await loadRanking();
   }catch(e){ btn.disabled=false; btn.textContent='この記録を登録'; showToast('登録に失敗しました','info'); }
 }
-async function loadRanking(){
-  const wrap=document.getElementById('ta-board-wrap');
+async function loadRanking(targetId){
+  const wrap=document.getElementById(targetId||'ta-board-wrap');
   if(!wrap) return;
   wrap.innerHTML='<div class="ta-board-load">ランキングを読み込み中...</div>';
   try{
     const rk=taRangeKey();
-    const rows=await sbGet('eitango_ranking','app=eq.'+encodeURIComponent(APP_KEY)+'&range_key=eq.'+encodeURIComponent(rk)+'&order=score.desc,created_at.asc&limit=20');
-    if(!rows||!rows.length){ wrap.innerHTML='<div class="ta-board-empty">この範囲・時間ではまだ記録がありません。一番乗りをねらおう！</div>'; return; }
-    const min = TA_STATE.sec>=60 ? (TA_STATE.sec/60)+'分' : TA_STATE.sec+'秒';
-    let html=`<div class="ta-board-title">🏆 ランキング（${TA_STATE.preset?TA_STATE.preset.label:''} ・ ${min}）</div>`;
-    rows.forEach((r,i)=>{
-      const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1)+'.';
-      html+=`<div class="ta-board-row${i<3?' top':''}">
-        <span class="tb-rank">${medal}</span>
-        <span class="tb-name">${escapeHtml(r.display_name||'名無し')}</span>
-        <span class="tb-score">${r.score}問</span>
-      </div>`;
-    });
-    wrap.innerHTML=html;
+    const rows=await sbGet('eitango_ranking','app=eq.'+encodeURIComponent(APP_KEY)+'&range_key=eq.'+encodeURIComponent(rk)+'&order=score.desc,created_at.asc&limit=10');
+    renderBoard(wrap, rows||[]);
   }catch(e){ wrap.innerHTML='<div class="ta-board-empty">ランキングの読み込みに失敗しました</div>'; }
+}
+// 上位5位まで表示、タップで10位まで展開
+function renderBoard(wrap, rows){
+  const min = TA_STATE.sec>=60 ? (TA_STATE.sec/60)+'分' : TA_STATE.sec+'秒';
+  const label = TA_STATE.preset?TA_STATE.preset.label:'';
+  if(!rows.length){
+    wrap.innerHTML=`<div class="ta-board-title">🏆 ランキング（${label} ・ ${min}）</div>`+
+      '<div class="ta-board-empty">この範囲・時間ではまだ記録がありません。一番乗りをねらおう！</div>';
+    return;
+  }
+  const rowHtml=(r,i)=>{
+    const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1)+'.';
+    return `<div class="ta-board-row${i<3?' top':''}">
+      <span class="tb-rank">${medal}</span>
+      <span class="tb-name">${escapeHtml(r.display_name||'名無し')}</span>
+      <span class="tb-score">${r.score}問</span>
+    </div>`;
+  };
+  const top5=rows.slice(0,5).map(rowHtml).join('');
+  const rest=rows.slice(5,10).map(rowHtml).join('');
+  let html=`<div class="ta-board-title">🏆 ランキング（${label} ・ ${min}）</div>`+top5;
+  if(rest){
+    html+=`<div class="ta-board-more" data-open="0">
+      <div class="ta-board-rest" style="display:none">${rest}</div>
+      <button class="ta-board-toggle" type="button">6〜${Math.min(rows.length,10)}位を見る ▼</button>
+    </div>`;
+  }
+  wrap.innerHTML=html;
+  const more=wrap.querySelector('.ta-board-more');
+  if(more){
+    const btn=more.querySelector('.ta-board-toggle');
+    const restEl=more.querySelector('.ta-board-rest');
+    btn.onclick=()=>{
+      const open=more.dataset.open==='1';
+      more.dataset.open=open?'0':'1';
+      restEl.style.display=open?'none':'block';
+      btn.textContent=open?`6〜${Math.min(rows.length,10)}位を見る ▼`:'閉じる ▲';
+    };
+  }
 }
 function retryTimeAttack(){ showScreen('screen-home'); document.getElementById('quiz-config').scrollIntoView({behavior:'smooth'}); }
 

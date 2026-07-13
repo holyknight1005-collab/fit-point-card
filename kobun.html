@@ -114,6 +114,8 @@
   .tb-rank{font-size:15px;font-weight:800;min-width:34px}
   .tb-name{flex:1;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tb-score{font-size:14px;font-weight:800;color:var(--vermilion)}
+  .ta-board-home{margin-top:18px}
+  .ta-board-toggle{width:100%;margin-top:6px;border:1px solid var(--border);background:#fff;color:var(--vermilion);border-radius:10px;padding:9px;font-size:12.5px;font-weight:700;cursor:pointer}
 
   /* 苦手な単語カード */
   .weak-card{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--vermilion);border-radius:var(--radius);padding:14px 16px;margin-top:10px}
@@ -274,6 +276,7 @@
         <div class="ta-ranges" id="ta-range-pick"></div>
       </div>
       <button class="ta-start-btn" id="ta-start-btn" onclick="startTimeAttack()">タイムアタック開始</button>
+      <div id="ta-board-home" class="ta-board-home"></div>
     </div>
     <div class="foot">総合学習塾 fit ・ fit古単テスト</div>
   </div>
@@ -617,6 +620,7 @@ bindSeg('speed-pick','speed','speed');
         el.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
         b.classList.add('on');
         TA_STATE.sec=parseInt(b.dataset.sec,10);
+        loadRanking('ta-board-home');
       };
     });
   }
@@ -802,8 +806,10 @@ function renderTaPresets(){
       wrap.querySelectorAll('.ta-range-chip').forEach(b=>b.classList.remove('on'));
       btn.classList.add('on');
       TA_STATE.preset=presets.find(p=>p.key===btn.dataset.key)||presets[0];
+      loadRanking('ta-board-home');
     };
   });
+  loadRanking('ta-board-home');
 }
 function taPool(){
   if(!TA_STATE.preset) return WORDS.slice();
@@ -920,26 +926,54 @@ async function submitRanking(){
     await loadRanking();
   }catch(e){ btn.disabled=false; btn.textContent='この記録を登録'; showToast('登録に失敗しました','info'); }
 }
-async function loadRanking(){
-  const wrap=document.getElementById('ta-board-wrap');
+async function loadRanking(targetId){
+  const wrap=document.getElementById(targetId||'ta-board-wrap');
   if(!wrap) return;
   wrap.innerHTML='<div class="ta-board-load">ランキングを読み込み中...</div>';
   try{
     const rk=taRangeKey();
-    const rows=await sbGet('eitango_ranking','app=eq.'+encodeURIComponent(APP_KEY)+'&range_key=eq.'+encodeURIComponent(rk)+'&order=score.desc,created_at.asc&limit=20');
-    if(!rows||!rows.length){ wrap.innerHTML='<div class="ta-board-empty">この範囲・時間ではまだ記録がありません。一番乗りをねらおう！</div>'; return; }
-    const min = TA_STATE.sec>=60 ? (TA_STATE.sec/60)+'分' : TA_STATE.sec+'秒';
-    let html=`<div class="ta-board-title">🏆 ランキング（${TA_STATE.preset?TA_STATE.preset.label:''} ・ ${min}）</div>`;
-    rows.forEach((r,i)=>{
-      const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1)+'.';
-      html+=`<div class="ta-board-row${i<3?' top':''}">
-        <span class="tb-rank">${medal}</span>
-        <span class="tb-name">${escapeHtml(r.display_name||'名無し')}</span>
-        <span class="tb-score">${r.score}問</span>
-      </div>`;
-    });
-    wrap.innerHTML=html;
+    const rows=await sbGet('eitango_ranking','app=eq.'+encodeURIComponent(APP_KEY)+'&range_key=eq.'+encodeURIComponent(rk)+'&order=score.desc,created_at.asc&limit=10');
+    renderBoard(wrap, rows||[]);
   }catch(e){ wrap.innerHTML='<div class="ta-board-empty">ランキングの読み込みに失敗しました</div>'; }
+}
+// 上位5位まで表示、タップで10位まで展開
+function renderBoard(wrap, rows){
+  const min = TA_STATE.sec>=60 ? (TA_STATE.sec/60)+'分' : TA_STATE.sec+'秒';
+  const label = TA_STATE.preset?TA_STATE.preset.label:'';
+  if(!rows.length){
+    wrap.innerHTML=`<div class="ta-board-title">🏆 ランキング（${label} ・ ${min}）</div>`+
+      '<div class="ta-board-empty">この範囲・時間ではまだ記録がありません。一番乗りをねらおう！</div>';
+    return;
+  }
+  const rowHtml=(r,i)=>{
+    const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1)+'.';
+    return `<div class="ta-board-row${i<3?' top':''}">
+      <span class="tb-rank">${medal}</span>
+      <span class="tb-name">${escapeHtml(r.display_name||'名無し')}</span>
+      <span class="tb-score">${r.score}問</span>
+    </div>`;
+  };
+  const top5=rows.slice(0,5).map(rowHtml).join('');
+  const rest=rows.slice(5,10).map(rowHtml).join('');
+  let html=`<div class="ta-board-title">🏆 ランキング（${label} ・ ${min}）</div>`+top5;
+  if(rest){
+    html+=`<div class="ta-board-more" data-open="0">
+      <div class="ta-board-rest" style="display:none">${rest}</div>
+      <button class="ta-board-toggle" type="button">6〜${Math.min(rows.length,10)}位を見る ▼</button>
+    </div>`;
+  }
+  wrap.innerHTML=html;
+  const more=wrap.querySelector('.ta-board-more');
+  if(more){
+    const btn=more.querySelector('.ta-board-toggle');
+    const restEl=more.querySelector('.ta-board-rest');
+    btn.onclick=()=>{
+      const open=more.dataset.open==='1';
+      more.dataset.open=open?'0':'1';
+      restEl.style.display=open?'none':'block';
+      btn.textContent=open?`6〜${Math.min(rows.length,10)}位を見る ▼`:'閉じる ▲';
+    };
+  }
 }
 function retryTimeAttack(){ showScreen('screen-home'); const c=document.getElementById('quiz-config')||document.querySelector('.ta-block'); if(c) c.scrollIntoView({behavior:'smooth'}); }
 
