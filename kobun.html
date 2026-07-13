@@ -107,6 +107,7 @@
   .ta-r-meta{font-size:12.5px;opacity:.92;margin-top:8px}
   .ta-reg{margin:18px 0}
   .ta-reg-label{font-size:13px;font-weight:700;margin-bottom:8px}
+  .ta-reg-notice{font-size:11.5px;line-height:1.6;color:#8a3a6a;background:#faf2f7;border:1px solid #ecd8e8;border-radius:9px;padding:8px 10px;margin:2px 0 10px}
   .ta-board-title{font-size:14px;font-weight:800;margin:16px 0 10px}
   .ta-board-load,.ta-board-empty{font-size:13px;color:var(--muted);text-align:center;padding:14px 0}
   .ta-board-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:11px;background:var(--bg);margin-bottom:7px}
@@ -116,6 +117,10 @@
   .tb-score{font-size:14px;font-weight:800;color:var(--vermilion)}
   .ta-board-home{margin-top:18px}
   .ta-board-toggle{width:100%;margin-top:6px;border:1px solid var(--border);background:#fff;color:var(--vermilion);border-radius:10px;padding:9px;font-size:12.5px;font-weight:700;cursor:pointer}
+  .tb-real{display:inline-block;margin-left:6px;font-size:11px;font-weight:700;color:#6a4a7a;background:#efe4f5;border-radius:6px;padding:1px 6px}
+  .tb-hide{margin-left:6px;border:1px solid var(--border);background:#fff;color:#8a3a6a;border-radius:7px;padding:4px 9px;font-size:11px;font-weight:700;cursor:pointer;flex-shrink:0}
+  .ta-board-row.hiddenrow{opacity:.5}
+  .ta-board-row.hiddenrow .tb-name{text-decoration:line-through}
 
   /* 苦手な単語カード */
   .weak-card{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--vermilion);border-radius:var(--radius);padding:14px 16px;margin-top:10px}
@@ -333,6 +338,7 @@
     <div class="ta-reg" id="ta-reg">
       <div class="ta-reg-label">ランキングに登録する</div>
       <input id="ta-name-input" class="spell-input" type="text" maxlength="12" autocomplete="off" placeholder="表示名（12文字まで）">
+      <div class="ta-reg-notice">⚠️ 公共の場にふさわしくない名前で登録した場合、その記録を削除のうえ、このアプリの使用を禁止することがあります。</div>
       <button class="btn-primary" id="ta-reg-btn" onclick="submitRanking()">この記録を登録</button>
     </div>
     <div id="ta-board-wrap"></div>
@@ -926,18 +932,32 @@ async function submitRanking(){
     await loadRanking();
   }catch(e){ btn.disabled=false; btn.textContent='この記録を登録'; showToast('登録に失敗しました','info'); }
 }
+// student_id → 実名 のキャッシュ（スタッフ照合用）
+const studentNameCache = {};
+async function resolveStudentNames(ids){
+  const need=ids.filter(id=>id && !(id in studentNameCache));
+  if(!need.length) return;
+  try{
+    const q='id=in.('+need.map(id=>'"'+id+'"').join(',')+')&select=id,name';
+    const rows=await sbGet('students', q);
+    (rows||[]).forEach(r=>{ studentNameCache[r.id]=r.name; });
+    need.forEach(id=>{ if(!(id in studentNameCache)) studentNameCache[id]='(不明)'; });
+  }catch(e){ need.forEach(id=>{ studentNameCache[id]='(照合失敗)'; }); }
+}
 async function loadRanking(targetId){
   const wrap=document.getElementById(targetId||'ta-board-wrap');
   if(!wrap) return;
   wrap.innerHTML='<div class="ta-board-load">ランキングを読み込み中...</div>';
   try{
     const rk=taRangeKey();
-    const rows=await sbGet('eitango_ranking','app=eq.'+encodeURIComponent(APP_KEY)+'&range_key=eq.'+encodeURIComponent(rk)+'&order=score.desc,created_at.asc&limit=10');
-    renderBoard(wrap, rows||[]);
+    const hideFilter = isStaff ? '' : '&hidden=eq.false';
+    const rows=await sbGet('eitango_ranking','app=eq.'+encodeURIComponent(APP_KEY)+'&range_key=eq.'+encodeURIComponent(rk)+hideFilter+'&order=score.desc,created_at.asc&limit=10');
+    if(isStaff){ await resolveStudentNames((rows||[]).map(r=>r.student_id)); }
+    renderBoard(wrap, rows||[], targetId||'ta-board-wrap');
   }catch(e){ wrap.innerHTML='<div class="ta-board-empty">ランキングの読み込みに失敗しました</div>'; }
 }
-// 上位5位まで表示、タップで10位まで展開
-function renderBoard(wrap, rows){
+// 上位5位まで表示、タップで10位まで展開。スタッフは実名照合＋非表示操作あり。
+function renderBoard(wrap, rows, targetId){
   const min = TA_STATE.sec>=60 ? (TA_STATE.sec/60)+'分' : TA_STATE.sec+'秒';
   const label = TA_STATE.preset?TA_STATE.preset.label:'';
   if(!rows.length){
@@ -947,10 +967,14 @@ function renderBoard(wrap, rows){
   }
   const rowHtml=(r,i)=>{
     const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1)+'.';
-    return `<div class="ta-board-row${i<3?' top':''}">
+    const real = r.student_id ? (studentNameCache[r.student_id]||'…') : '（スタッフ/匿名）';
+    const staffInfo = isStaff ? `<span class="tb-real">${escapeHtml(real)}</span>` : '';
+    const staffBtn = isStaff ? `<button class="tb-hide" type="button" data-id="${r.id}" data-h="${r.hidden?1:0}">${r.hidden?'表示':'非表示'}</button>` : '';
+    return `<div class="ta-board-row${i<3?' top':''}${r.hidden?' hiddenrow':''}">
       <span class="tb-rank">${medal}</span>
-      <span class="tb-name">${escapeHtml(r.display_name||'名無し')}</span>
+      <span class="tb-name">${escapeHtml(r.display_name||'名無し')}${staffInfo}</span>
       <span class="tb-score">${r.score}問</span>
+      ${staffBtn}
     </div>`;
   };
   const top5=rows.slice(0,5).map(rowHtml).join('');
@@ -974,6 +998,16 @@ function renderBoard(wrap, rows){
       btn.textContent=open?`6〜${Math.min(rows.length,10)}位を見る ▼`:'閉じる ▲';
     };
   }
+  wrap.querySelectorAll('.tb-hide').forEach(b=>{
+    b.onclick=()=>toggleHideRanking(b.dataset.id, b.dataset.h==='1', targetId);
+  });
+}
+async function toggleHideRanking(id, currentlyHidden, targetId){
+  try{
+    await sbPatch('eitango_ranking','id=eq.'+encodeURIComponent(id), { hidden: !currentlyHidden });
+    showToast(currentlyHidden?'表示に戻しました':'非表示にしました','info');
+    await loadRanking(targetId);
+  }catch(e){ showToast('操作に失敗しました（UPDATE権限のSQL適用を確認）','info'); }
 }
 function retryTimeAttack(){ showScreen('screen-home'); const c=document.getElementById('quiz-config')||document.querySelector('.ta-block'); if(c) c.scrollIntoView({behavior:'smooth'}); }
 
