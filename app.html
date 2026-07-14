@@ -3888,7 +3888,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702co';
+const APP_VERSION = '20260702cp';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -15521,11 +15521,13 @@ let detailCalMonthOffset = 0;
 let detailCalSessions = [];            // [{date, classes:[{id,name,subject}]}]
 let detailCalAttended = new Set();     // 来塾した日（ISO）
 let detailCalMakeup = {};              // 'classId|date' -> 'pending'/'approved'
+let detailCalAttMap = {};              // 'classId|date' -> 'present'/'makeup'/'absent'（スタッフ手動記録・最優先）
 
 async function loadDetailCalendar() {
   if (!detailStudent) return;
   detailCalSessions = [];
   detailCalMakeup = {};
+  detailCalAttMap = {};
   detailCalAttended = new Set(detailCheckins.map(d => {
     // detailCheckins は toDateString() 形式 → ISO に変換
     const dt = new Date(d);
@@ -15555,6 +15557,17 @@ async function loadDetailCalendar() {
           'student_id=eq.' + detailStudent.id + '&status=in.(reserved,reported,pending,approved)&select=class_master_id,session_date,status') || [];
         makeups.forEach(m => { detailCalMakeup[m.class_master_id + '|' + m.session_date] = m.status; });
       } catch(e) { /* テーブル未作成時は無視 */ }
+      // スタッフ手動の出欠記録（session_attendance）。出欠はこれを最優先にする（来塾チェックイン忘れ対策）
+      try {
+        const atts = await sbGet('session_attendance',
+          'student_id=eq.' + detailStudent.id + '&select=class_master_id,session_date,status') || [];
+        atts.forEach(a => {
+          const key = a.class_master_id + '|' + a.session_date;
+          const prev = detailCalAttMap[key];
+          // 同日同クラスに複数記録があれば出席寄り（present/makeup）を優先
+          if (!prev || prev === 'absent') detailCalAttMap[key] = a.status;
+        });
+      } catch(e) { /* テーブル未作成時は無視 */ }
     }
   } catch(e) { /* 授業なしでも続行 */ }
   detailCalMonthOffset = 0;
@@ -15570,13 +15583,23 @@ function detailGetDayStatus(dateISO, sess, todayISO) {
   const attendedDay = detailCalAttended.has(dateISO);
   if (sess) {
     const isPast = dateISO <= todayISO;
+    // スタッフ手動の出欠記録（session_attendance）を最優先で判定
+    // present/makeup が1つでもあれば「出席扱い」、なければ absent 記録があるかを見る
+    let manualPresent = false, manualAbsent = false;
+    sess.classes.forEach(c => {
+      const ms = detailCalAttMap[c.id + '|' + dateISO];
+      if (ms === 'present' || ms === 'makeup') manualPresent = true;
+      else if (ms === 'absent') manualAbsent = true;
+    });
+    // 出席扱い：スタッフが present/makeup を記録 or（記録が無ければ）来塾チェックインあり
+    const treatedAttended = manualPresent || attendedDay;
     let makeupInvolved = false, allFilled = true, anyPending = false, anyInProgress = false;
     sess.classes.forEach(c => {
       const st = detailCalMakeup[c.id + '|' + dateISO];
       if (st === 'approved') { makeupInvolved = true; }
       else if (st === 'reported' || st === 'pending') { makeupInvolved = true; anyPending = true; allFilled = false; }
       else if (st === 'reserved') { makeupInvolved = true; anyInProgress = true; allFilled = false; }
-      else if (!attendedDay) { allFilled = false; }
+      else if (!treatedAttended) { allFilled = false; }
     });
     if (makeupInvolved) {
       if (allFilled) return { bg:'#7B2D8B', color:'#fff', label:'補習完了', dashed:false };
@@ -15584,7 +15607,7 @@ function detailGetDayStatus(dateISO, sess, todayISO) {
       return { bg:'#E3D0EC', color:'#7B2D8B', label:lbl, dashed:true };
     }
     if (!isPast) return { bg:'#B8C4D0', color:'#fff', label:'予定', dashed:false };
-    if (attendedDay) return { bg:'var(--green-d)', color:'#fff', label:'出席', dashed:false };
+    if (treatedAttended) return { bg:'var(--green-d)', color:'#fff', label:'出席', dashed:false };
     return { bg:'#C75050', color:'#fff', label:'欠席', dashed:false };
   }
   if (attendedDay) return { bg:'var(--orange)', color:'#fff', label:'来塾', dashed:false };
@@ -15614,7 +15637,15 @@ function renderDetailCalMonth() {
     if (detailCalAttended.has(dateISO)) visitCount++;
   }
   Object.values(monthSessions).forEach(s => {
-    if (s.date <= todayISO) { pastCount++; if (detailCalAttended.has(s.date)) attendedCount++; }
+    if (s.date <= todayISO) {
+      pastCount++;
+      let manualPresent = false;
+      (s.classes || []).forEach(c => {
+        const ms = detailCalAttMap[c.id + '|' + s.date];
+        if (ms === 'present' || ms === 'makeup') manualPresent = true;
+      });
+      if (manualPresent || detailCalAttended.has(s.date)) attendedCount++;
+    }
   });
   const sumEl = document.getElementById('detail-cal-summary');
   if (sumEl) {
