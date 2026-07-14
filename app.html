@@ -2784,7 +2784,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div class="card-box" style="display:flex;flex-direction:column;gap:10px">
         <div>
           <div class="form-label">担当者（複数選択可）</div>
-          <div id="todo-staff-checks" style="display:flex;flex-direction:column;gap:6px;max-height:150px;overflow-y:auto;padding:4px"></div>
+          <div id="todo-staff-checks" style="display:flex;flex-wrap:wrap;gap:8px;max-height:200px;overflow-y:auto;padding:4px"></div>
           <button onclick="toggleAllStaffCheck()" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">全員選択/解除</button>
         </div>
         <div>
@@ -2816,6 +2816,24 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         </div>
       </div>
       <div id="sm-all-todos" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
+
+      <!-- 進捗・催促（依頼マトリクス＋締切遵守率） -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:20px">
+        <div class="section-title" style="margin:0">📊 進捗・催促</div>
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);cursor:pointer">
+          <input type="checkbox" id="todo-matrix-pending-only" onchange="renderTodoMatrix()" style="width:14px;height:14px;cursor:pointer">
+          未完了の人だけ表示
+        </label>
+      </div>
+      <div id="sm-todo-matrix" style="margin-top:8px"></div>
+
+      <div class="section-title" style="margin-top:18px">⏱️ 締切遵守率（担当者ごと）</div>
+      <div style="font-size:11px;color:var(--muted);margin:-4px 0 8px">期限のある依頼のうち、期限内に完了できた割合です。</div>
+      <div id="sm-todo-rate-assignee" style="display:flex;flex-direction:column;gap:6px"></div>
+
+      <div class="section-title" style="margin-top:18px">📤 やり切り率（依頼者ごと）</div>
+      <div style="font-size:11px;color:var(--muted);margin:-4px 0 8px">その人が依頼したToDoのうち、完了まで到達した割合です。</div>
+      <div id="sm-todo-rate-requester" style="display:flex;flex-direction:column;gap:6px"></div>
       <!-- 期日変更モーダル -->
       <div id="todo-due-edit-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:500;align-items:center;justify-content:center">
         <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:360px">
@@ -3888,7 +3906,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702cp';
+const APP_VERSION = '20260702cr';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -12717,17 +12735,46 @@ async function loadStaffSelect() {
   const el = document.getElementById('todo-staff-checks');
   if (!el) return;
   el.innerHTML = allStaffList.map(s =>
-    '<label style="display:flex;align-items:center;gap:8px;padding:6px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--text)">' +
-      '<input type="checkbox" class="todo-staff-check" value="' + s.id + '" style="width:16px;height:16px;cursor:pointer">' +
-      s.name + '<span style="font-size:10px;color:var(--muted);font-family:DM Mono,monospace">(' + s.staff_id + ')</span>' +
+    '<label class="todo-staff-chip" onclick="syncTodoChip(this)" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--surface);cursor:pointer;font-size:13px;color:var(--text);user-select:none;transition:all 0.12s">' +
+      '<input type="checkbox" class="todo-staff-check" value="' + s.id + '" style="display:none">' +
+      '<span class="chip-name">' + s.name + '</span>' +
+      '<span style="font-size:10px;color:var(--muted);font-family:DM Mono,monospace">' + s.staff_id + '</span>' +
     '</label>'
   ).join('');
+  // 復元時などにチェック状態と見た目を合わせる
+  document.querySelectorAll('.todo-staff-chip').forEach(applyTodoChipStyle);
+}
+
+// チップの見た目をチェック状態に合わせる
+function applyTodoChipStyle(chip) {
+  const cb = chip.querySelector('.todo-staff-check');
+  if (!cb) return;
+  if (cb.checked) {
+    chip.style.background = 'var(--orange)';
+    chip.style.borderColor = 'var(--orange)';
+    chip.style.color = 'white';
+    chip.querySelectorAll('span').forEach(sp => sp.style.color = 'white');
+  } else {
+    chip.style.background = 'var(--surface)';
+    chip.style.borderColor = 'var(--border)';
+    chip.style.color = 'var(--text)';
+    const spans = chip.querySelectorAll('span');
+    if (spans[0]) spans[0].style.color = 'var(--text)';
+    if (spans[1]) spans[1].style.color = 'var(--muted)';
+  }
+}
+
+// チップがタップされたらチェックを反転して見た目更新（label標準のトグル後に呼ばれる）
+function syncTodoChip(chip) {
+  // labelクリックでcheckboxは自動トグルされるので、次フレームで状態を反映
+  setTimeout(() => applyTodoChipStyle(chip), 0);
 }
 
 function toggleAllStaffCheck() {
   const checks = document.querySelectorAll('.todo-staff-check');
   const allChecked = [...checks].every(c => c.checked);
   checks.forEach(c => c.checked = !allChecked);
+  document.querySelectorAll('.todo-staff-chip').forEach(applyTodoChipStyle);
 }
 
 async function createStaffTodo() {
@@ -12751,6 +12798,7 @@ async function createStaffTodo() {
     document.getElementById('todo-detail').value = '';
     document.getElementById('todo-due').value = '';
     document.querySelectorAll('.todo-staff-check').forEach(c => c.checked = false);
+    document.querySelectorAll('.todo-staff-chip').forEach(applyTodoChipStyle);
     refreshTodoViews();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
@@ -12773,6 +12821,7 @@ async function createMyTodo() {
     document.getElementById('todo-detail').value = '';
     document.getElementById('todo-due').value = '';
     document.querySelectorAll('.todo-staff-check').forEach(c => c.checked = false);
+    document.querySelectorAll('.todo-staff-chip').forEach(applyTodoChipStyle);
     refreshTodoViews();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
@@ -12846,19 +12895,24 @@ async function loadSentTodos() {
   }
   const today = getTodayJST();
 
-  // タイトルでグループ化（一斉送信したものをまとめる）
+  // タイトル+依頼者+作成時刻(分単位)でグループ化（一斉送信したものを1依頼としてまとめる）
   const groups = {};
   todos.forEach(t => {
-    const key = t.title;
-    if (!groups[key]) groups[key] = { title: t.title, due_date: t.due_date, id: t.id, todos: [] };
+    const min = t.created_at ? String(t.created_at).slice(0, 16) : ''; // YYYY-MM-DDTHH:MM
+    const key = t.title + '\u0001' + (t.from_staff_id || '') + '\u0001' + min;
+    if (!groups[key]) groups[key] = { key, title: t.title, detail: t.detail || '', due_date: t.due_date, id: t.id, todos: [] };
     groups[key].todos.push(t);
   });
 
-  el.innerHTML = Object.entries(groups).map(([title, group], gi) => {
+  el.innerHTML = Object.values(groups).map((group, gi) => {
+    const title = group.title;
     const pending = group.todos.filter(t => !t.is_done).length;
     const done = group.todos.filter(t => t.is_done).length;
     const overdue = group.todos.filter(t => !t.is_done && t.due_date && t.due_date < today).length;
     const due = group.due_date ? group.due_date.replace(/-/g, '/') : '';
+    // コピー用に担当者ID配列とエスケープ済み内容を data 属性で保持
+    const toIds = group.todos.map(t => t.to_staff_id).filter(Boolean);
+    const copyPayload = encodeURIComponent(JSON.stringify({ title: group.title, detail: group.detail, to: toIds }));
 
     // 中身
     const innerHtml = group.todos.map(t => {
@@ -12891,6 +12945,7 @@ async function loadSentTodos() {
         '</div>' +
         '<div id="sent-arrow-' + gi + '" style="color:var(--muted);font-size:16px;transition:transform 0.2s">›</div>' +
       '</div>' +
+      '<div style="padding:0 14px 11px 14px"><button onclick="copyTodoToForm(\'' + copyPayload + '\')" style="padding:5px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;color:var(--text)">📋 コピーして再依頼</button></div>' +
       '<div id="' + groupId + '" style="display:none">' + innerHtml + '</div>' +
     '</div>';
   }).join('');
@@ -12934,6 +12989,29 @@ async function saveTodoDue() {
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
+// 既存の依頼をフォームに復元して、編集して再依頼できるようにする
+function copyTodoToForm(payload) {
+  let data;
+  try { data = JSON.parse(decodeURIComponent(payload)); } catch(e) { showToast('コピーに失敗しました', 'error'); return; }
+  const titleEl = document.getElementById('todo-title');
+  const detailEl = document.getElementById('todo-detail');
+  const dueEl = document.getElementById('todo-due');
+  if (titleEl) titleEl.value = data.title || '';
+  if (detailEl) detailEl.value = data.detail || '';
+  if (dueEl) dueEl.value = ''; // 期限は空にして毎回設定してもらう
+  // 担当者チェックを復元
+  const wantIds = new Set(data.to || []);
+  document.querySelectorAll('.todo-staff-check').forEach(c => { c.checked = wantIds.has(c.value); });
+  document.querySelectorAll('.todo-staff-chip').forEach(applyTodoChipStyle);
+  // フォームへスクロール
+  if (titleEl) {
+    const box = titleEl.closest('.card-box') || titleEl;
+    box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    titleEl.focus();
+  }
+  showToast('📋 コピーしました。内容を編集して依頼できます', 'success');
+}
+
 
 // ===== 全体ToDo一覧 =====
 let allTodosData = [];
@@ -12944,6 +13022,137 @@ async function loadAllTodos() {
     'order=created_at.desc&select=*,from:from_staff_id(name),to:to_staff_id(name)') || [];
   allTodosData = todos;
   renderAllTodos();
+  renderTodoMatrix();
+  renderTodoRates();
+}
+
+// ===== 進捗・催促マトリクス（依頼ごと × 担当者の完了状況） =====
+function renderTodoMatrix() {
+  const el = document.getElementById('sm-todo-matrix');
+  if (!el) return;
+  const pendingOnly = !!document.getElementById('todo-matrix-pending-only')?.checked;
+  const today = getTodayJST();
+
+  // 他人に依頼したTODOのみ対象（自分だけの自己TODOは除外）
+  const assigned = allTodosData.filter(t => t.to_staff_id && t.from_staff_id !== t.to_staff_id);
+
+  // タイトル+依頼者+作成時刻(分)で1依頼にまとめる
+  const groups = {};
+  assigned.forEach(t => {
+    const min = t.created_at ? String(t.created_at).slice(0, 16) : '';
+    const key = t.title + '\u0001' + (t.from_staff_id || '') + '\u0001' + min;
+    if (!groups[key]) groups[key] = { title: t.title, from: t.from?.name || '—', due_date: t.due_date, created_at: t.created_at, rows: [] };
+    groups[key].rows.push(t);
+  });
+
+  let list = Object.values(groups);
+  // 新しい順
+  list.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+  if (pendingOnly) list = list.filter(g => g.rows.some(t => !t.is_done));
+
+  if (!list.length) {
+    el.innerHTML = '<div class="card-box" style="font-size:12px;color:var(--muted);text-align:center">' +
+      (pendingOnly ? '未完了の依頼はありません ✨' : '依頼したToDoはありません') + '</div>';
+    return;
+  }
+
+  el.innerHTML = list.map(g => {
+    let rows = g.rows.slice();
+    if (pendingOnly) rows = rows.filter(t => !t.is_done);
+    rows.sort((a, b) => (a.to?.name || '').localeCompare(b.to?.name || '', 'ja'));
+    const pending = g.rows.filter(t => !t.is_done).length;
+    const overdue = g.rows.filter(t => !t.is_done && t.due_date && t.due_date < today).length;
+    const due = g.due_date ? g.due_date.replace(/-/g, '/') : '';
+
+    const chips = rows.map(t => {
+      const doneMark = t.is_done;
+      const isOverdue = !doneMark && t.due_date && t.due_date < today;
+      const bg = doneMark ? 'var(--green-l)' : (isOverdue ? 'var(--red-l)' : 'var(--surface2)');
+      const fg = doneMark ? 'var(--green-d)' : (isOverdue ? 'var(--red)' : 'var(--muted)');
+      const icon = doneMark ? '✅' : (isOverdue ? '⚠️' : '⬜');
+      return '<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:12px;background:' + bg + ';color:' + fg + ';font-size:11px;white-space:nowrap">' +
+        icon + ' ' + escapeHtml(t.to?.name || '—') + '</span>';
+    }).join('');
+
+    return '<div style="background:var(--surface);border:1px solid ' + (overdue ? '#F5BABA' : 'var(--border)') + ';border-radius:10px;padding:11px 13px;margin-bottom:8px">' +
+      '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:8px">' +
+        '<span style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(g.title) + '</span>' +
+        '<span style="font-size:10px;color:var(--muted)">依頼：' + escapeHtml(g.from) + '</span>' +
+        (due ? '<span style="font-size:10px;color:' + (overdue ? 'var(--red)' : 'var(--muted)') + '">期限：' + due + '</span>' : '') +
+        (pending > 0 ? '<span style="font-size:10px;background:var(--orange-l);color:var(--orange-d);padding:1px 7px;border-radius:10px">未完了 ' + pending + '</span>' : '<span style="font-size:10px;background:var(--green-l);color:var(--green-d);padding:1px 7px;border-radius:10px">全員完了</span>') +
+      '</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:6px">' + chips + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+// ===== 締切遵守率（担当者ごと）＋ やり切り率（依頼者ごと） =====
+function renderTodoRates() {
+  const assigneeEl = document.getElementById('sm-todo-rate-assignee');
+  const requesterEl = document.getElementById('sm-todo-rate-requester');
+
+  // 担当者ごと：期限のある依頼で、期限内に完了できた割合
+  // 期限内 = done_at の日付(JST) <= due_date
+  const byAssignee = {};
+  allTodosData.forEach(t => {
+    if (t.from_staff_id === t.to_staff_id) return; // 自己TODOは除外
+    if (!t.due_date) return;                       // 期限なしは母数に含めない
+    const id = t.to_staff_id || 'unknown';
+    const name = t.to?.name || '不明';
+    if (!byAssignee[id]) byAssignee[id] = { name, total: 0, onTime: 0, done: 0 };
+    byAssignee[id].total++;
+    if (t.is_done && t.done_at) {
+      byAssignee[id].done++;
+      const doneDate = toJSTDateStr(new Date(t.done_at));
+      if (doneDate <= t.due_date) byAssignee[id].onTime++;
+    }
+  });
+
+  // 依頼者ごと：依頼したToDoのうち、完了まで到達した割合
+  const byRequester = {};
+  allTodosData.forEach(t => {
+    if (t.from_staff_id === t.to_staff_id) return;
+    const id = t.from_staff_id || 'unknown';
+    const name = t.from?.name || '不明';
+    if (!byRequester[id]) byRequester[id] = { name, total: 0, done: 0 };
+    byRequester[id].total++;
+    if (t.is_done) byRequester[id].done++;
+  });
+
+  function barRow(name, numer, denom, sublabel) {
+    const rate = denom ? Math.round(numer / denom * 100) : null;
+    const color = rate == null ? 'var(--muted)' : (rate >= 80 ? 'var(--green-d)' : rate >= 50 ? 'var(--orange-d)' : '#C75050');
+    const pct = rate == null ? 0 : rate;
+    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:9px 12px">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">' +
+        '<span style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(name) + '</span>' +
+        '<span style="font-size:13px;font-weight:700;color:' + color + '">' + (rate == null ? '—' : rate + '%') + '</span>' +
+      '</div>' +
+      '<div style="height:7px;background:var(--surface2);border-radius:4px;overflow:hidden;margin-bottom:4px">' +
+        '<div style="height:100%;width:' + pct + '%;background:' + color + '"></div>' +
+      '</div>' +
+      '<div style="font-size:10px;color:var(--muted)">' + sublabel + '</div>' +
+    '</div>';
+  }
+
+  if (assigneeEl) {
+    const rows = Object.values(byAssignee).sort((a, b) => {
+      const ra = a.total ? a.onTime / a.total : -1, rb = b.total ? b.onTime / b.total : -1;
+      return rb - ra;
+    });
+    assigneeEl.innerHTML = rows.length
+      ? rows.map(r => barRow(r.name, r.onTime, r.total, '期限内 ' + r.onTime + ' / 期限付き依頼 ' + r.total + '件（完了 ' + r.done + '）')).join('')
+      : '<div class="card-box" style="font-size:12px;color:var(--muted);text-align:center">期限付きの依頼がまだありません</div>';
+  }
+  if (requesterEl) {
+    const rows = Object.values(byRequester).sort((a, b) => {
+      const ra = a.total ? a.done / a.total : -1, rb = b.total ? b.done / b.total : -1;
+      return rb - ra;
+    });
+    requesterEl.innerHTML = rows.length
+      ? rows.map(r => barRow(r.name, r.done, r.total, '完了 ' + r.done + ' / 依頼 ' + r.total + '件')).join('')
+      : '<div class="card-box" style="font-size:12px;color:var(--muted);text-align:center">依頼したToDoがまだありません</div>';
+  }
 }
 
 function filterAllTodos(filter, btn) {
