@@ -2784,7 +2784,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div class="card-box" style="display:flex;flex-direction:column;gap:10px">
         <div>
           <div class="form-label">担当者（複数選択可）</div>
-          <div id="todo-staff-checks" style="display:flex;flex-wrap:wrap;gap:8px;max-height:200px;overflow-y:auto;padding:4px"></div>
+          <div id="todo-staff-checks" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;max-height:260px;overflow-y:auto;padding:4px"></div>
           <button onclick="toggleAllStaffCheck()" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">全員選択/解除</button>
         </div>
         <div>
@@ -2807,15 +2807,17 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="sm-sent-todos" style="display:flex;flex-direction:column;gap:8px"></div>
 
       <!-- 全体ToDo一覧 -->
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px">
-        <div class="section-title" style="margin:0">📋 全体ToDo一覧</div>
-        <div style="display:flex;gap:6px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px;gap:8px">
+        <div onclick="toggleTodoSection('all-todos')" class="section-title" style="margin:0;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px">
+          <span id="arrow-all-todos" style="font-size:13px;color:var(--muted);transition:transform 0.2s;display:inline-block">›</span>📋 全体ToDo一覧
+        </div>
+        <div id="all-todos-filters" style="display:none;gap:6px">
           <button onclick="filterAllTodos('all',this)" class="todo-filter-btn active" style="padding:4px 10px;font-size:11px;border-radius:20px;border:1px solid var(--orange);background:var(--orange);color:white;cursor:pointer;font-family:'Noto Sans JP',sans-serif">全て</button>
           <button onclick="filterAllTodos('pending',this)" class="todo-filter-btn" style="padding:4px 10px;font-size:11px;border-radius:20px;border:1px solid var(--border);background:white;color:var(--muted);cursor:pointer;font-family:'Noto Sans JP',sans-serif">未完了</button>
           <button onclick="filterAllTodos('done',this)" class="todo-filter-btn" style="padding:4px 10px;font-size:11px;border-radius:20px;border:1px solid var(--border);background:white;color:var(--muted);cursor:pointer;font-family:'Noto Sans JP',sans-serif">完了</button>
         </div>
       </div>
-      <div id="sm-all-todos" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
+      <div id="sm-all-todos" style="display:none;flex-direction:column;gap:6px;margin-top:8px"></div>
 
       <!-- 進捗・催促（依頼マトリクス＋締切遵守率） -->
       <div style="display:flex;align-items:center;justify-content:space-between;margin-top:20px">
@@ -2827,9 +2829,13 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
       <div id="sm-todo-matrix" style="margin-top:8px"></div>
 
-      <div class="section-title" style="margin-top:18px">⏱️ 締切遵守率（担当者ごと）</div>
-      <div style="font-size:11px;color:var(--muted);margin:-4px 0 8px">期限のある依頼のうち、期限内に完了できた割合です。</div>
-      <div id="sm-todo-rate-assignee" style="display:flex;flex-direction:column;gap:6px"></div>
+      <div onclick="toggleTodoSection('rate-assignee')" class="section-title" style="margin-top:18px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px">
+        <span id="arrow-rate-assignee" style="font-size:13px;color:var(--muted);transition:transform 0.2s;display:inline-block">›</span>⏱️ 締切遵守率（担当者ごと）
+      </div>
+      <div id="rate-assignee-body" style="display:none">
+        <div style="font-size:11px;color:var(--muted);margin:4px 0 8px">期限のある依頼のうち、期限内に完了できた割合です。</div>
+        <div id="sm-todo-rate-assignee" style="display:flex;flex-direction:column;gap:6px"></div>
+      </div>
 
       <div class="section-title" style="margin-top:18px">📤 やり切り率（依頼者ごと）</div>
       <div style="font-size:11px;color:var(--muted);margin:-4px 0 8px">その人が依頼したToDoのうち、完了まで到達した割合です。</div>
@@ -3906,7 +3912,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702cu';
+const APP_VERSION = '20260702cx';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -12731,15 +12737,17 @@ async function submitReport() {
 // ===== ToDo（一斉依頼・期日変更対応） =====
 
 async function loadStaffSelect() {
-  allStaffList = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id') || [];
+  const raw = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id') || [];
+  // fit001（代表）は依頼先から除外
+  allStaffList = raw.filter(s => (s.staff_id || '').toLowerCase() !== 'fit001');
   // チェックボックス一覧を作成
   const el = document.getElementById('todo-staff-checks');
   if (!el) return;
   el.innerHTML = allStaffList.map(s =>
-    '<label class="todo-staff-chip" onclick="syncTodoChip(this)" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--surface);cursor:pointer;font-size:13px;color:var(--text);user-select:none;transition:all 0.12s">' +
+    '<label class="todo-staff-chip" onclick="syncTodoChip(this)" style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:8px 12px;border-radius:14px;border:1.5px solid var(--border);background:var(--surface);cursor:pointer;font-size:13px;color:var(--text);user-select:none;transition:all 0.12s;min-width:0">' +
       '<input type="checkbox" class="todo-staff-check" value="' + s.id + '" style="display:none">' +
-      '<span class="chip-name">' + s.name + '</span>' +
-      '<span style="font-size:10px;color:var(--muted);font-family:DM Mono,monospace">' + s.staff_id + '</span>' +
+      '<span class="chip-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + s.name + '</span>' +
+      '<span style="font-size:10px;color:var(--muted);font-family:DM Mono,monospace;flex-shrink:0">' + s.staff_id + '</span>' +
     '</label>'
   ).join('');
   // 復元時などにチェック状態と見た目を合わせる
@@ -12927,15 +12935,15 @@ async function loadSentTodos() {
     // 中身
     const innerHtml = group.todos.map(t => {
       const isOverdue = !t.is_done && t.due_date && t.due_date < today;
-      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-top:1px solid var(--border);gap:8px">' +
-        '<div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">' +
-          '<div style="font-size:13px;color:' + (t.is_done?'var(--muted)':'var(--text)') + ';' + (t.is_done?'text-decoration:line-through':'') + '">' + (t.to?.name||'—') + '</div>' +
+      return '<div style="display:flex;flex-direction:column;gap:6px;padding:9px 14px;border-top:1px solid var(--border)">' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0">' +
+          '<div style="font-size:13px;font-weight:500;color:' + (t.is_done?'var(--muted)':'var(--text)') + ';' + (t.is_done?'text-decoration:line-through':'') + '">' + (t.to?.name||'—') + '</div>' +
           (t.done_at ? '<span style="font-size:10px;color:var(--green-d)">✅ ' + new Date(t.done_at).toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'}) + '</span>' :
             (t.read_at ? '<span style="font-size:10px;color:var(--muted)">✓既読 ' + new Date(t.read_at).toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'}) + '</span>' :
               '<span style="font-size:10px;color:#B08968">未読</span>')) +
           (isOverdue ? '<span style="font-size:10px;color:var(--red)">⚠️ 期限超</span>' : '') +
         '</div>' +
-        '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">' +
+        '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
           '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:' + (t.is_done?'var(--green-l)':'var(--orange-l)') + ';color:' + (t.is_done?'var(--green-d)':'var(--orange-d)') + '">' + (t.is_done?'完了':'未完了') + '</span>' +
           (!t.is_done ? '<button onclick="openTodoDueEdit(\'' + t.id + '\',\'' + (t.due_date||'') + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">期日変更</button>' : '') +
           '<button onclick="removeTodoAssignee(\'' + t.id + '\',\'' + escapeAttr(t.to?.name||'') + '\',\'' + escapeAttr(t.title) + '\')" title="この人を依頼から外す" style="padding:2px 8px;background:var(--surface);border:1px solid #E5A5A5;border-radius:6px;font-size:10px;cursor:pointer;color:#C75050;font-family:\'Noto Sans JP\',sans-serif">✕ 対象外</button>' +
@@ -13060,6 +13068,23 @@ async function deleteTodoGroup(idsPayload, title, count) {
 // ===== 全体ToDo一覧 =====
 let allTodosData = [];
 let allTodosFilter = 'all';
+
+// セクション開閉（全体TODO一覧・締切遵守率）
+function toggleTodoSection(key) {
+  const arrow = document.getElementById('arrow-' + key);
+  let target, extra;
+  if (key === 'all-todos') {
+    target = document.getElementById('sm-all-todos');
+    extra = document.getElementById('all-todos-filters');
+  } else if (key === 'rate-assignee') {
+    target = document.getElementById('rate-assignee-body');
+  }
+  if (!target) return;
+  const isOpen = target.style.display !== 'none';
+  target.style.display = isOpen ? 'none' : (key === 'all-todos' ? 'flex' : 'block');
+  if (extra) extra.style.display = isOpen ? 'none' : 'flex';
+  if (arrow) arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+}
 
 async function loadAllTodos() {
   const todos = await sbGet('staff_todos',
