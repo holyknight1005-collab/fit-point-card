@@ -3906,7 +3906,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702cr';
+const APP_VERSION = '20260702cu';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -4143,6 +4143,7 @@ document.addEventListener('visibilitychange', function() {
 function showScreen(id) { document.querySelectorAll('.screen').forEach(s => s.classList.remove('active')); document.getElementById(id).classList.add('active'); }
 function showToast(msg, type) { const t = document.getElementById('toast'); t.textContent = msg; t.className = 'toast show ' + (type || 'info'); setTimeout(() => t.classList.remove('show'), 2800); }
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function escapeAttr(s) { return String(s == null ? '' : s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/\r?\n/g,' '); }
 
 
 let filterSchool = '全員', filterGrade = '全学年';
@@ -12730,7 +12731,7 @@ async function submitReport() {
 // ===== ToDo（一斉依頼・期日変更対応） =====
 
 async function loadStaffSelect() {
-  allStaffList = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=name') || [];
+  allStaffList = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id') || [];
   // チェックボックス一覧を作成
   const el = document.getElementById('todo-staff-checks');
   if (!el) return;
@@ -12845,6 +12846,15 @@ async function loadMyTodos() {
     el.innerHTML = '<div class="card-box" style="font-size:12px;color:var(--muted);text-align:center">未完了のToDoはありません ✨</div>';
     return;
   }
+  // 未読の依頼（他人からのもの）を既読にする（表示された時点で自動既読）
+  try {
+    const nowIso = new Date().toISOString();
+    const unread = todos.filter(t => !t.read_at && t.from_staff_id && t.from_staff_id !== currentStaff.id);
+    if (unread.length) {
+      const ids = unread.map(t => '"' + t.id + '"').join(',');
+      await sbPatch('staff_todos', 'id=in.(' + ids + ')', { read_at: nowIso });
+    }
+  } catch(e) { /* 既読記録失敗は表示を妨げない */ }
   el.innerHTML = todos.map(t => {
     const today = getTodayJST();
     const isOverdue = t.due_date && t.due_date < today;
@@ -12920,12 +12930,15 @@ async function loadSentTodos() {
       return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-top:1px solid var(--border);gap:8px">' +
         '<div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">' +
           '<div style="font-size:13px;color:' + (t.is_done?'var(--muted)':'var(--text)') + ';' + (t.is_done?'text-decoration:line-through':'') + '">' + (t.to?.name||'—') + '</div>' +
-          (t.done_at ? '<span style="font-size:10px;color:var(--green-d)">✅ ' + new Date(t.done_at).toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'}) + '</span>' : '') +
+          (t.done_at ? '<span style="font-size:10px;color:var(--green-d)">✅ ' + new Date(t.done_at).toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'}) + '</span>' :
+            (t.read_at ? '<span style="font-size:10px;color:var(--muted)">✓既読 ' + new Date(t.read_at).toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'}) + '</span>' :
+              '<span style="font-size:10px;color:#B08968">未読</span>')) +
           (isOverdue ? '<span style="font-size:10px;color:var(--red)">⚠️ 期限超</span>' : '') +
         '</div>' +
         '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">' +
           '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:' + (t.is_done?'var(--green-l)':'var(--orange-l)') + ';color:' + (t.is_done?'var(--green-d)':'var(--orange-d)') + '">' + (t.is_done?'完了':'未完了') + '</span>' +
           (!t.is_done ? '<button onclick="openTodoDueEdit(\'' + t.id + '\',\'' + (t.due_date||'') + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">期日変更</button>' : '') +
+          '<button onclick="removeTodoAssignee(\'' + t.id + '\',\'' + escapeAttr(t.to?.name||'') + '\',\'' + escapeAttr(t.title) + '\')" title="この人を依頼から外す" style="padding:2px 8px;background:var(--surface);border:1px solid #E5A5A5;border-radius:6px;font-size:10px;cursor:pointer;color:#C75050;font-family:\'Noto Sans JP\',sans-serif">✕ 対象外</button>' +
         '</div>' +
       '</div>';
     }).join('');
@@ -12945,7 +12958,8 @@ async function loadSentTodos() {
         '</div>' +
         '<div id="sent-arrow-' + gi + '" style="color:var(--muted);font-size:16px;transition:transform 0.2s">›</div>' +
       '</div>' +
-      '<div style="padding:0 14px 11px 14px"><button onclick="copyTodoToForm(\'' + copyPayload + '\')" style="padding:5px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;color:var(--text)">📋 コピーして再依頼</button></div>' +
+      '<div style="padding:0 14px 11px 14px;display:flex;gap:8px;flex-wrap:wrap"><button onclick="copyTodoToForm(\'' + copyPayload + '\')" style="padding:5px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;color:var(--text)">📋 コピーして再依頼</button>' +
+        '<button onclick="deleteTodoGroup(\'' + encodeURIComponent(JSON.stringify(group.todos.map(t=>t.id))) + '\',\'' + escapeAttr(title) + '\',' + group.todos.length + ')" style="padding:5px 12px;background:var(--surface);border:1px solid #E5A5A5;border-radius:8px;font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;color:#C75050">🗑 この依頼を削除</button></div>' +
       '<div id="' + groupId + '" style="display:none">' + innerHtml + '</div>' +
     '</div>';
   }).join('');
@@ -13010,6 +13024,36 @@ function copyTodoToForm(payload) {
     titleEl.focus();
   }
   showToast('📋 コピーしました。内容を編集して依頼できます', 'success');
+}
+
+// 特定の担当者を依頼から外す（その1行を削除）
+async function removeTodoAssignee(id, name, title) {
+  if (!confirm(name + ' さんを「' + title + '」の依頼から外します。\n\nこの担当者の分だけ削除されます。よろしいですか？')) return;
+  showLoading('外しています...');
+  try {
+    await sbDelete('staff_todos', 'id=eq.' + id);
+    hideLoading();
+    showToast('✕ ' + name + ' さんを依頼から外しました', 'success');
+    refreshTodoViews();
+    if (typeof loadAllTodos === 'function') loadAllTodos();
+  } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+// 依頼グループをまとめて削除
+async function deleteTodoGroup(idsPayload, title, count) {
+  let ids;
+  try { ids = JSON.parse(decodeURIComponent(idsPayload)); } catch(e) { showToast('削除に失敗しました', 'error'); return; }
+  if (!ids || !ids.length) return;
+  if (!confirm('「' + title + '」を' + count + '名分すべて削除します。\n\nこの操作は取り消せません。よろしいですか？')) return;
+  showLoading('削除中...');
+  try {
+    // id in.(...) で一括削除（bigint/uuid どちらでも id 列で消せる）
+    await sbDelete('staff_todos', 'id=in.(' + ids.map(i => '"' + i + '"').join(',') + ')');
+    hideLoading();
+    showToast('🗑 「' + title + '」を削除しました', 'success');
+    refreshTodoViews();
+    if (typeof loadAllTodos === 'function') loadAllTodos();
+  } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
 
