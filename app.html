@@ -1896,6 +1896,27 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
     </div>
 
+    <!-- 受講の日付修正モーダル -->
+    <div id="enroll-edit-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:500;align-items:center;justify-content:center">
+      <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:360px">
+        <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">📅 受講期間の修正</div>
+        <div id="enroll-edit-title" style="font-size:12px;color:var(--muted);margin-bottom:14px"></div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:11px;color:var(--muted)">開始日</label>
+          <input type="date" id="enroll-edit-started" class="form-input-sm" style="width:100%">
+        </div>
+        <div style="margin-bottom:6px">
+          <label style="font-size:11px;color:var(--muted)">終了日（空にすると継続中）</label>
+          <input type="date" id="enroll-edit-ended" class="form-input-sm" style="width:100%">
+        </div>
+        <button onclick="setEnrollEndToMonthEnd()" style="margin-bottom:14px;padding:5px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:11px;cursor:pointer;color:var(--text);font-family:'Noto Sans JP',sans-serif">📆 今月末をセット（ストップ処理）</button>
+        <div style="display:flex;gap:8px">
+          <button onclick="saveEnrollEdit()" style="flex:1;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">保存する</button>
+          <button onclick="closeEnrollEdit()" style="flex:1;padding:11px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--muted);font-size:13px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">キャンセル</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 教科アプリ利用履歴 -->
     <div id="detail-appusage-section">
       <div class="section-title">📊 教科アプリ利用履歴</div>
@@ -3912,7 +3933,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702cy';
+const APP_VERSION = '20260702daa';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -13088,7 +13109,7 @@ function toggleTodoSection(key) {
 
 async function loadAllTodos() {
   const todos = await sbGet('staff_todos',
-    'order=created_at.desc&select=*,from:from_staff_id(name),to:to_staff_id(name)') || [];
+    'order=created_at.desc&select=*,from:from_staff_id(name),to:to_staff_id(name,staff_id)') || [];
   allTodosData = todos;
   renderAllTodos();
   renderTodoMatrix();
@@ -13254,12 +13275,15 @@ function renderAllTodos() {
   filtered.forEach(t => {
     const toId = t.to_staff_id || 'unknown';
     const toName = t.to?.name || '不明';
-    if (!groups[toId]) groups[toId] = { name: toName, todos: [] };
+    if (!groups[toId]) groups[toId] = { name: toName, staffId: t.to?.staff_id || '', todos: [] };
     groups[toId].todos.push(t);
   });
 
   const today = getTodayJST();
-  el.innerHTML = Object.entries(groups).map(([toId, group]) => {
+  // staff_id の若い順（fit002, fit003…）で並べる
+  const sortedGroups = Object.entries(groups).sort((a, b) =>
+    (a[1].staffId || '').localeCompare(b[1].staffId || '', undefined, { numeric: true }));
+  el.innerHTML = sortedGroups.map(([toId, group]) => {
     const pending = group.todos.filter(t => !t.is_done).length;
     const done = group.todos.filter(t => t.is_done).length;
     const overdue = group.todos.filter(t => !t.is_done && t.due_date && t.due_date < today).length;
@@ -14939,7 +14963,11 @@ async function loadDetailEnrollments() {
             '<div style="font-size:12px;color:var(--text)">' + (c.name||'不明') + '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + (c.subject||'') + '</span></div>' +
             '<div style="font-size:10px;color:var(--muted)">' + range + '</div>' +
           '</div>' +
-          (ongoing ? '' : '<button onclick="reopenEnrollment(\'' + e.id + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:10px;cursor:pointer">再開</button>') +
+          '<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">' +
+            '<button onclick="openEnrollEdit(\'' + e.id + '\',\'' + (e.started_on||'') + '\',\'' + (e.ended_on||'') + '\',\'' + escapeAttr(c.name||'') + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📅 日付修正</button>' +
+            (ongoing ? '' : '<button onclick="reopenEnrollment(\'' + e.id + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">▶ 再開</button>') +
+            '<button onclick="deleteEnrollment(\'' + e.id + '\',\'' + escapeAttr(c.name||'') + '\')" style="padding:2px 8px;background:var(--surface);border:1px solid #E5A5A5;border-radius:6px;color:#C75050;font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🗑 削除</button>' +
+          '</div>' +
         '</div>';
       }).join('');
     }
@@ -14954,6 +14982,64 @@ async function reopenEnrollment(enrollmentId) {
     showToast('受講を再開しました', 'success');
     loadDetailEnrollments();
   } catch (e) { showToast('エラー: ' + e.message, 'error'); }
+}
+
+// 受講レコードを完全削除（誤登録の取り消し用）
+async function deleteEnrollment(enrollmentId, className) {
+  if (!confirm('「' + className + '」の受講記録を完全に削除します。\n\n誤って登録した場合の取り消し用です。\nこの操作は取り消せません。よろしいですか？')) return;
+  showLoading('削除中...');
+  try {
+    await sbDelete('class_enrollments', 'id=eq.' + encodeURIComponent(enrollmentId));
+    hideLoading();
+    showToast('🗑 受講記録を削除しました', 'success');
+    loadDetailEnrollments();
+  } catch (e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+// 受講の日付修正モーダルを開く
+let editingEnrollId = null;
+function openEnrollEdit(enrollmentId, started, ended, className) {
+  editingEnrollId = enrollmentId;
+  document.getElementById('enroll-edit-title').textContent = className;
+  document.getElementById('enroll-edit-started').value = started || '';
+  document.getElementById('enroll-edit-ended').value = ended || '';
+  const box = document.getElementById('enroll-edit-box');
+  box.style.display = 'flex';
+}
+
+function closeEnrollEdit() {
+  document.getElementById('enroll-edit-box').style.display = 'none';
+  editingEnrollId = null;
+}
+
+// 終了日に「今月末」をセット（ストップ処理でよく使う）
+function setEnrollEndToMonthEnd() {
+  const today = getTodayJST(); // YYYY-MM-DD
+  const [y, m] = today.split('-').map(Number);
+  const lastDay = new Date(y, m, 0).getDate(); // m月の最終日（m-1+1月の0日目）
+  const mEnd = y + '-' + String(m).padStart(2, '0') + '-' + String(lastDay).padStart(2, '0');
+  document.getElementById('enroll-edit-ended').value = mEnd;
+}
+
+async function saveEnrollEdit() {
+  if (!editingEnrollId) return;
+  const started = document.getElementById('enroll-edit-started').value;
+  const ended = document.getElementById('enroll-edit-ended').value;
+  if (started && ended && ended < started) {
+    showToast('終了日は開始日より後にしてください', 'error');
+    return;
+  }
+  showLoading('保存中...');
+  try {
+    await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(editingEnrollId), {
+      started_on: started || null,
+      ended_on: ended || null
+    });
+    hideLoading();
+    showToast('📅 受講期間を更新しました', 'success');
+    closeEnrollEdit();
+    loadDetailEnrollments();
+  } catch (e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
 // ===== 受講の過去分 手入力（さかのぼり） =====
