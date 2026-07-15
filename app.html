@@ -911,6 +911,12 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="course-modal-dates" style="display:flex;flex-direction:column;gap:6px"></div>
     </div>
 
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:12px;font-size:12px;color:#8A5A2B;cursor:pointer;font-weight:700;background:#FBF0E8;border:1px solid #C79A6E;border-radius:8px;padding:9px 10px">
+      <input type="checkbox" id="course-makeup" style="width:16px;height:16px;cursor:pointer">
+      <span>🔁 補習として登録（回数にカウントしない）</span>
+    </label>
+    <div style="font-size:10px;color:var(--muted);margin:-8px 0 12px 2px;line-height:1.5">通常はチェック不要です。登録済みの続きから自動で回数を振ります。</div>
+
     <button onclick="submitCourseSessions()" style="width:100%;padding:13px;background:linear-gradient(135deg,#2D6DB5,#184A86);border:none;border-radius:10px;color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">✅ 選択した日に一括登録</button>
   </div>
 </div>
@@ -3657,7 +3663,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <select class="form-select" id="cm-subject"><option value="英語">英語</option><option value="国語">国語</option><option value="数学">数学</option><option value="理科">理科</option><option value="社会">社会</option><option value="その他">その他</option></select></div>
         <div style="display:flex;gap:8px">
           <div style="flex:1"><div class="form-label">区分</div>
-            <select class="form-select" id="cm-category">
+            <select class="form-select" id="cm-category" onchange="onCmCategoryChange()">
               <option value="normal">📘 通常</option>
               <option value="kosotsu">🎓 高卒生</option>
               <option value="summer">☀️ 夏期講習</option>
@@ -3668,6 +3674,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
             </select></div>
           <div style="width:120px"><div class="form-label">年度（任意）</div>
             <input class="form-input-sm" id="cm-school-year" type="number" inputmode="numeric" placeholder="例 2026"></div>
+        </div>
+        <div id="cm-total-row" style="display:none">
+          <div class="form-label">全何回の講座か</div>
+          <input class="form-input-sm" id="cm-total-sessions" type="number" inputmode="numeric" min="1" placeholder="例：8">
+          <div style="font-size:10px;color:var(--muted);margin-top:3px;line-height:1.5">講習は「全◯回」を入れると、授業日がその回数分登録されているか判定できます。通常授業は月4回サイクルなので不要です。</div>
         </div>
         <div><div class="form-label">対象学年（複数選択可・混在講座は全部チェック）</div>
           <div style="display:flex;gap:14px;padding:4px 2px">
@@ -3991,7 +4002,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702daf';
+const APP_VERSION = '20260702dag';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -13938,6 +13949,16 @@ async function loadClassMasterList() {
       } catch (e) { /* class_teachers 未作成：主担当のみ */ }
     }
   } catch (e) { /* 講師名が引けなくても一覧は出す */ }
+  // 講習（total_sessions あり）の登録済み回数を数える（補習は除外）→「全8回中6回」判定用
+  const cmSessionCount = {};
+  try {
+    const courseIds = classMasterList.filter(c => c.total_sessions).map(c => c.id);
+    if (courseIds.length) {
+      const sess = await sbGet('class_sessions',
+        'class_master_id=in.(' + courseIds.join(',') + ')&is_makeup=not.eq.true&select=class_master_id&limit=2000') || [];
+      sess.forEach(s => { cmSessionCount[s.class_master_id] = (cmSessionCount[s.class_master_id] || 0) + 1; });
+    }
+  } catch (e) { /* 数えられなくても一覧は出す */ }
   const subjGroups = {};
   classMasterList.forEach(c => {
     if (!subjGroups[c.subject]) subjGroups[c.subject] = [];
@@ -13950,9 +13971,20 @@ async function loadClassMasterList() {
       const gradeBadge = (c.grade_level && c.grade_level.trim())
         ? '<span style="font-size:10px;background:var(--orange-l);color:var(--orange-d);border:1px solid var(--orange);padding:1px 7px;border-radius:10px;margin-left:6px">' + c.grade_level.split(',').filter(Boolean).map(g => g + '年').join('・') + '</span>'
         : '<span style="font-size:10px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);padding:1px 7px;border-radius:10px;margin-left:6px">学年なし</span>';
+      // 講習の登録進捗バッジ（全◯回に対して何回登録済みか）
+      let totalBadge = '';
+      if (c.total_sessions) {
+        const done = cmSessionCount[c.id] || 0;
+        const diff = done - c.total_sessions;
+        let bg, bd, fg, txt;
+        if (diff === 0) { bg='#EAF7EA'; bd='#8CC98C'; fg='#3B6D11'; txt='✅ 全' + c.total_sessions + '回 登録済み'; }
+        else if (diff < 0) { bg='#FDECEC'; bd='#E0A0A0'; fg='#B84A4A'; txt='⚠️ 全' + c.total_sessions + '回中 ' + done + '回（' + (-diff) + '回不足）'; }
+        else { bg='#FBF1E0'; bd='#E0A96F'; fg='#B5741A'; txt='⚠️ 全' + c.total_sessions + '回 → ' + done + '回（' + diff + '回超過）'; }
+        totalBadge = '<span style="font-size:10px;background:' + bg + ';color:' + fg + ';border:1px solid ' + bd + ';padding:1px 7px;border-radius:10px;margin-left:6px;font-weight:700">' + txt + '</span>';
+      }
       return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:4px;flex-wrap:wrap">' +
         '<span style="flex:0 0 auto;width:14px;height:14px;border-radius:4px;background:' + classColorOf(c) + ';border:1px solid rgba(0,0,0,0.1)"></span>' +
-        '<div style="flex:1;min-width:120px"><div onclick="openClassKarte(\'' + c.id + '\')" style="font-size:13px;font-weight:600;color:var(--orange-d);cursor:pointer;text-decoration:underline;text-decoration-color:rgba(0,0,0,0.15);text-underline-offset:2px">' + c.name + classCategoryBadge(c) + gradeBadge + '</div>' +
+        '<div style="flex:1;min-width:120px"><div onclick="openClassKarte(\'' + c.id + '\')" style="font-size:13px;font-weight:600;color:var(--orange-d);cursor:pointer;text-decoration:underline;text-decoration-color:rgba(0,0,0,0.15);text-underline-offset:2px">' + c.name + classCategoryBadge(c) + gradeBadge + totalBadge + '</div>' +
         '<div style="font-size:10px;color:var(--muted)">' + ((cmTeacherNames[c.id] && cmTeacherNames[c.id].length) ? cmTeacherNames[c.id].join('・') : '担当未設定') + '</div></div>' +
         '<button onclick="filterSessionsByClass(\'' + c.id + '\')" style="padding:3px 8px;background:var(--orange-l);border:1px solid var(--orange);border-radius:6px;color:var(--orange-d);font-size:10px;font-weight:700;cursor:pointer">📅 日程を見る</button>' +
         '<button onclick="openClassAttendanceLatest(\'' + c.id + '\')" style="padding:3px 8px;background:#EAF2FB;border:1px solid #9CC0E8;border-radius:6px;color:#2D5FA6;font-size:10px;font-weight:700;cursor:pointer">🗓 出欠</button>' +
@@ -14521,15 +14553,21 @@ async function createClassMaster() {
   const category = document.getElementById('cm-category').value || 'normal';
   const yrRaw = document.getElementById('cm-school-year').value;
   const schoolYear = yrRaw ? parseInt(yrRaw) : null;
+  // 講習のみ「全何回」を保存（通常講座は月4回サイクルなので null）
+  const totRaw = document.getElementById('cm-total-sessions')?.value;
+  const totalSessions = (!isNormalCategory(category) && totRaw) ? parseInt(totRaw) : null;
   showLoading('登録中...');
   try {
-    const data = { name, subject, grade_level: grades.join(','), category, school_year: schoolYear };
+    const data = { name, subject, grade_level: grades.join(','), category, school_year: schoolYear, total_sessions: totalSessions };
     if (currentStaff?.role !== 'admin') data.teacher_staff_id = currentStaff.id;
     await sbPost('class_master', data);
     hideLoading();
     document.getElementById('cm-name').value = '';
     document.getElementById('cm-school-year').value = '';
     document.getElementById('cm-category').value = 'normal';
+    const totEl = document.getElementById('cm-total-sessions');
+    if (totEl) totEl.value = '';
+    onCmCategoryChange();
     document.querySelectorAll('.cm-grade-chk').forEach(c => c.checked = false);
     showToast('✅ 授業を登録しました', 'success');
     loadClassMasterList();
@@ -14810,8 +14848,25 @@ function addSessionRow() {
 // 実施日がずれても（4月4回目が5月に実施等）番号は動かないので session_date からは算出しない。
 const CYCLE_PER_MONTH = 4;
 
+// 通常講座かどうか（通常=月4回サイクル、それ以外=講習で通し番号）
+function isNormalCategory(cat) {
+  return (cat || 'normal') === 'normal';
+}
+
+// 区分セレクトの変更で「全何回」欄を出し分け
+function onCmCategoryChange() {
+  const cat = document.getElementById('cm-category')?.value || 'normal';
+  const row = document.getElementById('cm-total-row');
+  if (row) row.style.display = isNormalCategory(cat) ? 'none' : 'block';
+}
+
 // {year, month, no} の次の回を返す
-function cycleNext(c) {
+// 通常講座: 月4回で繰り上がり（4月4回目→5月1回目、3月4回目→翌年度4月1回目）
+// 講習: 通し番号なので no を +1 するだけ（month は使わない）
+function cycleNext(c, isNormal) {
+  if (isNormal === false) {
+    return { year: c.year, month: null, no: c.no + 1 };
+  }
   let { year, month, no } = c;
   no++;
   if (no > CYCLE_PER_MONTH) {
@@ -14824,10 +14879,18 @@ function cycleNext(c) {
   return { year, month, no };
 }
 
-// 表示用ラベル
+// 表示用ラベル（通常=「4月2回目」、講習=「第3回」）
 function cycleLabel(c) {
-  if (!c || c.month == null || c.no == null) return '';
+  if (!c || c.no == null) return '';
+  if (c.month == null) return '第' + c.no + '回';
   return c.month + '月' + c.no + '回目';
+}
+
+// セッション行（cycle_month/cycle_no を持つ）用のラベル
+function sessionCycleLabel(s) {
+  if (s.cycle_no == null) return '';
+  const y = s.cycle_year ? s.cycle_year + '年度 ' : '';
+  return y + (s.cycle_month == null ? '第' + s.cycle_no + '回' : s.cycle_month + '月' + s.cycle_no + '回目');
 }
 
 // そのクラスの登録済み最終回を調べ、その「次」を開始番号として提案する
@@ -14841,21 +14904,32 @@ async function suggestCycleStart() {
   if (!classId) { showToast('先にコマの授業を選んでください', 'error'); return; }
   showLoading('確認中...');
   try {
+    const isNormal = await isNormalClass(classId);
     const last = await fetchLastCycle(classId);
     hideLoading();
     if (!last) {
       showToast('登録済みの回数がありません。開始番号を手で入れてください', 'info');
       return;
     }
-    const next = cycleNext(last);
-    document.getElementById('cs-cycle-year').value = next.year;
-    document.getElementById('cs-cycle-month').value = next.month;
+    const next = cycleNext(last, isNormal);
+    document.getElementById('cs-cycle-year').value = next.year || '';
+    document.getElementById('cs-cycle-month').value = next.month || '';
     document.getElementById('cs-cycle-no').value = next.no;
-    showToast('前回は' + last.year + '年度' + cycleLabel(last) + ' → ' + next.year + '年度' + cycleLabel(next) + 'から', 'success');
+    showToast('前回は' + cycleLabel(last) + ' → ' + cycleLabel(next) + 'から', 'success');
   } catch (e) {
     hideLoading();
     showToast('エラー: ' + e.message, 'error');
   }
+}
+
+// その授業が通常講座か（class_master.category で判定）
+const cycleCatCache = {};
+async function isNormalClass(classId) {
+  if (cycleCatCache[classId] !== undefined) return cycleCatCache[classId];
+  const rows = await sbGet('class_master', 'id=eq.' + classId + '&select=category') || [];
+  const isN = isNormalCategory(rows[0] && rows[0].category);
+  cycleCatCache[classId] = isN;
+  return isN;
 }
 
 // そのクラスの登録済みセッションのうち、回数が振られた最後の回を返す（補習は除外）
@@ -14868,7 +14942,7 @@ async function fetchLastCycle(classId) {
   return { year: r.cycle_year, month: r.cycle_month, no: r.cycle_no };
 }
 
-function previewSessions() {
+async function previewSessions() {
   const weekday = parseInt(document.getElementById('cs-weekday').value);
   const fromStr = document.getElementById('cs-from').value;
   const toStr = document.getElementById('cs-to').value;
@@ -14903,12 +14977,25 @@ function previewSessions() {
   const cyYear = parseInt(document.getElementById('cs-cycle-year').value);
   const cyMonth = parseInt(document.getElementById('cs-cycle-month').value);
   const cyNo = parseInt(document.getElementById('cs-cycle-no').value);
-  const useCycle = !!(cyYear && cyMonth && cyNo);
-  if (useCycle && (cyNo < 1 || cyNo > CYCLE_PER_MONTH || cyMonth < 1 || cyMonth > 12)) {
-    showToast('回数の指定が不正です（月1〜12・回1〜4）', 'error'); return;
+  const useCycle = !!(cyYear && cyNo);
+  if (useCycle && (cyNo < 1 || (cyMonth && (cyMonth < 1 || cyMonth > 12)))) {
+    showToast('回数の指定が不正です（月1〜12・回1以上）', 'error'); return;
   }
-  // 授業(class_master_id)ごとに独立してカウントする
+  // 授業(class_master_id)ごとに独立してカウントする。区分(通常/講習)で採番則が変わる。
   const cycleCursor = {};
+  const isNormalMap = {};
+  if (useCycle) {
+    showLoading('確認中...');
+    try {
+      for (const row of rows) {
+        const sel = row.querySelector('.cs-class-sel');
+        if (sel && sel.value && isNormalMap[sel.value] === undefined) {
+          isNormalMap[sel.value] = await isNormalClass(sel.value);
+        }
+      }
+    } catch (e) { hideLoading(); showToast('区分の確認に失敗: ' + e.message, 'error'); return; }
+    hideLoading();
+  }
   rows.forEach(row => {
     const classSel = row.querySelector('.cs-class-sel');
     const periodSel = row.querySelector('.cs-period-sel');
@@ -14916,13 +15003,14 @@ function previewSessions() {
     const className = classSel.options[classSel.selectedIndex].dataset.name || classSel.options[classSel.selectedIndex].text;
     const period = parseInt(periodSel.value);
     const times = PERIODS[period];
+    const isNormal = isNormalMap[classSel.value] !== false;
     dates.forEach(d => {
       let cyc = null;
       if (useCycle) {
         if (!cycleCursor[classSel.value]) {
-          cycleCursor[classSel.value] = { year: cyYear, month: cyMonth, no: cyNo };
+          cycleCursor[classSel.value] = { year: cyYear, month: isNormal ? cyMonth : null, no: cyNo };
         } else {
-          cycleCursor[classSel.value] = cycleNext(cycleCursor[classSel.value]);
+          cycleCursor[classSel.value] = cycleNext(cycleCursor[classSel.value], isNormal);
         }
         cyc = { ...cycleCursor[classSel.value] };
       }
@@ -14956,7 +15044,7 @@ function previewSessions() {
     return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px">' +
       '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">' + pm + '/' + pd + '（' + weekNames[pDate.getDay()] + '）</div>' +
       sessions.map(s => '<div style="font-size:11px;color:var(--muted)">　' + s.period + '限 ' + s.start_time + '〜' + s.end_time + '　' + s.class_name +
-        (s.cycle_no ? '<span style="color:var(--orange-d);font-weight:700;margin-left:6px">' + s.cycle_year + '年度' + s.cycle_month + '月' + s.cycle_no + '回目</span>' : '') +
+        (s.cycle_no ? '<span style="color:var(--orange-d);font-weight:700;margin-left:6px">' + sessionCycleLabel(s) + '</span>' : '') +
         '</div>').join('') +
     '</div>';
   }).join('');
@@ -15010,13 +15098,15 @@ async function previewSpotSessions() {
 
   // 補習でなければ、授業ごとに登録済みの続き番号を自動採番
   const cursor = {};
+  const isNormalMap = {};
   if (!isMakeup) {
     showLoading('回数を確認中...');
     try {
       for (const rd of rowData) {
         if (cursor[rd.classId] !== undefined) continue;
+        isNormalMap[rd.classId] = await isNormalClass(rd.classId);
         const last = await fetchLastCycle(rd.classId);
-        cursor[rd.classId] = last ? cycleNext(last) : null;
+        cursor[rd.classId] = last ? cycleNext(last, isNormalMap[rd.classId]) : null;
       }
     } catch (e) {
       hideLoading();
@@ -15031,7 +15121,7 @@ async function previewSpotSessions() {
     let cyc = null;
     if (!isMakeup && cursor[rd.classId]) {
       cyc = { ...cursor[rd.classId] };
-      cursor[rd.classId] = cycleNext(cursor[rd.classId]); // 同じ授業を複数コマ足す場合に進める
+      cursor[rd.classId] = cycleNext(cursor[rd.classId], isNormalMap[rd.classId]); // 同じ授業を複数コマ足す場合に進める
     }
     pendingSessions.push({
       class_master_id: rd.classId,
@@ -15055,7 +15145,7 @@ async function previewSpotSessions() {
         (isMakeup ? '<span style="font-size:10px;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:10px;padding:0 6px;margin-left:4px">🔁 補習（カウントしない）</span>' : '') +
       '</div>' +
       pendingSessions.map(s => '<div style="font-size:11px;color:var(--muted)">　' + s.period + '限 ' + s.start_time + '〜' + s.end_time + '　' + s.class_name +
-        (s.cycle_no ? '<span style="color:var(--orange-d);font-weight:700;margin-left:6px">' + s.cycle_year + '年度' + s.cycle_month + '月' + s.cycle_no + '回目</span>' : '') +
+        (s.cycle_no ? '<span style="color:var(--orange-d);font-weight:700;margin-left:6px">' + sessionCycleLabel(s) + '</span>' : '') +
         '</div>').join('') +
     '</div>';
   document.getElementById('cs-preview').style.display = 'block';
@@ -15154,7 +15244,7 @@ async function loadSessionList() {
             (s.is_makeup
               ? '<span style="font-size:9px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:10px;padding:0 6px">🔁 補習</span>'
               : (s.cycle_no
-                  ? '<span style="font-size:9px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);border-radius:10px;padding:0 6px">' + s.cycle_year + '年度 ' + s.cycle_month + '月' + s.cycle_no + '回目</span>'
+                  ? '<span style="font-size:9px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);border-radius:10px;padding:0 6px">' + sessionCycleLabel(s) + '</span>'
                   : '')) +
           '</div>' +
           '<button onclick="deleteSession(\'' + s.id + '\')" style="padding:2px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer;flex-shrink:0">削除</button>' +
@@ -16317,7 +16407,17 @@ async function submitCourseSessions() {
   if (!classId) { showToast('授業を選んでください', 'error'); return; }
   if (!courseSelectedDates.size) { showToast('日付が選ばれていません', 'error'); return; }
   const dates = [...courseSelectedDates].sort();
+  const isMakeup = !!document.getElementById('course-makeup')?.checked;
   showLoading('登録中...');
+  // 補習でなければ、登録済みの続きから自動採番（通常=月4回サイクル / 講習=通し番号）
+  let cursor = null, isNormal = true;
+  if (!isMakeup) {
+    try {
+      isNormal = await isNormalClass(classId);
+      const last = await fetchLastCycle(classId);
+      cursor = last ? cycleNext(last, isNormal) : null;
+    } catch (e) { /* 回数が取れなくても登録は続行（番号なしになる） */ }
+  }
   let success = 0;
   for (const d of dates) {
     const t = courseDateTimes[d] || courseBulkTime;
@@ -16327,16 +16427,23 @@ async function submitCourseSessions() {
         session_date: d,
         period: t.period,           // カスタムは null
         start_time: t.start,
-        end_time: t.end
+        end_time: t.end,
+        cycle_year: cursor ? cursor.year : null,
+        cycle_month: cursor ? cursor.month : null,
+        cycle_no: cursor ? cursor.no : null,
+        is_makeup: isMakeup
       });
       success++;
+      if (cursor) cursor = cycleNext(cursor, isNormal);
     } catch(e) { /* 重複はスキップ */ }
   }
   hideLoading();
-  showToast('✅ ' + success + '日分の授業を登録しました', 'success');
+  showToast('✅ ' + success + '日分の授業を登録しました' + (isMakeup ? '（補習）' : ''), 'success');
   closeCourseSessionModal();
   courseSelectedDates.clear();
   courseDateTimes = {};
+  const mkEl = document.getElementById('course-makeup');
+  if (mkEl) mkEl.checked = false;
   toggleCourseMode();
   loadStaffHomeCalendar();
 }
