@@ -1539,6 +1539,18 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
     </div>
 
+    <!-- ★ スタッフポイント（ホーム） -->
+    <div id="home-points-section" style="background:linear-gradient(135deg,#FDF1E3,#FFFFFF);border:1.5px solid var(--orange);border-radius:var(--radius);padding:14px 16px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:14px;font-weight:700;color:var(--orange-d)">📊 スタッフポイント</span>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="font-family:'DM Mono',monospace;font-size:22px;font-weight:500;color:var(--orange-d)" id="staff-points-display">—</div>
+          <button id="home-points-rank-btn" onclick="toggleStaffRanking()" style="display:none;font-size:11px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);border-radius:20px;padding:4px 12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🏆 ランキング ›</button>
+        </div>
+      </div>
+      <div id="home-points-ranking" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)"></div>
+    </div>
+
     <!-- ★ 自分へのToDo（ホーム上部・すぐ見える） -->
     <div id="home-mytodo-section" style="background:linear-gradient(135deg,#EAF5E1,#FFFFFF);border:1.5px solid var(--green);border-radius:var(--radius);padding:14px 16px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -2776,11 +2788,6 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
           <button onclick="submitReport()" style="width:100%;padding:13px;background:linear-gradient(135deg,#3B6D11,#5A9E3C);border:none;border-radius:var(--radius-sm);color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">💾 保存する</button>
         </div>
-      </div>
-      <!-- スタッフポイント表示 -->
-      <div class="card-box" style="margin-top:12px;display:flex;align-items:center;justify-content:space-between">
-        <div style="font-size:13px;font-weight:700;color:var(--text)">📊 スタッフポイント</div>
-        <div style="font-family:'DM Mono',monospace;font-size:22px;font-weight:500;color:var(--orange-d)" id="staff-points-display">—</div>
       </div>
     </div>
 
@@ -4075,7 +4082,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dam';
+const APP_VERSION = '20260702dap';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6366,6 +6373,7 @@ async function initStaff() {
     hideLoading();
     initDatePicker();
     loadTodayTasks();
+    loadHomeStaffPoints();
     loadHomeMyTodos();
     loadHomeSchedule();
     loadStaffHomeCalendar();
@@ -6381,6 +6389,68 @@ function updateScienceAppsCard() {
   const sec = document.getElementById('science-apps-section');
   if (!sec) return;
   sec.style.display = currentStaff ? 'block' : 'none';
+}
+
+// ===== スタッフポイント（ホーム）=====
+// 自分の持ち点は全スタッフに表示。ランキングは admin のみ（fit001＝代表は除外）。
+let staffRankOpen = false;
+
+async function loadHomeStaffPoints() {
+  if (!currentStaff) return;
+  const el = document.getElementById('staff-points-display');
+  const btn = document.getElementById('home-points-rank-btn');
+  const isAdmin = currentStaff.role === 'admin';
+  if (btn) btn.style.display = isAdmin ? '' : 'none';
+  try {
+    const rows = await sbGet('staff', 'id=eq.' + currentStaff.id + '&select=points') || [];
+    const pts = rows[0]?.points || 0;
+    if (currentStaff) currentStaff.points = pts;
+    if (el) el.textContent = pts + 'pt';
+  } catch (e) {
+    if (el) el.textContent = '—';
+  }
+  if (isAdmin && staffRankOpen) loadStaffRanking();
+}
+
+function toggleStaffRanking() {
+  const box = document.getElementById('home-points-ranking');
+  const btn = document.getElementById('home-points-rank-btn');
+  if (!box) return;
+  staffRankOpen = !staffRankOpen;
+  box.style.display = staffRankOpen ? 'block' : 'none';
+  if (btn) btn.textContent = staffRankOpen ? '🏆 閉じる' : '🏆 ランキング ›';
+  if (staffRankOpen) loadStaffRanking();
+}
+
+async function loadStaffRanking() {
+  const box = document.getElementById('home-points-ranking');
+  if (!box || !currentStaff || currentStaff.role !== 'admin') return;
+  box.innerHTML = '<div style="font-size:12px;color:var(--muted)">読み込み中...</div>';
+  try {
+    let rows = await sbGet('staff', 'select=id,staff_id,name,points,is_active&order=points.desc') || [];
+    // fit001（代表）は除外。退職者など無効スタッフも出さない。
+    rows = rows.filter(s => (s.staff_id || '').toLowerCase() !== 'fit001' && s.is_active !== false);
+    if (!rows.length) {
+      box.innerHTML = '<div style="font-size:12px;color:var(--muted)">表示できるスタッフがいません</div>';
+      return;
+    }
+    const maxPts = Math.max(1, ...rows.map(s => Math.abs(s.points || 0)));
+    const medal = ['🥇', '🥈', '🥉'];
+    box.innerHTML = rows.map((s, i) => {
+      const p = s.points || 0;
+      const me = s.id === currentStaff.id;
+      const w = Math.round(Math.abs(p) / maxPts * 100);
+      const col = p < 0 ? '#C75050' : 'var(--orange-d)';
+      return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0">' +
+        '<span style="font-size:12px;width:22px;text-align:center;flex-shrink:0">' + (medal[i] || (i + 1)) + '</span>' +
+        '<span style="font-size:12px;font-weight:' + (me ? '700' : '400') + ';color:' + (me ? 'var(--orange-d)' : 'var(--text)') + ';width:72px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(s.name || '—') + (me ? '（自分）' : '') + '</span>' +
+        '<div style="flex:1;height:7px;background:var(--surface2);border-radius:4px;overflow:hidden;min-width:0"><div style="width:' + w + '%;height:100%;background:' + col + ';border-radius:4px"></div></div>' +
+        '<span style="font-family:\'DM Mono\',monospace;font-size:12px;color:' + col + ';width:44px;text-align:right;flex-shrink:0">' + p + 'pt</span>' +
+      '</div>';
+    }).join('');
+  } catch (e) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--muted)">ランキングを読み込めませんでした</div>';
+  }
 }
 
 // ===== 自分へのToDo（ホーム上部・コンパクト表示） =====
@@ -12888,12 +12958,6 @@ async function loadStaffReports() {
   reportMap = {};
   reports.forEach(r => { reportMap[r.report_date] = r; });
 
-  // スタッフポイント表示
-  const staffData = await sbGet('staff', 'id=eq.' + currentStaff.id + '&select=points');
-  const pts = staffData?.[0]?.points || 0;
-  const el = document.getElementById('staff-points-display');
-  if (el) el.textContent = pts + 'pt';
-
   renderReportCalendar();
 }
 
@@ -13120,6 +13184,7 @@ function refreshTodoViews() {
   if (typeof loadSentTodos === 'function') loadSentTodos();
   // ホーム上部「自分へのToDo」「今日やること」「カレンダーのToDo締切」も即時反映
   if (typeof loadHomeMyTodos === 'function') loadHomeMyTodos();
+  if (typeof loadHomeStaffPoints === 'function') loadHomeStaffPoints();
   if (typeof loadTodayTasks === 'function') loadTodayTasks();
   if (typeof loadStaffHomeCalendar === 'function') loadStaffHomeCalendar();
 }
@@ -14717,6 +14782,17 @@ let ckStuClassId = null;
 let ckStuIsNormal = true;
 
 // その授業が「1年継続後は無料」の対象か（超感覚英語・長文読解のみ）
+// 集計表示用に授業名をまとめる（くくり名）。
+// 「超感覚英語(1年)」「超感覚英語(2、3年)」は学年で分かれているだけで
+// 実質1つの講座なので、人数集計・分析では「超感覚英語」1つにまとめる。
+// 注意：これは表示・集計のキーだけを変えるもので、class_master のデータは変えない。
+//       科目(subject)は元から同じなので、売上（科目ユニーク数）には影響しない。
+function groupClassName(name) {
+  const n = name || '';
+  if (n.indexOf('超感覚英語') === 0) return '超感覚英語';
+  return n || '（名称未設定）';
+}
+
 function isFreeAfterLapClass(name) {
   const n = name || '';
   return n.indexOf('長文読解') === 0 || n.indexOf('超感覚英語') === 0;
@@ -16395,11 +16471,23 @@ async function loadTodayClasses() {
       return;
     }
 
-    // 自分の受講登録を確認
-    const enrollments = await sbGetActiveEnrollments('student_id=eq.' + currentStudent.id + '&select=class_master_id');
+    // 自分の受講登録を確認（preferred_period＝担当コマも取得）
+    const enrollments = await sbGetActiveEnrollments('student_id=eq.' + currentStudent.id + '&select=class_master_id,preferred_period');
     const myClassIds = (enrollments || []).map(e => e.class_master_id);
+    // 授業ごとの担当コマ。長文読解のように同じ授業が5限/6限の2コマある場合、
+    // 自分が出るコマだけを表示する。未設定(null)の授業は従来どおり全コマ表示。
+    const prefOf = {};
+    (enrollments || []).forEach(e => {
+      if (e.preferred_period != null) prefOf[e.class_master_id] = e.preferred_period;
+    });
 
-    const mySessions = sessions.filter(s => s.class_master && myClassIds.includes(s.class_master.id));
+    const mySessions = sessions.filter(s => {
+      if (!s.class_master || !myClassIds.includes(s.class_master.id)) return false;
+      const pref = prefOf[s.class_master.id];
+      if (pref == null) return true;              // 担当コマ未設定 → 全部見せる
+      if (s.period == null) return true;          // 時限なしの授業は対象外
+      return s.period === pref;                   // 担当コマだけ
+    });
     if (!mySessions.length) {
       document.getElementById('today-classes-box').style.display = 'none';
       return;
@@ -28016,7 +28104,7 @@ function saRenderItem(key) {
       const cm = e.class_master || {};
       const subj = cm.subject || '';
       const tkey = (subj === '英語') ? '__english__' : (cm.teacher_staff_id || '__none__');
-      const cname = cm.name || '（名称未設定）';
+      const cname = groupClassName(cm.name);
       if (!byTeacher[tkey]) byTeacher[tkey] = { total: 0, classes: {}, ids: [] };
       const t = byTeacher[tkey];
       t.total++;
@@ -28387,12 +28475,14 @@ function saRenderBar() {
 
   // ---- 講座（授業）ごとの受講人数 ----
   if (saCanView('class')) {
-  const byClass = {};   // class_master_id -> {name, subject, teacher_staff_id, n}
+  const byClass = {};   // key -> {name, subject, teacher_staff_id, n}
   (saData.enrolls || []).forEach(e => {
     if (!studentIdSetForBar.has(e.student_id)) return;
     const cm = e.class_master || {};
-    const cid = e.class_master_id || (cm.name || '不明');
-    if (!byClass[cid]) byClass[cid] = { name: cm.name || '（名称未設定）', subject: cm.subject || 'その他', teacher: cm.teacher_staff_id || null, n: 0 };
+    const gname = groupClassName(cm.name);
+    // 超感覚英語(1年)/(2、3年)は1つの講座としてまとめるため、まとめ名をキーにする
+    const cid = (gname !== (cm.name || '')) ? ('__g__' + gname) : (e.class_master_id || (cm.name || '不明'));
+    if (!byClass[cid]) byClass[cid] = { name: gname, subject: cm.subject || 'その他', teacher: cm.teacher_staff_id || null, n: 0 };
     byClass[cid].n++;
   });
   const classList = Object.values(byClass).sort((a, b) => b.n - a.n);
