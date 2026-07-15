@@ -4002,7 +4002,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dag';
+const APP_VERSION = '20260702dah';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -4157,6 +4157,34 @@ async function sbDelete(table, query) {
     headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Prefer': 'return=minimal' }
   });
   if (!res.ok) throw new Error(await res.text());
+}
+
+// ===== デモ（除外）生徒の判定 =====
+// inactive_reason='除外' の生徒はデモ・テスト用アカウント。
+// 生徒側の画面確認のために授業へ受講登録することがあるため、
+// 名簿・出席率・各種集計からは必ず外す（数字が歪むのを防ぐ）。
+let demoStudentIdSet = null;   // Set(student_id) / 未取得は null
+async function getDemoStudentIds() {
+  if (demoStudentIdSet) return demoStudentIdSet;
+  try {
+    const rows = await sbGet('students',
+      'inactive_reason=eq.' + encodeURIComponent('除外') + '&select=id') || [];
+    demoStudentIdSet = new Set(rows.map(r => r.id));
+  } catch (e) {
+    demoStudentIdSet = new Set();   // 取れなくても動作は止めない
+  }
+  return demoStudentIdSet;
+}
+// 生徒IDの配列からデモを除く
+async function excludeDemoIds(ids) {
+  const demo = await getDemoStudentIds();
+  return (ids || []).filter(id => !demo.has(id));
+}
+// student_id を持つ行の配列からデモの行を除く
+async function excludeDemoRows(rows, key) {
+  const demo = await getDemoStudentIds();
+  const k = key || 'student_id';
+  return (rows || []).filter(r => !demo.has(r[k]));
 }
 
 // ===== 受講変遷（class_enrollments の started_on / ended_on） =====
@@ -6824,10 +6852,10 @@ async function loadHomeAbsent() {
     // 未来日の予定は対象外（欠席は過去のみ）。直近の欠席を上に。
     // session_attendance には students / class_master への外部キーが無いため
     // ネストjoin(PGRST200)は使えない。生の列だけ取り、名前は別クエリで引く。
-    const rows = await sbGet('session_attendance',
+    const rows = await excludeDemoRows(await sbGet('session_attendance',
       'status=eq.absent&session_date=lte.' + todayStr +
       '&select=session_date,period,student_id,class_master_id' +
-      '&order=session_date.desc&limit=500') || [];
+      '&order=session_date.desc&limit=500') || []);
     if (!rows.length) {
       if (cntEl) cntEl.textContent = '0件';
       listEl.innerHTML = '<div style="font-size:12px;color:var(--muted)">未消化の欠席はありません。</div>';
@@ -8040,6 +8068,7 @@ async function deactivateStudent(reason) {
   try {
     const nowIso = new Date().toISOString();
     await sbPatch('students', 'id=eq.' + detailStudent.id, { is_active: false, inactive_at: nowIso, inactive_reason: reason });
+    demoStudentIdSet = null;   // デモ判定キャッシュを破棄（除外の付け外しを即反映）
     detailStudent.is_active = false;
     detailStudent.inactive_at = nowIso;
     detailStudent.inactive_reason = reason;
@@ -8060,6 +8089,7 @@ async function reactivateStudent() {
   showLoading('処理中...');
   try {
     await sbPatch('students', 'id=eq.' + detailStudent.id, { is_active: true, inactive_at: null, inactive_reason: null });
+    demoStudentIdSet = null;   // デモ判定キャッシュを破棄（除外の付け外しを即反映）
     detailStudent.is_active = true;
     detailStudent.inactive_at = null;
     detailStudent.inactive_reason = null;
@@ -14294,7 +14324,8 @@ async function loadKarteAttendance(classId) {
       'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
       '&select=session_date,period&order=session_date.desc,period&limit=12') || [];
     const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id');
-    const total = new Set(enrolls.map(e => e.student_id)).size;
+    const enrollIds = await excludeDemoIds(enrolls.map(e => e.student_id));
+    const total = new Set(enrollIds).size;
     // 統計バー：受講人数を先に反映
     const stStu = document.getElementById('ck-stat-students');
     if (stStu) { stStu.textContent = total; stStu.className = 'ck-stat-num'; }
@@ -14304,9 +14335,9 @@ async function loadKarteAttendance(classId) {
     }
     const dates = sessions.map(s => s.session_date);
     const minD = dates.reduce((a,b) => a < b ? a : b);
-    const atts = await sbGet('session_attendance',
+    const atts = await excludeDemoRows(await sbGet('session_attendance',
       'class_master_id=eq.' + classId + '&session_date=gte.' + minD +
-      '&select=session_date,period,student_id,status') || [];
+      '&select=session_date,period,student_id,status') || []);
     const attByKey = {};
     let allPresent = 0, allRecorded = 0;
     atts.forEach(a => {
@@ -15444,8 +15475,8 @@ async function loadTimetableConflicts() {
       'id=in.(' + cmIds.join(',') + ')&select=id,name,subject') || [];
     const mName = {}; masters.forEach(m => { mName[m.id] = m; });
     // 各授業の受講生（active）を取得
-    const enrolls = await sbGetActiveEnrollments(
-      'class_master_id=in.(' + cmIds.join(',') + ')&select=student_id,class_master_id,preferred_period');
+    const enrolls = await excludeDemoRows(await sbGetActiveEnrollments(
+      'class_master_id=in.(' + cmIds.join(',') + ')&select=student_id,class_master_id,preferred_period'));
     // class_master_id -> [ {student_id, preferred_period} ]
     const byClass = {};
     enrolls.forEach(e => {
@@ -15551,9 +15582,9 @@ async function loadLongtextPeriods() {
       return;
     }
     ttLongtextClassId = ld.id;
-    // 受講生（active）
-    const enrolls = await sbGetActiveEnrollments(
-      'class_master_id=eq.' + ld.id + '&select=id,student_id,preferred_period');
+    // 受講生（active・デモ生徒は除外）
+    const enrolls = await excludeDemoRows(await sbGetActiveEnrollments(
+      'class_master_id=eq.' + ld.id + '&select=id,student_id,preferred_period'));
     if (!enrolls.length) {
       if (cntEl) cntEl.textContent = '0名';
       listEl.innerHTML = '<div style="font-size:12px;color:var(--muted)">長文読解の受講生がいません。</div>';
@@ -18780,9 +18811,9 @@ async function loadAttendanceRoster() {
 
   showLoading('名簿を読み込み中...');
   try {
-    // 名簿
+    // 名簿（デモ生徒は除外）
     const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id');
-    const studentIds = enrolls.map(e => e.student_id);
+    const studentIds = await excludeDemoIds(enrolls.map(e => e.student_id));
     if (!studentIds.length) {
       hideLoading();
       document.getElementById('att-roster').innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">この授業に受講登録された生徒がいません</div>';
@@ -19135,13 +19166,13 @@ async function exportAttendanceCsv() {
       'class_master_id=eq.' + classId + '&session_date=gte.' + fromStr + '&session_date=lte.' + toStr +
       '&select=session_date,period,start_time,end_time&order=session_date,period') || [];
     if (!sessions.length) { hideLoading(); showToast('期間内に授業日がありません', 'error'); return; }
-    // 名簿
+    // 名簿（デモ生徒は除外）
     const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id');
-    const studentIds = enrolls.map(e => e.student_id);
-    // 出欠記録
-    const atts = await sbGet('session_attendance',
+    const studentIds = await excludeDemoIds(enrolls.map(e => e.student_id));
+    // 出欠記録（デモ生徒は除外）
+    const atts = await excludeDemoRows(await sbGet('session_attendance',
       'class_master_id=eq.' + classId + '&session_date=gte.' + fromStr + '&session_date=lte.' + toStr +
-      '&select=session_date,period,student_id,status') || [];
+      '&select=session_date,period,student_id,status') || []);
     // ビデオ補習（承認＝完了扱い）
     let makeups = [];
     try {
@@ -19281,9 +19312,9 @@ async function loadAttMatrix() {
     const sessions = await sbGet('class_sessions',
       'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
       '&select=session_date,period,start_time,end_time&order=session_date,period') || [];
-    // 受講名簿
+    // 受講名簿（デモ生徒は除外）
     const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id');
-    const studentIds = enrolls.map(e => e.student_id);
+    const studentIds = await excludeDemoIds(enrolls.map(e => e.student_id));
     if (!sessions.length || !studentIds.length) {
       hideLoading();
       attMatrix = null;
@@ -28266,6 +28297,7 @@ async function excludeDuplicateStudent(studentId, name) {
   showLoading('除外中...');
   try {
     await sbPatch('students', 'id=eq.' + studentId, { is_active: false, inactive_at: new Date().toISOString(), inactive_reason: '除外' });
+    demoStudentIdSet = null;   // デモ判定キャッシュを破棄（除外の付け外しを即反映）
     hideLoading();
     showToast('仮アカウントを除外しました', 'success');
     // 名簿照合を再読込して警告を更新
@@ -29660,9 +29692,9 @@ async function loadClassAnalysis() {
     if (since) sessQ += '&session_date=gte.' + since;
     const sessions = await sbGet('class_sessions', sessQ) || [];
 
-    // 受講名簿
+    // 受講名簿（デモ生徒は除外）
     const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id');
-    const studentIds = enrolls.map(e => e.student_id);
+    const studentIds = await excludeDemoIds(enrolls.map(e => e.student_id));
 
     // 出欠記録
     let attQ = 'class_master_id=eq.' + classId +
