@@ -1557,20 +1557,6 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
     </div>
 
-    <!-- ★ ビデオ補習が必要な欠席一覧（未消化の欠席をスタッフが把握してLINEで連絡） -->
-    <div id="home-absent-section" style="background:linear-gradient(135deg,#FBF0E8,#FFFFFF);border:1.5px solid #C79A6E;border-radius:var(--radius);padding:14px 16px">
-      <div onclick="toggleHomeAbsent()" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
-        <div style="display:flex;align-items:center;gap:8px">
-          <span id="home-absent-caret" style="font-size:12px;color:#8A5A2B;transition:transform 0.2s">▶</span>
-          <span style="font-size:14px;font-weight:700;color:#8A5A2B">📹 ビデオ補習が必要な欠席</span>
-          <span id="home-absent-count" style="font-size:11px;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;padding:1px 8px;border-radius:20px;font-weight:700">読み込み中...</span>
-        </div>
-      </div>
-      <div id="home-absent-list" style="display:none;flex-direction:column;gap:10px;margin-top:10px">
-        <div style="font-size:12px;color:var(--muted)">読み込み中...</div>
-      </div>
-    </div>
-
     <!-- ★ スタッフホーム カレンダー（生徒側と同じ見やすい形式） -->
 
     <!-- お気に入り（スタッフごと・すぐアクセス） -->
@@ -2996,6 +2982,20 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="alert-board-list" style="display:flex;flex-direction:column;gap:8px">
         <div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">読み込み中...</div>
       </div>
+
+      <!-- ★ ビデオ補習が必要な欠席一覧（未消化の欠席をスタッフが把握してLINEで連絡） -->
+      <div id="home-absent-section" style="background:linear-gradient(135deg,#FBF0E8,#FFFFFF);border:1.5px solid #C79A6E;border-radius:var(--radius);padding:14px 16px;margin-top:16px">
+        <div onclick="toggleHomeAbsent()" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span id="home-absent-caret" style="font-size:12px;color:#8A5A2B;transition:transform 0.2s">▶</span>
+            <span style="font-size:14px;font-weight:700;color:#8A5A2B">📹 ビデオ補習が必要な欠席</span>
+            <span id="home-absent-count" style="font-size:11px;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;padding:1px 8px;border-radius:20px;font-weight:700">読み込み中...</span>
+          </div>
+        </div>
+        <div id="home-absent-list" style="display:none;flex-direction:column;gap:10px;margin-top:10px">
+          <div style="font-size:12px;color:var(--muted)">読み込み中...</div>
+        </div>
+      </div>
     </div>
 
     <!-- お知らせタブ -->
@@ -3977,7 +3977,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dac';
+const APP_VERSION = '20260702dad';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6241,7 +6241,6 @@ async function initStaff() {
     loadTodayTasks();
     loadHomeMyTodos();
     loadHomeSchedule();
-    loadHomeAbsent();
     loadStaffHomeCalendar();
     loadExecDashboard();
     updateScienceAppsCard();
@@ -6798,32 +6797,48 @@ async function loadHomeAbsent() {
   try {
     const todayStr = getTodayJST();
     // 未来日の予定は対象外（欠席は過去のみ）。直近の欠席を上に。
+    // session_attendance には students / class_master への外部キーが無いため
+    // ネストjoin(PGRST200)は使えない。生の列だけ取り、名前は別クエリで引く。
     const rows = await sbGet('session_attendance',
       'status=eq.absent&session_date=lte.' + todayStr +
-      '&select=session_date,period,student_id,students(name,school,grade),class_master(name,subject)' +
+      '&select=session_date,period,student_id,class_master_id' +
       '&order=session_date.desc&limit=500') || [];
     if (!rows.length) {
       if (cntEl) cntEl.textContent = '0件';
       listEl.innerHTML = '<div style="font-size:12px;color:var(--muted)">未消化の欠席はありません。</div>';
       return;
     }
+    // 生徒名・授業名を別クエリで取得（FKが無いのでjoinせず突合）
+    const stuIds = [...new Set(rows.map(r => r.student_id).filter(Boolean))];
+    const cmIds = [...new Set(rows.map(r => r.class_master_id).filter(Boolean))];
+    let sMap = {}, cMap = {};
+    if (stuIds.length) {
+      const stus = await sbGet('students', 'id=in.(' + stuIds.join(',') + ')&select=id,name,school,grade') || [];
+      stus.forEach(s => { sMap[s.id] = s; });
+    }
+    if (cmIds.length) {
+      const cms = await sbGet('class_master', 'id=in.(' + cmIds.join(',') + ')&select=id,name,subject') || [];
+      cms.forEach(c => { cMap[c.id] = c; });
+    }
     // 生徒ごとにグルーピング
     const byStu = {};
     rows.forEach(r => {
       const sid = r.student_id;
+      const stu = sMap[sid] || {};
+      const cm = cMap[r.class_master_id] || {};
       if (!byStu[sid]) {
         byStu[sid] = {
-          name: (r.students && r.students.name) || '(不明)',
-          school: (r.students && r.students.school) || '',
-          grade: (r.students && r.students.grade) || '',
+          name: stu.name || '(不明)',
+          school: stu.school || '',
+          grade: stu.grade || '',
           items: []
         };
       }
       byStu[sid].items.push({
         date: r.session_date,
         period: r.period,
-        className: (r.class_master && r.class_master.name) || '(授業名不明)',
-        subject: (r.class_master && r.class_master.subject) || ''
+        className: cm.name || '(授業名不明)',
+        subject: cm.subject || ''
       });
     });
     // 欠席が多い生徒を上に
@@ -19364,7 +19379,7 @@ function switchManageTab(tab, el) {
   if (tab === 'student-view') loadStudentSelectForView();
   if (tab === 'birthday') loadStudentBirthdays();
   if (tab === 'calendar') loadStaffCalendar();
-  if (tab === 'alert') loadAlertBoard();
+  if (tab === 'alert') { loadAlertBoard(); loadHomeAbsent(); }
   if (tab === 'announce') { loadAnnouncementsStaff(); initAnnounceForm(); }
   if (tab === 'attendance') initAttendanceTab();
   if (tab === 'timetable') { loadTimetableConflicts(); loadLongtextPeriods(); }
