@@ -1843,6 +1843,18 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           </select>
           <div style="font-size:10px;color:var(--muted);margin-top:4px">「時期別のみ」にすると通常受講の人数には数えず、在籍（時期別含む）にのみ数えます。</div>
         </div>
+        <div style="margin-bottom:8px;border-top:1px solid var(--border);padding-top:10px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;cursor:pointer">
+            <input type="checkbox" id="detail-exam-finished" onchange="onExamFinishedToggle()" style="cursor:pointer"> 🎓 受験終了（送り出し）
+          </label>
+          <div style="font-size:10px;color:var(--muted);margin-top:4px">退塾ではなく、最後まで通って受験を終えた状態。在籍人数にはカウントし、売上は終了日の属する月まで満額・翌月から停止します。</div>
+          <div id="detail-exam-finish-detail" style="display:none;margin-top:8px">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">受験終了日</div>
+            <input type="date" class="form-select" id="detail-exam-finished-on" style="width:100%;font-size:13px;margin-bottom:6px">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px">区分</div>
+            <input type="text" class="form-select" id="detail-exam-finish-kind" placeholder="指定校 / 推薦 / 一般 など" style="width:100%;font-size:13px">
+          </div>
+        </div>
         <button onclick="saveStudentAttributes()" style="width:100%;padding:9px;background:var(--surface2);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">属性を保存</button>
       </div>
     </div>
@@ -4161,7 +4173,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dau';
+const APP_VERSION = '20260702dav';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -7999,6 +8011,19 @@ async function staffAddPoints() {
 }
 
 // 生徒属性（学校・学年・性別・部活・誕生日）の保存（スタッフ側）
+// 受験終了チェックのON/OFFで日付・区分の入力欄を出し入れ
+function onExamFinishedToggle() {
+  const chk = document.getElementById('detail-exam-finished');
+  const box = document.getElementById('detail-exam-finish-detail');
+  if (!chk || !box) return;
+  box.style.display = chk.checked ? 'block' : 'none';
+  // ONにした時、終了日が空なら今日(JST)を初期値に
+  if (chk.checked) {
+    const dEl = document.getElementById('detail-exam-finished-on');
+    if (dEl && !dEl.value) dEl.value = getTodayJST();
+  }
+}
+
 async function saveStudentAttributes() {
   if (!detailStudent) return;
   const nameEl = document.getElementById('detail-name');
@@ -8017,14 +8042,29 @@ async function saveStudentAttributes() {
   showLoading('保存中...');
   const memEl = document.getElementById('detail-membership');
   const membership = memEl ? (memEl.value || '通常') : '通常';
+  // 受験終了（送り出し）
+  const examChk = document.getElementById('detail-exam-finished');
+  const examFinished = examChk ? !!examChk.checked : false;
+  const examOnEl = document.getElementById('detail-exam-finished-on');
+  const examKindEl = document.getElementById('detail-exam-finish-kind');
+  const examOn = (examFinished && examOnEl && examOnEl.value) ? examOnEl.value : null;
+  const examKind = (examFinished && examKindEl) ? (examKindEl.value.trim() || null) : null;
+  if (examFinished && !examOn) { hideLoading(); showToast('受験終了日を入力してください', 'error'); return; }
   try {
     const base = { name: name, gender: gender || null, club: club || null, birthday: birthday, school: school || null, grade: grade || null, school_detail: schoolDetail || null };
+    const examFields = { exam_finished: examFinished, exam_finished_on: examOn, exam_finish_kind: examKind };
     try {
-      await sbPatch('students', 'id=eq.' + detailStudent.id, Object.assign({}, base, { membership_status: membership }));
+      await sbPatch('students', 'id=eq.' + detailStudent.id, Object.assign({}, base, { membership_status: membership }, examFields));
       detailStudent.membership_status = membership;
+      Object.assign(detailStudent, examFields);
     } catch (e0) {
-      // membership_status 列が無い旧環境 → 外して保存
-      await sbPatch('students', 'id=eq.' + detailStudent.id, base);
+      // membership_status / exam_* 列が無い旧環境 → 外して保存
+      try {
+        await sbPatch('students', 'id=eq.' + detailStudent.id, Object.assign({}, base, { membership_status: membership }));
+        detailStudent.membership_status = membership;
+      } catch (e1) {
+        await sbPatch('students', 'id=eq.' + detailStudent.id, base);
+      }
     }
     detailStudent.name = name;
     detailStudent.gender = gender;
@@ -8372,6 +8412,16 @@ async function openStudentDetail(idx, from) {
     document.getElementById('detail-school-detail').value = s.school_detail || '';
     const memSel = document.getElementById('detail-membership');
     if (memSel) memSel.value = (s.membership_status === '時期別のみ') ? '時期別のみ' : '通常';
+    // 受験終了（送り出し）
+    const examChk = document.getElementById('detail-exam-finished');
+    if (examChk) {
+      examChk.checked = (s.exam_finished === true);
+      const examOnEl = document.getElementById('detail-exam-finished-on');
+      const examKindEl = document.getElementById('detail-exam-finish-kind');
+      if (examOnEl) examOnEl.value = s.exam_finished_on || '';
+      if (examKindEl) examKindEl.value = s.exam_finish_kind || '';
+      if (typeof onExamFinishedToggle === 'function') onExamFinishedToggle();
+    }
     onSchoolChange('detail');
     setClubUI('detail', s.club);
     setBirthdayUI('detail', s.birthday);
@@ -26407,13 +26457,17 @@ async function renderEnrollmentTrend() {
   let stu = [];
   try {
     try {
+      stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,exam_finished,exam_finished_on') || [];
+    } catch (eE) {
+     try {
       stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status') || [];
-    } catch (e0) {
+     } catch (e0) {
       try {
         stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || [];
       } catch (e1) {
         stu = await sbGet('students', 'select=id,name,school,grade,created_at,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || [];
       }
+     }
     }
   } catch (e) {
     wrap.innerHTML = '<div style="border:1px solid #E8B4B4;border-radius:10px;padding:14px;margin-bottom:14px;background:#FDF2F2;color:#A04040;font-size:12px">推移グラフの取得に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
@@ -26468,7 +26522,7 @@ async function renderEnrollmentTrend() {
     }
     if (!enroll && !withdraw) return;    // 入塾日も退塾日も無ければスキップ
     const membership = (s.membership_status === '時期別のみ') ? '時期別のみ' : '通常';
-    persons.push({ enroll: enroll, withdraw: withdraw, school: s.school || '', grade: s.grade || '', name: s.name || '(名前なし)', src: 'app', membership: membership });
+    persons.push({ enroll: enroll, withdraw: withdraw, school: s.school || '', grade: s.grade || '', name: s.name || '(名前なし)', src: 'app', membership: membership, examFinished: (s.exam_finished === true), examFinishedOn: s.exam_finished_on || null });
   });
   rosterPersons.forEach(r => { persons.push({ enroll: r._enroll, withdraw: r._withdraw, school: r._school || '', grade: r._grade || '', name: r._name || '(名前なし)', src: 'roster', membership: (r._membership === '時期別のみ') ? '時期別のみ' : '通常' }); });
   trendPersonsCache = persons; // 絞り込み再集計用にキャッシュ
@@ -26767,10 +26821,14 @@ async function svEnsureTrendData() {
   // students
   let stu = [];
   try {
+    stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,exam_finished,exam_finished_on') || [];
+  } catch (eE) {
+   try {
     stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status') || [];
-  } catch (e0) {
+   } catch (e0) {
     try { stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || []; }
     catch (e1) { stu = await sbGet('students', 'select=id,name,school,grade,created_at,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || []; }
+   }
   }
   stu = stu.filter(s => s.inactive_reason !== '除外');
   // roster（アプリ未登録分）
@@ -26802,7 +26860,7 @@ async function svEnsureTrendData() {
     }
     if (!enroll && !withdraw) return;
     const membership = (s.membership_status === '時期別のみ') ? '時期別のみ' : '通常';
-    persons.push({ enroll: enroll, withdraw: withdraw, school: s.school || '', grade: s.grade || '', name: s.name || '(名前なし)', src: 'app', membership: membership });
+    persons.push({ enroll: enroll, withdraw: withdraw, school: s.school || '', grade: s.grade || '', name: s.name || '(名前なし)', src: 'app', membership: membership, examFinished: (s.exam_finished === true), examFinishedOn: s.exam_finished_on || null });
   });
   rosterPersons.forEach(r => { persons.push({ enroll: r._enroll, withdraw: r._withdraw, school: r._school || '', grade: r._grade || '', name: r._name || '(名前なし)', src: 'roster', membership: (r._membership === '時期別のみ') ? '時期別のみ' : '通常' }); });
   trendPersonsCache = persons;
