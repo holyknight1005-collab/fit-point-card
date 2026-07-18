@@ -2425,6 +2425,25 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 </div>
 
 
+<!-- ===== 学校別ページ（学校ミーティング：在籍推移・未入塾一覧・議事録・目標） ===== -->
+<div class="screen" id="screen-school-view">
+  <div class="staff-content" style="padding-bottom:40px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+      <button onclick="backFromSchoolView()" class="page-btn" style="padding:6px 12px;flex:0 0 auto">‹ 戻る</button>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:18px;font-weight:800;color:var(--text)">🏫 学校別ページ</div>
+        <div style="font-size:12px;color:var(--muted)">学校ミーティング：在籍推移・未入塾・議事録・目標</div>
+      </div>
+    </div>
+    <!-- 学校選択タブ -->
+    <div id="sv-school-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
+    <!-- 在籍推移（学年×月） -->
+    <div id="sv-enroll-section"></div>
+    <!-- 以降のバージョンで：未入塾一覧・議事録・目標をここに追加 -->
+  </div>
+</div>
+
+
 <!-- ===== 授業カルテ（全画面ページ） ===== -->
 <div class="screen" id="screen-class-karte">
   <div class="staff-content" style="padding-bottom:40px">
@@ -2719,6 +2738,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <button onclick="switchManageTab('appusage',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📊 教科アプリ</button>
       <button onclick="switchManageTab('classanalysis',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📊 授業分析</button>
       <button onclick="switchManageTab('studentanalysis',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📈 生徒分析</button>
+      <button onclick="openSchoolView('manage')" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🏫 学校別</button>
       <button onclick="switchManageTab('rostercheck',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📋 名簿照合</button>
       <button onclick="switchManageTab('prospects',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🚪 入来塾管理</button>
       <button onclick="switchManageTab('interview',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🗣 面談</button>
@@ -4082,7 +4102,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dat';
+const APP_VERSION = '20260702dau';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -26437,8 +26457,10 @@ function trendMatchFilter(school, grade) {
 }
 // 在籍区分モードに合致するか。'regular'=通常のみ（時期別のみを除外）／'all'=合算。
 function trendMatchMembership(p) {
-  if (trendMembershipMode === 'regular') return (p.membership || '通常') !== '時期別のみ';
-  return true;
+  const isSeasonal = (p.membership || '通常') === '時期別のみ';
+  if (trendMembershipMode === 'regular') return !isSeasonal;       // 通常のみ
+  if (trendMembershipMode === 'seasonal') return isSeasonal;        // 季節（時期別）のみ
+  return true;                                                      // all=合算
 }
 
 // 日本の年度（4月始まり〜翌3月）系ヘルパ
@@ -26623,6 +26645,211 @@ function setTrendFilterGrade(g) { trendFilter.grade = g; recomputeTrend(); }
 function setTrendFilterSchool(s) { trendFilter.school = s; recomputeTrend(); }
 // 在籍区分モード切替（通常のみ / 時期別のみ合算）
 function setTrendMembershipMode(mode) { trendMembershipMode = mode; recomputeTrend(); }
+
+// ============================================================
+// 🏫 学校別ページ（学校ミーティング）
+//   在籍推移は既存トレンドエンジン（trendPersonsCache / trendAnnualRows /
+//   trendFiscalSeries）を学校固定で流用。studentanalysis タブとはDOMを分離し、
+//   専用の状態（svSchool / svFY / svMemMode）で描画する。
+// ============================================================
+let svSchool = null;          // 選択中の学校名
+let svFY = null;              // 表示年度（開始年）。null=今年度
+let svMemMode = 'all';        // 'all' | 'regular' | 'seasonal'
+let svBackTo = 'manage';     // 戻り先
+
+async function openSchoolView(backTo) {
+  svBackTo = backTo || 'manage';
+  if (!svSchool) svSchool = SA_SCHOOLS[0];
+  if (svFY == null) svFY = currentFiscalStartYear();
+  showScreen('screen-school-view');
+  renderSvSchoolTabs();
+  // データ未取得なら取得（トレンドと同じキャッシュを共有）
+  const sec = document.getElementById('sv-enroll-section');
+  if (sec) sec.innerHTML = '<div style="border:1px solid var(--border);border-radius:10px;padding:16px;background:var(--surface);text-align:center;color:var(--muted);font-size:12px">在籍推移を集計中…</div>';
+  try {
+    await svEnsureTrendData();
+    renderSvEnroll();
+  } catch (e) {
+    if (sec) sec.innerHTML = '<div style="border:1px solid #E8B4B4;border-radius:10px;padding:16px;background:#FDF2F2;color:#A04040;font-size:12px">在籍データの取得に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
+  }
+}
+
+function backFromSchoolView() {
+  if (svBackTo === 'manage') showScreen('screen-staff-manage');
+  else showScreen('screen-staff');
+}
+
+// トレンドのデータキャッシュを（無ければ）用意する。
+// studentanalysis タブのデータ収集と同じ内容だが、DOM描画を伴わない独立ローダー。
+async function svEnsureTrendData() {
+  // 既にトレンドキャッシュがあれば再利用（同一セッション内）
+  if (trendPersonsCache && trendPersonsCache.length && trendAllMonths && trendAllMonths.length) return;
+  // students
+  let stu = [];
+  try {
+    stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status') || [];
+  } catch (e0) {
+    try { stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || []; }
+    catch (e1) { stu = await sbGet('students', 'select=id,name,school,grade,created_at,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || []; }
+  }
+  stu = stu.filter(s => s.inactive_reason !== '除外');
+  // roster（アプリ未登録分）
+  let rosterPersons = [];
+  try {
+    let rosterRows;
+    try { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status,membership_status') || []; }
+    catch (eR) { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status') || []; }
+    const allStu = await sbGet('students', 'select=name,school') || [];
+    const stuKeys = new Set(); const stuNames = new Set();
+    allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
+    rosterRows.forEach(r => {
+      if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
+      const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+      if (isOut && !r.withdraw_date) return;
+      rosterPersons.push({ _enroll: r.enroll_date || null, _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null, _school: r.school || '', _grade: r.grade || '', _name: r.name || '(名前なし)', _membership: r.membership_status || '通常' });
+    });
+  } catch (e) { rosterPersons = []; }
+  const persons = [];
+  stu.forEach(s => {
+    let enroll = s.enroll_date || null;
+    const isWithdrawn = (s.withdraw_status === '確定') || (s.is_active === false);
+    let withdraw = null;
+    if (isWithdrawn) {
+      if (s.withdraw_status === '確定' && s.withdraw_effective_date) withdraw = s.withdraw_effective_date;
+      else if (s.inactive_at) withdraw = toJSTDateStr(new Date(s.inactive_at));
+      else return;
+    }
+    if (!enroll && !withdraw) return;
+    const membership = (s.membership_status === '時期別のみ') ? '時期別のみ' : '通常';
+    persons.push({ enroll: enroll, withdraw: withdraw, school: s.school || '', grade: s.grade || '', name: s.name || '(名前なし)', src: 'app', membership: membership });
+  });
+  rosterPersons.forEach(r => { persons.push({ enroll: r._enroll, withdraw: r._withdraw, school: r._school || '', grade: r._grade || '', name: r._name || '(名前なし)', src: 'roster', membership: (r._membership === '時期別のみ') ? '時期別のみ' : '通常' }); });
+  trendPersonsCache = persons;
+  // 24ヶ月メタ
+  const todayStr = getTodayJST();
+  const [ty, tm] = todayStr.split('-').map(n => parseInt(n, 10));
+  const allMonths = [];
+  for (let i = 23; i >= 0; i--) {
+    let y = ty, m = tm - i;
+    while (m <= 0) { m += 12; y -= 1; }
+    allMonths.push({ y: y, m: m, label: m + '月', ym: y + '-' + String(m).padStart(2, '0'), lastDay: toJSTDateStr(new Date(y, m, 0)) });
+  }
+  trendAllMonths = allMonths;
+  // 過去年度手入力
+  trendAnnualRows = [];
+  try {
+    try { trendAnnualRows = await sbGet('annual_enrollment', 'select=year,month,count,school,grade,metric') || []; }
+    catch (e0) {
+      try { trendAnnualRows = await sbGet('annual_enrollment', 'select=year,month,count,school,grade') || []; }
+      catch (e1) { trendAnnualRows = await sbGet('annual_enrollment', 'select=year,month,count') || []; }
+    }
+  } catch (e) { trendAnnualRows = []; }
+  trendAnnualRows.forEach(r => { if (!r.metric) r.metric = 'enrolled'; });
+}
+
+function renderSvSchoolTabs() {
+  const el = document.getElementById('sv-school-tabs');
+  if (!el) return;
+  el.innerHTML = SA_SCHOOLS.filter(s => s !== 'その他').map(s => {
+    const on = s === svSchool;
+    return '<button type="button" onclick="setSvSchool(\'' + escapeAttr(s) + '\')" style="padding:6px 13px;border-radius:16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;border:1.5px solid ' +
+      (on ? '#2D6CB6' : 'var(--border)') + ';background:' + (on ? '#2D6CB6' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--muted)') + '">' + escapeHtml(s) + '</button>';
+  }).join('');
+}
+
+function setSvSchool(s) { svSchool = s; renderSvSchoolTabs(); renderSvEnroll(); }
+function setSvMemMode(m) { svMemMode = m; renderSvEnroll(); }
+function setSvFY(y) { svFY = parseInt(y, 10); renderSvEnroll(); }
+
+// 学年×月の在籍推移表（今年度・昨年度・前年差異）。trendFiscalSeries を学校固定で流用。
+function renderSvEnroll() {
+  const el = document.getElementById('sv-enroll-section');
+  if (!el || !svSchool) return;
+  // trendFilter / trendMembershipMode を学校別ページの状態に一時セットして流用し、後で必ず戻す
+  const savedFilter = { school: trendFilter.school, grade: trendFilter.grade };
+  const savedMem = trendMembershipMode;
+  trendFilter.school = svSchool;
+  trendFilter.grade = '全体';           // 学年はこの表で分けるので全体で取得
+  trendMembershipMode = svMemMode;
+  try {
+    const fyStart = (svFY == null) ? currentFiscalStartYear() : svFY;
+    const curFY = currentFiscalStartYear();
+    const fmonthsCur = trendFiscalMonths(fyStart);
+    const fmonthsPrev = trendFiscalMonths(fyStart - 1);
+    const grades = SA_GRADES; // 1年/2年/3年
+    // 学年ごとに在籍系列を取得（enrolled）
+    const seriesByGrade = {}, prevByGrade = {};
+    grades.forEach(g => {
+      trendFilter.grade = g;
+      seriesByGrade[g] = trendFiscalSeries(fyStart, 'enrolled', fmonthsCur);
+      prevByGrade[g] = trendFiscalSeries(fyStart - 1, 'enrolled', fmonthsPrev);
+    });
+    trendFilter.grade = '全体';
+    // 合計系列
+    const sumSeries = (byG) => fmonthsCur.map((_, i) => {
+      let has = false, sum = 0;
+      grades.forEach(g => { const v = byG[g][i]; if (v != null) { has = true; sum += v; } });
+      return has ? sum : null;
+    });
+    const curSum = sumSeries(seriesByGrade);
+    const prevSum = sumSeries(prevByGrade);
+    // 平均（null除外）
+    const avgOf = (arr) => { const xs = arr.filter(v => v != null); return xs.length ? (xs.reduce((a, b) => a + b, 0) / xs.length) : null; };
+    // 月ヘッダ（4月〜3月）
+    const monHead = fmonthsCur.map(mo => '<th style="padding:5px 4px;font-size:10px;font-weight:700;color:var(--muted);border:1px solid var(--border);white-space:nowrap">' + mo.m + '月</th>').join('');
+    const rowHtml = (label, arr, bold, color) => {
+      const cells = arr.map(v => '<td style="padding:5px 4px;text-align:center;font-size:11px;border:1px solid var(--border);' + (bold ? 'font-weight:800;' : '') + (color ? 'color:' + color + ';' : '') + '">' + (v == null ? '' : v) + '</td>').join('');
+      const avg = avgOf(arr);
+      return '<tr><td style="position:sticky;left:0;background:var(--surface2);padding:5px 8px;font-size:11px;font-weight:700;color:var(--text);border:1px solid var(--border);white-space:nowrap">' + label + '</td>' + cells +
+        '<td style="padding:5px 6px;text-align:center;font-size:11px;font-weight:800;border:1px solid var(--border);background:var(--surface2)">' + (avg == null ? '' : avg.toFixed(1)) + '</td></tr>';
+    };
+    // 前年差異（今年度合計 − 昨年度合計）
+    const diff = fmonthsCur.map((_, i) => (curSum[i] == null || prevSum[i] == null) ? null : (curSum[i] - prevSum[i]));
+
+    // 在籍区分ボタン
+    const memBtn = (m, lab) => '<button type="button" onclick="setSvMemMode(\'' + m + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1.5px solid #2D6CB6;border-radius:16px;cursor:pointer;font-family:inherit;background:' +
+      (svMemMode === m ? '#2D6CB6;color:#fff' : 'transparent;color:#2D6CB6') + '">' + lab + '</button>';
+    // 年度セレクタ
+    const fyChoices = [];
+    for (let y = curFY; y >= curFY - 4; y--) fyChoices.push(y);
+    (typeof ANNUAL_YEARS !== 'undefined' ? ANNUAL_YEARS : []).forEach(y => { if (!fyChoices.includes(y)) fyChoices.push(y); });
+    fyChoices.sort((a, b) => b - a);
+    const fyOpts = fyChoices.map(y => '<option value="' + y + '"' + (y === fyStart ? ' selected' : '') + '>' + y + '年度</option>').join('');
+
+    let html = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:14px">';
+    html += '<div style="font-size:14px;font-weight:800;color:var(--text);margin-bottom:10px">📊 請求ベース在籍人数（' + escapeHtml(svSchool) + '）</div>';
+    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">' +
+      '<span style="font-size:10px;color:var(--muted)">集計対象：</span>' + memBtn('all', '合算') + memBtn('regular', '通常のみ') + memBtn('seasonal', '季節別のみ') +
+      '<select onchange="setSvFY(this.value)" style="padding:4px 8px;font-size:11px;border:1px solid var(--border);border-radius:8px;font-family:inherit;margin-left:auto">' + fyOpts + '</select>' +
+      '</div>';
+    html += '<div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">' +
+      '<table style="border-collapse:collapse;min-width:100%">' +
+      '<tr><th style="position:sticky;left:0;background:var(--surface2);padding:5px 8px;font-size:10px;font-weight:700;color:var(--text);border:1px solid var(--border)">' + fyStart + '年度</th>' + monHead +
+      '<th style="padding:5px 6px;font-size:10px;font-weight:700;color:var(--muted);border:1px solid var(--border)">平均</th></tr>';
+    grades.forEach(g => { html += rowHtml('高' + g.replace('年', ''), seriesByGrade[g], false, null); });
+    html += rowHtml('合計', curSum, true, '#1A4D80');
+    html += '</table></div>';
+    // 昨年度
+    html += '<div style="height:8px"></div>';
+    html += '<div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">' +
+      '<table style="border-collapse:collapse;min-width:100%">' +
+      '<tr><th style="position:sticky;left:0;background:var(--surface2);padding:5px 8px;font-size:10px;font-weight:700;color:var(--text);border:1px solid var(--border)">' + (fyStart - 1) + '年度</th>' + monHead +
+      '<th style="padding:5px 6px;font-size:10px;font-weight:700;color:var(--muted);border:1px solid var(--border)">平均</th></tr>';
+    grades.forEach(g => { html += rowHtml('高' + g.replace('年', ''), prevByGrade[g], false, null); });
+    html += rowHtml('合計', prevSum, true, '#8A6D3B');
+    html += rowHtml('前年差異', diff, true, '#C0392B');
+    html += '</table></div>';
+    html += '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※今年度は実データ（入塾日・退塾日から各月末時点の在籍を集計）、過去年度は手入力（annual_enrollment）を表示します。前年差異＝' + fyStart + '年度合計 − ' + (fyStart - 1) + '年度合計。</div>';
+    html += '</div>';
+    el.innerHTML = html;
+  } finally {
+    // 共有状態を必ず復元（studentanalysis タブに影響させない）
+    trendFilter.school = savedFilter.school;
+    trendFilter.grade = savedFilter.grade;
+    trendMembershipMode = savedMem;
+  }
+}
+
 // グラフX軸モード切替（年度 / 直近12ヶ月）
 function setTrendGraphMode(mode) {
   trendGraphMode = mode;
@@ -26836,7 +27063,7 @@ function drawEnrollmentTrend() {
     (trendMembershipMode === mode ? '#2D6CB6;color:#fff' : 'transparent;color:#2D6CB6') + '">' + label + '</button>';
   const memRow = '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:center;margin:2px 0 8px">'
     + '<span style="font-size:10px;color:var(--muted)">集計対象：</span>'
-    + memBtn('regular', '通常のみ') + memBtn('all', '時期別のみ合算') + '</div>';
+    + memBtn('regular', '通常のみ') + memBtn('all', '合算') + memBtn('seasonal', '季節別のみ') + '</div>';
 
   // グラフX軸モード（年度4月始まり / 直近12ヶ月）＋ 年度セレクタ
   const curFY = currentFiscalStartYear();
@@ -26861,7 +27088,7 @@ function drawEnrollmentTrend() {
   xModeRow += '</div>';
   const scopeNote = '<div style="text-align:center;font-size:10px;color:var(--muted);margin-bottom:6px">表示中：'
     + (trendFilter.school === '全校' ? '全校' : trendFilter.school) + '／' + trendFilter.grade
-    + '／' + (trendMembershipMode === 'regular' ? '通常のみ' : '時期別のみ合算') + '</div>';
+    + '／' + (trendMembershipMode === 'regular' ? '通常のみ' : trendMembershipMode === 'seasonal' ? '季節別のみ' : '合算') + '</div>';
 
   const titleSpan = (trendGraphMode === 'fiscal')
     ? ('📈 人数推移（' + ((trendGraphFY == null) ? curFY : trendGraphFY) + '年度）')
