@@ -2889,6 +2889,33 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         ⚠️ チーム課題テーブルが未作成です。<br><b>create_team_tasks.sql</b> を Supabase で実行してください。
       </div>
 
+      <!-- ▼▼ チーム階層（大カテゴリー→小チーム）daw ▼▼ -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div class="section-title" style="margin:0">🗂 チーム階層</div>
+        <button onclick="toggleTeamHierPanel()" id="th-toggle-btn" style="font-size:11px;padding:4px 12px;border-radius:16px;border:1px solid #2D6CB6;background:transparent;color:#2D6CB6;cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋ カテゴリー/チームを管理</button>
+      </div>
+      <div id="th-manage-panel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:12px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">「〜に向けてのチーム」などの<b>大カテゴリー</b>を作り、その中に<b>小チーム</b>（メンバー選択）を作ります。タスクは小チームに紐づけて追加できます。目標は大カテゴリー・小チームに紐づきます。</div>
+        <!-- 大カテゴリー作成 -->
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <input class="form-input-sm" id="th-cat-name" type="text" placeholder="大カテゴリー名（例：夏期集客に向けて）" style="flex:1">
+          <button onclick="createTeamCategory()" style="padding:8px 14px;background:#2D6CB6;border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;white-space:nowrap">＋大カテゴリー</button>
+        </div>
+        <!-- 小チーム作成 -->
+        <div style="border-top:1px solid var(--border);padding-top:10px">
+          <div class="form-label">小チームを追加</div>
+          <select class="form-input-sm" id="th-sub-parent" style="width:100%;margin-bottom:6px"></select>
+          <input class="form-input-sm" id="th-sub-name" type="text" placeholder="小チーム名（例：チラシ班）" style="width:100%;margin-bottom:6px">
+          <div class="form-label">メンバー（複数選択可）</div>
+          <div id="th-sub-members" style="display:flex;flex-direction:column;gap:5px;max-height:130px;overflow-y:auto;padding:4px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px"></div>
+          <div class="form-label">紐づける目標（任意）</div>
+          <select class="form-input-sm" id="th-sub-goal" style="width:100%;margin-bottom:8px"></select>
+          <button onclick="createTeamSubteam()" style="width:100%;padding:9px;background:#2D6CB6;border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋小チームを作成</button>
+        </div>
+      </div>
+      <div id="th-tree" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px"></div>
+      <!-- ▲▲ チーム階層 ▲▲ -->
+
       <!-- 進捗パネル -->
       <div class="section-title">📊 チーム進捗</div>
       <div id="tt-progress-panel" style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px"></div>
@@ -2935,6 +2962,10 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
             <input class="form-input-sm" id="tt-category" type="text" placeholder="例：事務 / 授業 / 広報" list="tt-category-list">
             <datalist id="tt-category-list"></datalist>
           </div>
+        </div>
+        <div>
+          <div class="form-label">所属チーム（任意・小チームに紐づけ）</div>
+          <select class="form-input-sm" id="tt-parent" style="width:100%"></select>
         </div>
         <button onclick="createTeamTask()" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🗂 課題を追加</button>
       </div>
@@ -4173,7 +4204,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dav';
+const APP_VERSION = '20260702daw';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -20456,6 +20487,9 @@ var ttAssignees = [];    // 中間テーブル行（task_id, staff_id, member_st
 var ttFilter = 'open';   // 'open' | 'done' | 'all'
 var ttStaffMap = {};     // staff_id -> name
 var ttStaffList = [];     // [{staff_id, name}]
+var ttGroups = [];        // node_type='group' 行（大カテゴリー＋小チーム）
+var ttGoals = [];         // staff_goals（目標紐付け用の選択肢）
+var thPanelOpen = false;  // 階層管理パネルの開閉
 
 async function loadTeamTasks() {
   const listEl = document.getElementById('tt-list');
@@ -20478,7 +20512,7 @@ async function loadTeamTasks() {
     }
   } catch (e) { /* staff取得失敗しても続行 */ }
 
-  // 親タスク取得（deleted除外）
+  // 親タスク取得（deleted除外）。group行も含めて取得し、後で分離する。
   try {
     ttTasks = await sbGet('team_tasks', 'status=in.(todo,doing,done)&order=created_at.desc&select=*') || [];
   } catch (e) {
@@ -20488,9 +20522,14 @@ async function loadTeamTasks() {
     return;
   }
 
-  // 担当割当を取得（該当タスクぶん）
+  // node_type='group' をチーム階層として分離（未設定の旧行は 'task' 扱い）
+  ttGroups = ttTasks.filter(t => t.node_type === 'group');
+  // タスク一覧（フラット/進捗）は group を除いた実タスクのみ
+  ttTasks = ttTasks.filter(t => t.node_type !== 'group');
+
+  // 担当割当を取得（実タスク＋group行ぶん）
   ttAssignees = [];
-  const ids = ttTasks.map(t => t.id);
+  const ids = ttTasks.map(t => t.id).concat(ttGroups.map(g => g.id));
   if (ids.length) {
     try {
       ttAssignees = await sbGet('team_task_assignees', 'task_id=in.(' + ids.join(',') + ')&select=*') || [];
@@ -20506,6 +20545,9 @@ async function loadTeamTasks() {
 
   renderTeamProgress();
   renderTeamTasks();
+  await loadTeamGoalsForHier();
+  populateTeamHierSelectors();
+  renderTeamHierTree();
   refreshTeamTaskBadge();
 }
 
@@ -20741,6 +20783,274 @@ function renderTeamTasks() {
   }).join('');
 }
 
+
+// ============================================================
+// チーム階層（daw）：node_type='group' の2階層（大カテゴリー→小チーム）
+//   ・大カテゴリー: parent_id=NULL, node_type='group'
+//   ・小チーム    : parent_id=大カテid, node_type='group'（メンバー=team_task_assignees）
+//   ・タスク      : node_type='task'（従来）、parent_id=小チームid で紐づけ
+//   ・目標(goal_id)は group 行に付与。タスクは所属小チームの目標を継承表示。
+// ============================================================
+function toggleTeamHierPanel() {
+  thPanelOpen = !thPanelOpen;
+  const p = document.getElementById('th-manage-panel');
+  const b = document.getElementById('th-toggle-btn');
+  if (p) p.style.display = thPanelOpen ? 'block' : 'none';
+  if (b) b.textContent = thPanelOpen ? '× 閉じる' : '＋ カテゴリー/チームを管理';
+}
+
+// 目標（staff_goals）を選択肢用に取得
+async function loadTeamGoalsForHier() {
+  try {
+    ttGoals = await sbGet('staff_goals', 'is_active=eq.true&order=fiscal_year.desc,school,term&select=*') || [];
+  } catch (e) { ttGoals = []; }
+}
+function goalLabel(g) {
+  if (!g) return '';
+  const termName = g.term === 1 ? '1期' : (g.term === 2 ? '2期' : (g.term === 3 ? '3期' : (g.term + '期')));
+  return (g.school || '全体') + '／' + g.fiscal_year + '年度・' + termName;
+}
+function goalById(id) { return (ttGoals || []).find(g => String(g.id) === String(id)) || null; }
+
+// 大カテゴリー（トップgroup）と小チーム（子group）を分離
+function topCategories() { return ttGroups.filter(g => !g.parent_id); }
+function subTeamsOf(catId) { return ttGroups.filter(g => String(g.parent_id) === String(catId)); }
+function tasksOfSub(subId) { return ttTasks.filter(t => String(t.parent_id) === String(subId)); }
+function ungroupedTasks() {
+  const subIds = new Set(ttGroups.map(g => String(g.id)));
+  return ttTasks.filter(t => !t.parent_id || !subIds.has(String(t.parent_id)));
+}
+
+// 管理パネル・タスク作成フォームのセレクタを埋める
+function populateTeamHierSelectors() {
+  // 小チーム作成：親（大カテゴリー）選択
+  const parSel = document.getElementById('th-sub-parent');
+  if (parSel) {
+    const cats = topCategories();
+    parSel.innerHTML = cats.length
+      ? cats.map(c => '<option value="' + c.id + '">' + escapeHtml(c.title || '(無題)') + '</option>').join('')
+      : '<option value="">先に大カテゴリーを作成してください</option>';
+  }
+  // 小チーム作成：メンバーチェック
+  const memBox = document.getElementById('th-sub-members');
+  if (memBox) {
+    memBox.innerHTML = (ttStaffList || []).map(s =>
+      '<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">' +
+      '<input type="checkbox" class="th-member-check" value="' + escapeHtml(s.staff_id) + '">' +
+      '<span>' + escapeHtml(s.name) + '</span></label>'
+    ).join('') || '<div style="font-size:12px;color:var(--muted)">スタッフがいません</div>';
+  }
+  // 小チーム作成：目標選択
+  const goalSel = document.getElementById('th-sub-goal');
+  if (goalSel) {
+    goalSel.innerHTML = '<option value="">（紐づけなし）</option>' +
+      (ttGoals || []).map(g => '<option value="' + g.id + '">' + escapeHtml(goalLabel(g)) + '</option>').join('');
+  }
+  // タスク作成：所属小チーム選択
+  const ttPar = document.getElementById('tt-parent');
+  if (ttPar) {
+    let opts = '<option value="">（未分類）</option>';
+    topCategories().forEach(c => {
+      const subs = subTeamsOf(c.id);
+      subs.forEach(sub => {
+        opts += '<option value="' + sub.id + '">' + escapeHtml(c.title || '') + ' ＞ ' + escapeHtml(sub.title || '') + '</option>';
+      });
+    });
+    ttPar.innerHTML = opts;
+  }
+}
+
+// 大カテゴリー作成
+async function createTeamCategory() {
+  const nameEl = document.getElementById('th-cat-name');
+  const name = (nameEl.value || '').trim();
+  if (!name) { showToast('大カテゴリー名を入力してください', 'error'); return; }
+  const by = currentStaff ? (currentStaff.staff_id || null) : null;
+  showLoading('作成中...');
+  try {
+    await sbPost('team_tasks', {
+      title: name, node_type: 'group', parent_id: null,
+      status: 'todo', created_by: by, updated_at: new Date().toISOString()
+    });
+    hideLoading();
+    nameEl.value = '';
+    showToast('🗂 大カテゴリーを作成しました', 'success');
+    loadTeamTasks();
+  } catch (e) {
+    hideLoading();
+    const msg = String(e && e.message || e);
+    if (/node_type|parent_id|column|PGRST|400/i.test(msg)) showToast('保存に失敗（create_daw_team_school.sql 未実行の可能性）', 'error');
+    else showToast('エラー: ' + msg, 'error');
+  }
+}
+
+// 小チーム作成（メンバー＋目標）
+async function createTeamSubteam() {
+  const parId = document.getElementById('th-sub-parent').value;
+  const name = (document.getElementById('th-sub-name').value || '').trim();
+  if (!parId) { showToast('先に大カテゴリーを作成・選択してください', 'error'); return; }
+  if (!name) { showToast('小チーム名を入力してください', 'error'); return; }
+  const goalId = document.getElementById('th-sub-goal').value || null;
+  const members = [...document.querySelectorAll('.th-member-check:checked')].map(c => c.value);
+  const by = currentStaff ? (currentStaff.staff_id || null) : null;
+  showLoading('作成中...');
+  try {
+    const created = await sbPostReturn('team_tasks', {
+      title: name, node_type: 'group', parent_id: parId, goal_id: goalId,
+      status: 'todo', created_by: by, updated_at: new Date().toISOString()
+    });
+    const subId = created && created[0] ? created[0].id : null;
+    if (subId && members.length) {
+      for (const sid of members) {
+        try { await sbPost('team_task_assignees', { task_id: subId, staff_id: sid, member_status: 'todo', updated_at: new Date().toISOString() }); } catch (e) {}
+      }
+    }
+    hideLoading();
+    document.getElementById('th-sub-name').value = '';
+    document.querySelectorAll('.th-member-check').forEach(c => c.checked = false);
+    document.getElementById('th-sub-goal').value = '';
+    showToast('👥 小チームを作成しました', 'success');
+    loadTeamTasks();
+  } catch (e) {
+    hideLoading();
+    showToast('エラー: ' + String(e && e.message || e), 'error');
+  }
+}
+
+// 目標の紐付けを後から変更（group行）
+async function editGroupGoal(groupId) {
+  const g = ttGroups.find(x => String(x.id) === String(groupId));
+  if (!g) return;
+  const opts = ['（紐づけなし）'].concat((ttGoals || []).map((gg, i) => (i + 1) + ': ' + goalLabel(gg)));
+  const cur = g.goal_id ? (goalById(g.goal_id) ? goalLabel(goalById(g.goal_id)) : '不明') : 'なし';
+  const msg = '目標の紐付けを番号で入力（0=なし）\n現在: ' + cur + '\n\n' +
+    (ttGoals || []).map((gg, i) => (i + 1) + ': ' + goalLabel(gg)).join('\n');
+  const ans = window.prompt(msg, '0');
+  if (ans === null) return;
+  const idx = parseInt((ans || '').trim(), 10);
+  let newGoalId = null;
+  if (!isNaN(idx) && idx >= 1 && idx <= (ttGoals || []).length) newGoalId = ttGoals[idx - 1].id;
+  showLoading('保存中...');
+  try {
+    await sbPatch('team_tasks', 'id=eq.' + groupId, { goal_id: newGoalId, updated_at: new Date().toISOString() });
+    hideLoading();
+    showToast('🎯 目標紐付けを更新しました', 'success');
+    loadTeamTasks();
+  } catch (e) { hideLoading(); showToast('エラー: ' + String(e && e.message || e), 'error'); }
+}
+
+// group（大カテゴリー/小チーム）の論理削除。配下があれば警告。
+async function deleteTeamGroup(groupId) {
+  const g = ttGroups.find(x => String(x.id) === String(groupId));
+  if (!g) return;
+  const isCat = !g.parent_id;
+  const childCount = isCat ? subTeamsOf(groupId).length : tasksOfSub(groupId).length;
+  const kind = isCat ? '大カテゴリー' : '小チーム';
+  let msg = kind + '「' + (g.title || '') + '」を削除しますか？';
+  if (childCount > 0) msg += '\n配下の' + (isCat ? '小チーム' : 'タスク') + ' ' + childCount + ' 件は「未分類」に移動します。';
+  if (!window.confirm(msg)) return;
+  showLoading('削除中...');
+  try {
+    // 配下の紐付けを外す（未分類へ）
+    if (isCat) {
+      for (const sub of subTeamsOf(groupId)) {
+        try { await sbPatch('team_tasks', 'id=eq.' + sub.id, { parent_id: null, updated_at: new Date().toISOString() }); } catch (e) {}
+      }
+    } else {
+      for (const t of tasksOfSub(groupId)) {
+        try { await sbPatch('team_tasks', 'id=eq.' + t.id, { parent_id: null, updated_at: new Date().toISOString() }); } catch (e) {}
+      }
+    }
+    // group自身は論理削除（status='deleted'）※物理削除しない
+    await sbPatch('team_tasks', 'id=eq.' + groupId, { status: 'deleted', updated_at: new Date().toISOString() });
+    hideLoading();
+    showToast('🗑 ' + kind + 'を削除しました', 'success');
+    loadTeamTasks();
+  } catch (e) { hideLoading(); showToast('エラー: ' + String(e && e.message || e), 'error'); }
+}
+
+// 小チームのメンバーバッジ
+function subMembersHtml(subId) {
+  const ms = ttAssigneesOf(subId);
+  if (!ms.length) return '<span style="font-size:11px;color:var(--muted)">メンバー未設定</span>';
+  return ms.map(a => '<span style="font-size:11px;padding:1px 8px;border-radius:10px;background:#EAF1FB;color:#2D5FA6">👤 ' + escapeHtml(ttStaffMap[a.staff_id] || a.staff_id) + '</span>').join(' ');
+}
+
+// 1タスクを小さいカードとしてHTML化（ツリー内表示用・簡易版）
+function hierTaskCardHtml(t) {
+  const done = t.status === 'done';
+  const doing = t.status === 'doing';
+  const today = getTodayJST();
+  const statusBadge = done ? '✅' : (doing ? '🔧' : '・');
+  let dueBadge = '';
+  if (t.due_date) {
+    const overdue = !done && t.due_date < today;
+    const dt = new Date(t.due_date + 'T00:00:00+09:00');
+    dueBadge = '<span style="font-size:11px;padding:1px 7px;border-radius:10px;background:' + (overdue ? '#FCE9E7' : 'var(--surface2)') + ';color:' + (overdue ? '#C0392B' : 'var(--muted)') + '">' + (overdue ? '⚠️ ' : '📅 ') + (dt.getMonth() + 1) + '/' + dt.getDate() + '</span>';
+  }
+  let act = '';
+  if (!done) {
+    if (t.status === 'todo') act += '<button onclick="startTeamTask(\'' + t.id + '\')" style="padding:3px 8px;background:#E9A93C;border:none;border-radius:6px;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">🔧</button>';
+    act += '<button onclick="doneTeamTask(\'' + t.id + '\')" style="padding:3px 8px;background:var(--orange);border:none;border-radius:6px;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">✓</button>';
+  } else {
+    act += '<button onclick="reopenTeamTask(\'' + t.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:11px;cursor:pointer;font-family:inherit">↩︎</button>';
+  }
+  return '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;' + (done ? 'opacity:0.7;' : '') + '">' +
+    '<span style="flex-shrink:0">' + statusBadge + '</span>' +
+    '<span style="flex:1;min-width:0;font-size:13px;' + (done ? 'text-decoration:line-through;' : '') + '">' + escapeHtml(t.title || '') + '</span>' +
+    dueBadge +
+    '<span style="display:flex;gap:4px;flex-shrink:0">' + act + '</span>' +
+    '</div>';
+}
+
+// 階層ツリーを描画
+function renderTeamHierTree() {
+  const el = document.getElementById('th-tree');
+  if (!el) return;
+  const cats = topCategories();
+  const ungrouped = ungroupedTasks();
+  if (!cats.length && !ungrouped.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:12px;border:1px dashed var(--border);border-radius:8px">まだチームがありません。「＋ カテゴリー/チームを管理」から大カテゴリーを作成してください。</div>';
+    return;
+  }
+  let html = '';
+  cats.forEach(cat => {
+    const catGoal = cat.goal_id ? goalById(cat.goal_id) : null;
+    html += '<div style="border:1.5px solid #2D6CB6;border-radius:10px;overflow:hidden">';
+    html += '<div style="background:#EAF2FB;padding:9px 12px;display:flex;align-items:center;gap:8px">' +
+      '<span style="font-size:14px;font-weight:800;color:#1E4276;flex:1;min-width:0">🗂 ' + escapeHtml(cat.title || '') + '</span>' +
+      (catGoal ? '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#fff;color:#2D6CB6;font-weight:700">🎯 ' + escapeHtml(goalLabel(catGoal)) + '</span>' : '') +
+      '<button onclick="editGroupGoal(\'' + cat.id + '\')" style="font-size:10px;padding:2px 7px;border:1px solid #2D6CB6;border-radius:10px;background:#fff;color:#2D6CB6;cursor:pointer;font-family:inherit">🎯</button>' +
+      '<button onclick="deleteTeamGroup(\'' + cat.id + '\')" style="font-size:10px;padding:2px 7px;border:1px solid #E0A0A0;border-radius:10px;background:#fff;color:#C0392B;cursor:pointer;font-family:inherit">削除</button>' +
+      '</div>';
+    const subs = subTeamsOf(cat.id);
+    if (!subs.length) {
+      html += '<div style="padding:8px 12px;font-size:11px;color:var(--muted)">小チーム未作成</div>';
+    }
+    subs.forEach(sub => {
+      const subGoal = sub.goal_id ? goalById(sub.goal_id) : (catGoal || null);
+      const tasks = tasksOfSub(sub.id);
+      const openCnt = tasks.filter(t => t.status !== 'done').length;
+      html += '<div style="padding:8px 12px;border-top:1px solid #D6E3F3">';
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+        '<span style="font-size:13px;font-weight:700;color:var(--text);flex:1;min-width:0">👥 ' + escapeHtml(sub.title || '') + ' <span style="font-size:11px;color:var(--muted);font-weight:400">（残' + openCnt + '/' + tasks.length + '）</span></span>' +
+        (sub.goal_id && subGoal ? '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#EAF2FB;color:#2D6CB6;font-weight:700">🎯 ' + escapeHtml(goalLabel(subGoal)) + '</span>' : '') +
+        '<button onclick="editGroupGoal(\'' + sub.id + '\')" style="font-size:10px;padding:2px 7px;border:1px solid #2D6CB6;border-radius:10px;background:#fff;color:#2D6CB6;cursor:pointer;font-family:inherit">🎯</button>' +
+        '<button onclick="deleteTeamGroup(\'' + sub.id + '\')" style="font-size:10px;padding:2px 7px;border:1px solid #E0A0A0;border-radius:10px;background:#fff;color:#C0392B;cursor:pointer;font-family:inherit">削除</button>' +
+        '</div>';
+      html += '<div style="font-size:11px;margin-bottom:6px">' + subMembersHtml(sub.id) + '</div>';
+      if (tasks.length) {
+        html += '<div style="display:flex;flex-direction:column;gap:5px">' + tasks.map(hierTaskCardHtml).join('') + '</div>';
+      } else {
+        html += '<div style="font-size:11px;color:var(--muted)">タスクなし（下の「チーム課題を追加」で所属チームに指定）</div>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+  });
+  el.innerHTML = html;
+}
+
 async function createTeamTask() {
   const title = (document.getElementById('tt-title').value || '').trim();
   if (!title) { showToast('タイトルを入力してください', 'error'); return; }
@@ -20749,6 +21059,8 @@ async function createTeamTask() {
   const due = document.getElementById('tt-due').value || null;
   const category = (document.getElementById('tt-category').value || '').trim() || null;
   const rule = document.getElementById('tt-rule').value || 'any';
+  const parentEl = document.getElementById('tt-parent');
+  const parentId = parentEl && parentEl.value ? parentEl.value : null;
   const assignees = [...document.querySelectorAll('.tt-assignee-check:checked')].map(c => c.value);
   const by = currentStaff ? (currentStaff.staff_id || null) : null;
 
@@ -20758,6 +21070,7 @@ async function createTeamTask() {
     const created = await sbPostReturn('team_tasks', {
       title: title, detail: detail || null, category: category,
       priority: priority, due_date: due, complete_rule: rule,
+      parent_id: parentId, node_type: 'task',
       status: 'todo', created_by: by, updated_at: new Date().toISOString()
     });
     const taskId = created && created[0] ? created[0].id : null;
@@ -20775,6 +21088,7 @@ async function createTeamTask() {
     document.getElementById('tt-category').value = '';
     document.getElementById('tt-priority').value = 'mid';
     document.getElementById('tt-rule').value = 'any';
+    const ttPar = document.getElementById('tt-parent'); if (ttPar) ttPar.value = '';
     document.querySelectorAll('.tt-assignee-check').forEach(c => c.checked = false);
     showToast('🗂 課題を追加しました', 'success');
     loadTeamTasks();
