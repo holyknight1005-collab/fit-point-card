@@ -4082,7 +4082,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702daq';
+const APP_VERSION = '20260702dat';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -13204,7 +13204,9 @@ async function loadMyTodos() {
   // 未読の依頼（他人からのもの）を既読にする（表示された時点で自動既読）
   try {
     const nowIso = new Date().toISOString();
-    const unread = todos.filter(t => !t.read_at && t.from_staff_id && t.from_staff_id !== currentStaff.id);
+    // 自分宛の未読を既読にする。自分で自分に出した依頼も、この画面で見ている以上は既読でよい。
+    // （以前は from_staff_id !== currentStaff.id で自作依頼を除外しており、永久に未読のままだった）
+    const unread = todos.filter(t => !t.read_at && t.from_staff_id);
     if (unread.length) {
       const ids = unread.map(t => '"' + t.id + '"').join(',');
       await sbPatch('staff_todos', 'id=in.(' + ids + ')', { read_at: nowIso });
@@ -20058,8 +20060,9 @@ function attStudentCellHtml(s) {
     : '<div style="width:28px;height:28px;border-radius:50%;background:var(--orange-l);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--orange-d);flex-shrink:0">' + escapeHtml((s.name||'?').charAt(0)) + '</div>';
   const sub = [s.grade ? s.grade + '年' : '', s.school || ''].filter(Boolean).join(' ');
   return '<td style="position:sticky;left:0;background:var(--surface);padding:5px 8px;border-right:1px solid var(--border);z-index:1">' +
-    '<div style="display:flex;align-items:center;gap:7px;white-space:nowrap">' + avatar +
-    '<div style="min-width:0"><div style="font-size:12px;color:var(--text)">' + escapeHtml(s.name||'(不明)') + '</div>' +
+    '<div onclick="openInterviewKarte(\'' + escapeAttr(s.id) + '\',\'att\')" style="display:flex;align-items:center;gap:7px;white-space:nowrap;cursor:pointer" title="カルテを開く">' + avatar +
+    '<div style="min-width:0"><div style="font-size:12px;color:var(--text)">' + escapeHtml(s.name||'(不明)') +
+      '<span style="font-size:10px;color:var(--muted);margin-left:4px">›</span></div>' +
     (sub ? '<div style="font-size:9px;color:var(--muted)">' + escapeHtml(sub) + '</div>' : '') +
     '</div></div></td>';
 }
@@ -21916,7 +21919,10 @@ function ivFmtDate(d) { return d ? String(d).slice(5).replace('-', '/') : ''; }
 // ============================================================
 let karteStudentId = null;
 let karteStudent = null;
-let karteBackTo = 'interview'; // 'interview' | 'detail'
+let karteBackTo = 'interview'; // 'interview' | 'detail' | 'att'（出席表から）
+// 授業出席セクションの状態（期間切替は再取得せずこの保持データを絞り込んで再描画）
+let karteAttData = null;        // { classes:[{id,name,subject}], rows:[{cid,date,mark}] }
+let karteAttPeriod = 'month';   // 'month' | '3m' | '6m' | '1y' | 'all'
 
 // カルテのセクション定義（チップ・表示制御に使う）
 const KARTE_SECTIONS = [
@@ -22028,6 +22034,7 @@ function backFromKarte() {
   if (karteBackTo === 'detail') {
     showScreen('screen-staff-detail');
   } else {
+    // 'interview' も 'att' も、裏で開いたままの screen-staff-manage（面談/出席表タブ）へ戻る
     showScreen('screen-staff-manage');
   }
 }
@@ -22175,7 +22182,7 @@ async function karteLoadAttendance(sid) {
       makeups.forEach(m => makeupSet.add(m.class_master_id + '|' + m.session_date));
     } catch (e) { /* テーブル未作成は無視 */ }
 
-    // ---- renderMyAttendance と同じ判定ロジック（カルテ用にサマリだけ描画） ----
+    // ---- renderMyAttendance と同じ判定ロジック（マーク種別を返す） ----
     const attMap = {};
     atts.forEach(a => { attMap[a.class_master_id + '|' + a.session_date + '|' + (a.period || '')] = { status: a.status }; });
     const ciByDate = {};
@@ -22185,11 +22192,13 @@ async function karteLoadAttendance(sid) {
       const outMs = c.checkout_time ? new Date(c.checkout_time).getTime() : null;
       if (inMs) ciByDate[c.checkin_date].push({ inMs, outMs });
     });
-    function karteStatusOf(s) {
+    // マーク種別: 'present'|'video'|'makeup'|'absent'|'planned'
+    // 手入力(session_attendance)を最優先。次にビデオ補習。未実施は planned。過去で記録なしは来塾から自動判定。
+    function karteMarkOf(s) {
       const isPast = s.session_date <= todayStr;
       const k = s.class_master_id + '|' + s.session_date + '|' + (s.period || '');
-      if (attMap[k]) return attMap[k].status;
-      if (makeupSet.has(s.class_master_id + '|' + s.session_date)) return 'present';
+      if (attMap[k]) return attMap[k].status; // 'present'|'makeup'|'absent'
+      if (makeupSet.has(s.class_master_id + '|' + s.session_date)) return 'video';
       if (!isPast) return 'planned';
       if (s.start_time && s.end_time) {
         const startMs = jstTimeToMs(s.session_date, s.start_time);
@@ -22214,39 +22223,125 @@ async function karteLoadAttendance(sid) {
       }
       return 'absent';
     }
-    const byClass = {};
+    // 授業×日付でマークを1つに集約（同日に5限/6限など複数行がある授業対策：出席優先で1マーク）
+    const MARK_RANK = { present: 5, video: 4, makeup: 3, absent: 2, planned: 1 };
+    const cellMap = {}; // cid|date -> mark
     sessions.forEach(s => {
       const cid = s.class_master_id;
       if (!classInfo[cid]) return;
-      if (!byClass[cid]) byClass[cid] = { info: classInfo[cid], p: 0, mk: 0, ab: 0, pl: 0 };
-      const st = karteStatusOf(s);
-      if (st === 'present') byClass[cid].p++;
-      else if (st === 'makeup') byClass[cid].mk++;
-      else if (st === 'absent') byClass[cid].ab++;
-      else byClass[cid].pl++;
+      const key = cid + '|' + s.session_date;
+      const m = karteMarkOf(s);
+      if (!cellMap[key] || (MARK_RANK[m] || 0) > (MARK_RANK[cellMap[key]] || 0)) cellMap[key] = m;
     });
-    const cards = Object.values(byClass).map(cl => {
-      const attended = cl.p + cl.mk;
-      const recorded = attended + cl.ab;
-      const rate = recorded ? Math.round(attended / recorded * 100) : null;
-      const rColor = rate == null ? 'var(--muted)' : (rate >= 80 ? 'var(--green-d)' : rate >= 50 ? 'var(--orange-d)' : '#C75050');
-      const subjTag = cl.info.subject ? '<span style="font-size:10px;color:var(--muted)">【' + escapeHtml(cl.info.subject) + '】</span> ' : '';
-      const bar = rate == null ? '' :
-        '<div style="flex:1;height:8px;background:#EDEDED;border-radius:4px;overflow:hidden"><div style="width:' + rate + '%;height:100%;background:' + rColor + '"></div></div>';
-      return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">' +
-        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px">' +
-          '<div style="font-size:12px;font-weight:700;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + subjTag + escapeHtml(cl.info.name) + '</div>' +
-          '<div style="font-size:12px;font-weight:800;color:' + rColor + ';white-space:nowrap">' + (rate == null ? '記録なし' : rate + '%') + '</div>' +
-        '</div>' +
-        '<div style="display:flex;align-items:center;gap:8px">' + bar +
-          '<div style="font-size:10px;color:var(--muted);white-space:nowrap">出席' + cl.p + '・補習' + cl.mk + '・欠席' + cl.ab + (cl.pl ? '・予定' + cl.pl : '') + '</div>' +
-        '</div>' +
-      '</div>';
-    }).join('');
-    el.innerHTML = karteSecShell('✅ 授業の出席率', cards || '<div style="font-size:12px;color:var(--muted)">出席データがありません。</div>');
+    const rows = Object.keys(cellMap).map(key => {
+      const i = key.indexOf('|');
+      return { cid: key.slice(0, i), date: key.slice(i + 1), mark: cellMap[key] };
+    });
+    const classes = myClassIds.map(cid => classInfo[cid]).filter(Boolean);
+    karteAttData = { classes, rows };
+    karteAttPeriod = 'month';
+    renderKarteAttendance();
   } catch (e) {
-    el.innerHTML = karteSecShell('✅ 授業の出席率', '<div style="font-size:12px;color:var(--muted)">読み込みに失敗しました。</div>');
+    el.innerHTML = karteSecShell('✅ 授業出席', '<div style="font-size:12px;color:var(--muted)">読み込みに失敗しました。</div>');
   }
+}
+
+// 授業出席セクションの描画（期間切替で再描画。karteAttData を絞り込むだけで再取得はしない）
+function karteAttMarkCell(mark, faded) {
+  const st = {
+    present: { t: '◯', c: 'var(--green-d)', bg: '#F1F8EE' },
+    video:   { t: 'ビデオ<br>補習', c: '#185FA5', bg: '#EAF1FB' },
+    makeup:  { t: '補習', c: '#6B4FA0', bg: '#F1ECF8' },
+    absent:  { t: '欠', c: '#C75050', bg: '#FBEDED' },
+    planned: { t: '―', c: 'var(--muted)', bg: 'transparent' }
+  }[mark] || { t: '', c: 'var(--muted)', bg: 'transparent' };
+  const op = faded ? ';opacity:.5' : '';
+  return '<td style="text-align:center;padding:4px 6px;font-size:11px;font-weight:700;color:' + st.c +
+    ';background:' + st.bg + ';border:1px solid var(--border);white-space:nowrap;line-height:1.15' + op + '">' + st.t + '</td>';
+}
+
+function setKarteAttPeriod(p) {
+  karteAttPeriod = p;
+  renderKarteAttendance();
+}
+
+function renderKarteAttendance() {
+  const el = document.getElementById('karte-sec-attendance');
+  if (!el || !karteAttData) return;
+  const todayStr = getTodayJST();
+  // 期間の下限日付（today から遡る）。'all' は制限なし。
+  const periods = [
+    { key: 'month', label: '今月' },
+    { key: '3m',    label: '3ヶ月' },
+    { key: '6m',    label: '半年' },
+    { key: '1y',    label: '1年' },
+    { key: 'all',   label: '通算' }
+  ];
+  let minDate = null;
+  if (karteAttPeriod === 'month') {
+    minDate = todayStr.slice(0, 7) + '-01'; // 当月1日
+  } else {
+    const d = new Date(todayStr + 'T00:00:00');
+    if (karteAttPeriod === '3m') d.setMonth(d.getMonth() - 3);
+    else if (karteAttPeriod === '6m') d.setMonth(d.getMonth() - 6);
+    else if (karteAttPeriod === '1y') d.setFullYear(d.getFullYear() - 1);
+    if (karteAttPeriod !== 'all') minDate = toJSTDateStr(d);
+  }
+  // 期間タブ
+  const tabs = '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px">' +
+    periods.map(p => {
+      const on = p.key === karteAttPeriod;
+      return '<button type="button" onclick="setKarteAttPeriod(\'' + p.key + '\')" style="padding:5px 11px;border-radius:16px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid ' +
+        (on ? 'var(--orange)' : 'var(--border)') + ';background:' + (on ? 'var(--orange-l)' : 'var(--surface)') + ';color:' + (on ? 'var(--orange-d)' : 'var(--muted)') + '">' + p.label + '</button>';
+    }).join('') + '</div>';
+
+  // 授業ごとにテーブル
+  const blocks = karteAttData.classes.map(cl => {
+    let cellsForClass = karteAttData.rows.filter(r => r.cid === cl.id);
+    if (minDate) cellsForClass = cellsForClass.filter(r => r.date >= minDate);
+    cellsForClass.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+    const subjTag = cl.subject ? '<span style="font-size:10px;color:var(--muted)">【' + escapeHtml(cl.subject) + '】</span> ' : '';
+    if (!cellsForClass.length) {
+      return '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px">' + subjTag + escapeHtml(cl.name) + '</div>' +
+        '<div style="font-size:11px;color:var(--muted)">この期間の授業はありません。</div></div>';
+    }
+    // 集計（planned は母数から除外。出席=present+video+makeup、母数=出席+欠席）
+    let p = 0, v = 0, mk = 0, ab = 0;
+    cellsForClass.forEach(r => {
+      if (r.mark === 'present') p++;
+      else if (r.mark === 'video') v++;
+      else if (r.mark === 'makeup') mk++;
+      else if (r.mark === 'absent') ab++;
+    });
+    const attended = p + v + mk;
+    const recorded = attended + ab;
+    const rate = recorded ? Math.round(attended / recorded * 100) : null;
+    const rColor = rate == null ? 'var(--muted)' : (rate >= 80 ? 'var(--green-d)' : rate >= 50 ? 'var(--orange-d)' : '#C75050');
+    // 回ヘッダ・日付・マークの3段（横スクロール）
+    const noHead = cellsForClass.map((r, i) =>
+      '<th style="padding:3px 6px;font-size:9px;font-weight:700;color:var(--muted);border:1px solid var(--border);white-space:nowrap">' + (i + 1) + '</th>').join('');
+    const dayHead = cellsForClass.map(r =>
+      '<td style="padding:3px 6px;font-size:9px;color:#555;border:1px solid var(--border);white-space:nowrap;text-align:center">' + ivFmtDate(r.date) + '</td>').join('');
+    const markRow = cellsForClass.map(r => karteAttMarkCell(r.mark, r.mark === 'planned')).join('');
+    const summary = '出席' + p + (v ? '・ビデオ' + v : '') + (mk ? '・補習' + mk : '') + '・欠席' + ab;
+    return '<div style="margin-bottom:16px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px">' +
+        '<div style="font-size:12px;font-weight:700;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + subjTag + escapeHtml(cl.name) + '</div>' +
+        '<div style="font-size:12px;font-weight:800;color:' + rColor + ';white-space:nowrap">' + (rate == null ? '記録なし' : rate + '%') + '</div>' +
+      '</div>' +
+      '<div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px">' +
+        '<table style="border-collapse:collapse;min-width:100%">' +
+          '<tr><th style="position:sticky;left:0;background:var(--surface2);padding:3px 8px;font-size:9px;font-weight:700;color:var(--muted);border:1px solid var(--border);white-space:nowrap">回</th>' + noHead + '</tr>' +
+          '<tr><td style="position:sticky;left:0;background:var(--surface2);padding:3px 8px;font-size:9px;color:#555;border:1px solid var(--border);white-space:nowrap">日付</td>' + dayHead + '</tr>' +
+          '<tr><td style="position:sticky;left:0;background:var(--surface);padding:3px 8px;font-size:10px;font-weight:700;color:var(--text);border:1px solid var(--border);white-space:nowrap">出欠</td>' + markRow + '</tr>' +
+        '</table>' +
+      '</div>' +
+      '<div style="font-size:10px;color:var(--muted);margin-top:4px">' + summary + '</div>' +
+    '</div>';
+  }).join('');
+
+  const legend = '<div style="font-size:9px;color:var(--muted);margin-top:4px;line-height:1.5">◯出席／ビデオ補習／補習／欠 欠席／― 未実施　※授業出席は出席カードに基づく記録です。</div>';
+  el.innerHTML = karteSecShell('✅ 授業出席', tabs + (blocks || '<div style="font-size:12px;color:var(--muted)">出席データがありません。</div>') + legend);
 }
 
 // ---- 受講歴タイムライン（class_enrollments × class_master。通常授業と季節講習を分けて表示） ----
