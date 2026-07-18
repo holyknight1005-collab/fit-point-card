@@ -4212,7 +4212,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702day';
+const APP_VERSION = '20260702daz';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -27173,6 +27173,7 @@ function setTrendMembershipMode(mode) { trendMembershipMode = mode; recomputeTre
 let svSchool = null;          // 選択中の学校名
 let svFY = null;              // 表示年度（開始年）。null=今年度
 let svMemMode = 'all';        // 'all' | 'regular' | 'seasonal'
+let svShowPrevYear = false;   // 昨年度ブロックを表示するか（デフォルト非表示）
 let svBackTo = 'manage';     // 戻り先
 
 async function openSchoolView(backTo) {
@@ -27305,6 +27306,7 @@ function renderSvSchoolTabs() {
 function setSvSchool(s) { svSchool = s; renderSvSchoolTabs(); renderSvPeriodBar(); renderSvEnroll(); renderSvGoal(); }
 function setSvMemMode(m) { svMemMode = m; renderSvEnroll(); renderSvGoal(); }
 function setSvFY(y) { svFY = parseInt(y, 10); renderSvEnroll(); renderSvGoal(); }
+function toggleSvPrevYear() { svShowPrevYear = !svShowPrevYear; renderSvEnroll(); }
 
 // 学年×月の在籍推移表（今年度・昨年度・前年差異を1表に）。trendFiscalSeries を学校固定で流用。
 function renderSvEnroll() {
@@ -27367,9 +27369,15 @@ function renderSvEnroll() {
     // 年度ラベルは 在籍4行(高1/2/3/合計)＋入塾/退塾2行＝6行ぶんまたげる
     const yrLabelCell = (y, span) => '<td class="sv-rowhead" rowspan="' + span + '" style="vertical-align:middle;text-align:center;min-width:44px">' + y + '<br>年度</td>';
 
+    // 昨年度表示トグル
+    const prevBtn = '<button type="button" onclick="toggleSvPrevYear()" style="padding:5px 12px;font-size:11px;font-weight:700;border:1.5px solid ' +
+      (svShowPrevYear ? '#8A6D3B;background:#8A6D3B;color:#fff' : '#8A6D3B;background:transparent;color:#8A6D3B') +
+      ';border-radius:16px;cursor:pointer;font-family:inherit">' + (svShowPrevYear ? '☑ 昨年度' : '＋ 昨年度と比較') + '</button>';
+
     let html = '<div class="sv-card-h">📊 請求ベース在籍人数（' + escapeHtml(svSchool) + '）</div>';
     html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">' +
       '<span style="font-size:10px;color:var(--muted)">集計対象：</span>' + memBtn('all', '合算') + memBtn('regular', '通常のみ') + memBtn('seasonal', '季節別のみ') +
+      prevBtn +
       '<select onchange="setSvFY(this.value)" style="padding:4px 8px;font-size:11px;border:1px solid var(--border);border-radius:8px;font-family:inherit;margin-left:auto">' + fyOpts + '</select>' +
       '</div>';
     html += '<div style="overflow-x:auto;border:1px solid #D9D4C7;border-radius:8px">';
@@ -27382,18 +27390,20 @@ function renderSvEnroll() {
     html += yrRow('合計', curSum, 'sv-sum');
     html += flowRow('入塾', curJoined, '#2E7D32');
     html += flowRow('退塾', curLeft, '#C0392B');
-    // 昨年度（同様に6行）
-    html += yrRow('高1', prevByGrade['1年'], '', yrLabelCell(fyStart - 1, 6));
-    html += yrRow('高2', prevByGrade['2年'], '');
-    html += yrRow('高3', prevByGrade['3年'], '');
-    html += yrRow('合計', prevSum, 'sv-sum');
-    html += flowRow('入塾', prevJoined, '#2E7D32');
-    html += flowRow('退塾', prevLeft, '#C0392B');
-    // 前年差異（在籍合計の差）
-    html += '<tr class="sv-diff"><td class="sv-rowhead" colspan="2" style="text-align:center">前年差異</td>' +
-      diff.map(v => '<td>' + (v == null ? '' : (v > 0 ? '+' + v : v)) + '</td>').join('') + '</tr>';
+    // 昨年度（トグルON時のみ・同様に6行）＋前年差異
+    if (svShowPrevYear) {
+      html += yrRow('高1', prevByGrade['1年'], '', yrLabelCell(fyStart - 1, 6));
+      html += yrRow('高2', prevByGrade['2年'], '');
+      html += yrRow('高3', prevByGrade['3年'], '');
+      html += yrRow('合計', prevSum, 'sv-sum');
+      html += flowRow('入塾', prevJoined, '#2E7D32');
+      html += flowRow('退塾', prevLeft, '#C0392B');
+      // 前年差異（在籍合計の差）
+      html += '<tr class="sv-diff"><td class="sv-rowhead" colspan="2" style="text-align:center">前年差異</td>' +
+        diff.map(v => '<td>' + (v == null ? '' : (v > 0 ? '+' + v : v)) + '</td>').join('') + '</tr>';
+    }
     html += '</tbody></table></div>';
-    html += '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※在籍は各月末時点（今年度は実データ、過去年度は手入力 annual_enrollment）。入塾＝各月の新規入塾数、退塾＝各月の退塾数。前年差異＝' + fyStart + '年度 − ' + (fyStart - 1) + '年度の在籍合計。空欄は未来月または未入力。</div>';
+    html += '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※在籍は各月末時点（今年度は実データ、過去年度は手入力 annual_enrollment）。入塾＝各月の新規入塾数、退塾＝各月の退塾数。' + (svShowPrevYear ? '前年差異＝' + fyStart + '年度 − ' + (fyStart - 1) + '年度の在籍合計。' : '「＋昨年度と比較」で昨年度・前年差異を表示。') + '空欄は未来月または未入力。</div>';
     el.innerHTML = html;
   } finally {
     trendFilter.school = savedFilter.school;
@@ -27435,10 +27445,11 @@ async function renderSvGoal() {
   svGoalsCache = goals;
   const byTerm = {}; goals.forEach(g => { byTerm[g.term] = g; });
 
-  // 期末在籍の実績（トレンドエンジンを学校固定で流用）
+  // 期末在籍の実績（トレンドエンジンを学校固定で流用）＋現在の在籍数
   const savedFilter = { school: trendFilter.school, grade: trendFilter.grade };
   const savedMem = trendMembershipMode;
   let actualEnd = {}; // term -> 期末在籍実績（合計）
+  let currentEnroll = null; // 現在（直近の集計済み月末）の在籍合計
   try {
     trendFilter.school = svSchool;
     trendMembershipMode = svMemMode;
@@ -27447,44 +27458,63 @@ async function renderSvGoal() {
     const seriesByGrade = {};
     grades.forEach(g => { trendFilter.grade = g; seriesByGrade[g] = trendFiscalSeries(fyStart, 'enrolled', fmonths); });
     trendFilter.grade = '全体';
-    SV_TERMS.forEach(t => {
+    // 月別の合計（学年合算）
+    const monthTotals = fmonths.map((_, i) => {
       let has = false, sum = 0;
-      grades.forEach(g => { const v = seriesByGrade[g][t.monthIdx]; if (v != null) { has = true; sum += v; } });
-      actualEnd[t.term] = has ? sum : null;
+      grades.forEach(g => { const v = seriesByGrade[g][i]; if (v != null) { has = true; sum += v; } });
+      return has ? sum : null;
     });
-  } catch (e) { actualEnd = {}; } finally {
+    SV_TERMS.forEach(t => { actualEnd[t.term] = monthTotals[t.monthIdx]; });
+    // 現在の在籍＝直近の非null月（未来月は空欄なので、最後に値がある月）
+    for (let i = monthTotals.length - 1; i >= 0; i--) { if (monthTotals[i] != null) { currentEnroll = monthTotals[i]; break; } }
+  } catch (e) { actualEnd = {}; currentEnroll = null; } finally {
     trendFilter.school = savedFilter.school;
     trendFilter.grade = savedFilter.grade;
     trendMembershipMode = savedMem;
   }
 
-  // 描画
+  // 描画（横軸＝第1期/第2期/第3期、縦＝期末在籍目標／現在の人数／達成度）
   const cell = (v) => (v == null || v === '') ? '<span style="color:var(--muted)">―</span>' : v;
-  const rateBadge = (target, actual) => {
-    if (target == null || actual == null) return '';
+  // 達成度＝「あと〜人」＋％（期末在籍が過ぎた期は実績、未達の期は現在の人数で判定）
+  const achieveCell = (target, termActual, isPast) => {
+    if (target == null) return '<span style="color:var(--muted)">―</span>';
+    const actual = isPast ? (termActual != null ? termActual : currentEnroll) : currentEnroll;
+    if (actual == null) return '<span style="color:var(--muted)">―</span>';
     const pct = target > 0 ? Math.round(actual / target * 100) : 0;
+    const remain = target - actual;
     const col = pct >= 100 ? '#2E7D32' : (pct >= 80 ? '#B8860B' : '#C0392B');
-    return '<span style="font-size:10px;font-weight:700;color:' + col + '">（' + pct + '%）</span>';
+    const remainText = remain > 0 ? ('あと' + remain + '人') : (remain === 0 ? '達成🎉' : ('超過+' + (-remain) + '人'));
+    return '<div style="color:' + col + ';font-weight:700;font-size:12px">' + pct + '%</div>' +
+           '<div style="color:' + col + ';font-size:10px">' + remainText + '</div>';
   };
+  const todayStr = getTodayJST();
+  const curY = parseInt(todayStr.slice(0, 4), 10), curM = parseInt(todayStr.slice(5, 7), 10);
+  // 各期の期末が既に過ぎたか（該当年度基準）：第1期=7月末, 第2期=12月末, 第3期=翌3月末
+  const termIsPast = (term) => {
+    if (term === 1) return (curY > fyStart) || (curY === fyStart && curM > 7);
+    if (term === 2) return (curY > fyStart) || (curY === fyStart && curM > 12);
+    return (curY > fyStart + 1) || (curY === fyStart + 1 && curM > 3);
+  };
+
   let html = '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／' + fyStart + '年度（集計対象は在籍表の区分に連動）</div>';
-  html += '<div style="overflow-x:auto"><table class="sv-enroll-table" style="min-width:520px"><thead><tr>' +
-    '<th style="text-align:left">期</th><th>入塾目標</th><th>入塾実績</th><th>期末在籍目標</th><th>期末在籍実績</th><th>操作</th></tr></thead><tbody>';
-  SV_TERMS.forEach(t => {
-    const g = byTerm[t.term] || null;
-    const tEnroll = g ? g.target_enroll : null;
-    const tActive = g ? g.target_active : null;
-    const aEnd = actualEnd[t.term];
-    html += '<tr>' +
-      '<td class="sv-rowhead" style="text-align:left;white-space:nowrap">' + t.label + '</td>' +
-      '<td>' + cell(tEnroll) + '</td>' +
-      '<td><span style="color:var(--muted)">―</span></td>' +
-      '<td>' + cell(tActive) + '</td>' +
-      '<td>' + cell(aEnd) + ' ' + rateBadge(tActive, aEnd) + '</td>' +
-      '<td><button type="button" onclick="openSvGoalEdit(' + t.term + ')" style="font-size:11px;padding:3px 10px;border:1px solid #2D6CB6;border-radius:14px;background:transparent;color:#2D6CB6;cursor:pointer;font-family:inherit">' + (g ? '編集' : '設定') + '</button></td>' +
-      '</tr>';
-  });
+  html += '<div style="overflow-x:auto"><table class="sv-enroll-table"><thead><tr>' +
+    '<th style="text-align:left">項目＼期</th>' +
+    SV_TERMS.map(t => '<th style="white-space:nowrap">' + t.label.replace('（', '<br><span style="font-size:9px;font-weight:400">（') + '</span>' + '</th>').join('') +
+    '</tr></thead><tbody>';
+  // 期末在籍目標
+  html += '<tr><td class="sv-rowhead" style="text-align:left;white-space:nowrap">期末在籍目標</td>' +
+    SV_TERMS.map(t => { const g = byTerm[t.term]; return '<td>' + cell(g ? g.target_active : null) + '</td>'; }).join('') + '</tr>';
+  // 現在の人数（全期共通＝いまの在籍）
+  html += '<tr><td class="sv-rowhead" style="text-align:left;white-space:nowrap">現在の人数</td>' +
+    SV_TERMS.map(() => '<td>' + cell(currentEnroll) + '</td>').join('') + '</tr>';
+  // 達成度
+  html += '<tr class="sv-sum"><td class="sv-rowhead" style="text-align:left;white-space:nowrap">達成度</td>' +
+    SV_TERMS.map(t => { const g = byTerm[t.term]; return '<td>' + achieveCell(g ? g.target_active : null, actualEnd[t.term], termIsPast(t.term)) + '</td>'; }).join('') + '</tr>';
+  // 設定/編集ボタン
+  html += '<tr><td class="sv-rowhead" style="text-align:left">操作</td>' +
+    SV_TERMS.map(t => { const g = byTerm[t.term]; return '<td><button type="button" onclick="openSvGoalEdit(' + t.term + ')" style="font-size:11px;padding:3px 10px;border:1px solid #2D6CB6;border-radius:14px;background:transparent;color:#2D6CB6;cursor:pointer;font-family:inherit">' + (g && g.target_active != null ? '編集' : '設定') + '</button></td>'; }).join('') + '</tr>';
   html += '</tbody></table></div>';
-  html += '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※期末在籍実績＝在籍推移から各期末月（7月末／12月末／3月末）の合計。受験終了（送り出し）の生徒も在籍にカウントされます。入塾実績は後続バージョンで接続します。</div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※期末在籍目標＝各期末（7月末／12月末／3月末）に到達したい在籍数。達成度は「現在の人数÷目標」（期末が過ぎた期は期末時点の実績）。受験終了（送り出し）の生徒も在籍にカウントされます。</div>';
   el.innerHTML = html;
 }
 
@@ -27495,15 +27525,11 @@ async function openSvGoalEdit(term) {
   const existing = (svGoalsCache || []).find(g => g.term === term) || null;
   const tName = (SV_TERMS.find(t => t.term === term) || {}).label || ('第' + term + '期');
 
-  const curEnroll = existing && existing.target_enroll != null ? existing.target_enroll : '';
-  const eIn = window.prompt(tName + '\n【入塾目標】人数を入力（空欄で未設定）', curEnroll);
-  if (eIn === null) return; // キャンセル
   const curActive = existing && existing.target_active != null ? existing.target_active : '';
-  const aIn = window.prompt(tName + '\n【期末在籍目標】人数を入力（空欄で未設定）', curActive);
-  if (aIn === null) return;
+  const aIn = window.prompt(tName + '\n【期末在籍目標】到達したい在籍数を入力（空欄で未設定）', curActive);
+  if (aIn === null) return; // キャンセル
 
   const toNum = (s) => { s = (s || '').trim(); if (s === '') return null; const n = parseInt(s, 10); return isNaN(n) ? null : n; };
-  const targetEnroll = toNum(eIn);
   const targetActive = toNum(aIn);
   const by = currentStaff ? (currentStaff.staff_id || null) : null;
 
@@ -27511,13 +27537,13 @@ async function openSvGoalEdit(term) {
   try {
     if (existing) {
       await sbPatch('staff_goals', 'id=eq.' + existing.id, {
-        target_enroll: targetEnroll, target_active: targetActive,
+        target_active: targetActive,
         updated_at: new Date().toISOString()
       });
     } else {
       await sbPost('staff_goals', {
         school: svSchool, fiscal_year: fyStart, term: term,
-        title: tName, target_enroll: targetEnroll, target_active: targetActive,
+        title: tName, target_active: targetActive,
         is_active: true, created_by: by, updated_at: new Date().toISOString()
       });
     }
