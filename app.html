@@ -4212,7 +4212,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702daz';
+const APP_VERSION = '20260702dba';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -27473,30 +27473,48 @@ async function renderSvGoal() {
     trendMembershipMode = savedMem;
   }
 
-  // 描画（横軸＝第1期/第2期/第3期、縦＝期末在籍目標／現在の人数／達成度）
+  // 描画（案B）：現在の在籍を上に1回。各期は過ぎた期＝実績、これからの期＝目標までの差。
   const cell = (v) => (v == null || v === '') ? '<span style="color:var(--muted)">―</span>' : v;
-  // 達成度＝「あと〜人」＋％（期末在籍が過ぎた期は実績、未達の期は現在の人数で判定）
-  const achieveCell = (target, termActual, isPast) => {
-    if (target == null) return '<span style="color:var(--muted)">―</span>';
-    const actual = isPast ? (termActual != null ? termActual : currentEnroll) : currentEnroll;
-    if (actual == null) return '<span style="color:var(--muted)">―</span>';
-    const pct = target > 0 ? Math.round(actual / target * 100) : 0;
-    const remain = target - actual;
-    const col = pct >= 100 ? '#2E7D32' : (pct >= 80 ? '#B8860B' : '#C0392B');
-    const remainText = remain > 0 ? ('あと' + remain + '人') : (remain === 0 ? '達成🎉' : ('超過+' + (-remain) + '人'));
-    return '<div style="color:' + col + ';font-weight:700;font-size:12px">' + pct + '%</div>' +
-           '<div style="color:' + col + ';font-size:10px">' + remainText + '</div>';
-  };
   const todayStr = getTodayJST();
   const curY = parseInt(todayStr.slice(0, 4), 10), curM = parseInt(todayStr.slice(5, 7), 10);
-  // 各期の期末が既に過ぎたか（該当年度基準）：第1期=7月末, 第2期=12月末, 第3期=翌3月末
+  // 各期の期末が既に過ぎたか：第1期=7月末, 第2期=12月末, 第3期=翌3月末
   const termIsPast = (term) => {
     if (term === 1) return (curY > fyStart) || (curY === fyStart && curM > 7);
     if (term === 2) return (curY > fyStart) || (curY === fyStart && curM > 12);
     return (curY > fyStart + 1) || (curY === fyStart + 1 && curM > 3);
   };
 
+  // 各期の「結果 or 見通し」セル
+  const resultCell = (target, termActual, isPast) => {
+    if (target == null) return '<div style="color:var(--muted);font-size:11px">目標未設定</div>';
+    if (isPast) {
+      // 過ぎた期＝期末時点の実績（無ければ現在で代用）で確定表示
+      const actual = (termActual != null) ? termActual : currentEnroll;
+      if (actual == null) return '<div style="color:var(--muted)">―</div>';
+      const diff = actual - target;
+      const ok = diff >= 0;
+      const col = ok ? '#2E7D32' : '#C0392B';
+      return '<div style="font-size:11px;color:var(--muted)">実績 ' + actual + '</div>' +
+             '<div style="font-weight:700;color:' + col + ';font-size:12px">' + (ok ? '達成 ✓' : ('未達 ' + diff)) + '</div>';
+    } else {
+      // これからの期＝現在から目標までの差
+      if (currentEnroll == null) return '<div style="color:var(--muted)">―</div>';
+      const remain = target - currentEnroll;
+      const pct = target > 0 ? Math.round(currentEnroll / target * 100) : 0;
+      const col = pct >= 100 ? '#2E7D32' : (pct >= 80 ? '#B8860B' : '#2D6CB6');
+      const remainText = remain > 0 ? ('あと ' + remain + '人') : (remain === 0 ? '達成🎉' : ('超過 +' + (-remain) + '人'));
+      return '<div style="font-weight:700;color:' + col + ';font-size:13px">' + remainText + '</div>' +
+             '<div style="font-size:10px;color:' + col + '">（' + pct + '%）</div>';
+    }
+  };
+
   let html = '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／' + fyStart + '年度（集計対象は在籍表の区分に連動）</div>';
+  // 現在の在籍（1回だけ・目立たせる）
+  html += '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:12px;padding:8px 12px;background:#EAF2FB;border-radius:8px">' +
+    '<span style="font-size:12px;color:var(--muted)">現在の在籍</span>' +
+    '<span style="font-size:22px;font-weight:800;color:#1E4276">' + (currentEnroll == null ? '―' : currentEnroll) + '</span>' +
+    '<span style="font-size:12px;color:var(--muted)">人</span></div>';
+  // 各期テーブル（横軸＝期、縦＝目標／状況）
   html += '<div style="overflow-x:auto"><table class="sv-enroll-table"><thead><tr>' +
     '<th style="text-align:left">項目＼期</th>' +
     SV_TERMS.map(t => '<th style="white-space:nowrap">' + t.label.replace('（', '<br><span style="font-size:9px;font-weight:400">（') + '</span>' + '</th>').join('') +
@@ -27504,48 +27522,63 @@ async function renderSvGoal() {
   // 期末在籍目標
   html += '<tr><td class="sv-rowhead" style="text-align:left;white-space:nowrap">期末在籍目標</td>' +
     SV_TERMS.map(t => { const g = byTerm[t.term]; return '<td>' + cell(g ? g.target_active : null) + '</td>'; }).join('') + '</tr>';
-  // 現在の人数（全期共通＝いまの在籍）
-  html += '<tr><td class="sv-rowhead" style="text-align:left;white-space:nowrap">現在の人数</td>' +
-    SV_TERMS.map(() => '<td>' + cell(currentEnroll) + '</td>').join('') + '</tr>';
-  // 達成度
-  html += '<tr class="sv-sum"><td class="sv-rowhead" style="text-align:left;white-space:nowrap">達成度</td>' +
-    SV_TERMS.map(t => { const g = byTerm[t.term]; return '<td>' + achieveCell(g ? g.target_active : null, actualEnd[t.term], termIsPast(t.term)) + '</td>'; }).join('') + '</tr>';
-  // 設定/編集ボタン
-  html += '<tr><td class="sv-rowhead" style="text-align:left">操作</td>' +
-    SV_TERMS.map(t => { const g = byTerm[t.term]; return '<td><button type="button" onclick="openSvGoalEdit(' + t.term + ')" style="font-size:11px;padding:3px 10px;border:1px solid #2D6CB6;border-radius:14px;background:transparent;color:#2D6CB6;cursor:pointer;font-family:inherit">' + (g && g.target_active != null ? '編集' : '設定') + '</button></td>'; }).join('') + '</tr>';
+  // 状況（過ぎた期＝実績／これから＝目標までの差）
+  html += '<tr class="sv-sum"><td class="sv-rowhead" style="text-align:left;white-space:nowrap">状況</td>' +
+    SV_TERMS.map(t => { const g = byTerm[t.term]; return '<td>' + resultCell(g ? g.target_active : null, actualEnd[t.term], termIsPast(t.term)) + '</td>'; }).join('') + '</tr>';
   html += '</tbody></table></div>';
-  html += '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※期末在籍目標＝各期末（7月末／12月末／3月末）に到達したい在籍数。達成度は「現在の人数÷目標」（期末が過ぎた期は期末時点の実績）。受験終了（送り出し）の生徒も在籍にカウントされます。</div>';
+  // 目標設定（下部・畳んだ入力欄）
+  const goalInputs = SV_TERMS.map(t => {
+    const g = byTerm[t.term];
+    const val = (g && g.target_active != null) ? g.target_active : '';
+    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+      '<label style="font-size:12px;min-width:120px;color:var(--text)">' + t.label + '</label>' +
+      '<input type="number" id="sv-goal-in-' + t.term + '" value="' + val + '" placeholder="在籍目標" style="width:110px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px">' +
+      '<span style="font-size:12px;color:var(--muted)">人</span></div>';
+  }).join('');
+  html += '<div style="margin-top:12px">' +
+    '<button type="button" onclick="toggleSvGoalSetup()" id="sv-goal-setup-btn" style="font-size:12px;padding:6px 14px;border:1px solid var(--border);border-radius:16px;background:var(--surface2);color:var(--text);cursor:pointer;font-family:inherit">⚙ 目標を設定</button>' +
+    '<div id="sv-goal-setup" style="display:none;margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">' +
+      '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">各期末（7月末／12月末／3月末）に到達したい在籍数を入力してください。空欄＝未設定。</div>' +
+      goalInputs +
+      '<button type="button" onclick="saveSvGoals()" style="margin-top:6px;width:100%;padding:9px;background:linear-gradient(135deg,#2D6CB6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">💾 目標を保存</button>' +
+    '</div></div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※期末在籍目標＝各期末に到達したい在籍数。過ぎた期は期末時点の実績で達成判定、これからの期は現在の在籍から目標までの差を表示。受験終了（送り出し）の生徒も在籍にカウントされます。</div>';
   el.innerHTML = html;
 }
 
-// 目標の編集モーダル（簡易：prompt 2連。confirm 不要の軽量入力）
-async function openSvGoalEdit(term) {
+// 目標設定パネルの開閉
+function toggleSvGoalSetup() {
+  const box = document.getElementById('sv-goal-setup');
+  const btn = document.getElementById('sv-goal-setup-btn');
+  if (!box) return;
+  const open = box.style.display === 'none';
+  box.style.display = open ? 'block' : 'none';
+  if (btn) btn.textContent = open ? '× 閉じる' : '⚙ 目標を設定';
+}
+
+// 3期分の期末在籍目標を一括保存
+async function saveSvGoals() {
   if (!svSchool) return;
   const fyStart = (svFY == null) ? currentFiscalStartYear() : svFY;
-  const existing = (svGoalsCache || []).find(g => g.term === term) || null;
-  const tName = (SV_TERMS.find(t => t.term === term) || {}).label || ('第' + term + '期');
-
-  const curActive = existing && existing.target_active != null ? existing.target_active : '';
-  const aIn = window.prompt(tName + '\n【期末在籍目標】到達したい在籍数を入力（空欄で未設定）', curActive);
-  if (aIn === null) return; // キャンセル
-
   const toNum = (s) => { s = (s || '').trim(); if (s === '') return null; const n = parseInt(s, 10); return isNaN(n) ? null : n; };
-  const targetActive = toNum(aIn);
   const by = currentStaff ? (currentStaff.staff_id || null) : null;
-
+  const existingByTerm = {}; (svGoalsCache || []).forEach(g => { existingByTerm[g.term] = g; });
   showLoading('保存中...');
   try {
-    if (existing) {
-      await sbPatch('staff_goals', 'id=eq.' + existing.id, {
-        target_active: targetActive,
-        updated_at: new Date().toISOString()
-      });
-    } else {
-      await sbPost('staff_goals', {
-        school: svSchool, fiscal_year: fyStart, term: term,
-        title: tName, target_active: targetActive,
-        is_active: true, created_by: by, updated_at: new Date().toISOString()
-      });
+    for (const t of SV_TERMS) {
+      const el = document.getElementById('sv-goal-in-' + t.term);
+      const targetActive = el ? toNum(el.value) : null;
+      const existing = existingByTerm[t.term] || null;
+      if (existing) {
+        await sbPatch('staff_goals', 'id=eq.' + existing.id, { target_active: targetActive, updated_at: new Date().toISOString() });
+      } else if (targetActive != null) {
+        // 新規は目標値がある期だけ作成
+        await sbPost('staff_goals', {
+          school: svSchool, fiscal_year: fyStart, term: t.term,
+          title: t.label, target_active: targetActive,
+          is_active: true, created_by: by, updated_at: new Date().toISOString()
+        });
+      }
     }
     hideLoading();
     showToast('🎯 目標を保存しました', 'success');
