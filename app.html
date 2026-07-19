@@ -1014,6 +1014,26 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
   </div>
 </div>
 
+<!-- dcd: 学校TODO登録モーダル -->
+<div id="svtodo-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:672;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);width:100%;max-width:440px;border-radius:14px;padding:18px;max-height:90vh;overflow-y:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div style="font-size:15px;font-weight:800;color:var(--text)">✅ 学校TODOを追加</div>
+      <button onclick="closeSvTodo()" style="padding:5px 12px;font-size:13px;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">× 閉じる</button>
+    </div>
+    <div id="svtodo-school" style="font-size:12px;font-weight:700;color:#1E4276;margin-bottom:10px"></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:3px">やること（タイトル）</div>
+    <input class="form-input-sm" type="text" id="svtodo-title" placeholder="例：三者面談の日程調整" style="width:100%;margin-bottom:8px">
+    <div style="font-size:11px;color:var(--muted);margin-bottom:3px">内容補足（任意）</div>
+    <textarea class="form-input-sm" id="svtodo-detail" rows="3" placeholder="詳細・メモ" style="width:100%;resize:vertical;margin-bottom:8px"></textarea>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:3px">締切</div>
+    <input class="form-input-sm" type="date" id="svtodo-due" style="width:100%;margin-bottom:8px">
+    <div style="font-size:11px;color:var(--muted);margin-bottom:3px">担当スタッフ（任意・複数可）</div>
+    <div id="svtodo-assignees" style="display:flex;flex-direction:column;gap:4px;max-height:32vh;overflow-y:auto;margin-bottom:12px;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
+    <button onclick="saveSvTodo()" style="width:100%;padding:10px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">✅ 追加する</button>
+  </div>
+</div>
+
 <!-- dbk: 大カテゴリー 部・学校 編集モーダル -->
 <div id="catedit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);width:100%;max-width:420px;border-radius:14px;padding:18px;max-height:90vh;overflow-y:auto">
@@ -3952,7 +3972,13 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px">
             各スタッフが生徒分析タブで見られる項目と、対象の学校範囲を設定します。未設定のスタッフは何も見られません（管理者は常に全部見られます）。
           </div>
-          <div><div class="form-label">スタッフを選択</div>
+          <div style="border:1px solid #C9E0F5;border-radius:8px;padding:10px;margin-bottom:14px;background:#F4F9FE">
+            <div style="font-size:12px;font-weight:800;color:#1E4276;margin-bottom:4px">🏫 学校担当をまとめて設定</div>
+            <div style="font-size:10px;color:var(--muted);line-height:1.5;margin-bottom:8px">全スタッフの担当校を一覧でチェックして、一括保存できます。「全校」にチェックすると全ての学校を担当します（＝制限なし）。</div>
+            <div id="perm-bulk-school-area" style="overflow-x:auto"><div style="font-size:12px;color:var(--muted);padding:6px">読み込み中…</div></div>
+            <button class="form-btn" onclick="saveBulkSchoolScope()" style="margin-top:10px">💾 学校担当をまとめて保存</button>
+          </div>
+          <div><div class="form-label">スタッフを選択（項目権限の詳細設定）</div>
             <select class="form-select" id="perm-staff-select" onchange="loadStaffPermEditor()"><option value="">選択してください</option></select>
           </div>
           <div id="perm-editor" style="margin-top:12px;display:none">
@@ -4325,7 +4351,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dcb';
+const APP_VERSION = '20260702dcf';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -12988,7 +13014,7 @@ function resetDgridRowFilter() {
 }
 
 
-async function openCalendarReg(presetDate, presetScope, presetSchool) {
+async function openCalendarReg(presetDate, presetScope, presetSchool, presetStaffIds) {
   document.getElementById('calreg-modal').style.display = 'flex';
   // リセット
   calRegScope = null;
@@ -13006,6 +13032,9 @@ async function openCalendarReg(presetDate, presetScope, presetSchool) {
   document.getElementById('calreg-target-panel').style.display = 'none';
   // 学校プリセット（学校ページからの追加）：学校・学年スコープ＋この学校を選択
   if (presetSchool) { calRegSchools.add(presetSchool); if (!presetScope) presetScope = 'school_grade'; }
+  // スタッフ予定プリセット：担当スタッフを対象として事前選択（scope=target, type=staff）
+  const wantStaffPreset = Array.isArray(presetStaffIds) && presetStaffIds.length;
+  if (wantStaffPreset) { presetScope = 'target'; calRegTargetType = 'staff'; }
   renderCalRegColorRow();
   renderCalRegSchoolRow();
   renderCalRegGradeRow();
@@ -13018,6 +13047,17 @@ async function openCalendarReg(presetDate, presetScope, presetSchool) {
   }
   if (!calRegStaffList.length) {
     try { calRegStaffList = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=name') || []; } catch(e) {}
+  }
+  // 担当スタッフを事前チェック
+  if (wantStaffPreset) {
+    setCalRegTargetType('staff');
+    presetStaffIds.forEach(sid => {
+      const p = (calRegStaffList || []).find(x => x.id === sid);
+      calRegTargetIds.add(sid);
+      calRegTargetMeta[sid] = { name: p ? p.name : '?', type: 'staff' };
+    });
+    if (typeof renderCalRegTargetSelected === 'function') renderCalRegTargetSelected();
+    if (typeof renderCalRegTargetList === 'function') renderCalRegTargetList();
   }
   loadCalRegList();
 }
@@ -26449,8 +26489,8 @@ const PROSPECT_STATUS_VALUES = ['問合せ', '☆入塾書待ち', '◎入塾濃
 
 // テンプレCSVをダウンロード（ヘッダ＋記入例1行、UTF-8 BOM付きでExcel文字化け回避）
 function downloadProspectCsvTemplate() {
-  const header = ['氏名', '学校', '学年', '連絡先', '流入経路', '状態', '来塾日', '問合せ日', '次回予定日', 'LINE登録日', '面談日', '保護者面談日', 'メモ'];
-  const example = ['山田太郎', '松山東高校', '高2', '090-0000-0000', 'チラシ', '問合せ', '2026-07-01', '2026-06-28', '2026-07-15', '', '', '', '体験希望'];
+  const header = ['氏名', '学校', '学年', '連絡先', '流入経路', '状態', '来塾日', '問合せ日', '次回予定日', 'LINE登録日', '面談日', '保護者面談日', 'イベント', 'メモ'];
+  const example = ['山田太郎', '松山東高校', '高2', '090-0000-0000', 'チラシ', '問合せ', '2026-07-01', '2026-06-28', '2026-07-15', '', '', '', 'FOC', '体験希望'];
   const lines = [header.join(','), example.join(',')];
   const csv = '\uFEFF' + lines.join('\r\n') + '\r\n';
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -26477,7 +26517,7 @@ async function onProspectCsvSelected(event) {
     // ヘッダ判定＋列マッピング（ヘッダが無ければ既定の並びとみなす）
     let startIdx = 0;
     const head = rows[0].map(c => String(c).trim());
-    let col = { name: 0, school: 1, grade: 2, contact: 3, source: 4, status: 5, visit: 6, inquiry: 7, next: 8, line: -1, interview: -1, parent: -1, note: 9 };
+    let col = { name: 0, school: 1, grade: 2, contact: 3, source: 4, status: 5, visit: 6, inquiry: 7, next: 8, line: -1, interview: -1, parent: -1, event: -1, note: 9 };
     const headerHit = head.some(h => /氏名|名前|name/i.test(h));
     if (headerHit) {
       startIdx = 1;
@@ -26494,6 +26534,7 @@ async function onProspectCsvSelected(event) {
         else if (/面談|interview/i.test(h)) col.interview = idx;
         else if (/LINE|ライン|line/i.test(h)) col.line = idx;
         else if (/次回|予定|next/i.test(h)) col.next = idx;
+        else if (/イベント|event/i.test(h)) col.event = idx;
         else if (/メモ|備考|note/i.test(h)) col.note = idx;
       });
     }
@@ -26560,6 +26601,9 @@ async function onProspectCsvSelected(event) {
         updated_at: nowIso,
         created_by: staffId
       };
+      // イベント名（FOC等）を紐付け用に保持（prospects 本体には保存しない）
+      body._eventName = get(row, col.event) || '';
+      body._visitDate = vd.value || null;
       toInsert.push(body);
     }
 
@@ -26579,18 +26623,55 @@ async function onProspectCsvSelected(event) {
     showLoading('一括登録中...（' + toInsert.length + '件）');
     let ok = 0, fail = 0;
     const failMsgs = [];
-    for (const body of toInsert) {
+    // イベント名→id 解決キャッシュ（無ければ作成）
+    const eventIdByName = {};
+    async function resolveEventId(nm) {
+      if (!nm) return null;
+      const key = nm.trim();
+      if (!key) return null;
+      if (eventIdByName[key] !== undefined) return eventIdByName[key];
+      let id = null;
       try {
-        // 新カラム未作成環境へのフォールバック（saveProspect踏襲）
+        const found = await sbGet('prospect_events', 'name=eq.' + encodeURIComponent(key) + '&is_active=eq.true&select=id&limit=1') || [];
+        if (found.length) id = found[0].id;
+      } catch (e) {}
+      if (!id) {
         try {
-          await sbPost('prospects', body);
+          const created = await sbPostReturn('prospect_events', { name: key, is_active: true, sort_order: 0 });
+          id = (created && created[0]) ? created[0].id : null;
+        } catch (e) {}
+      }
+      eventIdByName[key] = id;
+      return id;
+    }
+    for (const body of toInsert) {
+      const evName = body._eventName; const visitDate = body._visitDate;
+      const clean = Object.assign({}, body); delete clean._eventName; delete clean._visitDate;
+      try {
+        // 新カラム未作成環境へのフォールバック（saveProspect踏襲）。IDが要るので sbPostReturn を使用。
+        let created;
+        try {
+          created = await sbPostReturn('prospects', clean);
         } catch (e1) {
           const m = String(e1 && e1.message || e1);
           if (/visit_date|inquiry_date|line_registered_date|interview_date|parent_interview_date|column|schema|PGRST|400/i.test(m)) {
-            const b2 = Object.assign({}, body); delete b2.visit_date; delete b2.inquiry_date;
+            const b2 = Object.assign({}, clean); delete b2.visit_date; delete b2.inquiry_date;
             delete b2.line_registered_date; delete b2.interview_date; delete b2.parent_interview_date;
-            await sbPost('prospects', b2);
+            created = await sbPostReturn('prospects', b2);
           } else { throw e1; }
+        }
+        const pid = (created && created[0]) ? created[0].id : null;
+        // イベント紐付け（prospect_visits）
+        if (pid && evName) {
+          try {
+            const eid = await resolveEventId(evName);
+            if (eid) {
+              await sbPost('prospect_visits', {
+                prospect_id: pid, event_id: eid,
+                visit_date: visitDate || null, status: 'visited', updated_at: nowIso
+              });
+            }
+          } catch (e) { /* 紐付け失敗はスキップ（本体は登録済み） */ }
         }
         ok++;
       } catch (e) {
@@ -27024,6 +27105,99 @@ async function initStaffPermUI() {
       + staffs.filter(s => s.role !== 'admin').map(s =>
         '<option value="' + escapeHtml(s.staff_id) + '">' + escapeHtml(s.staff_id + '：' + s.name) + '</option>').join('');
   } catch (e) {}
+  renderBulkSchoolScope();
+}
+
+// 全スタッフの学校担当を一覧表で表示（一括編集用）
+async function renderBulkSchoolScope() {
+  const area = document.getElementById('perm-bulk-school-area');
+  if (!area) return;
+  area.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:6px">読み込み中…</div>';
+  let staffs = [], perms = [];
+  try {
+    staffs = await sbGet('staff', 'is_active=eq.true&select=staff_id,name,role&order=staff_id') || [];
+    perms = await sbGet('staff_permissions', 'select=staff_id,school_scope') || [];
+  } catch (e) {
+    area.innerHTML = '<div style="font-size:12px;color:#C0392B;padding:6px">取得に失敗しました。</div>';
+    return;
+  }
+  const scopeByStaff = {};
+  perms.forEach(p => { scopeByStaff[p.staff_id] = p.school_scope; });
+  const targets = staffs.filter(s => s.role !== 'admin');
+  if (!targets.length) { area.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:6px">対象スタッフがいません。</div>'; return; }
+
+  let html = '<table style="border-collapse:collapse;font-size:11px;white-space:nowrap"><thead><tr>' +
+    '<th style="position:sticky;left:0;background:var(--surface);padding:4px 8px;text-align:left;border-bottom:1px solid var(--border)">スタッフ</th>' +
+    '<th style="padding:4px 6px;border-bottom:1px solid var(--border)">全校</th>';
+  SA_SCHOOLS.forEach(sc => { html += '<th style="padding:4px 6px;border-bottom:1px solid var(--border)">' + escapeHtml(sc) + '</th>'; });
+  html += '</tr></thead><tbody>';
+  targets.forEach(s => {
+    const scope = scopeByStaff[s.staff_id];
+    const isAll = (scope === 'all' || scope == null || !Array.isArray(scope));
+    const selected = Array.isArray(scope) ? scope : [];
+    html += '<tr data-staff="' + escapeAttr(s.staff_id) + '">';
+    html += '<td style="position:sticky;left:0;background:var(--surface);padding:4px 8px;border-bottom:1px solid var(--border);font-weight:700">' + escapeHtml(s.name || s.staff_id) + '<span style="font-size:9px;color:var(--muted)"> ' + escapeHtml(s.staff_id) + '</span></td>';
+    html += '<td style="padding:4px 6px;text-align:center;border-bottom:1px solid var(--border)"><input type="checkbox" class="bulk-all-cb" data-staff="' + escapeAttr(s.staff_id) + '" onchange="onBulkAllToggle(this)"' + (isAll ? ' checked' : '') + '></td>';
+    SA_SCHOOLS.forEach(sc => {
+      html += '<td style="padding:4px 6px;text-align:center;border-bottom:1px solid var(--border)"><input type="checkbox" class="bulk-school-cb" data-staff="' + escapeAttr(s.staff_id) + '" value="' + escapeAttr(sc) + '"' + ((!isAll && selected.includes(sc)) ? ' checked' : '') + (isAll ? ' disabled' : '') + '></td>';
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  area.innerHTML = html;
+}
+
+// 「全校」チェックのトグルで、その行の学校チェックを無効化/有効化
+function onBulkAllToggle(cb) {
+  const sid = cb.getAttribute('data-staff');
+  document.querySelectorAll('.bulk-school-cb[data-staff="' + sid + '"]').forEach(x => {
+    x.disabled = cb.checked;
+    if (cb.checked) x.checked = false;
+  });
+}
+
+// 全スタッフの学校担当を一括保存（upsert）
+async function saveBulkSchoolScope() {
+  const rows = document.querySelectorAll('#perm-bulk-school-area tr[data-staff]');
+  if (!rows.length) return;
+  showLoading('保存中...');
+  let ok = 0, err = 0;
+  try {
+    // 既存権限を取得（perms を保持したまま school_scope だけ更新するため）
+    let existing = [];
+    try { existing = await sbGet('staff_permissions', 'select=staff_id,perms') || []; } catch (e) {}
+    const permsByStaff = {};
+    existing.forEach(p => { permsByStaff[p.staff_id] = p.perms || {}; });
+    const existingSet = new Set(existing.map(p => p.staff_id));
+
+    for (const tr of rows) {
+      const sid = tr.getAttribute('data-staff');
+      const allCb = tr.querySelector('.bulk-all-cb');
+      let school_scope;
+      if (allCb && allCb.checked) {
+        school_scope = 'all';
+      } else {
+        const sel = [];
+        tr.querySelectorAll('.bulk-school-cb:checked').forEach(cb => sel.push(cb.value));
+        school_scope = sel;
+      }
+      const payload = { school_scope: school_scope, updated_at: new Date().toISOString() };
+      try {
+        if (existingSet.has(sid)) {
+          await sbPatch('staff_permissions', 'staff_id=eq.' + encodeURIComponent(sid), payload);
+        } else {
+          await sbPost('staff_permissions', Object.assign({ staff_id: sid, perms: permsByStaff[sid] || {} }, payload));
+        }
+        ok++;
+      } catch (e) { err++; }
+    }
+    hideLoading();
+    showToast('🏫 学校担当を保存しました（' + ok + '件' + (err ? '／失敗' + err : '') + '）', err ? 'error' : 'success');
+    renderBulkSchoolScope();
+  } catch (e) {
+    hideLoading();
+    showToast('保存に失敗: ' + (e && e.message ? e.message : e), 'error');
+  }
 }
 
 async function loadStaffPermEditor() {
@@ -28693,7 +28867,7 @@ async function renderSvCalendar() {
       const schoolByGroup = {};
       groups.forEach(g => { schoolByGroup[g.id] = g.school || null; });
       const raw = await sbGet('team_tasks',
-        'node_type=eq.task&status=in.(todo,doing)&due_date=gte.' + todayStr + '&select=title,due_date,parent_id&order=due_date').catch(() => []) || [];
+        'node_type=eq.task&status=in.(todo,doing)&due_date=gte.' + todayStr + '&select=title,due_date,parent_id,school&order=due_date').catch(() => []) || [];
       const subIds = [...new Set((raw || []).map(t => t.parent_id).filter(Boolean))];
       let subParent = {};
       if (subIds.length) {
@@ -28702,7 +28876,8 @@ async function renderSvCalendar() {
       }
       (raw || []).forEach(t => {
         let grp = t.parent_id; if (grp && subParent[grp]) grp = subParent[grp];
-        const sch = grp ? schoolByGroup[grp] : null;
+        // タスク自身の school（学校ページ発の単発TODO）を優先、無ければ親グループ継承
+        const sch = t.school || (grp ? schoolByGroup[grp] : null);
         if (inThisSchool(sch)) items.push({ date: t.due_date, kind: 'task', title: t.title || '', color: '#B9770E' });
       });
     }
@@ -28723,7 +28898,9 @@ async function renderSvCalendar() {
 
   let html = '<div class="sv-card-h">📅 予定・締切（この学校）' +
     '<button onclick="openDgrid(\'school\')" style="float:right;padding:4px 10px;font-size:11px;font-weight:700;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-family:inherit">📋 一覧グリッド</button>' +
-    '<button onclick="openCalendarReg(null,\'school_grade\',\'' + escapeAttr(svSchool) + '\')" style="float:right;margin-right:6px;padding:4px 10px;font-size:11px;font-weight:700;border-radius:8px;border:none;background:linear-gradient(135deg,#F5A623,#E08800);color:#fff;cursor:pointer;font-family:inherit">＋ 予定を追加</button></div>';
+    '<button onclick="openCalendarReg(null,\'school_grade\',\'' + escapeAttr(svSchool) + '\')" style="float:right;margin-right:6px;padding:4px 10px;font-size:11px;font-weight:700;border-radius:8px;border:none;background:linear-gradient(135deg,#F5A623,#E08800);color:#fff;cursor:pointer;font-family:inherit">＋ 予定を追加</button>' +
+    '<button onclick="openSvStaffSchedule()" style="float:right;margin-right:6px;padding:4px 10px;font-size:11px;font-weight:700;border-radius:8px;border:none;background:linear-gradient(135deg,#2D6CB6,#1E4276);color:#fff;cursor:pointer;font-family:inherit">＋ 会議・スタッフ予定</button>' +
+    '<button onclick="openSvTodo()" style="float:right;margin-right:6px;padding:4px 10px;font-size:11px;font-weight:700;border-radius:8px;border:none;background:linear-gradient(135deg,#E9A93C,#C6851B);color:#fff;cursor:pointer;font-family:inherit">＋ TODO</button></div>';
   if (!items.length) {
     html += '<div class="sv-placeholder" style="clear:both">今日以降の予定・締切はありません。</div>';
     sec.innerHTML = html;
@@ -28942,6 +29119,94 @@ async function saveSvWeekly(w) {
     showToast('保存に失敗: ' + (e.message || ''), 'error');
   }
 }
+// 学校ページから学校TODOを登録（team_tasks の task に school を直接付与）。
+// 締切がカレンダー（予定・締切セクション）に自動で乗る。担当スタッフは team_task_assignees。
+async function openSvTodo() {
+  if (!svSchool) return;
+  document.getElementById('svtodo-school').textContent = '🏫 ' + svSchool;
+  document.getElementById('svtodo-title').value = '';
+  document.getElementById('svtodo-detail').value = '';
+  document.getElementById('svtodo-due').value = '';
+  const box = document.getElementById('svtodo-assignees');
+  box.innerHTML = '<div style="font-size:12px;color:var(--muted)">読み込み中…</div>';
+  document.getElementById('svtodo-modal').style.display = 'flex';
+  // スタッフ一覧
+  let staff = [];
+  try { staff = await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=name') || []; } catch (e) {}
+  box.innerHTML = staff.map(s =>
+    '<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">' +
+    '<input type="checkbox" class="svtodo-assignee" value="' + escapeAttr(s.staff_id) + '">' +
+    '<span>' + escapeHtml(s.name || s.staff_id) + '</span></label>'
+  ).join('') || '<div style="font-size:12px;color:var(--muted)">スタッフがいません</div>';
+}
+function closeSvTodo() { document.getElementById('svtodo-modal').style.display = 'none'; }
+
+async function saveSvTodo() {
+  if (!svSchool) return;
+  const title = (document.getElementById('svtodo-title').value || '').trim();
+  if (!title) { showToast('やること（タイトル）を入力してください', 'error'); return; }
+  const detail = (document.getElementById('svtodo-detail').value || '').trim() || null;
+  const due = document.getElementById('svtodo-due').value || null;
+  const assignees = [...document.querySelectorAll('.svtodo-assignee:checked')].map(c => c.value);
+  const by = currentStaff ? (currentStaff.staff_id || null) : null;
+  showLoading('追加中...');
+  try {
+    const baseBody = {
+      title: title, detail: detail, due_date: due,
+      node_type: 'task', parent_id: null, school: svSchool,
+      status: 'todo', complete_rule: 'any', created_by: by, updated_at: new Date().toISOString()
+    };
+    let created;
+    try {
+      created = await sbPostReturn('team_tasks', baseBody);
+    } catch (e1) {
+      const m = String(e1 && e1.message || e1);
+      if (/school|column|PGRST|400/i.test(m)) {
+        const b2 = Object.assign({}, baseBody); delete b2.school;
+        created = await sbPostReturn('team_tasks', b2);
+      } else { throw e1; }
+    }
+    const taskId = created && created[0] ? created[0].id : null;
+    if (taskId && assignees.length) {
+      for (const sid of assignees) {
+        try { await sbPost('team_task_assignees', { task_id: taskId, staff_id: sid, member_status: 'todo', updated_at: new Date().toISOString() }); } catch (e) {}
+      }
+    }
+    hideLoading();
+    showToast('✅ 学校TODOを追加しました', 'success');
+    closeSvTodo();
+    renderSvCalendar();
+  } catch (e) {
+    hideLoading();
+    showToast('追加に失敗: ' + (e && e.message ? e.message : e), 'error');
+  }
+}
+
+// 学校ページから「スタッフ予定（会議など）」を登録。
+// この学校を担当する（staff_permissions.school_scope に含む or 'all'）スタッフを事前チェック。
+async function openSvStaffSchedule() {
+  if (!svSchool) return;
+  let staffIds = [];
+  try {
+    const perms = await sbGet('staff_permissions', 'select=staff_id,school_scope') || [];
+    // school_scope が配列でこの学校を含む、または 'all' のスタッフ
+    const staffCodes = [];
+    (perms || []).forEach(p => {
+      const ss = p.school_scope;
+      if (ss === 'all') { staffCodes.push(p.staff_id); return; }
+      if (Array.isArray(ss) && ss.indexOf(svSchool) >= 0) { staffCodes.push(p.staff_id); return; }
+    });
+    // staff_id(コード) → staff.id(UUID) 解決
+    if (staffCodes.length) {
+      const codeList = staffCodes.map(c => '"' + c + '"').join(',');
+      const rows = await sbGet('staff', 'staff_id=in.(' + codeList + ')&is_active=eq.true&select=id') || [];
+      staffIds = (rows || []).map(r => r.id);
+    }
+  } catch (e) {}
+  // 該当なしでもモーダルは開く（手動で選べる）
+  openCalendarReg(null, 'target', null, staffIds);
+}
+
 // グラフX軸モード切替（年度 / 直近12ヶ月）
 function setTrendGraphMode(mode) {
   trendGraphMode = mode;
