@@ -3619,6 +3619,12 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <div style="font-size:10px;color:#8A5A5A;margin-bottom:8px;line-height:1.5">未登録（⚠️・❓）の名簿だけをまとめて消去します。<b>名簿生・アプリ登録済み（✅）の子は消えません</b>。消した名簿はデータベースには残るため、復旧が必要なときは管理者にご相談ください。</div>
         <button onclick="resetUnregisteredRoster()" style="width:100%;padding:9px;background:#fff;border:1.5px solid #C0392B;border-radius:8px;color:#C0392B;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🗑 未登録の名簿をリセット</button>
       </div>
+      <div style="background:#FEF7EC;border:1px solid #E8C98A;border-radius:8px;padding:10px;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:#96690F;margin-bottom:6px">④ 重複生徒の統合</div>
+        <div style="font-size:10px;color:#7A5A2A;margin-bottom:8px;line-height:1.5">同じ氏名＋学校で<b>複数の生徒</b>ができてしまったものを検出します（異体字ゆれ・仮アカウント重複など）。統合すると、<b>片方の出欠・ポイント・受講などの履歴をもう片方に付け替え</b>てから、余分な方を除外します。アプリ登録済み（実アカウント）を残す想定です。<b>統合は取り消せません</b>ので、内容をよく確認してから実行してください。</div>
+        <button onclick="detectDuplicateStudents()" style="width:100%;padding:9px;background:linear-gradient(135deg,#E9A93C,#C6851B);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔎 重複を検出する</button>
+        <div id="dup-merge-area" style="margin-top:10px"></div>
+      </div>
       <div id="roster-import-summary"></div>
       <div id="enroll-date-editor" style="margin-bottom:12px"></div>
       <div id="roster-list-area"></div>
@@ -4319,7 +4325,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dby';
+const APP_VERSION = '20260702dcb';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -8807,17 +8813,27 @@ async function approveApplication(id, name, email, school, grade) {
 
     // 自動昇格：同名・同校の「名簿生（roster_only）」が既にいれば、新規作成せずその行を昇格。
     // （メール/PIN を付与し roster_only=false。出欠・科目・集計の履歴をそのまま引き継ぐ）
+    // 異体字ゆれは normalizeName(NFKC＋異体字マップ) で吸収して照合する。
     let promoted = false;
     try {
       const cand = await sbGet('students',
-        'select=id,name,school,roster_only&order=created_at.desc&limit=200') || [];
-      const hit = cand.find(s => s.roster_only === true
-        && rosterKey(s.name, s.school) === rosterKey(name, school));
-      if (hit) {
-        await sbPatch('students', 'id=eq.' + hit.id, {
-          email: email, pin: pin, student_no: pin, roster_only: false
-        });
+        'select=id,name,school,roster_only,email&order=created_at.desc&limit=500') || [];
+      const key = rosterKey(name, school);
+      // ① まず既にアプリ登録済み（roster_only でない実アカウント）が同一人物ならそれを優先し、新規作成しない
+      const realHit = cand.find(s => s.roster_only !== true && rosterKey(s.name, s.school) === key);
+      if (realHit) {
+        // 実アカウントが既に存在 → 重複を作らず、メール/PINを最新で更新
+        await sbPatch('students', 'id=eq.' + realHit.id, { email: email, pin: pin, student_no: pin });
         promoted = true;
+      } else {
+        // ② 名簿生（roster_only）がいれば昇格
+        const hit = cand.find(s => s.roster_only === true && rosterKey(s.name, s.school) === key);
+        if (hit) {
+          await sbPatch('students', 'id=eq.' + hit.id, {
+            email: email, pin: pin, student_no: pin, roster_only: false
+          });
+          promoted = true;
+        }
       }
     } catch (e) { /* roster_only 列が無い等は無視して通常INSERTへ */ }
 
@@ -28483,7 +28499,9 @@ async function renderSvInterviews() {
   let students = [];
   try {
     students = await sbGet('students',
-      'school=eq.' + encodeURIComponent(svSchool) + '&is_active=eq.true&select=id,name,grade,course_track,enroll_date') || [];
+      'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason') || [];
+    // 除外（デモ・テスト）は落とす。退塾・卒業は含める。
+    students = students.filter(s => s.inactive_reason !== '除外');
   } catch (e) {
     sec.innerHTML = '<div class="sv-card-h">👥 学年別名簿（この学校）</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">生徒の取得に失敗しました。</div>';
     return;
@@ -28538,8 +28556,10 @@ async function renderSvInterviews() {
   // 学年グルーピング（1年→2年→3年、各学年は入塾日昇順）
   const byGrade = { '1': [], '2': [], '3': [], 'other': [] };
   students.forEach(s => {
-    const g = String(s.grade || '');
-    if (byGrade[g]) byGrade[g].push(s); else byGrade['other'].push(s);
+    // grade は「1年」「2年」「3年」形式が主。数字だけ取り出して振り分ける。
+    const digits = String(s.grade || '').replace(/[^0-9]/g, '');
+    const g = (digits === '1' || digits === '2' || digits === '3') ? digits : 'other';
+    byGrade[g].push(s);
   });
   Object.keys(byGrade).forEach(g => {
     byGrade[g].sort((a, b) => (a.enroll_date || '9999-99-99').localeCompare(b.enroll_date || '9999-99-99'));
@@ -28548,7 +28568,7 @@ async function renderSvInterviews() {
   const md = (d) => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10)) : '?';
 
   let html = '<div class="sv-card-h">👥 学年別名簿（この学校）</div>';
-  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／在籍' + students.length + '名（入塾日順）</div>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／' + students.length + '名（入塾日順・退塾/卒業含む）</div>';
 
   const gradeOrder = [['1', '高1'], ['2', '高2'], ['3', '高3'], ['other', 'その他']];
   gradeOrder.forEach(([gk, glabel]) => {
@@ -28570,7 +28590,12 @@ async function renderSvInterviews() {
       const subs = subjectsByStudent[s.id] ? [...subjectsByStudent[s.id]] : [];
       const ivg = ivByStudent[s.id];
       html += '<tr style="border-top:1px solid var(--border);vertical-align:top">';
-      html += '<td style="padding:6px;white-space:nowrap;font-weight:700"><span onclick="openInterviewKarte(\'' + escapeAttr(String(s.id)) + '\',\'school\')" style="color:#2D6CB6;cursor:pointer;text-decoration:underline">' + escapeHtml(s.name || '') + '</span></td>';
+      const statusBadge = (s.is_active === false)
+        ? (s.inactive_reason === '退塾'
+          ? '<span style="font-size:9px;color:#C0392B;background:#FCE9E7;border-radius:6px;padding:1px 5px;margin-left:5px">退塾</span>'
+          : '<span style="font-size:9px;color:#7A6A2A;background:#F3EEDD;border-radius:6px;padding:1px 5px;margin-left:5px">卒業</span>')
+        : '';
+      html += '<td style="padding:6px;white-space:nowrap;font-weight:700"><span onclick="openInterviewKarte(\'' + escapeAttr(String(s.id)) + '\',\'school\')" style="color:#2D6CB6;cursor:pointer;text-decoration:underline">' + escapeHtml(s.name || '') + '</span>' + statusBadge + '</td>';
       html += '<td style="padding:6px;white-space:nowrap;color:var(--muted)">' + escapeHtml(s.course_track || '—') + '</td>';
       html += '<td style="padding:6px">' + (subs.length
         ? subs.map(x => '<span style="display:inline-block;font-size:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:1px 6px;margin:1px 2px 1px 0;white-space:nowrap">' + escapeHtml(x) + '</span>').join('')
@@ -31282,8 +31307,37 @@ function parseCsvDateStrict(s) {
 }
 
 // 氏名の正規化（表記ゆれ吸収）：全角/半角スペース除去・トリム・小文字化
+// 氏名の異体字ゆれ吸収マップ（NFKCで拾えない旧字・異体字を新字に寄せる）。
+// 照合キー専用。表示名は元のまま保持する。
+const NAME_VARIANT_MAP = {
+  '髙': '高', '﨑': '崎', '嵜': '崎',
+  '邊': '辺', '邉': '辺',
+  '齋': '斎', '齊': '斉', '斈': '学',
+  '澤': '沢', '𣘺': '橋', '橳': '橋',
+  '德': '徳', '濵': '浜', '濱': '浜',
+  '槇': '槙', '祐': '祐', '祿': '禄',
+  '恵': '恵', '桒': '桑', '曻': '昇',
+  '塚': '塚', '峯': '峰', '莊': '荘',
+  '萬': '万', '與': '与', '兒': '児',
+  '廣': '広', '惠': '恵', '晄': '晃',
+  '琢': '琢', '祢': '禰', '曾': '曽',
+  '瀨': '瀬', '賴': '頼', '遙': '遥',
+  '鄕': '郷', '禮': '礼', '穰': '穣',
+  '眞': '真', '龍': '竜', '國': '国',
+  '對': '対', '應': '応', '樂': '楽'
+};
+function foldNameVariants(s) {
+  let out = '';
+  for (const ch of String(s)) out += (NAME_VARIANT_MAP[ch] || ch);
+  return out;
+}
 function normalizeName(s) {
-  return String(s == null ? '' : s)
+  let str = String(s == null ? '' : s);
+  // Unicode 正規化（NFKC）で互換異体字（﨑 U+FA11 → 崎 等）を吸収
+  try { str = str.normalize('NFKC'); } catch (e) {}
+  // NFKC で吸収されない旧字・異体字を明示マップで新字へ
+  str = foldNameVariants(str);
+  return str
     .replace(/[\s\u3000]+/g, '')
     .trim()
     .toLowerCase();
@@ -31331,6 +31385,138 @@ async function excludeDuplicateStudent(studentId, name) {
   } catch (e) {
     hideLoading();
     showToast('除外に失敗しました：' + (e && e.message ? e.message : e), 'error');
+  }
+}
+
+// ============================================================
+// 重複生徒の検出＆統合（daa）
+//   同じ rosterKey（正規化氏名＋学校）で複数の在籍生徒がいる組を検出。
+//   統合＝片方(from)の履歴を student_id 付け替えで他方(to)へ移し、from を除外。
+//   残す側(to)はアプリ登録済み（実アカウント）を優先。
+// ============================================================
+
+// 履歴を付け替える対象テーブル（student_id 列）。列が無いテーブルは try で握りつぶす。
+const MERGE_STUDENT_TABLES = [
+  'checkins', 'point_logs', 'class_enrollments', 'session_attendance', 'class_attendance',
+  'student_interviews', 'interview_goals', 'check_logs', 'mission_logs', 'quiz_logs',
+  'review_logs', 'study_logs', 'video_makeups', 'mini_quiz_results', 'mini_quiz_assignments',
+  'annual_enrollment', 'student_exams', 'student_exam_scores', 'checkin_qr_tokens'
+];
+// student_id ではなく target_student_id を使うテーブル
+const MERGE_TARGET_STUDENT_TABLES = ['check_items'];
+
+function isRealAccount(s) {
+  const email = String(s.email || '').toLowerCase();
+  const isRosterMail = /^roster\+.*@fit\.local$/.test(email);
+  return !isRosterMail; // 実メール＝アプリ登録済み
+}
+
+async function detectDuplicateStudents() {
+  const area = document.getElementById('dup-merge-area');
+  if (!area) return;
+  area.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">検出中…</div>';
+  let students = [];
+  try {
+    students = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade,email,points,roster_only,enroll_date&order=created_at') || [];
+  } catch (e) {
+    area.innerHTML = '<div style="font-size:12px;color:#C0392B;padding:8px">生徒の取得に失敗しました。</div>';
+    return;
+  }
+  students = students.filter(s => s.inactive_reason !== '除外');
+  // rosterKey でグルーピング
+  const groups = {};
+  students.forEach(s => {
+    const k = rosterKey(s.name, s.school);
+    (groups[k] = groups[k] || []).push(s);
+  });
+  const dupGroups = Object.keys(groups).map(k => groups[k]).filter(g => g.length >= 2);
+
+  if (!dupGroups.length) {
+    area.innerHTML = '<div style="font-size:12px;color:#1E8449;padding:8px;background:#EAF6EE;border-radius:8px">✅ 重複は見つかりませんでした。</div>';
+    return;
+  }
+
+  window._dupStudentMap = {};
+  students.forEach(s => { window._dupStudentMap[s.id] = s; });
+
+  let html = '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + dupGroups.length + '組の重複候補が見つかりました。残す側（実アカウント優先）を確認して統合してください。</div>';
+  dupGroups.forEach((g, gi) => {
+    // 残す側の推奨：実アカウント優先→ポイント多い→入塾日が古い
+    const sorted = g.slice().sort((a, b) => {
+      const ra = isRealAccount(a) ? 0 : 1, rb = isRealAccount(b) ? 0 : 1;
+      if (ra !== rb) return ra - rb;
+      if ((b.points || 0) !== (a.points || 0)) return (b.points || 0) - (a.points || 0);
+      return (a.enroll_date || '9999').localeCompare(b.enroll_date || '9999');
+    });
+    const keepId = sorted[0].id;
+    html += '<div style="border:1px solid #E8C98A;border-radius:8px;padding:10px;margin-bottom:8px;background:#fff">';
+    html += '<div style="font-size:12px;font-weight:800;color:#96690F;margin-bottom:6px">' + escapeHtml(sorted[0].name || '') + '（' + escapeHtml(sorted[0].school || '') + ' ' + (sorted[0].grade || '') + '年）</div>';
+    html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">残す側を選択：</div>';
+    html += '<div style="display:flex;flex-direction:column;gap:4px">';
+    g.forEach(s => {
+      const real = isRealAccount(s);
+      const badge = real ? '<span style="font-size:9px;color:#1E8449;background:#EAF6EE;border-radius:6px;padding:1px 6px">✅アプリ登録</span>' : '<span style="font-size:9px;color:#96690F;background:#FEF3E0;border-radius:6px;padding:1px 6px">仮アカ</span>';
+      html += '<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:4px 6px;border:1px solid var(--border);border-radius:6px">' +
+        '<input type="radio" name="dupkeep-' + gi + '" value="' + escapeAttr(String(s.id)) + '"' + (s.id === keepId ? ' checked' : '') + '>' +
+        badge + '<span style="flex:1;min-width:0;color:var(--text)">' + escapeHtml(String(s.email || '(メールなし)')) + '</span>' +
+        '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' + (s.points || 0) + 'pt' + (s.enroll_date ? '・入塾' + String(s.enroll_date).slice(5).replace('-', '/') : '') + '</span>' +
+        '</label>';
+    });
+    html += '</div>';
+    const otherIds = g.map(s => s.id);
+    html += '<button onclick="mergeStudents(' + gi + ',[' + otherIds.map(x => "'" + escapeAttr(String(x)) + "'").join(',') + '])" ' +
+      'style="margin-top:8px;width:100%;padding:8px;background:linear-gradient(135deg,#E9A93C,#C6851B);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">🔗 選択した側に統合する</button>';
+    html += '</div>';
+  });
+  area.innerHTML = html;
+}
+
+async function mergeStudents(groupIndex, allIds) {
+  const sel = document.querySelector('input[name="dupkeep-' + groupIndex + '"]:checked');
+  if (!sel) { showToast('残す側を選んでください', 'error'); return; }
+  const keepId = sel.value;
+  const fromIds = allIds.filter(id => id !== keepId);
+  if (!fromIds.length) { showToast('統合対象がありません', 'error'); return; }
+
+  const keep = (window._dupStudentMap && window._dupStudentMap[keepId]) ? window._dupStudentMap[keepId] : null;
+  const keepName = keep ? keep.name : '';
+  if (!confirm('「' + keepName + '」に統合します。\n\n他の ' + fromIds.length + ' 件の履歴（出欠・ポイント・受講など）をこの生徒に付け替え、余分な方を除外します。\n\nこの操作は取り消せません。よろしいですか？')) return;
+
+  showLoading('統合中...');
+  let moved = 0, errors = 0;
+  try {
+    for (const fromId of fromIds) {
+      // student_id 系テーブルを付け替え
+      for (const tbl of MERGE_STUDENT_TABLES) {
+        try { await sbPatch(tbl, 'student_id=eq.' + encodeURIComponent(fromId), { student_id: keepId }); moved++; }
+        catch (e) { /* 列が無い/該当なしは無視 */ }
+      }
+      // target_student_id 系テーブル
+      for (const tbl of MERGE_TARGET_STUDENT_TABLES) {
+        try { await sbPatch(tbl, 'target_student_id=eq.' + encodeURIComponent(fromId), { target_student_id: keepId }); }
+        catch (e) {}
+      }
+      // 残す側に入塾日が無く、from にあれば補完
+      try {
+        const fromS = (window._dupStudentMap || {})[fromId];
+        if (fromS && fromS.enroll_date && keep && !keep.enroll_date) {
+          await sbPatch('students', 'id=eq.' + encodeURIComponent(keepId), { enroll_date: fromS.enroll_date });
+          keep.enroll_date = fromS.enroll_date;
+        }
+      } catch (e) {}
+      // from を除外（論理削除）
+      try {
+        await sbPatch('students', 'id=eq.' + encodeURIComponent(fromId), { is_active: false, inactive_at: new Date().toISOString(), inactive_reason: '除外' });
+      } catch (e) { errors++; }
+    }
+    demoStudentIdSet = null;
+    hideLoading();
+    showToast('🔗 統合しました（' + fromIds.length + '件を「' + keepName + '」へ）', 'success');
+    detectDuplicateStudents();
+    if (typeof loadRosterList === 'function') loadRosterList();
+  } catch (e) {
+    hideLoading();
+    showToast('統合中にエラー：' + (e && e.message ? e.message : e), 'error');
   }
 }
 
