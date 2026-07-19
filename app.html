@@ -2574,14 +2574,10 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div class="sv-placeholder">読み込み中…</div>
     </div>
 
-    <!-- ===== 下段：週報進捗／問い合わせまとめ ===== -->
+    <!-- ===== 下段：週報進捗 ===== -->
     <div class="sv-grid-bottom">
       <div class="sv-card" id="sv-weekly-section">
         <div class="sv-card-h">📅 週報進捗（1W／2W／3W）</div>
-        <div class="sv-placeholder">読み込み中…</div>
-      </div>
-      <div class="sv-card" id="sv-inquiry-section">
-        <div class="sv-card-h">💬 問い合わせ一覧</div>
         <div class="sv-placeholder">読み込み中…</div>
       </div>
     </div>
@@ -4323,7 +4319,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dbt';
+const APP_VERSION = '20260702dbw';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -12976,7 +12972,7 @@ function resetDgridRowFilter() {
 }
 
 
-async function openCalendarReg(presetDate, presetScope) {
+async function openCalendarReg(presetDate, presetScope, presetSchool) {
   document.getElementById('calreg-modal').style.display = 'flex';
   // リセット
   calRegScope = null;
@@ -12992,6 +12988,8 @@ async function openCalendarReg(presetDate, presetScope) {
   document.querySelectorAll('.calreg-scope-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('calreg-sg-panel').style.display = 'none';
   document.getElementById('calreg-target-panel').style.display = 'none';
+  // 学校プリセット（学校ページからの追加）：学校・学年スコープ＋この学校を選択
+  if (presetSchool) { calRegSchools.add(presetSchool); if (!presetScope) presetScope = 'school_grade'; }
   renderCalRegColorRow();
   renderCalRegSchoolRow();
   renderCalRegGradeRow();
@@ -13165,6 +13163,8 @@ async function submitCalendarReg() {
     loadCalRegList();
     // ホームカレンダーを更新
     if (typeof loadStaffHomeCalendar === 'function') loadStaffHomeCalendar();
+    // 学校ページを開いていれば予定セクションを更新
+    if (typeof svSchool !== 'undefined' && svSchool && typeof renderSvCalendar === 'function') renderSvCalendar();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message + '（add_event_scope.sql 未実行かも）', 'error'); }
 }
 
@@ -27953,7 +27953,6 @@ async function openSchoolView(backTo) {
     renderSvCalendar();
     renderSvInout();
     renderSvWeekly();
-    renderSvInquiry();
     if (status) status.textContent = '';
   } catch (e) {
     if (sec) sec.innerHTML = '<div class="sv-card-h">📊 請求ベース在籍人数</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">在籍データの取得に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
@@ -28065,7 +28064,7 @@ function renderSvSchoolTabs() {
   }).join('');
 }
 
-function setSvSchool(s) { svSchool = s; renderSvSchoolTabs(); renderSvPeriodBar(); renderSvEnroll(); renderSvGoal(); renderSvGradeNotes(); renderSvInterviews(); renderSvCalendar(); renderSvInout(); renderSvWeekly(); renderSvInquiry(); }
+function setSvSchool(s) { svSchool = s; renderSvSchoolTabs(); renderSvPeriodBar(); renderSvEnroll(); renderSvGoal(); renderSvGradeNotes(); renderSvInterviews(); renderSvCalendar(); renderSvInout(); renderSvWeekly(); }
 function setSvMemMode(m) { svMemMode = m; renderSvEnroll(); renderSvGoal(); }
 function setSvFY(y) { svFY = parseInt(y, 10); renderSvEnroll(); renderSvGoal(); }
 function toggleSvPrevYear() { svShowPrevYear = !svShowPrevYear; renderSvEnroll(); }
@@ -28518,47 +28517,62 @@ async function renderSvInterviews() {
     return;
   }
 
-  // 生徒ごとにグルーピング（rows は日付降順なので各生徒内も降順）
+  // 生徒ごと → さらに日付ごとにグルーピング（同一日はまとめる）。rows は日付降順。
   const byStudent = {};
-  rows.forEach(r => { (byStudent[r.student_id] = byStudent[r.student_id] || []).push(r); });
+  rows.forEach(r => {
+    const sid = r.student_id;
+    const d = r.interview_date || '';
+    if (!byStudent[sid]) byStudent[sid] = { dates: [], byDate: {} };
+    const grp = byStudent[sid];
+    if (!grp.byDate[d]) { grp.byDate[d] = []; grp.dates.push(d); }
+    grp.byDate[d].push(r);
+  });
   // 生徒の並び：直近面談が新しい順
   const studentIds = Object.keys(byStudent).sort((a, b) => {
-    const la = byStudent[a][0].interview_date || '', lb = byStudent[b][0].interview_date || '';
+    const la = byStudent[a].dates[0] || '', lb = byStudent[b].dates[0] || '';
     return lb.localeCompare(la);
   });
 
-  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／' + studentIds.length + '名・全' + rows.length + '件</div>';
+  const dateCount = studentIds.reduce((n, sid) => n + byStudent[sid].dates.length, 0);
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／' + studentIds.length + '名・' + dateCount + '面談日</div>';
   html += '<div style="display:flex;flex-direction:column">';
   studentIds.forEach(sid => {
-    const list = byStudent[sid];
+    const grp = byStudent[sid];
     const nm = nameById[sid] || sid;
     const gr = gradeById[sid] ? ('高' + gradeById[sid]) : '';
     html += '<div style="padding:8px 0;border-bottom:1px solid var(--border)">';
-    // 氏名 ＋ 日付チップ横並び
+    // 氏名 ＋ 日付チップ横並び（同一日は1チップ）
     html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
     html += '<span style="font-size:13px;font-weight:700;color:#1E4276;white-space:nowrap;min-width:96px">' + escapeHtml(nm) + (gr ? '<span style="font-size:10px;color:var(--muted);font-weight:400"> ' + escapeHtml(gr) + '</span>' : '') + '</span>';
-    list.forEach(r => {
-      const open = !!svIvExpanded[r.id];
-      const d = r.interview_date ? (parseInt(r.interview_date.slice(5, 7), 10) + '/' + parseInt(r.interview_date.slice(8, 10), 10)) : '?';
-      const parentBadge = r.share_to_parent ? '👪' : '';
-      html += '<button type="button" onclick="svToggleIv(\'' + escapeAttr(String(r.id)) + '\')" ' +
+    grp.dates.forEach(d => {
+      const key = sid + '|' + d;
+      const open = !!svIvExpanded[key];
+      const recs = grp.byDate[d];
+      const dLbl = d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10)) : '?';
+      const parentBadge = recs.some(r => r.share_to_parent) ? '👪' : '';
+      const multi = recs.length > 1 ? ('<span style="font-size:9px;opacity:0.8"> ×' + recs.length + '</span>') : '';
+      html += '<button type="button" onclick="svToggleIv(\'' + escapeAttr(key) + '\')" ' +
         'style="padding:3px 10px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:inherit;' +
         (open ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--text)') + '">' +
-        escapeHtml(d) + parentBadge + '</button>';
+        escapeHtml(dLbl) + parentBadge + multi + '</button>';
     });
     html += '</div>';
-    // 展開された面談の本文
-    list.forEach(r => {
-      if (!svIvExpanded[r.id]) return;
-      const who = r.interviewer ? (staffMap[r.interviewer] || r.interviewer) : '';
-      const dateStr = r.interview_date ? String(r.interview_date).replace(/-/g, '/') : '';
-      const staffMemo = '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">' + escapeHtml(r.note || '（スタッフメモなし）') + '</div>';
-      const studentMemo = r.student_note
-        ? '<div style="font-size:11px;color:#2E6B12;background:#F1F8ED;border-radius:6px;padding:6px 8px;margin-top:4px;white-space:pre-wrap;line-height:1.5">💬 生徒共有：' + escapeHtml(r.student_note) + '</div>'
-        : '';
-      html += '<div style="margin-top:6px;padding:8px 10px;background:var(--surface2);border-radius:8px">' +
-        '<div style="font-size:11px;color:var(--muted);margin-bottom:3px">' + escapeHtml(dateStr) + (who ? '　担当 ' + escapeHtml(who) : '') + '</div>' +
-        staffMemo + studentMemo + '</div>';
+    // 展開された日付の本文（その日の全レコードをまとめて表示）
+    grp.dates.forEach(d => {
+      const key = sid + '|' + d;
+      if (!svIvExpanded[key]) return;
+      const recs = grp.byDate[d];
+      const dateStr = d ? String(d).replace(/-/g, '/') : '';
+      recs.forEach(r => {
+        const who = r.interviewer ? (staffMap[r.interviewer] || r.interviewer) : '';
+        const staffMemo = '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">' + escapeHtml(r.note || '（スタッフメモなし）') + '</div>';
+        const studentMemo = r.student_note
+          ? '<div style="font-size:11px;color:#2E6B12;background:#F1F8ED;border-radius:6px;padding:6px 8px;margin-top:4px;white-space:pre-wrap;line-height:1.5">💬 生徒共有：' + escapeHtml(r.student_note) + '</div>'
+          : '';
+        html += '<div style="margin-top:6px;padding:8px 10px;background:var(--surface2);border-radius:8px">' +
+          '<div style="font-size:11px;color:var(--muted);margin-bottom:3px">' + escapeHtml(dateStr) + (who ? '　担当 ' + escapeHtml(who) : '') + '</div>' +
+          staffMemo + studentMemo + '</div>';
+      });
     });
     html += '</div>';
   });
@@ -28643,14 +28657,15 @@ async function renderSvCalendar() {
   items.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 
   let html = '<div class="sv-card-h">📅 予定・締切（この学校）' +
-    '<button onclick="openDgrid(\'school\')" style="float:right;padding:4px 10px;font-size:11px;font-weight:700;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-family:inherit">📋 一覧グリッド</button></div>';
+    '<button onclick="openDgrid(\'school\')" style="float:right;padding:4px 10px;font-size:11px;font-weight:700;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-family:inherit">📋 一覧グリッド</button>' +
+    '<button onclick="openCalendarReg(null,\'school_grade\',\'' + escapeAttr(svSchool) + '\')" style="float:right;margin-right:6px;padding:4px 10px;font-size:11px;font-weight:700;border-radius:8px;border:none;background:linear-gradient(135deg,#F5A623,#E08800);color:#fff;cursor:pointer;font-family:inherit">＋ 予定を追加</button></div>';
   if (!items.length) {
-    html += '<div class="sv-placeholder">今日以降の予定・締切はありません。</div>';
+    html += '<div class="sv-placeholder" style="clear:both">今日以降の予定・締切はありません。</div>';
     sec.innerHTML = html;
     return;
   }
   const kindLabel = { event: '予定', task: 'タスク', campaign: '締切' };
-  html += '<div style="display:flex;flex-direction:column;gap:2px">';
+  html += '<div style="display:flex;flex-direction:column;gap:2px;clear:both">';
   items.forEach(it => {
     const d = it.date ? new Date(it.date + 'T00:00:00+09:00') : null;
     const ds = d ? ((d.getMonth() + 1) + '/' + d.getDate() + '(' + DGRID_WD[d.getDay()] + ')') : '';
@@ -28862,55 +28877,6 @@ async function saveSvWeekly(w) {
     showToast('保存に失敗: ' + (e.message || ''), 'error');
   }
 }
-
-// ============================================================
-// 学校カルテ：問い合わせまとめ（dbq）
-//   この学校の prospects を問合せ日の新しい順に一覧（過去の問い合わせ一覧）。
-//   来塾メモは不要（要望により省略）。
-// ============================================================
-async function renderSvInquiry() {
-  const sec = document.getElementById('sv-inquiry-section');
-  if (!sec || !svSchool) return;
-  sec.innerHTML = '<div class="sv-card-h">💬 問い合わせ一覧</div><div class="sv-placeholder">読み込み中…</div>';
-
-  let rows = [];
-  try {
-    rows = await sbGet('prospects',
-      'school=eq.' + encodeURIComponent(svSchool) + '&select=*') || [];
-  } catch (e) {
-    sec.innerHTML = '<div class="sv-card-h">💬 問い合わせ一覧</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">取得に失敗しました（' + escapeHtml(String(e && e.message || e)) + '）。</div>';
-    return;
-  }
-  // 問合せ日（無ければ作成日）で新しい順
-  const keyOf = (p) => (p.inquiry_date || (p.created_at || '').slice(0, 10) || '');
-  rows.sort((a, b) => keyOf(b).localeCompare(keyOf(a)));
-
-  let html = '<div class="sv-card-h">💬 問い合わせ一覧</div>';
-  if (!rows.length) {
-    html += '<div class="sv-placeholder">この学校の問い合わせ記録はまだありません。</div>';
-    sec.innerHTML = html;
-    return;
-  }
-  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／全' + rows.length + '件（新しい順）</div>';
-  html += '<div style="display:flex;flex-direction:column">';
-  const md = (d) => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10)) : '';
-  rows.forEach(p => {
-    const st = (typeof normalizeProspectStatus === 'function') ? normalizeProspectStatus(p.status) : (p.status || '');
-    const enrolled = !!p.enrolled_student_id;
-    const stColor = enrolled ? '#1E8449' : (st === '×見送り' ? '#7F8C8D' : '#B9770E');
-    const stLabel = enrolled ? '入塾済' : (st || '問合せ');
-    const d = keyOf(p);
-    const gr = p.grade ? ('高' + p.grade) : '';
-    html += '<div style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid var(--border)">' +
-      '<span style="font-size:12px;font-weight:700;color:var(--text);min-width:46px;white-space:nowrap">' + escapeHtml(md(d)) + '</span>' +
-      '<span style="font-size:13px;color:var(--text);flex:1;min-width:0">' + escapeHtml(p.name || '(名前なし)') + (gr ? '<span style="font-size:10px;color:var(--muted);margin-left:4px">' + escapeHtml(gr) + '</span>' : '') + '</span>' +
-      '<span style="font-size:10px;font-weight:700;color:#fff;background:' + stColor + ';border-radius:8px;padding:1px 8px;white-space:nowrap">' + escapeHtml(stLabel) + '</span>' +
-      '</div>';
-  });
-  html += '</div>';
-  sec.innerHTML = html;
-}
-
 // グラフX軸モード切替（年度 / 直近12ヶ月）
 function setTrendGraphMode(mode) {
   trendGraphMode = mode;
