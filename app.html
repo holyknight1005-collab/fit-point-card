@@ -1014,6 +1014,22 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
   </div>
 </div>
 
+<!-- dbk: 大カテゴリー 部・学校 編集モーダル -->
+<div id="catedit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);width:100%;max-width:420px;border-radius:14px;padding:18px;max-height:90vh;overflow-y:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div style="font-size:15px;font-weight:800;color:var(--text)">🏫 部・学校を編集</div>
+      <button onclick="closeCatEdit()" style="padding:5px 12px;font-size:13px;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">× 閉じる</button>
+    </div>
+    <div id="catedit-name" style="font-size:13px;font-weight:700;color:#1E4276;margin-bottom:12px"></div>
+    <div class="form-label">部（複数選択可／未選択＝全体）</div>
+    <div id="catedit-dept-row" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
+    <div class="form-label">学校（複数選択可／未選択＝全体）</div>
+    <div id="catedit-school-row" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
+    <button onclick="saveCatEdit()" style="width:100%;padding:10px;background:linear-gradient(135deg,#2D6CB6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">💾 保存</button>
+  </div>
+</div>
+
 <!-- dbc: 一覧グリッド（部/学校担当 × 日付・半月帯） -->
 <div id="dgrid-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:660;align-items:stretch;justify-content:center">
   <div style="background:var(--bg);width:100%;height:100%;display:flex;flex-direction:column;overflow:hidden">
@@ -1037,6 +1053,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
       <button onclick="closeDgrid()" style="padding:6px 14px;font-size:13px;font-weight:700;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">× 閉じる</button>
     </div>
+    <div id="dgrid-filter-bar" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 16px;border-bottom:1px solid var(--border);flex:0 0 auto;background:var(--surface)"></div>
     <div id="dgrid-body" style="flex:1 1 auto;overflow:auto;padding:12px 16px"></div>
   </div>
 </div>
@@ -2957,6 +2974,8 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <select class="form-input-sm" id="th-cat-goal" style="width:100%;margin-bottom:8px"></select>
           <div class="form-label">部（任意・複数選択可／未選択＝全体）</div>
           <div id="th-cat-dept-row" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
+          <div class="form-label">学校（任意・複数選択可／未選択＝全体）</div>
+          <div id="th-cat-school-row" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
           <button onclick="createTeamCategory()" style="width:100%;padding:9px;background:#1E4276;border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋大カテゴリーを作成</button>
         </div>
         <!-- 小チーム作成 -->
@@ -4294,7 +4313,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dbg';
+const APP_VERSION = '20260702dbl';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -12544,6 +12563,38 @@ function resetDeptRow(rowId) {
   renderDeptRow(rowId);
 }
 
+// ===== 学校（school）割り振り 共通ヘルパー（deptと同じ設計） =====
+const FIT_TT_SCHOOLS = ['松山東','松山南','松山北','松山中央','松山西','愛大附属','済美','SSS','その他'];
+// 各ピッカーの選択状態: rowId -> Set(school)
+const fitSchoolSel = {};
+function renderSchoolRow(rowId) {
+  const box = document.getElementById(rowId);
+  if (!box) return;
+  const sel = fitSchoolSel[rowId] || (fitSchoolSel[rowId] = new Set());
+  box.innerHTML = FIT_TT_SCHOOLS.map(s => {
+    const on = sel.has(s);
+    return '<button type="button" onclick="toggleTtSchool(\'' + rowId + '\',\'' + escapeAttr(s) + '\')" ' +
+      'style="padding:6px 12px;font-size:12px;font-weight:700;border-radius:14px;cursor:pointer;' +
+      'font-family:\'Noto Sans JP\',sans-serif;border:1.5px solid ' + (on ? '#2D6CB6' : 'var(--border)') + ';' +
+      'background:' + (on ? 'var(--blue-l,#E3EEFB)' : 'var(--surface)') + ';color:' + (on ? '#1E4276' : 'var(--text)') + '">' +
+      escapeHtml(s) + '</button>';
+  }).join('');
+}
+function toggleTtSchool(rowId, s) {
+  const sel = fitSchoolSel[rowId] || (fitSchoolSel[rowId] = new Set());
+  if (sel.has(s)) sel.delete(s); else sel.add(s);
+  renderSchoolRow(rowId);
+}
+function getSchoolCSV(rowId) {
+  const sel = fitSchoolSel[rowId];
+  if (!sel || !sel.size) return null;
+  return FIT_TT_SCHOOLS.filter(s => sel.has(s)).join(',');
+}
+function resetSchoolRow(rowId) {
+  fitSchoolSel[rowId] = new Set();
+  renderSchoolRow(rowId);
+}
+
 // ============================================================
 // dbc: 一覧グリッド（部/学校担当 × 日付・半月帯）
 // 縦=行(部 or 学校担当), 横=日付。半月ずつ(1-15 / 16-末)の帯を積む。
@@ -12552,6 +12603,8 @@ function resetDeptRow(rowId) {
 let dgridOffset = 0;               // 単位はモードによる(週/月/年度)
 let dgridMode = 'dept';            // 'dept' | 'school'
 let dgridRange = 'month';          // 'week' | 'month' | 'year'
+// 行フィルタ：チェックした行だけ表示。null=全表示（初期）。モードごとに別集合。
+let dgridRowFilter = { dept: null, school: null };
 const DGRID_DEPT_ROWS = ['小','中','高','高卒','英語','通信'];
 const DGRID_DEPT_COLOR = { '小':'#5B8DD6','中':'#5FA672','高':'#E0913A','高卒':'#D9B94A','英語':'#C75F5F','通信':'#8B6FB0','全体':'#6E7B8A' };
 const DGRID_SCHOOLS = ['松山東','松山南','松山北','松山中央','松山西','愛大附属','済美','SSS','その他'];
@@ -12670,12 +12723,19 @@ async function loadDgrid() {
     events = await sbGet('events',
       'event_date=lte.' + lastISO +
       '&or=(end_date.gte.' + firstISO + ',and(end_date.is.null,event_date.gte.' + firstISO + '))' +
-      '&select=title,event_date,end_date,color,dept,scope&order=event_date').catch(() => []) || [];
+      '&select=title,event_date,end_date,color,dept,scope,target_schools&order=event_date').catch(() => []) || [];
   } catch (e) { events = []; }
   try {
-    const groups = await sbGet('team_tasks', "node_type=eq.group&parent_id=is.null&select=id,dept").catch(() => []) || [];
+    let groups;
+    try {
+      groups = await sbGet('team_tasks', "node_type=eq.group&parent_id=is.null&select=id,dept,school").catch(() => null) || [];
+    } catch (eg) { groups = null; }
+    if (groups == null) {
+      groups = await sbGet('team_tasks', "node_type=eq.group&parent_id=is.null&select=id,dept").catch(() => []) || [];
+    }
     const deptByGroup = {};
-    (groups || []).forEach(g => { deptByGroup[g.id] = g.dept || null; });
+    const schoolByGroup = {};
+    (groups || []).forEach(g => { deptByGroup[g.id] = g.dept || null; schoolByGroup[g.id] = g.school || null; });
     const rawTasks = await sbGet('team_tasks',
       'node_type=eq.task&status=in.(todo,doing)&due_date=gte.' + firstISO + '&due_date=lte.' + lastISO +
       '&select=title,due_date,parent_id').catch(() => []) || [];
@@ -12688,19 +12748,26 @@ async function loadDgrid() {
     tasks = (rawTasks || []).map(t => {
       let grpId = t.parent_id;
       if (grpId && subParent[grpId]) grpId = subParent[grpId];
-      return { title: t.title, due_date: t.due_date, dept: grpId ? (deptByGroup[grpId] || null) : null };
+      return {
+        title: t.title, due_date: t.due_date,
+        dept: grpId ? (deptByGroup[grpId] || null) : null,
+        school: grpId ? (schoolByGroup[grpId] || null) : null
+      };
     });
   } catch (e) { tasks = []; }
 
+  renderDgridFilterBar();
   if (dgridMode === 'school') {
-    renderDgridSchoolPlaceholder(body);
+    renderDgridSchool(body, win, events, tasks);
     return;
   }
   renderDgridDept(body, win, events, tasks);
 }
 
 function renderDgridDept(body, win, events, tasks) {
-  const rows = DGRID_DEPT_ROWS.concat(['全体']);
+  const allRows = DGRID_DEPT_ROWS.concat(['全体']);
+  const sel = dgridRowFilter.dept;
+  const rows = (sel && sel.size) ? allRows.filter(r => sel.has(r)) : allRows;
   // bucket[ISO][row] = [{type,title,color}]
   const bucket = {};
   const ensure = (iso) => { if (!bucket[iso]) { bucket[iso] = {}; rows.forEach(r => bucket[iso][r] = []); } return bucket[iso]; };
@@ -12710,7 +12777,7 @@ function renderDgridDept(body, win, events, tasks) {
 
   (events || []).forEach(ev => {
     const depts = dgridDeptList(ev.dept);
-    const targetRows = depts.length ? depts.filter(x => rows.includes(x)) : ['全体'];
+    const targetRows = (depts.length ? depts.filter(x => rows.includes(x)) : ['全体']).filter(r => rows.includes(r));
     let cur = new Date(ev.event_date + 'T00:00:00');
     const end = new Date((ev.end_date || ev.event_date) + 'T00:00:00');
     let guard = 0;
@@ -12724,7 +12791,7 @@ function renderDgridDept(body, win, events, tasks) {
   (tasks || []).forEach(t => {
     if (!inWin(t.due_date)) return;
     const depts = dgridDeptList(t.dept);
-    const targetRows = depts.length ? depts.filter(x => rows.includes(x)) : ['全体'];
+    const targetRows = (depts.length ? depts.filter(x => rows.includes(x)) : ['全体']).filter(r => rows.includes(r));
     const b = ensure(t.due_date);
     targetRows.forEach(r => b[r].push({ type: 'task', title: t.title, color: '' }));
   });
@@ -12770,12 +12837,132 @@ function renderDgridDept(body, win, events, tasks) {
   body.innerHTML = html;
 }
 
-function renderDgridSchoolPlaceholder(body) {
-  body.innerHTML =
-    '<div style="padding:24px 16px;text-align:center;color:var(--muted);font-size:13px;line-height:1.8">' +
-    '🏫 学校担当ごとの表示は、次版（学校依頼機能）で担当データを接続してから有効になります。<br>' +
-    '現在は「部ごと」タブをご利用ください。' +
-    '</div>';
+// 学校ごと：縦軸＝学校。events は scope=school_grade の target_schools で振り分け、
+// それ以外（全員向け等）は「全体」行に集約。タスクは学校情報を持たないため「全体」行に集約。
+function renderDgridSchool(body, win, events, tasks) {
+  const allRows = DGRID_SCHOOLS.concat(['全体']);
+  const sel = dgridRowFilter.school;
+  const rows = (sel && sel.size) ? allRows.filter(r => sel.has(r)) : allRows;
+
+  const bucket = {};
+  const ensure = (iso) => { if (!bucket[iso]) { bucket[iso] = {}; rows.forEach(r => bucket[iso][r] = []); } return bucket[iso]; };
+  const winStart = dgridISO(win.start), winEnd = dgridISO(win.end);
+  const inWin = (iso) => iso && iso >= winStart && iso <= winEnd;
+
+  const schoolColor = (s) => (s === '全体') ? '#6E7B8A' : '#2D6CB6';
+
+  (events || []).forEach(ev => {
+    let targetRows;
+    if (ev.scope === 'school_grade' && ev.target_schools) {
+      const schools = String(ev.target_schools).split(',').map(x => x.trim()).filter(Boolean);
+      targetRows = schools.length ? schools.filter(x => rows.includes(x)) : ['全体'];
+    } else {
+      targetRows = ['全体'];
+    }
+    targetRows = targetRows.filter(r => rows.includes(r));
+    if (!targetRows.length) return;
+    let cur = new Date(ev.event_date + 'T00:00:00');
+    const end = new Date((ev.end_date || ev.event_date) + 'T00:00:00');
+    let guard = 0;
+    while (cur <= end && guard < 800) {
+      const iso = dgridISO(cur);
+      if (inWin(iso)) { const b = ensure(iso); targetRows.forEach(r => b[r].push({ type: 'event', title: ev.title, color: ev.color || schoolColor(r) })); }
+      cur.setDate(cur.getDate() + 1);
+      guard++;
+    }
+  });
+  (tasks || []).forEach(t => {
+    if (!inWin(t.due_date)) return;
+    let targetRows;
+    if (t.school) {
+      const schools = String(t.school).split(',').map(x => x.trim()).filter(Boolean);
+      targetRows = schools.length ? schools.filter(x => rows.includes(x)) : ['全体'];
+    } else {
+      targetRows = ['全体'];
+    }
+    targetRows = targetRows.filter(r => rows.includes(r));
+    if (!targetRows.length) return;
+    const b = ensure(t.due_date);
+    targetRows.forEach(r => b[r].push({ type: 'task', title: t.title, color: '' }));
+  });
+
+  let html = '';
+  win.bands.forEach(band => {
+    const days = [];
+    let c = new Date(band.from);
+    let guard = 0;
+    while (c <= band.to && guard < 40) { days.push(new Date(c)); c.setDate(c.getDate() + 1); guard++; }
+    html += '<div class="dgrid-half">';
+    html += '<div class="dgrid-half-title">' + escapeHtml(band.title) + '</div>';
+    html += '<div style="overflow-x:auto"><table class="dgrid-table"><thead><tr>';
+    html += '<th class="dgrid-corner"></th>';
+    days.forEach(dt => {
+      const wd = dt.getDay();
+      const cls = wd === 0 ? ' sun' : (wd === 6 ? ' sat' : '');
+      html += '<th class="dgrid-datehead' + cls + '">' + dt.getDate() + '<br>(' + DGRID_WD[wd] + ')</th>';
+    });
+    html += '</tr></thead><tbody>';
+    rows.forEach(r => {
+      const rc = schoolColor(r);
+      html += '<tr>';
+      html += '<th class="dgrid-rowhead" style="background:' + rc + '">' + escapeHtml(r) + '</th>';
+      days.forEach(dt => {
+        const iso = dgridISO(dt);
+        const items = (bucket[iso] && bucket[iso][r]) || [];
+        html += '<td class="dgrid-cell">';
+        items.forEach(it => {
+          if (it.type === 'task') {
+            html += '<span class="dgrid-chip task">' + escapeHtml(it.title) + '</span>';
+          } else {
+            html += '<span class="dgrid-chip" style="background:' + (it.color || rc) + '">' + escapeHtml(it.title) + '</span>';
+          }
+        });
+        html += '</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table></div></div>';
+  });
+  body.innerHTML = html;
+}
+
+// 行フィルタバー：現モードの行をチェックボックスで表示／非表示
+function renderDgridFilterBar() {
+  const bar = document.getElementById('dgrid-filter-bar');
+  if (!bar) return;
+  const allRows = (dgridMode === 'school') ? DGRID_SCHOOLS.concat(['全体']) : DGRID_DEPT_ROWS.concat(['全体']);
+  const sel = dgridRowFilter[dgridMode]; // null=全表示
+  const isOn = (r) => (!sel || !sel.size) ? true : sel.has(r);
+  const colorOf = (r) => (dgridMode === 'school') ? (r === '全体' ? '#6E7B8A' : '#2D6CB6') : (DGRID_DEPT_COLOR[r] || '#6E7B8A');
+  let html = '<span style="font-size:11px;color:var(--muted);font-weight:700;margin-right:2px">表示：</span>';
+  allRows.forEach(r => {
+    const on = isOn(r);
+    const rc = colorOf(r);
+    html += '<button type="button" onclick="toggleDgridRow(\'' + escapeAttr(r) + '\')" ' +
+      'style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+      (on ? ('border:1.5px solid ' + rc + ';background:' + rc + ';color:#fff') : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' +
+      (on ? '✓ ' : '') + escapeHtml(r) + '</button>';
+  });
+  html += '<button type="button" onclick="resetDgridRowFilter()" style="margin-left:4px;padding:3px 10px;font-size:11px;border-radius:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;border:1.5px dashed var(--border);background:transparent;color:var(--muted)">すべて表示</button>';
+  bar.innerHTML = html;
+}
+
+function toggleDgridRow(r) {
+  const allRows = (dgridMode === 'school') ? DGRID_SCHOOLS.concat(['全体']) : DGRID_DEPT_ROWS.concat(['全体']);
+  let sel = dgridRowFilter[dgridMode];
+  // null（全表示）状態からのタップ＝その行を単独ONにする…ではなく、
+  // 直感優先：全表示中に1つ消す操作になるよう、まず全部ONの集合を作ってからトグル。
+  if (!sel || !sel.size) { sel = new Set(allRows); }
+  else { sel = new Set(sel); }
+  if (sel.has(r)) sel.delete(r); else sel.add(r);
+  // 全部ONに戻ったら null（全表示）扱いにして軽くする
+  dgridRowFilter[dgridMode] = (sel.size === allRows.length) ? null : sel;
+  loadDgrid();
+}
+
+function resetDgridRowFilter() {
+  dgridRowFilter[dgridMode] = null;
+  loadDgrid();
 }
 
 
@@ -21277,6 +21464,7 @@ function toggleTeamHierPanel() {
   if (p) p.style.display = thPanelOpen ? 'block' : 'none';
   if (b) b.textContent = thPanelOpen ? '× 閉じる' : '＋ カテゴリー/チームを管理';
   if (thPanelOpen) renderDeptRow('th-cat-dept-row');
+  if (thPanelOpen) renderSchoolRow('th-cat-school-row');
 }
 
 // 目標（staff_goals）を選択肢用に取得
@@ -21365,11 +21553,22 @@ async function createTeamCategory() {
   const by = currentStaff ? (currentStaff.staff_id || null) : null;
   showLoading('作成中...');
   try {
-    const created = await sbPostReturn('team_tasks', {
+    const baseBody = {
       title: name, node_type: 'group', parent_id: null, goal_id: goalId,
       dept: getDeptCSV('th-cat-dept-row'),
+      school: getSchoolCSV('th-cat-school-row'),
       status: 'todo', created_by: by, updated_at: new Date().toISOString()
-    });
+    };
+    let created;
+    try {
+      created = await sbPostReturn('team_tasks', baseBody);
+    } catch (e1) {
+      const m = String(e1 && e1.message || e1);
+      if (/school|column|PGRST|400/i.test(m)) {
+        const b2 = Object.assign({}, baseBody); delete b2.school;
+        created = await sbPostReturn('team_tasks', b2);
+      } else { throw e1; }
+    }
     const catId = created && created[0] ? created[0].id : null;
     // 責任者チーム（メンバー）を割当
     if (catId && members.length) {
@@ -21382,6 +21581,7 @@ async function createTeamCategory() {
     document.querySelectorAll('.th-cat-member-check').forEach(c => c.checked = false);
     if (document.getElementById('th-cat-goal')) document.getElementById('th-cat-goal').value = '';
     resetDeptRow('th-cat-dept-row');
+    resetSchoolRow('th-cat-school-row');
     showToast('🗂 大カテゴリーを作成しました', 'success');
     loadTeamTasks();
   } catch (e) {
@@ -21445,6 +21645,55 @@ async function editGroupGoal(groupId) {
     await sbPatch('team_tasks', 'id=eq.' + groupId, { goal_id: newGoalId, updated_at: new Date().toISOString() });
     hideLoading();
     showToast('🎯 目標紐付けを更新しました', 'success');
+    loadTeamTasks();
+  } catch (e) { hideLoading(); showToast('エラー: ' + String(e && e.message || e), 'error'); }
+}
+
+// 大カテゴリーの部・学校を後から編集（dbk）
+var catEditGroupId = null;
+function openCatEdit(groupId) {
+  const g = ttGroups.find(x => String(x.id) === String(groupId));
+  if (!g) return;
+  catEditGroupId = groupId;
+  const nameEl = document.getElementById('catedit-name');
+  if (nameEl) nameEl.textContent = '🗂 ' + (g.title || '');
+  // 既存値をチップ選択にプリセット
+  fitDeptSel['catedit-dept-row'] = new Set((g.dept ? String(g.dept).split(',') : []).map(x => x.trim()).filter(Boolean));
+  fitSchoolSel['catedit-school-row'] = new Set((g.school ? String(g.school).split(',') : []).map(x => x.trim()).filter(Boolean));
+  renderDeptRow('catedit-dept-row');
+  renderSchoolRow('catedit-school-row');
+  document.getElementById('catedit-modal').style.display = 'flex';
+}
+function closeCatEdit() {
+  document.getElementById('catedit-modal').style.display = 'none';
+  catEditGroupId = null;
+}
+async function saveCatEdit() {
+  if (!catEditGroupId) return;
+  const body = {
+    dept: getDeptCSV('catedit-dept-row'),
+    school: getSchoolCSV('catedit-school-row'),
+    updated_at: new Date().toISOString()
+  };
+  showLoading('保存中...');
+  try {
+    try {
+      await sbPatch('team_tasks', 'id=eq.' + catEditGroupId, body);
+    } catch (e1) {
+      const m = String(e1 && e1.message || e1);
+      if (/school|column|PGRST|400/i.test(m)) {
+        const b2 = Object.assign({}, body); delete b2.school;
+        await sbPatch('team_tasks', 'id=eq.' + catEditGroupId, b2);
+        hideLoading();
+        showToast('部は保存しましたが、学校は add_team_tasks_school.sql 未実行のため保存できません', 'error');
+        closeCatEdit();
+        loadTeamTasks();
+        return;
+      } else { throw e1; }
+    }
+    hideLoading();
+    showToast('🏫 部・学校を更新しました', 'success');
+    closeCatEdit();
     loadTeamTasks();
   } catch (e) { hideLoading(); showToast('エラー: ' + String(e && e.message || e), 'error'); }
 }
@@ -21560,8 +21809,11 @@ function renderTeamHierTree() {
     html += '<div style="border:1.5px solid #2D6CB6;border-radius:10px;overflow:hidden">';
     html += '<div style="background:#EAF2FB;padding:9px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
       '<span style="font-size:14px;font-weight:800;color:#1E4276;flex:1;min-width:0">🗂 ' + escapeHtml(cat.title || '') + '</span>' +
+      (cat.dept ? '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#fff;color:#5B8DD6;font-weight:700">🏷 ' + escapeHtml(cat.dept) + '</span>' : '') +
+      (cat.school ? '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#fff;color:#2D6CB6;font-weight:700">🏫 ' + escapeHtml(cat.school) + '</span>' : '') +
       (catGoal ? '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#fff;color:#2D6CB6;font-weight:700">🎯 ' + escapeHtml(goalLabel(catGoal)) + '</span>' : '') +
       '<button onclick="editGroupGoal(\'' + cat.id + '\')" style="font-size:10px;padding:2px 7px;border:1px solid #2D6CB6;border-radius:10px;background:#fff;color:#2D6CB6;cursor:pointer;font-family:inherit">🎯</button>' +
+      '<button onclick="openCatEdit(\'' + cat.id + '\')" style="font-size:10px;padding:2px 7px;border:1px solid #2D6CB6;border-radius:10px;background:#fff;color:#2D6CB6;cursor:pointer;font-family:inherit">🏫</button>' +
       '<button onclick="deleteTeamGroup(\'' + cat.id + '\')" style="font-size:10px;padding:2px 7px;border:1px solid #E0A0A0;border-radius:10px;background:#fff;color:#C0392B;cursor:pointer;font-family:inherit">削除</button>' +
       '</div>';
     // 責任者チーム
@@ -24866,21 +25118,29 @@ async function karteLoadInterviews(sid) {
           '<div style="font-size:11px;font-weight:700;color:var(--muted)">これまでの面談（' + rows.length + '件）</div>' +
           '<button onclick="printParentInterviews(\'' + sid + '\')" style="padding:5px 10px;background:#fff;border:1px solid var(--orange);border-radius:6px;color:var(--orange-d);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">🖨 保護者向け印刷</button>' +
         '</div>' +
-        rows.map(r => {
+        rows.map((r, ri) => {
+          const openInit = (ri === 0); // 最新1件だけ初期展開
           const who = (r.interviewer && staffMap[r.interviewer]) ? '<span style="font-size:10px;color:var(--muted)">担当 ' + escapeHtml(staffMap[r.interviewer]) + '</span>' : (r.interviewer ? '<span style="font-size:10px;color:var(--muted)">担当 ' + escapeHtml(r.interviewer) + '</span>' : '');
           const parentBadge = r.share_to_parent ? '<span style="font-size:9px;color:#1B5E8A;background:#EAF3FB;border:1px solid #B9D6EE;border-radius:8px;padding:1px 6px;margin-left:6px">👪保護者公開</span>' : '';
           const staffMemo = '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">' + escapeHtml(r.note || '（スタッフメモなし）') + '</div>';
           const studentMemo = r.student_note
             ? '<div style="font-size:11px;color:#2E6B12;background:#F1F8ED;border-radius:6px;padding:6px 8px;margin-top:4px;white-space:pre-wrap;line-height:1.5">💬 生徒共有：' + escapeHtml(r.student_note) + '</div>'
             : '';
+          // 内容の1行プレビュー（折りたたみ時のヒント）
+          const previewSrc = (r.note || r.student_note || '').replace(/\s+/g, ' ').trim();
+          const preview = previewSrc ? (previewSrc.length > 24 ? previewSrc.slice(0, 24) + '…' : previewSrc) : '（内容なし）';
           return '<div style="padding:8px 0;border-bottom:1px solid var(--border)" id="karte-iv-row-' + r.id + '">' +
             '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:2px">' +
-              '<div style="font-size:12px;font-weight:700;color:var(--text)">' + ivFmtDate(r.interview_date) + parentBadge + '</div>' +
-              '<div style="display:flex;align-items:center;gap:8px">' + who +
+              '<div onclick="karteToggleIv(' + r.id + ')" style="display:flex;align-items:center;gap:6px;flex:1;min-width:0;cursor:pointer">' +
+                '<span id="karte-iv-caret-' + r.id + '" style="font-size:11px;color:var(--muted);transition:transform .15s;transform:rotate(' + (openInit ? '90' : '0') + 'deg)">▶</span>' +
+                '<span style="font-size:12px;font-weight:700;color:var(--text)">' + ivFmtDate(r.interview_date) + '</span>' + parentBadge +
+                '<span id="karte-iv-preview-' + r.id + '" style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' + (openInit ? 'display:none' : '') + '">' + escapeHtml(preview) + '</span>' +
+              '</div>' +
+              '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0">' + who +
                 '<button onclick="karteEditInterview(' + r.id + ')" style="background:none;border:none;color:var(--orange-d);font-size:11px;font-weight:700;cursor:pointer;padding:0 2px;white-space:nowrap">✏️ 編集</button>' +
               '</div>' +
             '</div>' +
-            '<div id="karte-iv-view-' + r.id + '">' + staffMemo + studentMemo + '</div>' +
+            '<div id="karte-iv-view-' + r.id + '" style="' + (openInit ? '' : 'display:none;') + 'padding-left:17px">' + staffMemo + studentMemo + '</div>' +
             '<div id="karte-iv-edit-' + r.id + '" style="display:none"></div>' +
           '</div>';
         }).join('');
@@ -25133,6 +25393,21 @@ async function karteDeleteGoal(goalId) {
 }
 
 // 面談ハブ：既存面談レコードの編集フォームを開く
+// 面談履歴のアコーディオン開閉（日付ヘッダタップ）
+function karteToggleIv(id) {
+  const viewEl = document.getElementById('karte-iv-view-' + id);
+  const caret = document.getElementById('karte-iv-caret-' + id);
+  const preview = document.getElementById('karte-iv-preview-' + id);
+  if (!viewEl) return;
+  // 編集中は閉じない
+  const editEl = document.getElementById('karte-iv-edit-' + id);
+  if (editEl && editEl.style.display !== 'none' && editEl.innerHTML.trim()) return;
+  const open = viewEl.style.display === 'none';
+  viewEl.style.display = open ? '' : 'none';
+  if (caret) caret.style.transform = 'rotate(' + (open ? '90' : '0') + 'deg)';
+  if (preview) preview.style.display = open ? 'none' : '';
+}
+
 function karteEditInterview(id) {
   const r = (window._karteIvRows && window._karteIvRows[id]) ? window._karteIvRows[id] : null;
   if (!r) { showToast('編集対象が見つかりません', 'error'); return; }
@@ -27663,6 +27938,7 @@ async function openSchoolView(backTo) {
     await svEnsureTrendData();
     renderSvEnroll();
     renderSvGoal();
+    renderSvGradeNotes();
     if (status) status.textContent = '';
   } catch (e) {
     if (sec) sec.innerHTML = '<div class="sv-card-h">📊 請求ベース在籍人数</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">在籍データの取得に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
@@ -27774,7 +28050,7 @@ function renderSvSchoolTabs() {
   }).join('');
 }
 
-function setSvSchool(s) { svSchool = s; renderSvSchoolTabs(); renderSvPeriodBar(); renderSvEnroll(); renderSvGoal(); }
+function setSvSchool(s) { svSchool = s; renderSvSchoolTabs(); renderSvPeriodBar(); renderSvEnroll(); renderSvGoal(); renderSvGradeNotes(); }
 function setSvMemMode(m) { svMemMode = m; renderSvEnroll(); renderSvGoal(); }
 function setSvFY(y) { svFY = parseInt(y, 10); renderSvEnroll(); renderSvGoal(); }
 function toggleSvPrevYear() { svShowPrevYear = !svShowPrevYear; renderSvEnroll(); }
@@ -28054,6 +28330,115 @@ async function saveSvGoals() {
     hideLoading();
     showToast('🎯 目標を保存しました', 'success');
     renderSvGoal();
+  } catch (e) {
+    hideLoading();
+    showToast('保存に失敗: ' + (e.message || ''), 'error');
+  }
+}
+
+// ============================================================
+// 学年別 今月の計画・実績と反省・来月の計画（grade_notes / dbh）
+//   単位：学校 × 年 × 月（今月固定） × 学年
+//   3欄：plan（今月の計画）／review（実績・反省）／next_plan（来月の計画）
+//   編集権限：管理者＝全校可／担当スタッフ＝担当校のみ可／他＝閲覧のみ
+//   要 SQL: create_grade_notes.sql
+// ============================================================
+let svGradeNotesCache = {}; // grade -> row（現在の学校×年月）
+
+// 会議記録の対象年月（今月固定）
+function svTargetYM() {
+  const todayStr = getTodayJST();
+  return { y: parseInt(todayStr.slice(0, 4), 10), m: parseInt(todayStr.slice(5, 7), 10) };
+}
+
+// この学校のメモを編集できるか（管理者＝全校／担当＝担当校のみ）
+function svCanEditGradeNotes() {
+  if (currentStaff && currentStaff.role === 'admin') return true;
+  const scope = (typeof myScopeSchools === 'function') ? myScopeSchools() : null;
+  if (scope == null) return false;           // 全校スコープの一般スタッフは閲覧のみ（編集は担当校持ちのみ）
+  return scope.indexOf(svSchool) >= 0;       // 担当校に含まれれば可
+}
+
+async function renderSvGradeNotes() {
+  const sec = document.getElementById('sv-grade-plan-section');
+  if (!sec || !svSchool) return;
+  const { y, m } = svTargetYM();
+  const canEdit = svCanEditGradeNotes();
+  sec.innerHTML = '<div class="sv-card-h">📝 学年別 今月の計画・実績と反省・来月の計画</div>' +
+    '<div class="sv-placeholder">読み込み中…</div>';
+
+  // 取得
+  let rows = [];
+  try {
+    rows = await sbGet('grade_notes',
+      'school=eq.' + encodeURIComponent(svSchool) +
+      '&year=eq.' + y + '&month=eq.' + m + '&select=*') || [];
+  } catch (e) {
+    sec.innerHTML = '<div class="sv-card-h">📝 学年別 今月の計画・実績と反省・来月の計画</div>' +
+      '<div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">メモの取得に失敗しました（' + escapeHtml(e.message || '') + '）。create_grade_notes.sql 未実行の可能性。</div>';
+    return;
+  }
+  svGradeNotesCache = {};
+  rows.forEach(r => { svGradeNotesCache[r.grade] = r; });
+
+  const gradeLabel = { '1年': '高1', '2年': '高2', '3年': '高3' };
+  const fields = [
+    { key: 'plan', label: '今月の計画', ph: '今月やること・重点' },
+    { key: 'review', label: '実績・反省', ph: '実績と反省点' },
+    { key: 'next_plan', label: '来月の計画', ph: '来月に向けて' }
+  ];
+
+  let html = '<div class="sv-card-h">📝 学年別 今月の計画・実績と反省・来月の計画</div>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">' +
+    escapeHtml(svSchool) + '／' + y + '年' + m + '月' +
+    (canEdit ? '' : '（閲覧のみ・編集は担当者/管理者）') + '</div>';
+
+  SA_GRADES.forEach(g => {
+    const row = svGradeNotesCache[g] || {};
+    const upd = row.updated_at ? ('<span style="font-size:10px;color:var(--muted);margin-left:8px">最終更新 ' + escapeHtml(String(row.updated_at).slice(0, 10)) + '</span>') : '';
+    html += '<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;background:var(--surface)">';
+    html += '<div style="font-size:14px;font-weight:800;color:var(--text);margin-bottom:8px">' + gradeLabel[g] + upd + '</div>';
+    html += '<div style="display:grid;gap:8px" class="sv-gn-grid">';
+    fields.forEach(f => {
+      const val = row[f.key] || '';
+      html += '<div>';
+      html += '<div style="font-size:11px;color:var(--muted);margin-bottom:3px">' + f.label + '</div>';
+      if (canEdit) {
+        html += '<textarea id="sv-gn-' + g + '-' + f.key + '" rows="3" placeholder="' + escapeAttr(f.ph) + '" ' +
+          'style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px;resize:vertical;background:var(--surface)">' + escapeHtml(val) + '</textarea>';
+      } else {
+        html += '<div style="min-height:44px;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:13px;white-space:pre-wrap;color:' + (val ? 'var(--text)' : 'var(--muted)') + ';background:var(--surface2)">' + (val ? escapeHtml(val) : '（未記入）') + '</div>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+    if (canEdit) {
+      html += '<button type="button" onclick="saveSvGradeNote(\'' + escapeAttr(g) + '\')" ' +
+        'style="margin-top:10px;padding:8px 18px;background:linear-gradient(135deg,#2D6CB6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">💾 ' + gradeLabel[g] + 'を保存</button>';
+    }
+    html += '</div>';
+  });
+  sec.innerHTML = html;
+}
+
+// 1学年分のメモを保存（upsert：既存があればPATCH、無ければPOST）
+async function saveSvGradeNote(grade) {
+  if (!svSchool || !svCanEditGradeNotes()) { showToast('編集権限がありません', 'error'); return; }
+  const { y, m } = svTargetYM();
+  const gv = (k) => { const el = document.getElementById('sv-gn-' + grade + '-' + k); return el ? el.value : ''; };
+  const by = currentStaff ? (currentStaff.staff_id || '') : '';
+  const body = { plan: gv('plan'), review: gv('review'), next_plan: gv('next_plan'), updated_by: by };
+  const existing = svGradeNotesCache[grade] || null;
+  showLoading('保存中...');
+  try {
+    if (existing && existing.id != null) {
+      await sbPatch('grade_notes', 'id=eq.' + encodeURIComponent(existing.id), body);
+    } else {
+      await sbPost('grade_notes', Object.assign({ school: svSchool, year: y, month: m, grade: grade }, body));
+    }
+    hideLoading();
+    showToast('📝 保存しました', 'success');
+    renderSvGradeNotes();
   } catch (e) {
     hideLoading();
     showToast('保存に失敗: ' + (e.message || ''), 'error');
