@@ -2561,18 +2561,28 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
     <div class="sv-card" id="sv-inout-section">
       <div class="sv-card-h">🚪 来塾・入塾・退塾一覧</div>
-      <div class="sv-placeholder">未入塾一覧・来塾・入塾・退塾一覧はこの後のバージョンでDBから自動生成します。</div>
+      <div class="sv-placeholder">読み込み中…</div>
+    </div>
+
+    <div class="sv-card" id="sv-interviews-section">
+      <div class="sv-card-h">🗣 面談履歴（この学校）</div>
+      <div class="sv-placeholder">読み込み中…</div>
+    </div>
+
+    <div class="sv-card" id="sv-calendar-section">
+      <div class="sv-card-h">📅 予定・締切（この学校）</div>
+      <div class="sv-placeholder">読み込み中…</div>
     </div>
 
     <!-- ===== 下段：週報進捗／問い合わせまとめ ===== -->
     <div class="sv-grid-bottom">
       <div class="sv-card" id="sv-weekly-section">
         <div class="sv-card-h">📅 週報進捗（1W／2W／3W）</div>
-        <div class="sv-placeholder">週次の進捗メモはこの後のバージョンで入力できるようにします。</div>
+        <div class="sv-placeholder">読み込み中…</div>
       </div>
       <div class="sv-card" id="sv-inquiry-section">
-        <div class="sv-card-h">💬 今日来塾・問い合わせまとめ</div>
-        <div class="sv-placeholder">問い合わせ・来塾メモはこの後のバージョンで入力できるようにします。</div>
+        <div class="sv-card-h">💬 問い合わせ一覧</div>
+        <div class="sv-placeholder">読み込み中…</div>
       </div>
     </div>
   </div>
@@ -4313,7 +4323,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dbl';
+const APP_VERSION = '20260702dbr';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -27939,6 +27949,11 @@ async function openSchoolView(backTo) {
     renderSvEnroll();
     renderSvGoal();
     renderSvGradeNotes();
+    renderSvInterviews();
+    renderSvCalendar();
+    renderSvInout();
+    renderSvWeekly();
+    renderSvInquiry();
     if (status) status.textContent = '';
   } catch (e) {
     if (sec) sec.innerHTML = '<div class="sv-card-h">📊 請求ベース在籍人数</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">在籍データの取得に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
@@ -28050,7 +28065,7 @@ function renderSvSchoolTabs() {
   }).join('');
 }
 
-function setSvSchool(s) { svSchool = s; renderSvSchoolTabs(); renderSvPeriodBar(); renderSvEnroll(); renderSvGoal(); renderSvGradeNotes(); }
+function setSvSchool(s) { svSchool = s; renderSvSchoolTabs(); renderSvPeriodBar(); renderSvEnroll(); renderSvGoal(); renderSvGradeNotes(); renderSvInterviews(); renderSvCalendar(); renderSvInout(); renderSvWeekly(); renderSvInquiry(); }
 function setSvMemMode(m) { svMemMode = m; renderSvEnroll(); renderSvGoal(); }
 function setSvFY(y) { svFY = parseInt(y, 10); renderSvEnroll(); renderSvGoal(); }
 function toggleSvPrevYear() { svShowPrevYear = !svShowPrevYear; renderSvEnroll(); }
@@ -28443,6 +28458,450 @@ async function saveSvGradeNote(grade) {
     hideLoading();
     showToast('保存に失敗: ' + (e.message || ''), 'error');
   }
+}
+
+// ============================================================
+// 学校カルテ：この学校の全生徒の面談履歴を横断集約（dbm）
+//   students.school == svSchool の在籍生徒 → student_interviews を新しい順に。
+//   生徒名を併記、タップで内容展開（アコーディオン）。
+//   student_interviews に students へのFKは前提にせず、IDで別クエリ結合。
+// ============================================================
+let svIvExpanded = {}; // interview id -> bool
+let svInoutPeriod = 'month';  // 'month' | 'fy' | 'all'
+let svInoutKind = 'all';      // 'all' | 'join' | 'leave' | 'prospect' | 'visit'
+
+async function renderSvInterviews() {
+  const sec = document.getElementById('sv-interviews-section');
+  if (!sec || !svSchool) return;
+  sec.innerHTML = '<div class="sv-card-h">🗣 面談履歴（この学校）</div><div class="sv-placeholder">読み込み中…</div>';
+
+  // 1) この学校の在籍生徒
+  let students = [];
+  try {
+    students = await sbGet('students',
+      'school=eq.' + encodeURIComponent(svSchool) + '&is_active=eq.true&select=id,name,grade') || [];
+  } catch (e) {
+    sec.innerHTML = '<div class="sv-card-h">🗣 面談履歴（この学校）</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">生徒の取得に失敗しました。</div>';
+    return;
+  }
+  if (!students.length) {
+    sec.innerHTML = '<div class="sv-card-h">🗣 面談履歴（この学校）</div><div class="sv-placeholder">この学校の在籍生徒がいません。</div>';
+    return;
+  }
+  const nameById = {}, gradeById = {};
+  students.forEach(s => { nameById[s.id] = s.name || '(名前なし)'; gradeById[s.id] = s.grade || ''; });
+  const ids = students.map(s => s.id);
+
+  // 2) 面談記録（生徒ID群で取得）
+  let rows = [];
+  try {
+    const idList = ids.map(x => '"' + x + '"').join(',');
+    rows = await sbGet('student_interviews',
+      'student_id=in.(' + idList + ')&select=id,student_id,interview_date,interviewer,note,student_note,share_to_parent&order=interview_date.desc') || [];
+  } catch (e) {
+    sec.innerHTML = '<div class="sv-card-h">🗣 面談履歴（この学校）</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">面談記録の取得に失敗しました（create_student_interviews.sql 未実行の可能性）。</div>';
+    return;
+  }
+
+  // 3) スタッフ名解決
+  let staffMap = (typeof ivStaffMap !== 'undefined' && ivStaffMap && Object.keys(ivStaffMap).length) ? ivStaffMap : {};
+  if (!Object.keys(staffMap).length) {
+    try { const st = await sbGet('staff', 'select=staff_id,name') || []; st.forEach(s => { if (s.staff_id) staffMap[s.staff_id] = s.name; }); } catch (e) {}
+  }
+
+  let html = '<div class="sv-card-h">🗣 面談履歴（この学校）</div>';
+  if (!rows.length) {
+    html += '<div class="sv-placeholder">この学校の生徒の面談記録はまだありません。</div>';
+    sec.innerHTML = html;
+    return;
+  }
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／全' + rows.length + '件（新しい順）</div>';
+  html += '<div style="display:flex;flex-direction:column">';
+  rows.forEach(r => {
+    const open = !!svIvExpanded[r.id];
+    const nm = nameById[r.student_id] || r.student_id;
+    const gr = gradeById[r.student_id] ? ('高' + gradeById[r.student_id]) : '';
+    const who = r.interviewer ? (staffMap[r.interviewer] || r.interviewer) : '';
+    const dateStr = r.interview_date ? String(r.interview_date).replace(/-/g, '/') : '';
+    const parentBadge = r.share_to_parent ? '<span style="font-size:9px;color:#1B5E8A;background:#EAF3FB;border:1px solid #B9D6EE;border-radius:8px;padding:1px 6px;margin-left:6px">👪</span>' : '';
+    const previewSrc = (r.note || r.student_note || '').replace(/\s+/g, ' ').trim();
+    const preview = previewSrc ? (previewSrc.length > 20 ? previewSrc.slice(0, 20) + '…' : previewSrc) : '（内容なし）';
+    const staffMemo = '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">' + escapeHtml(r.note || '（スタッフメモなし）') + '</div>';
+    const studentMemo = r.student_note
+      ? '<div style="font-size:11px;color:#2E6B12;background:#F1F8ED;border-radius:6px;padding:6px 8px;margin-top:4px;white-space:pre-wrap;line-height:1.5">💬 生徒共有：' + escapeHtml(r.student_note) + '</div>'
+      : '';
+    html += '<div style="padding:8px 0;border-bottom:1px solid var(--border)">';
+    html += '<div onclick="svToggleIv(\'' + escapeAttr(String(r.id)) + '\')" style="display:flex;align-items:center;gap:6px;cursor:pointer">' +
+      '<span style="font-size:11px;color:var(--muted);transition:transform .15s;transform:rotate(' + (open ? '90' : '0') + 'deg)">▶</span>' +
+      '<span style="font-size:12px;font-weight:700;color:var(--text);white-space:nowrap">' + escapeHtml(dateStr) + '</span>' + parentBadge +
+      '<span style="font-size:12px;font-weight:700;color:#1E4276;white-space:nowrap">' + escapeHtml(nm) + (gr ? '<span style="font-size:10px;color:var(--muted);font-weight:400"> ' + escapeHtml(gr) + '</span>' : '') + '</span>' +
+      (who ? '<span style="font-size:10px;color:var(--muted);white-space:nowrap">担当 ' + escapeHtml(who) + '</span>' : '') +
+      '<span style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' + (open ? 'display:none' : '') + '">' + escapeHtml(preview) + '</span>' +
+      '</div>';
+    html += '<div style="' + (open ? '' : 'display:none;') + 'padding-left:17px;margin-top:4px" id="sv-iv-body-' + escapeAttr(String(r.id)) + '">' + staffMemo + studentMemo + '</div>';
+    html += '</div>';
+  });
+  html += '</div>';
+  sec.innerHTML = html;
+}
+
+function svToggleIv(id) {
+  svIvExpanded[id] = !svIvExpanded[id];
+  renderSvInterviews();
+}
+
+// ============================================================
+// 学校カルテ：この学校の予定・締切・タスクを日付順に集約（dbn）
+//   events（scope=all または target_schools にこの学校）＋
+//   team_tasks（school にこの学校、task）＋
+//   interview_campaigns（target_schools にこの学校）
+//   今日以降を新しい予定順（昇順）で表示。単独カレンダーモーダルへの導線も。
+// ============================================================
+async function renderSvCalendar() {
+  const sec = document.getElementById('sv-calendar-section');
+  if (!sec || !svSchool) return;
+  sec.innerHTML = '<div class="sv-card-h">📅 予定・締切（この学校）</div><div class="sv-placeholder">読み込み中…</div>';
+
+  const todayStr = getTodayJST();
+  const inThisSchool = (csv) => {
+    if (!csv) return false;
+    return String(csv).split(',').map(x => x.trim()).filter(Boolean).includes(svSchool);
+  };
+
+  const items = []; // {date, kind, title, color}
+
+  // 1) events（今日以降）
+  try {
+    const evs = await sbGet('events',
+      'event_date=gte.' + todayStr + '&select=title,event_date,color,scope,target_schools&order=event_date') || [];
+    (evs || []).forEach(ev => {
+      const sc = ev.scope || 'all';
+      let show = false;
+      if (sc === 'all') show = true;
+      else if (sc === 'school_grade') show = inThisSchool(ev.target_schools);
+      // personal は学校カルテには出さない
+      if (show) items.push({ date: ev.event_date, kind: 'event', title: ev.title || '', color: ev.color || '#2D6CB6' });
+    });
+  } catch (e) {}
+
+  // 2) team_tasks（この学校＝親グループのschool継承、今日以降の締切）
+  try {
+    let groups;
+    try { groups = await sbGet('team_tasks', 'node_type=eq.group&parent_id=is.null&select=id,school').catch(() => null); }
+    catch (eg) { groups = null; }
+    if (groups) {
+      const schoolByGroup = {};
+      groups.forEach(g => { schoolByGroup[g.id] = g.school || null; });
+      const raw = await sbGet('team_tasks',
+        'node_type=eq.task&status=in.(todo,doing)&due_date=gte.' + todayStr + '&select=title,due_date,parent_id&order=due_date').catch(() => []) || [];
+      const subIds = [...new Set((raw || []).map(t => t.parent_id).filter(Boolean))];
+      let subParent = {};
+      if (subIds.length) {
+        const subs = await sbGet('team_tasks', 'id=in.(' + subIds.map(x => '"' + x + '"').join(',') + ')&select=id,parent_id').catch(() => []) || [];
+        (subs || []).forEach(s => { subParent[s.id] = s.parent_id; });
+      }
+      (raw || []).forEach(t => {
+        let grp = t.parent_id; if (grp && subParent[grp]) grp = subParent[grp];
+        const sch = grp ? schoolByGroup[grp] : null;
+        if (inThisSchool(sch)) items.push({ date: t.due_date, kind: 'task', title: t.title || '', color: '#B9770E' });
+      });
+    }
+  } catch (e) {}
+
+  // 3) interview_campaigns（この学校対象・締切が今日以降）
+  try {
+    const camps = await sbGet('interview_campaigns',
+      'due_date=gte.' + todayStr + '&select=title,due_date,target_schools&order=due_date').catch(() => []) || [];
+    (camps || []).forEach(c => {
+      // target_schools 未指定＝全校対象
+      const all = !c.target_schools || !String(c.target_schools).trim();
+      if (all || inThisSchool(c.target_schools)) items.push({ date: c.due_date, kind: 'campaign', title: '面談締切：' + (c.title || ''), color: '#C0392B' });
+    });
+  } catch (e) {}
+
+  items.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+  let html = '<div class="sv-card-h">📅 予定・締切（この学校）' +
+    '<button onclick="openDgrid(\'school\')" style="float:right;padding:4px 10px;font-size:11px;font-weight:700;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-family:inherit">📋 一覧グリッド</button></div>';
+  if (!items.length) {
+    html += '<div class="sv-placeholder">今日以降の予定・締切はありません。</div>';
+    sec.innerHTML = html;
+    return;
+  }
+  const kindLabel = { event: '予定', task: 'タスク', campaign: '締切' };
+  html += '<div style="display:flex;flex-direction:column;gap:2px">';
+  items.forEach(it => {
+    const d = it.date ? new Date(it.date + 'T00:00:00+09:00') : null;
+    const ds = d ? ((d.getMonth() + 1) + '/' + d.getDate() + '(' + DGRID_WD[d.getDay()] + ')') : '';
+    const soon = it.date && it.date <= todayStr;
+    html += '<div style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid var(--border)">' +
+      '<span style="font-size:12px;font-weight:700;color:' + (soon ? '#C0392B' : 'var(--text)') + ';min-width:64px;white-space:nowrap">' + escapeHtml(ds) + '</span>' +
+      '<span style="font-size:9px;font-weight:700;color:#fff;background:' + it.color + ';border-radius:8px;padding:1px 7px;white-space:nowrap">' + kindLabel[it.kind] + '</span>' +
+      '<span style="font-size:13px;color:var(--text);flex:1;min-width:0">' + escapeHtml(it.title) + '</span>' +
+      '</div>';
+  });
+  html += '</div>';
+  sec.innerHTML = html;
+}
+
+// ============================================================
+// 学校カルテ：来塾・入塾・退塾一覧（dbo）
+//   今月の入塾（enroll_date）／今月の退塾（is_active=false & 退塾 & withdraw_effective_date が今月）
+//   ＋ 今日の来塾（checkins）。すべてこの学校の生徒に限定。
+// ============================================================
+async function renderSvInout() {
+  const sec = document.getElementById('sv-inout-section');
+  if (!sec || !svSchool) return;
+  sec.innerHTML = '<div class="sv-card-h">🚪 来塾・入塾・退塾一覧</div><div class="sv-placeholder">読み込み中…</div>';
+
+  const { y, m } = svTargetYM();
+  const todayStr = getTodayJST();
+
+  // 期間レンジを算出
+  let rangeStart, rangeEnd, rangeLabel;
+  if (svInoutPeriod === 'month') {
+    const mm = String(m).padStart(2, '0');
+    rangeStart = y + '-' + mm + '-01';
+    const lastDay = new Date(y, m, 0).getDate();
+    rangeEnd = y + '-' + mm + '-' + String(lastDay).padStart(2, '0');
+    rangeLabel = y + '年' + m + '月';
+  } else if (svInoutPeriod === 'fy') {
+    // 年度は4月始まり。1〜3月は前年度。
+    const fyStartYear = (m <= 3) ? (y - 1) : y;
+    rangeStart = fyStartYear + '-04-01';
+    rangeEnd = (fyStartYear + 1) + '-03-31';
+    rangeLabel = fyStartYear + '年度';
+  } else {
+    rangeStart = '0000-01-01';
+    rangeEnd = '9999-12-31';
+    rangeLabel = '全期間';
+  }
+
+  // この学校の生徒（在籍・退塾含む。除外は落とす）
+  let students = [];
+  try {
+    students = await sbGet('students',
+      'school=eq.' + encodeURIComponent(svSchool) +
+      '&select=id,name,grade,enroll_date,is_active,inactive_reason,withdraw_effective_date') || [];
+  } catch (e) {
+    sec.innerHTML = '<div class="sv-card-h">🚪 来塾・入塾・退塾一覧</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">生徒の取得に失敗しました。</div>';
+    return;
+  }
+  students = students.filter(s => s.inactive_reason !== '除外');
+  const nameById = {}, gradeById = {};
+  students.forEach(s => { nameById[s.id] = s.name || '(名前なし)'; gradeById[s.id] = s.grade || ''; });
+
+  const inRange = (d) => d && d >= rangeStart && d <= rangeEnd;
+
+  // 入塾
+  const joined = students.filter(s => inRange(s.enroll_date))
+    .sort((a, b) => (b.enroll_date || '').localeCompare(a.enroll_date || ''));
+  // 退塾
+  const left = students.filter(s => s.is_active === false && s.inactive_reason === '退塾' && inRange(s.withdraw_effective_date))
+    .sort((a, b) => (b.withdraw_effective_date || '').localeCompare(a.withdraw_effective_date || ''));
+
+  // 来塾（今日固定。期間指定に関わらず「今日この学校の来た生徒」）
+  let visitedToday = [];
+  try {
+    const ci = await sbGet('checkins', 'checkin_date=eq.' + todayStr + '&select=student_id') || [];
+    const idSet = new Set(students.map(s => s.id));
+    const seen = new Set();
+    (ci || []).forEach(c => { if (idSet.has(c.student_id) && !seen.has(c.student_id)) { seen.add(c.student_id); visitedToday.push(c.student_id); } });
+  } catch (e) {}
+
+  // 未入塾（見込み prospects：この学校・未入塾・見送り以外）。期間は created_at で判定。
+  let prospects = [];
+  if (svInoutKind === 'all' || svInoutKind === 'prospect') {
+    try {
+      const rows = await sbGet('prospects',
+        'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,status,created_at,enrolled_student_id') || [];
+      prospects = (rows || []).filter(p => {
+        if (p.enrolled_student_id) return false;                 // すでに入塾済み
+        const st = (typeof normalizeProspectStatus === 'function') ? normalizeProspectStatus(p.status) : p.status;
+        if (st === '×見送り') return false;                       // 見送りは除外
+        const cd = (p.created_at || '').slice(0, 10);
+        return svInoutPeriod === 'all' ? true : inRange(cd);
+      }).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+    } catch (e) {}
+  }
+
+  const md = (d) => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10)) : '';
+  const gLbl = (g) => g ? ('高' + g) : '';
+  const chip = (nm, gr, sub, color) =>
+    '<div style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border)">' +
+      (sub ? '<span style="font-size:11px;font-weight:700;color:' + color + ';min-width:42px;white-space:nowrap">' + escapeHtml(sub) + '</span>' : '') +
+      '<span style="font-size:13px;color:var(--text)">' + escapeHtml(nm) + (gr ? '<span style="font-size:10px;color:var(--muted);margin-left:4px">' + escapeHtml(gr) + '</span>' : '') + '</span>' +
+    '</div>';
+  const block = (title, count, bodyHtml) =>
+    '<div style="margin-bottom:12px">' +
+      '<div style="font-size:12px;font-weight:800;color:var(--text);margin-bottom:4px">' + title + '（' + count + '）</div>' +
+      (count ? bodyHtml : '<div style="font-size:11px;color:var(--muted);padding:4px">なし</div>') +
+    '</div>';
+
+  // フィルタUI
+  const perBtn = (v, lbl) => '<button onclick="setSvInoutPeriod(\'' + v + '\')" style="padding:4px 11px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:inherit;' +
+    (svInoutPeriod === v ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + lbl + '</button>';
+  const kindBtn = (v, lbl) => '<button onclick="setSvInoutKind(\'' + v + '\')" style="padding:4px 11px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:inherit;' +
+    (svInoutKind === v ? 'border:1.5px solid #1E8449;background:#1E8449;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + lbl + '</button>';
+
+  let html = '<div class="sv-card-h">🚪 来塾・入塾・退塾一覧</div>';
+  html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">' +
+    perBtn('month', '今月') + perBtn('fy', '今年度') + perBtn('all', '全期間') + '</div>';
+  html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' +
+    kindBtn('all', 'すべて') + kindBtn('join', '入塾') + kindBtn('leave', '退塾') + kindBtn('prospect', '未入塾') + kindBtn('visit', '来塾') + '</div>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／' + rangeLabel + '（来塾は今日 ' + md(todayStr) + '）</div>';
+
+  const showAll = svInoutKind === 'all';
+  if (showAll || svInoutKind === 'join') {
+    html += block('🆕 入塾', joined.length,
+      joined.map(s => chip(s.name || '', gLbl(s.grade), md(s.enroll_date), '#1E8449')).join(''));
+  }
+  if (showAll || svInoutKind === 'leave') {
+    html += block('🚪 退塾', left.length,
+      left.map(s => chip(s.name || '', gLbl(s.grade), md(s.withdraw_effective_date), '#C0392B')).join(''));
+  }
+  if (showAll || svInoutKind === 'prospect') {
+    html += block('🕐 未入塾（見込み）', prospects.length,
+      prospects.map(p => chip(p.name || '', gLbl(p.grade), md((p.created_at || '').slice(0, 10)), '#B9770E')).join(''));
+  }
+  if (showAll || svInoutKind === 'visit') {
+    html += block('📅 今日の来塾', visitedToday.length,
+      visitedToday.map(id => chip(nameById[id] || id, gLbl(gradeById[id]), '', '#2D6CB6')).join(''));
+  }
+  sec.innerHTML = html;
+}
+
+function setSvInoutPeriod(v) { svInoutPeriod = v; renderSvInout(); }
+function setSvInoutKind(v) { svInoutKind = v; renderSvInout(); }
+
+// ============================================================
+// 学校カルテ：週報進捗（1W／2W／3W）（dbq）
+//   単位：学校 × 年 × 月 × 週。各週は自由テキスト（行追加＝改行）。
+//   編集権限は学年別メモと同じ（管理者＝全校／担当＝担当校のみ）。
+//   要 SQL: create_weekly_reports.sql
+// ============================================================
+let svWeeklyCache = {}; // week -> row
+
+async function renderSvWeekly() {
+  const sec = document.getElementById('sv-weekly-section');
+  if (!sec || !svSchool) return;
+  const { y, m } = svTargetYM();
+  const canEdit = (typeof svCanEditGradeNotes === 'function') ? svCanEditGradeNotes() : true;
+  sec.innerHTML = '<div class="sv-card-h">📅 週報進捗（1W／2W／3W）</div><div class="sv-placeholder">読み込み中…</div>';
+
+  let rows = [];
+  try {
+    rows = await sbGet('weekly_reports',
+      'school=eq.' + encodeURIComponent(svSchool) + '&year=eq.' + y + '&month=eq.' + m + '&select=*') || [];
+  } catch (e) {
+    sec.innerHTML = '<div class="sv-card-h">📅 週報進捗（1W／2W／3W）</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">取得に失敗しました（create_weekly_reports.sql 未実行の可能性）。</div>';
+    return;
+  }
+  svWeeklyCache = {};
+  rows.forEach(r => { svWeeklyCache[r.week] = r; });
+
+  const weeks = ['1W', '2W', '3W', '4W'];
+  let html = '<div class="sv-card-h">📅 週報進捗（1W／2W／3W）</div>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">' + escapeHtml(svSchool) + '／' + y + '年' + m + '月' + (canEdit ? '' : '（閲覧のみ）') + '</div>';
+  weeks.forEach(w => {
+    const row = svWeeklyCache[w] || {};
+    const val = row.body || '';
+    html += '<div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:10px;background:var(--surface)">';
+    html += '<div style="font-size:13px;font-weight:800;color:#1E4276;margin-bottom:6px">' + w + '</div>';
+    if (canEdit) {
+      html += '<textarea id="sv-wk-' + w + '" rows="3" placeholder="進捗を1行ずつ入力（改行で行追加）" ' +
+        'style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px;resize:vertical;background:var(--surface)">' + escapeHtml(val) + '</textarea>';
+      html += '<div style="display:flex;gap:8px;margin-top:6px">' +
+        '<button type="button" onclick="svWeeklyAddRow(\'' + w + '\')" style="padding:5px 12px;background:var(--surface);border:1px dashed var(--border);border-radius:8px;color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">＋ 行追加</button>' +
+        '<button type="button" onclick="saveSvWeekly(\'' + w + '\')" style="padding:5px 16px;background:linear-gradient(135deg,#2D6CB6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">💾 保存</button>' +
+        '</div>';
+    } else {
+      html += '<div style="min-height:44px;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:13px;white-space:pre-wrap;color:' + (val ? 'var(--text)' : 'var(--muted)') + ';background:var(--surface2)">' + (val ? escapeHtml(val) : '（未記入）') + '</div>';
+    }
+    html += '</div>';
+  });
+  sec.innerHTML = html;
+}
+
+// 行追加：末尾に改行を足してフォーカス
+function svWeeklyAddRow(w) {
+  const el = document.getElementById('sv-wk-' + w);
+  if (!el) return;
+  if (el.value && !el.value.endsWith('\n')) el.value += '\n';
+  el.focus();
+  el.selectionStart = el.selectionEnd = el.value.length;
+}
+
+async function saveSvWeekly(w) {
+  if (!svSchool) return;
+  if (typeof svCanEditGradeNotes === 'function' && !svCanEditGradeNotes()) { showToast('編集権限がありません', 'error'); return; }
+  const { y, m } = svTargetYM();
+  const el = document.getElementById('sv-wk-' + w);
+  const body = { body: el ? el.value : '', updated_by: currentStaff ? (currentStaff.staff_id || '') : '' };
+  const existing = svWeeklyCache[w] || null;
+  showLoading('保存中...');
+  try {
+    if (existing && existing.id != null) {
+      await sbPatch('weekly_reports', 'id=eq.' + encodeURIComponent(existing.id), body);
+    } else {
+      await sbPost('weekly_reports', Object.assign({ school: svSchool, year: y, month: m, week: w }, body));
+    }
+    hideLoading();
+    showToast('📅 ' + w + 'を保存しました', 'success');
+    renderSvWeekly();
+  } catch (e) {
+    hideLoading();
+    showToast('保存に失敗: ' + (e.message || ''), 'error');
+  }
+}
+
+// ============================================================
+// 学校カルテ：問い合わせまとめ（dbq）
+//   この学校の prospects を問合せ日の新しい順に一覧（過去の問い合わせ一覧）。
+//   来塾メモは不要（要望により省略）。
+// ============================================================
+async function renderSvInquiry() {
+  const sec = document.getElementById('sv-inquiry-section');
+  if (!sec || !svSchool) return;
+  sec.innerHTML = '<div class="sv-card-h">💬 問い合わせ一覧</div><div class="sv-placeholder">読み込み中…</div>';
+
+  let rows = [];
+  try {
+    rows = await sbGet('prospects',
+      'school=eq.' + encodeURIComponent(svSchool) +
+      '&select=id,name,grade,status,inquiry_date,created_at,enrolled_student_id') || [];
+  } catch (e) {
+    sec.innerHTML = '<div class="sv-card-h">💬 問い合わせ一覧</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">取得に失敗しました（create_prospects.sql 未実行の可能性）。</div>';
+    return;
+  }
+  // 問合せ日（無ければ作成日）で新しい順
+  const keyOf = (p) => (p.inquiry_date || (p.created_at || '').slice(0, 10) || '');
+  rows.sort((a, b) => keyOf(b).localeCompare(keyOf(a)));
+
+  let html = '<div class="sv-card-h">💬 問い合わせ一覧</div>';
+  if (!rows.length) {
+    html += '<div class="sv-placeholder">この学校の問い合わせ記録はまだありません。</div>';
+    sec.innerHTML = html;
+    return;
+  }
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／全' + rows.length + '件（新しい順）</div>';
+  html += '<div style="display:flex;flex-direction:column">';
+  const md = (d) => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10)) : '';
+  rows.forEach(p => {
+    const st = (typeof normalizeProspectStatus === 'function') ? normalizeProspectStatus(p.status) : (p.status || '');
+    const enrolled = !!p.enrolled_student_id;
+    const stColor = enrolled ? '#1E8449' : (st === '×見送り' ? '#7F8C8D' : '#B9770E');
+    const stLabel = enrolled ? '入塾済' : (st || '問合せ');
+    const d = keyOf(p);
+    const gr = p.grade ? ('高' + p.grade) : '';
+    html += '<div style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid var(--border)">' +
+      '<span style="font-size:12px;font-weight:700;color:var(--text);min-width:46px;white-space:nowrap">' + escapeHtml(md(d)) + '</span>' +
+      '<span style="font-size:13px;color:var(--text);flex:1;min-width:0">' + escapeHtml(p.name || '(名前なし)') + (gr ? '<span style="font-size:10px;color:var(--muted);margin-left:4px">' + escapeHtml(gr) + '</span>' : '') + '</span>' +
+      '<span style="font-size:10px;font-weight:700;color:#fff;background:' + stColor + ';border-radius:8px;padding:1px 8px;white-space:nowrap">' + escapeHtml(stLabel) + '</span>' +
+      '</div>';
+  });
+  html += '</div>';
+  sec.innerHTML = html;
 }
 
 // グラフX軸モード切替（年度 / 直近12ヶ月）
