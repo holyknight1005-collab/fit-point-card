@@ -4319,7 +4319,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dbx';
+const APP_VERSION = '20260702dby';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -23297,6 +23297,8 @@ async function openInterviewKarte(studentId, backTo) {
 function backFromKarte() {
   if (karteBackTo === 'detail') {
     showScreen('screen-staff-detail');
+  } else if (karteBackTo === 'school') {
+    showScreen('screen-school-view');
   } else {
     // 'interview' も 'att' も、裏で開いたままの screen-staff-manage（面談/出席表タブ）へ戻る
     showScreen('screen-staff-manage');
@@ -28468,6 +28470,7 @@ async function saveSvGradeNote(grade) {
 //   student_interviews に students へのFKは前提にせず、IDで別クエリ結合。
 // ============================================================
 let svIvExpanded = {}; // interview id -> bool
+let svRosterGradeOpen = {}; // grade key -> bool (名簿の学年アコーディオン)
 let svInoutPeriod = 'month';  // 'month' | 'fy' | 'all'
 let svInoutKind = 'all';      // 'all' | 'join' | 'leave' | 'prospect' | 'visit'
 
@@ -28500,7 +28503,7 @@ async function renderSvInterviews() {
     let cmName = {};
     if (cmIds.length) {
       const cms = await sbGet('class_master', 'id=in.(' + cmIds.join(',') + ')&select=id,name,subject') || [];
-      (cms || []).forEach(c => { cmName[c.id] = c.subject || c.name || ''; });
+      (cms || []).forEach(c => { cmName[c.id] = c.name || c.subject || ''; });
     }
     enr.forEach(e => {
       const nm = cmName[e.class_master_id];
@@ -28551,19 +28554,23 @@ async function renderSvInterviews() {
   gradeOrder.forEach(([gk, glabel]) => {
     const list = byGrade[gk];
     if (!list.length) return;
-    html += '<div style="font-size:13px;font-weight:800;color:#1E4276;margin:12px 0 4px">' + glabel + '（' + list.length + '）</div>';
+    const open = !!svRosterGradeOpen[gk];
+    html += '<div onclick="svToggleRosterGrade(\'' + gk + '\')" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;font-weight:800;color:#1E4276;margin:12px 0 4px;padding:6px 8px;background:#EAF2FB;border-radius:8px">' +
+      '<span style="font-size:11px;transition:transform .15s;transform:rotate(' + (open ? '90' : '0') + 'deg)">▶</span>' +
+      glabel + '（' + list.length + '）</div>';
+    if (!open) return;
     html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
     html += '<thead><tr style="text-align:left;color:var(--muted);font-size:11px">' +
       '<th style="padding:4px 6px;white-space:nowrap">氏名</th>' +
       '<th style="padding:4px 6px;white-space:nowrap">文理</th>' +
-      '<th style="padding:4px 6px;white-space:nowrap">受講科目</th>' +
+      '<th style="padding:4px 6px;white-space:nowrap">受講授業</th>' +
       '<th style="padding:4px 6px">面談履歴</th>' +
       '</tr></thead><tbody>';
     list.forEach(s => {
       const subs = subjectsByStudent[s.id] ? [...subjectsByStudent[s.id]] : [];
       const ivg = ivByStudent[s.id];
       html += '<tr style="border-top:1px solid var(--border);vertical-align:top">';
-      html += '<td style="padding:6px;white-space:nowrap;font-weight:700;color:var(--text)">' + escapeHtml(s.name || '') + '</td>';
+      html += '<td style="padding:6px;white-space:nowrap;font-weight:700"><span onclick="openInterviewKarte(\'' + escapeAttr(String(s.id)) + '\',\'school\')" style="color:#2D6CB6;cursor:pointer;text-decoration:underline">' + escapeHtml(s.name || '') + '</span></td>';
       html += '<td style="padding:6px;white-space:nowrap;color:var(--muted)">' + escapeHtml(s.course_track || '—') + '</td>';
       html += '<td style="padding:6px">' + (subs.length
         ? subs.map(x => '<span style="display:inline-block;font-size:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:1px 6px;margin:1px 2px 1px 0;white-space:nowrap">' + escapeHtml(x) + '</span>').join('')
@@ -28610,6 +28617,11 @@ async function renderSvInterviews() {
 
 function svToggleIv(id) {
   svIvExpanded[id] = !svIvExpanded[id];
+  renderSvInterviews();
+}
+
+function svToggleRosterGrade(gk) {
+  svRosterGradeOpen[gk] = !svRosterGradeOpen[gk];
   renderSvInterviews();
 }
 
