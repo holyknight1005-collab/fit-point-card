@@ -1025,6 +1025,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <div id="dgrid-month" style="font-size:13px;font-weight:700;color:var(--text);min-width:96px;text-align:center"></div>
           <button onclick="changeDgridMonth(1)" class="page-btn" style="padding:4px 10px">›</button>
         </div>
+        <div style="display:flex;gap:4px">
+          <button id="dgrid-range-week" onclick="setDgridRange('week')" class="dgrid-tab" style="padding:4px 12px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">週間</button>
+          <button id="dgrid-range-month" onclick="setDgridRange('month')" class="dgrid-tab active" style="padding:4px 12px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">1ヶ月</button>
+          <button id="dgrid-range-year" onclick="setDgridRange('year')" class="dgrid-tab" style="padding:4px 12px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">年間</button>
+        </div>
         <div style="display:flex;gap:6px">
           <button id="dgrid-tab-dept" onclick="setDgridMode('dept')" class="dgrid-tab" style="padding:5px 14px;font-size:12px;font-weight:700;border-radius:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">部ごと</button>
           <button id="dgrid-tab-school" onclick="setDgridMode('school')" class="dgrid-tab" style="padding:5px 14px;font-size:12px;font-weight:700;border-radius:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">学校担当ごと</button>
@@ -4259,7 +4264,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dbc';
+const APP_VERSION = '20260702dbd';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -12514,17 +12519,20 @@ function resetDeptRow(rowId) {
 // 縦=行(部 or 学校担当), 横=日付。半月ずつ(1-15 / 16-末)の帯を積む。
 // events(dept CSV) と team_tasks(group.dept を継承する task の due_date) を表示。
 // ============================================================
-let dgridMonthOffset = 0;
+let dgridOffset = 0;               // 単位はモードによる(週/月/年度)
 let dgridMode = 'dept';            // 'dept' | 'school'
+let dgridRange = 'month';          // 'week' | 'month' | 'year'
 const DGRID_DEPT_ROWS = ['小','中','高','高卒','英語','通信'];
 const DGRID_DEPT_COLOR = { '小':'#5B8DD6','中':'#5FA672','高':'#E0913A','高卒':'#D9B94A','英語':'#C75F5F','通信':'#8B6FB0','全体':'#6E7B8A' };
 const DGRID_SCHOOLS = ['松山東','松山南','松山北','松山中央','松山西','愛大附属','済美','SSS','その他'];
+const DGRID_WD = ['日','月','火','水','木','金','土'];
 
 function openDgrid(mode) {
-  dgridMonthOffset = 0;
+  dgridOffset = 0;
   dgridMode = (mode === 'school') ? 'school' : 'dept';
   document.getElementById('dgrid-modal').style.display = 'flex';
   syncDgridTabs();
+  syncDgridRangeBtns();
   loadDgrid();
 }
 function closeDgrid() {
@@ -12535,25 +12543,85 @@ function setDgridMode(mode) {
   syncDgridTabs();
   loadDgrid();
 }
+function setDgridRange(r) {
+  if (dgridRange === r) return;
+  dgridRange = r;
+  dgridOffset = 0;
+  syncDgridRangeBtns();
+  loadDgrid();
+}
 function syncDgridTabs() {
   const d = document.getElementById('dgrid-tab-dept');
   const s = document.getElementById('dgrid-tab-school');
   if (d) d.classList.toggle('active', dgridMode === 'dept');
   if (s) s.classList.toggle('active', dgridMode === 'school');
 }
-function changeDgridMonth(delta) {
-  dgridMonthOffset += delta;
+function syncDgridRangeBtns() {
+  ['week','month','year'].forEach(r => {
+    const b = document.getElementById('dgrid-range-' + r);
+    if (b) b.classList.toggle('active', dgridRange === r);
+  });
+}
+function changeDgridMonth(delta) {   // 前後送り(単位はモード依存)
+  dgridOffset += delta;
   loadDgrid();
 }
 
-// events.dept(CSV) を配列に
 function dgridDeptList(csv) {
   if (!csv) return [];
   return String(csv).split(',').map(x => x.trim()).filter(Boolean);
 }
-// 日付文字列(JST安全)
 function dgridDateStr(y, m, d) {
   return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+}
+function dgridISO(dt) {
+  return dgridDateStr(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+}
+
+// 表示ウィンドウ(開始・終了Date)と、帯セグメント配列(from/to Date + タイトル)を返す
+function dgridComputeWindow() {
+  const today = new Date();
+  if (dgridRange === 'week') {
+    // 月曜始まりの週
+    const base = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    base.setDate(base.getDate() + dgridOffset * 7);
+    const wd = (base.getDay() + 6) % 7; // 月=0
+    const start = new Date(base); start.setDate(base.getDate() - wd);
+    const end = new Date(start); end.setDate(start.getDate() + 6);
+    const label = (start.getMonth() + 1) + '/' + start.getDate() + '〜' + (end.getMonth() + 1) + '/' + end.getDate();
+    return { start, end, label, bands: [{ from: new Date(start), to: new Date(end),
+      title: (start.getMonth() + 1) + '月' + start.getDate() + '日〜' + (end.getMonth() + 1) + '月' + end.getDate() + '日' }] };
+  }
+  if (dgridRange === 'year') {
+    // 年度(4月始まり)。今日が1〜3月なら前年が年度開始年
+    let fyStart = today.getFullYear() + dgridOffset;
+    if (today.getMonth() + 1 <= 3) fyStart -= 1;
+    const start = new Date(fyStart, 3, 1);           // 4/1
+    const end = new Date(fyStart + 1, 2, 31);         // 翌3/31
+    const label = fyStart + '年度';
+    const bands = [];
+    for (let k = 0; k < 12; k++) {
+      const y = fyStart + (k < 9 ? 0 : 1);
+      const m = ((3 + k) % 12) + 1; // 4,5,...,3
+      const last = new Date(y, m, 0).getDate();
+      bands.push({ from: new Date(y, m - 1, 1), to: new Date(y, m - 1, 15),
+        title: m + '月 1日〜15日' });
+      bands.push({ from: new Date(y, m - 1, 16), to: new Date(y, m - 1, last),
+        title: m + '月 16日〜' + last + '日' });
+    }
+    return { start, end, label, bands };
+  }
+  // month
+  const base = new Date(today.getFullYear(), today.getMonth(), 1);
+  base.setMonth(base.getMonth() + dgridOffset);
+  const y = base.getFullYear(), m = base.getMonth() + 1;
+  const last = new Date(y, m, 0).getDate();
+  const start = new Date(y, m - 1, 1);
+  const end = new Date(y, m - 1, last);
+  return { start, end, label: y + '年' + m + '月', bands: [
+    { from: new Date(y, m - 1, 1), to: new Date(y, m - 1, 15), title: m + '月 1日〜15日' },
+    { from: new Date(y, m - 1, 16), to: new Date(y, m - 1, last), title: m + '月 16日〜' + last + '日' }
+  ] };
 }
 
 async function loadDgrid() {
@@ -12561,15 +12629,11 @@ async function loadDgrid() {
   if (!body) return;
   body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
 
-  const base = new Date();
-  base.setDate(1);
-  base.setMonth(base.getMonth() + dgridMonthOffset);
-  const year = base.getFullYear(), month = base.getMonth() + 1;
-  const lastDate = new Date(year, month, 0).getDate();
-  const firstISO = dgridDateStr(year, month, 1);
-  const lastISO = dgridDateStr(year, month, lastDate);
+  const win = dgridComputeWindow();
+  const firstISO = dgridISO(win.start);
+  const lastISO = dgridISO(win.end);
   const mEl = document.getElementById('dgrid-month');
-  if (mEl) mEl.textContent = year + '年' + month + '月';
+  if (mEl) mEl.textContent = win.label;
 
   let events = [], tasks = [];
   try {
@@ -12579,14 +12643,12 @@ async function loadDgrid() {
       '&select=title,event_date,end_date,color,dept,scope&order=event_date').catch(() => []) || [];
   } catch (e) { events = []; }
   try {
-    // グループ(大カテゴリー)ごとの dept を引いて、その配下 task の due を継承
     const groups = await sbGet('team_tasks', "node_type=eq.group&parent_id=is.null&select=id,dept").catch(() => []) || [];
     const deptByGroup = {};
     (groups || []).forEach(g => { deptByGroup[g.id] = g.dept || null; });
     const rawTasks = await sbGet('team_tasks',
       'node_type=eq.task&status=in.(todo,doing)&due_date=gte.' + firstISO + '&due_date=lte.' + lastISO +
       '&select=title,due_date,parent_id').catch(() => []) || [];
-    // parent_id は「小チーム」を指すので、小チームの親(大カテゴリー)まで辿る
     const subIds = [...new Set((rawTasks || []).map(t => t.parent_id).filter(Boolean))];
     let subParent = {};
     if (subIds.length) {
@@ -12595,7 +12657,7 @@ async function loadDgrid() {
     }
     tasks = (rawTasks || []).map(t => {
       let grpId = t.parent_id;
-      if (grpId && subParent[grpId]) grpId = subParent[grpId]; // 小チーム→大カテゴリー
+      if (grpId && subParent[grpId]) grpId = subParent[grpId];
       return { title: t.title, due_date: t.due_date, dept: grpId ? (deptByGroup[grpId] || null) : null };
     });
   } catch (e) { tasks = []; }
@@ -12604,82 +12666,73 @@ async function loadDgrid() {
     renderDgridSchoolPlaceholder(body);
     return;
   }
-  renderDgridDept(body, year, month, lastDate, events, tasks);
+  renderDgridDept(body, win, events, tasks);
 }
 
-function renderDgridDept(body, year, month, lastDate, events, tasks) {
+function renderDgridDept(body, win, events, tasks) {
   const rows = DGRID_DEPT_ROWS.concat(['全体']);
-  // 日付ごと・行ごとに項目をバケツ詰め: bucket[day][row] = [{type,title,color}]
+  // bucket[ISO][row] = [{type,title,color}]
   const bucket = {};
-  for (let d = 1; d <= lastDate; d++) { bucket[d] = {}; rows.forEach(r => bucket[d][r] = []); }
+  const ensure = (iso) => { if (!bucket[iso]) { bucket[iso] = {}; rows.forEach(r => bucket[iso][r] = []); } return bucket[iso]; };
 
-  const inMonth = (iso) => {
-    if (!iso) return null;
-    const p = iso.split('-');
-    if (+p[0] !== year || +p[1] !== month) return null;
-    return +p[2];
-  };
-  // events: 期間帯は各日に展開
+  const winStart = dgridISO(win.start), winEnd = dgridISO(win.end);
+  const inWin = (iso) => iso && iso >= winStart && iso <= winEnd;
+
   (events || []).forEach(ev => {
-    const s = ev.event_date, e = ev.end_date || ev.event_date;
     const depts = dgridDeptList(ev.dept);
     const targetRows = depts.length ? depts.filter(x => rows.includes(x)) : ['全体'];
-    // 日を跨いで展開
-    let cur = new Date(s + 'T00:00:00');
-    const end = new Date(e + 'T00:00:00');
+    let cur = new Date(ev.event_date + 'T00:00:00');
+    const end = new Date((ev.end_date || ev.event_date) + 'T00:00:00');
     let guard = 0;
-    while (cur <= end && guard < 400) {
-      const iso = dgridDateStr(cur.getFullYear(), cur.getMonth() + 1, cur.getDate());
-      const day = inMonth(iso);
-      if (day) targetRows.forEach(r => bucket[day][r].push({ type: 'event', title: ev.title, color: ev.color || DGRID_DEPT_COLOR[r] || '#6E7B8A' }));
+    while (cur <= end && guard < 800) {
+      const iso = dgridISO(cur);
+      if (inWin(iso)) { const b = ensure(iso); targetRows.forEach(r => b[r].push({ type: 'event', title: ev.title, color: ev.color || DGRID_DEPT_COLOR[r] || '#6E7B8A' })); }
       cur.setDate(cur.getDate() + 1);
       guard++;
     }
   });
-  // tasks: due_date に締切として置く
   (tasks || []).forEach(t => {
-    const day = inMonth(t.due_date);
-    if (!day) return;
+    if (!inWin(t.due_date)) return;
     const depts = dgridDeptList(t.dept);
     const targetRows = depts.length ? depts.filter(x => rows.includes(x)) : ['全体'];
-    targetRows.forEach(r => bucket[day][r].push({ type: 'task', title: t.title, color: '' }));
+    const b = ensure(t.due_date);
+    targetRows.forEach(r => b[r].push({ type: 'task', title: t.title, color: '' }));
   });
 
-  // 半月ごとにテーブルを2本
-  const halves = [[1, 15], [16, lastDate]];
   let html = '';
-  halves.forEach(([from, to], hi) => {
+  win.bands.forEach(band => {
+    // 帯内の日付リスト
+    const days = [];
+    let c = new Date(band.from);
+    let guard = 0;
+    while (c <= band.to && guard < 40) { days.push(new Date(c)); c.setDate(c.getDate() + 1); guard++; }
     html += '<div class="dgrid-half">';
-    html += '<div class="dgrid-half-title">' + month + '月 ' + from + '日〜' + to + '日</div>';
+    html += '<div class="dgrid-half-title">' + escapeHtml(band.title) + '</div>';
     html += '<div style="overflow-x:auto"><table class="dgrid-table"><thead><tr>';
     html += '<th class="dgrid-corner"></th>';
-    for (let d = from; d <= to; d++) {
-      const wd = new Date(year, month - 1, d).getDay();
-      const wl = ['日','月','火','水','木','金','土'][wd];
+    days.forEach(dt => {
+      const wd = dt.getDay();
       const cls = wd === 0 ? ' sun' : (wd === 6 ? ' sat' : '');
-      html += '<th class="dgrid-datehead' + cls + '">' + d + '<br>(' + wl + ')</th>';
-    }
+      html += '<th class="dgrid-datehead' + cls + '">' + dt.getDate() + '<br>(' + DGRID_WD[wd] + ')</th>';
+    });
     html += '</tr></thead><tbody>';
     rows.forEach(r => {
       const rc = DGRID_DEPT_COLOR[r] || '#6E7B8A';
       html += '<tr>';
       html += '<th class="dgrid-rowhead" style="background:' + rc + '">' + escapeHtml(r) + '</th>';
-      for (let d = from; d <= to; d++) {
-        const items = bucket[d][r] || [];
+      days.forEach(dt => {
+        const iso = dgridISO(dt);
+        const items = (bucket[iso] && bucket[iso][r]) || [];
         html += '<td class="dgrid-cell">';
-        if (!items.length) {
-          html += '';
-        } else {
-          items.forEach(it => {
-            if (it.type === 'task') {
-              html += '<span class="dgrid-chip task">' + escapeHtml(it.title) + '</span>';
-            } else {
-              html += '<span class="dgrid-chip" style="background:' + (it.color || rc) + '">' + escapeHtml(it.title) + '</span>';
-            }
-          });
-        }
+        items.forEach(it => {
+          if (it.type === 'task') {
+            html += '<span class="dgrid-chip task">' + escapeHtml(it.title) + '</span>';
+          } else {
+            html += '<span class="dgrid-chip" style="background:' + (it.color || rc) + '">' + escapeHtml(it.title) + '</span>';
+          }
+        });
         html += '</td>';
-      }
+      });
       html += '</tr>';
     });
     html += '</tbody></table></div></div>';
