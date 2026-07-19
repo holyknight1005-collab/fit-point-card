@@ -4323,7 +4323,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dbs';
+const APP_VERSION = '20260702dbt';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -28408,10 +28408,11 @@ async function renderSvGradeNotes() {
     escapeHtml(svSchool) + '／' + y + '年' + m + '月' +
     (canEdit ? '' : '（閲覧のみ・編集は担当者/管理者）') + '</div>';
 
+  html += '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">';
   SA_GRADES.forEach(g => {
     const row = svGradeNotesCache[g] || {};
     const upd = row.updated_at ? ('<span style="font-size:10px;color:var(--muted);margin-left:8px">最終更新 ' + escapeHtml(String(row.updated_at).slice(0, 10)) + '</span>') : '';
-    html += '<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;background:var(--surface)">';
+    html += '<div style="flex:1 1 260px;min-width:240px;border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--surface)">';
     html += '<div style="font-size:14px;font-weight:800;color:var(--text);margin-bottom:8px">' + gradeLabel[g] + upd + '</div>';
     html += '<div style="display:grid;gap:8px" class="sv-gn-grid">';
     fields.forEach(f => {
@@ -28433,6 +28434,7 @@ async function renderSvGradeNotes() {
     }
     html += '</div>';
   });
+  html += '</div>';
   sec.innerHTML = html;
 }
 
@@ -28515,30 +28517,49 @@ async function renderSvInterviews() {
     sec.innerHTML = html;
     return;
   }
-  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／全' + rows.length + '件（新しい順）</div>';
+
+  // 生徒ごとにグルーピング（rows は日付降順なので各生徒内も降順）
+  const byStudent = {};
+  rows.forEach(r => { (byStudent[r.student_id] = byStudent[r.student_id] || []).push(r); });
+  // 生徒の並び：直近面談が新しい順
+  const studentIds = Object.keys(byStudent).sort((a, b) => {
+    const la = byStudent[a][0].interview_date || '', lb = byStudent[b][0].interview_date || '';
+    return lb.localeCompare(la);
+  });
+
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／' + studentIds.length + '名・全' + rows.length + '件</div>';
   html += '<div style="display:flex;flex-direction:column">';
-  rows.forEach(r => {
-    const open = !!svIvExpanded[r.id];
-    const nm = nameById[r.student_id] || r.student_id;
-    const gr = gradeById[r.student_id] ? ('高' + gradeById[r.student_id]) : '';
-    const who = r.interviewer ? (staffMap[r.interviewer] || r.interviewer) : '';
-    const dateStr = r.interview_date ? String(r.interview_date).replace(/-/g, '/') : '';
-    const parentBadge = r.share_to_parent ? '<span style="font-size:9px;color:#1B5E8A;background:#EAF3FB;border:1px solid #B9D6EE;border-radius:8px;padding:1px 6px;margin-left:6px">👪</span>' : '';
-    const previewSrc = (r.note || r.student_note || '').replace(/\s+/g, ' ').trim();
-    const preview = previewSrc ? (previewSrc.length > 20 ? previewSrc.slice(0, 20) + '…' : previewSrc) : '（内容なし）';
-    const staffMemo = '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">' + escapeHtml(r.note || '（スタッフメモなし）') + '</div>';
-    const studentMemo = r.student_note
-      ? '<div style="font-size:11px;color:#2E6B12;background:#F1F8ED;border-radius:6px;padding:6px 8px;margin-top:4px;white-space:pre-wrap;line-height:1.5">💬 生徒共有：' + escapeHtml(r.student_note) + '</div>'
-      : '';
+  studentIds.forEach(sid => {
+    const list = byStudent[sid];
+    const nm = nameById[sid] || sid;
+    const gr = gradeById[sid] ? ('高' + gradeById[sid]) : '';
     html += '<div style="padding:8px 0;border-bottom:1px solid var(--border)">';
-    html += '<div onclick="svToggleIv(\'' + escapeAttr(String(r.id)) + '\')" style="display:flex;align-items:center;gap:6px;cursor:pointer">' +
-      '<span style="font-size:11px;color:var(--muted);transition:transform .15s;transform:rotate(' + (open ? '90' : '0') + 'deg)">▶</span>' +
-      '<span style="font-size:12px;font-weight:700;color:var(--text);white-space:nowrap">' + escapeHtml(dateStr) + '</span>' + parentBadge +
-      '<span style="font-size:12px;font-weight:700;color:#1E4276;white-space:nowrap">' + escapeHtml(nm) + (gr ? '<span style="font-size:10px;color:var(--muted);font-weight:400"> ' + escapeHtml(gr) + '</span>' : '') + '</span>' +
-      (who ? '<span style="font-size:10px;color:var(--muted);white-space:nowrap">担当 ' + escapeHtml(who) + '</span>' : '') +
-      '<span style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' + (open ? 'display:none' : '') + '">' + escapeHtml(preview) + '</span>' +
-      '</div>';
-    html += '<div style="' + (open ? '' : 'display:none;') + 'padding-left:17px;margin-top:4px" id="sv-iv-body-' + escapeAttr(String(r.id)) + '">' + staffMemo + studentMemo + '</div>';
+    // 氏名 ＋ 日付チップ横並び
+    html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
+    html += '<span style="font-size:13px;font-weight:700;color:#1E4276;white-space:nowrap;min-width:96px">' + escapeHtml(nm) + (gr ? '<span style="font-size:10px;color:var(--muted);font-weight:400"> ' + escapeHtml(gr) + '</span>' : '') + '</span>';
+    list.forEach(r => {
+      const open = !!svIvExpanded[r.id];
+      const d = r.interview_date ? (parseInt(r.interview_date.slice(5, 7), 10) + '/' + parseInt(r.interview_date.slice(8, 10), 10)) : '?';
+      const parentBadge = r.share_to_parent ? '👪' : '';
+      html += '<button type="button" onclick="svToggleIv(\'' + escapeAttr(String(r.id)) + '\')" ' +
+        'style="padding:3px 10px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:inherit;' +
+        (open ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--text)') + '">' +
+        escapeHtml(d) + parentBadge + '</button>';
+    });
+    html += '</div>';
+    // 展開された面談の本文
+    list.forEach(r => {
+      if (!svIvExpanded[r.id]) return;
+      const who = r.interviewer ? (staffMap[r.interviewer] || r.interviewer) : '';
+      const dateStr = r.interview_date ? String(r.interview_date).replace(/-/g, '/') : '';
+      const staffMemo = '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">' + escapeHtml(r.note || '（スタッフメモなし）') + '</div>';
+      const studentMemo = r.student_note
+        ? '<div style="font-size:11px;color:#2E6B12;background:#F1F8ED;border-radius:6px;padding:6px 8px;margin-top:4px;white-space:pre-wrap;line-height:1.5">💬 生徒共有：' + escapeHtml(r.student_note) + '</div>'
+        : '';
+      html += '<div style="margin-top:6px;padding:8px 10px;background:var(--surface2);border-radius:8px">' +
+        '<div style="font-size:11px;color:var(--muted);margin-bottom:3px">' + escapeHtml(dateStr) + (who ? '　担当 ' + escapeHtml(who) : '') + '</div>' +
+        staffMemo + studentMemo + '</div>';
+    });
     html += '</div>';
   });
   html += '</div>';
@@ -28855,10 +28876,9 @@ async function renderSvInquiry() {
   let rows = [];
   try {
     rows = await sbGet('prospects',
-      'school=eq.' + encodeURIComponent(svSchool) +
-      '&select=id,name,grade,status,inquiry_date,created_at,enrolled_student_id') || [];
+      'school=eq.' + encodeURIComponent(svSchool) + '&select=*') || [];
   } catch (e) {
-    sec.innerHTML = '<div class="sv-card-h">💬 問い合わせ一覧</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">取得に失敗しました（create_prospects.sql 未実行の可能性）。</div>';
+    sec.innerHTML = '<div class="sv-card-h">💬 問い合わせ一覧</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">取得に失敗しました（' + escapeHtml(String(e && e.message || e)) + '）。</div>';
     return;
   }
   // 問合せ日（無ければ作成日）で新しい順
