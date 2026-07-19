@@ -4319,7 +4319,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dbw';
+const APP_VERSION = '20260702dbx';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -28474,109 +28474,137 @@ let svInoutKind = 'all';      // 'all' | 'join' | 'leave' | 'prospect' | 'visit'
 async function renderSvInterviews() {
   const sec = document.getElementById('sv-interviews-section');
   if (!sec || !svSchool) return;
-  sec.innerHTML = '<div class="sv-card-h">🗣 面談履歴（この学校）</div><div class="sv-placeholder">読み込み中…</div>';
+  sec.innerHTML = '<div class="sv-card-h">👥 学年別名簿（この学校）</div><div class="sv-placeholder">読み込み中…</div>';
 
-  // 1) この学校の在籍生徒
+  // 1) この学校の在籍生徒（入塾日・文理も取得）
   let students = [];
   try {
     students = await sbGet('students',
-      'school=eq.' + encodeURIComponent(svSchool) + '&is_active=eq.true&select=id,name,grade') || [];
+      'school=eq.' + encodeURIComponent(svSchool) + '&is_active=eq.true&select=id,name,grade,course_track,enroll_date') || [];
   } catch (e) {
-    sec.innerHTML = '<div class="sv-card-h">🗣 面談履歴（この学校）</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">生徒の取得に失敗しました。</div>';
+    sec.innerHTML = '<div class="sv-card-h">👥 学年別名簿（この学校）</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">生徒の取得に失敗しました。</div>';
     return;
   }
   if (!students.length) {
-    sec.innerHTML = '<div class="sv-card-h">🗣 面談履歴（この学校）</div><div class="sv-placeholder">この学校の在籍生徒がいません。</div>';
+    sec.innerHTML = '<div class="sv-card-h">👥 学年別名簿（この学校）</div><div class="sv-placeholder">この学校の在籍生徒がいません。</div>';
     return;
   }
-  const nameById = {}, gradeById = {};
-  students.forEach(s => { nameById[s.id] = s.name || '(名前なし)'; gradeById[s.id] = s.grade || ''; });
   const ids = students.map(s => s.id);
+  const idList = ids.map(x => '"' + x + '"').join(',');
 
-  // 2) 面談記録（生徒ID群で取得）
-  let rows = [];
+  // 2) 現在の受講（class_enrollments → class_master 名）
+  const subjectsByStudent = {};
   try {
-    const idList = ids.map(x => '"' + x + '"').join(',');
-    rows = await sbGet('student_interviews',
-      'student_id=in.(' + idList + ')&select=id,student_id,interview_date,interviewer,note,student_note,share_to_parent&order=interview_date.desc') || [];
-  } catch (e) {
-    sec.innerHTML = '<div class="sv-card-h">🗣 面談履歴（この学校）</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">面談記録の取得に失敗しました（create_student_interviews.sql 未実行の可能性）。</div>';
-    return;
-  }
+    const enr = await sbGetActiveEnrollments('student_id=in.(' + idList + ')&select=student_id,class_master_id') || [];
+    const cmIds = [...new Set(enr.map(e => e.class_master_id).filter(Boolean))];
+    let cmName = {};
+    if (cmIds.length) {
+      const cms = await sbGet('class_master', 'id=in.(' + cmIds.join(',') + ')&select=id,name,subject') || [];
+      (cms || []).forEach(c => { cmName[c.id] = c.subject || c.name || ''; });
+    }
+    enr.forEach(e => {
+      const nm = cmName[e.class_master_id];
+      if (!nm) return;
+      (subjectsByStudent[e.student_id] = subjectsByStudent[e.student_id] || new Set()).add(nm);
+    });
+  } catch (e) {}
 
-  // 3) スタッフ名解決
+  // 3) 面談記録（生徒ID群で取得）
+  let ivRows = [];
+  try {
+    ivRows = await sbGet('student_interviews',
+      'student_id=in.(' + idList + ')&select=id,student_id,interview_date,interviewer,note,student_note,share_to_parent&order=interview_date.desc') || [];
+  } catch (e) { ivRows = []; }
+
+  // 4) スタッフ名解決
   let staffMap = (typeof ivStaffMap !== 'undefined' && ivStaffMap && Object.keys(ivStaffMap).length) ? ivStaffMap : {};
   if (!Object.keys(staffMap).length) {
     try { const st = await sbGet('staff', 'select=staff_id,name') || []; st.forEach(s => { if (s.staff_id) staffMap[s.staff_id] = s.name; }); } catch (e) {}
   }
 
-  let html = '<div class="sv-card-h">🗣 面談履歴（この学校）</div>';
-  if (!rows.length) {
-    html += '<div class="sv-placeholder">この学校の生徒の面談記録はまだありません。</div>';
-    sec.innerHTML = html;
-    return;
-  }
-
-  // 生徒ごと → さらに日付ごとにグルーピング（同一日はまとめる）。rows は日付降順。
-  const byStudent = {};
-  rows.forEach(r => {
-    const sid = r.student_id;
-    const d = r.interview_date || '';
-    if (!byStudent[sid]) byStudent[sid] = { dates: [], byDate: {} };
-    const grp = byStudent[sid];
-    if (!grp.byDate[d]) { grp.byDate[d] = []; grp.dates.push(d); }
-    grp.byDate[d].push(r);
-  });
-  // 生徒の並び：直近面談が新しい順
-  const studentIds = Object.keys(byStudent).sort((a, b) => {
-    const la = byStudent[a].dates[0] || '', lb = byStudent[b].dates[0] || '';
-    return lb.localeCompare(la);
+  // 生徒ごとに面談を日付でまとめる
+  const ivByStudent = {};
+  ivRows.forEach(r => {
+    const sid = r.student_id, d = r.interview_date || '';
+    if (!ivByStudent[sid]) ivByStudent[sid] = { dates: [], byDate: {} };
+    const g = ivByStudent[sid];
+    if (!g.byDate[d]) { g.byDate[d] = []; g.dates.push(d); }
+    g.byDate[d].push(r);
   });
 
-  const dateCount = studentIds.reduce((n, sid) => n + byStudent[sid].dates.length, 0);
-  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／' + studentIds.length + '名・' + dateCount + '面談日</div>';
-  html += '<div style="display:flex;flex-direction:column">';
-  studentIds.forEach(sid => {
-    const grp = byStudent[sid];
-    const nm = nameById[sid] || sid;
-    const gr = gradeById[sid] ? ('高' + gradeById[sid]) : '';
-    html += '<div style="padding:8px 0;border-bottom:1px solid var(--border)">';
-    // 氏名 ＋ 日付チップ横並び（同一日は1チップ）
-    html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
-    html += '<span style="font-size:13px;font-weight:700;color:#1E4276;white-space:nowrap;min-width:96px">' + escapeHtml(nm) + (gr ? '<span style="font-size:10px;color:var(--muted);font-weight:400"> ' + escapeHtml(gr) + '</span>' : '') + '</span>';
-    grp.dates.forEach(d => {
-      const key = sid + '|' + d;
-      const open = !!svIvExpanded[key];
-      const recs = grp.byDate[d];
-      const dLbl = d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10)) : '?';
-      const parentBadge = recs.some(r => r.share_to_parent) ? '👪' : '';
-      const multi = recs.length > 1 ? ('<span style="font-size:9px;opacity:0.8"> ×' + recs.length + '</span>') : '';
-      html += '<button type="button" onclick="svToggleIv(\'' + escapeAttr(key) + '\')" ' +
-        'style="padding:3px 10px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:inherit;' +
-        (open ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--text)') + '">' +
-        escapeHtml(dLbl) + parentBadge + multi + '</button>';
-    });
-    html += '</div>';
-    // 展開された日付の本文（その日の全レコードをまとめて表示）
-    grp.dates.forEach(d => {
-      const key = sid + '|' + d;
-      if (!svIvExpanded[key]) return;
-      const recs = grp.byDate[d];
-      const dateStr = d ? String(d).replace(/-/g, '/') : '';
-      recs.forEach(r => {
-        const who = r.interviewer ? (staffMap[r.interviewer] || r.interviewer) : '';
-        const staffMemo = '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">' + escapeHtml(r.note || '（スタッフメモなし）') + '</div>';
-        const studentMemo = r.student_note
-          ? '<div style="font-size:11px;color:#2E6B12;background:#F1F8ED;border-radius:6px;padding:6px 8px;margin-top:4px;white-space:pre-wrap;line-height:1.5">💬 生徒共有：' + escapeHtml(r.student_note) + '</div>'
-          : '';
-        html += '<div style="margin-top:6px;padding:8px 10px;background:var(--surface2);border-radius:8px">' +
-          '<div style="font-size:11px;color:var(--muted);margin-bottom:3px">' + escapeHtml(dateStr) + (who ? '　担当 ' + escapeHtml(who) : '') + '</div>' +
-          staffMemo + studentMemo + '</div>';
-      });
-    });
-    html += '</div>';
+  // 学年グルーピング（1年→2年→3年、各学年は入塾日昇順）
+  const byGrade = { '1': [], '2': [], '3': [], 'other': [] };
+  students.forEach(s => {
+    const g = String(s.grade || '');
+    if (byGrade[g]) byGrade[g].push(s); else byGrade['other'].push(s);
   });
-  html += '</div>';
+  Object.keys(byGrade).forEach(g => {
+    byGrade[g].sort((a, b) => (a.enroll_date || '9999-99-99').localeCompare(b.enroll_date || '9999-99-99'));
+  });
+
+  const md = (d) => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10)) : '?';
+
+  let html = '<div class="sv-card-h">👥 学年別名簿（この学校）</div>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／在籍' + students.length + '名（入塾日順）</div>';
+
+  const gradeOrder = [['1', '高1'], ['2', '高2'], ['3', '高3'], ['other', 'その他']];
+  gradeOrder.forEach(([gk, glabel]) => {
+    const list = byGrade[gk];
+    if (!list.length) return;
+    html += '<div style="font-size:13px;font-weight:800;color:#1E4276;margin:12px 0 4px">' + glabel + '（' + list.length + '）</div>';
+    html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
+    html += '<thead><tr style="text-align:left;color:var(--muted);font-size:11px">' +
+      '<th style="padding:4px 6px;white-space:nowrap">氏名</th>' +
+      '<th style="padding:4px 6px;white-space:nowrap">文理</th>' +
+      '<th style="padding:4px 6px;white-space:nowrap">受講科目</th>' +
+      '<th style="padding:4px 6px">面談履歴</th>' +
+      '</tr></thead><tbody>';
+    list.forEach(s => {
+      const subs = subjectsByStudent[s.id] ? [...subjectsByStudent[s.id]] : [];
+      const ivg = ivByStudent[s.id];
+      html += '<tr style="border-top:1px solid var(--border);vertical-align:top">';
+      html += '<td style="padding:6px;white-space:nowrap;font-weight:700;color:var(--text)">' + escapeHtml(s.name || '') + '</td>';
+      html += '<td style="padding:6px;white-space:nowrap;color:var(--muted)">' + escapeHtml(s.course_track || '—') + '</td>';
+      html += '<td style="padding:6px">' + (subs.length
+        ? subs.map(x => '<span style="display:inline-block;font-size:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:1px 6px;margin:1px 2px 1px 0;white-space:nowrap">' + escapeHtml(x) + '</span>').join('')
+        : '<span style="color:var(--muted)">—</span>') + '</td>';
+      html += '<td style="padding:6px">';
+      if (ivg && ivg.dates.length) {
+        html += '<div style="display:flex;gap:4px;flex-wrap:wrap">';
+        ivg.dates.forEach(d => {
+          const key = s.id + '|' + d;
+          const open = !!svIvExpanded[key];
+          const recs = ivg.byDate[d];
+          const parentBadge = recs.some(r => r.share_to_parent) ? '👪' : '';
+          const multi = recs.length > 1 ? ('<span style="font-size:9px;opacity:0.8"> ×' + recs.length + '</span>') : '';
+          html += '<button type="button" onclick="svToggleIv(\'' + escapeAttr(key) + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;border-radius:10px;cursor:pointer;font-family:inherit;' +
+            (open ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--text)') + '">' +
+            md(d) + parentBadge + multi + '</button>';
+        });
+        html += '</div>';
+        // 展開本文
+        ivg.dates.forEach(d => {
+          const key = s.id + '|' + d;
+          if (!svIvExpanded[key]) return;
+          const recs = ivg.byDate[d];
+          recs.forEach(r => {
+            const who = r.interviewer ? (staffMap[r.interviewer] || r.interviewer) : '';
+            const staffMemo = '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">' + escapeHtml(r.note || '（スタッフメモなし）') + '</div>';
+            const studentMemo = r.student_note
+              ? '<div style="font-size:11px;color:#2E6B12;background:#F1F8ED;border-radius:6px;padding:6px 8px;margin-top:4px;white-space:pre-wrap;line-height:1.5">💬 生徒共有：' + escapeHtml(r.student_note) + '</div>'
+              : '';
+            html += '<div style="margin-top:6px;padding:8px 10px;background:var(--surface2);border-radius:8px;max-width:520px">' +
+              '<div style="font-size:11px;color:var(--muted);margin-bottom:3px">' + escapeHtml(String(d).replace(/-/g, '/')) + (who ? '　担当 ' + escapeHtml(who) : '') + '</div>' +
+              staffMemo + studentMemo + '</div>';
+          });
+        });
+      } else {
+        html += '<span style="color:var(--muted);font-size:11px">面談なし</span>';
+      }
+      html += '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+  });
   sec.innerHTML = html;
 }
 
