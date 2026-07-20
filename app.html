@@ -4553,7 +4553,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702ddb';
+const APP_VERSION = '20260702ddc';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -9067,8 +9067,45 @@ function rosterPlaceholderPin() {
   return String(Math.floor(10000 + Math.random() * 90000));
 }
 
+// roster に同一氏名＋学校が無ければ新規追加、あれば在籍情報を更新する。
+// 来塾→入塾や新規生徒登録のとき、名簿台帳にも自動で載せて突合ズレ（アプリのみ）を防ぐ。
+// 失敗しても生徒登録自体は妨げない（roster未整備の環境でも動く）。
+async function upsertRosterFromStudent(stu, enrollDate) {
+  try {
+    const name = (stu && stu.name || '').trim();
+    if (!name) return;
+    const school = stu.school || '';
+    const existing = await sbGet('roster', 'select=id,name,school') || [];
+    const key = rosterKey(name, school);
+    let exId = null;
+    existing.forEach(e => { if (rosterKey(e.name, e.school) === key) exId = e.id; });
+    const payload = {
+      name: name,
+      name_norm: normalizeName(name),
+      school: school || null,
+      grade: stu.grade || null,
+      course_track: stu.course_track || null,
+      membership_status: stu.membership_status || '通常',
+      enroll_date: enrollDate || null,
+      status: '在籍',
+      is_active: true,
+      updated_at: new Date().toISOString()
+    };
+    try {
+      if (exId) await sbPatch('roster', 'id=eq.' + exId, payload);
+      else await sbPost('roster', payload);
+    } catch (perr) {
+      // membership_status など未作成列があれば外して再試行
+      const p2 = Object.assign({}, payload); delete p2.membership_status; delete p2.course_track;
+      if (exId) await sbPatch('roster', 'id=eq.' + exId, p2);
+      else await sbPost('roster', p2);
+    }
+  } catch (e) { /* roster 未整備でも生徒登録は妨げない */ }
+}
+
 async function insertStudentTolerant(base, enrollDate) {
   let body = Object.assign({}, base);
+  // (roster自動連携は upsertRosterFromStudent が担当。ここでは students のみ扱う)
   let droppedRosterOnly = false;
   const maxTries = 12; // 無限ループ防止（外せる列の上限）
   for (let attempt = 0; attempt < maxTries; attempt++) {
@@ -27615,6 +27652,11 @@ async function saveNewStudent() {
       enrollingProspectId = null;
     }
 
+    // 名簿台帳(roster)にも自動で載せる（来塾→入塾でも突合ズレを作らない）
+    await upsertRosterFromStudent({
+      name, school: v('sadd-school') || null, grade: v('sadd-grade') || null
+    }, enrollDate);
+
     hideLoading();
     closeStudentAddModal();
     showToast('✅ ' + name + 'さんを登録しました' + (linkedFromProspect ? '（見込みを入塾に更新）' : ''), 'success');
@@ -29757,6 +29799,8 @@ async function saveSvNew() {
     const res = await insertStudentTolerant(base, enroll);
     hideLoading();
     if (!res || !res.ok) { showToast('登録に失敗しました', 'error'); return; }
+    // 名簿台帳にも自動登録
+    await upsertRosterFromStudent(base, enroll);
     closeSvNew();
     demoStudentIdSet = null;
     showToast('＋ ' + name + ' を登録しました', 'success');
