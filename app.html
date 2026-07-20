@@ -4422,7 +4422,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dcm';
+const APP_VERSION = '20260702dco';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -16741,6 +16741,25 @@ function cycleNext(c, isNormal) {
   return { year, month, no };
 }
 
+// {year, month, no} の前の回を返す（cycleNext の逆）
+// 通常講座: 月4回で繰り下がり（5月1回目→4月4回目、4月1回目→前年度3月4回目）
+// 講習: 通し番号なので no を -1 するだけ
+function cyclePrev(c, isNormal) {
+  if (isNormal === false) {
+    return { year: c.year, month: null, no: c.no - 1 };
+  }
+  let { year, month, no } = c;
+  no--;
+  if (no < 1) {
+    no = CYCLE_PER_MONTH;
+    month--;
+    if (month < 1) month = 12;
+    // 年度は4月始まり：4月分の前が3月分になるとき年度が繰り下がる
+    if (month === 3) year--;
+  }
+  return { year, month, no };
+}
+
 // 表示用ラベル（通常=「4月2回目」、講習=「第3回」）
 function cycleLabel(c) {
   if (!c || c.no == null) return '';
@@ -18023,6 +18042,7 @@ function openStaffCalModal(dateISO, simple) {
       const editBtn = s.class_master_id
         ? '<button onclick="openSessionTimeEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.start_time ? String(s.start_time).slice(0,5) : '') + '\',\'' + (s.end_time ? String(s.end_time).slice(0,5) : '') + '\')" style="margin-left:8px;font-size:10px;font-weight:700;color:#2D6DB5;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">⏱ 時間変更</button>'
           + '<button onclick="openSessionDateEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\')" style="margin-left:6px;font-size:10px;font-weight:700;color:#96690F;background:#FEF3E0;border:1px solid #E8C98A;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📅 日程変更</button>'
+          + '<button onclick="openSessionCycleEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\')" style="margin-left:6px;font-size:10px;font-weight:700;color:#7A3E9D;background:#F3EAFB;border:1px solid #C9A2E6;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🔢 回数編集</button>'
         : '';
       const chgBadge = s.change_log
         ? '<div style="font-size:10px;color:#96690F;background:#FEF3E0;border:1px solid #E8C98A;border-radius:6px;padding:2px 7px;margin-top:4px;display:inline-block">📅 ' +
@@ -18115,6 +18135,102 @@ function addEventFromCalModal(dateISO) {
 }
 
 // 既存セッションの時間を変更（日付モーダルの授業 → 時間ピッカー → PATCH）
+// 登録済み授業日の「何月何回目（サイクル番号）」を後から編集。
+// 「この回以降を自動連番」ON なら、同じ授業の以降の授業日にも連番を振り直す（月4回で繰り上がり）。
+async function openSessionCycleEdit(classId, dateISO, periodStr) {
+  const curPeriod = periodStr === '' ? null : parseInt(periodStr);
+  // この授業の区分・現在のサイクルを取得
+  let isNormal = true, cur = { year: null, month: null, no: null };
+  try {
+    const cm = await sbGet('class_master', 'id=eq.' + classId + '&select=category') || [];
+    isNormal = isNormalCategory(cm[0] ? cm[0].category : 'normal');
+  } catch (e) {}
+  try {
+    let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + dateISO;
+    q += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
+    const rows = await sbGet('class_sessions', q + '&select=cycle_year,cycle_month,cycle_no&limit=1') || [];
+    if (rows[0]) cur = { year: rows[0].cycle_year, month: rows[0].cycle_month, no: rows[0].cycle_no };
+  } catch (e) {}
+
+  const fy = getFiscalYearJST();
+  const p = dateISO.split('-').map(Number);
+  const wd = ['日','月','火','水','木','金','土'];
+  const dt = new Date(p[0], p[1]-1, p[2]);
+  let overlay = document.getElementById('session-cycle-modal');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'session-cycle-modal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.onclick = function(e){ if (e.target === overlay) overlay.remove(); };
+  const monthField = isNormal
+    ? '<div style="display:flex;flex-direction:column;align-items:center"><input class="ck-cyc-in" id="scyc-m" type="number" inputmode="numeric" min="1" max="12" placeholder="月" value="' + (cur.month != null ? cur.month : (p[1])) + '" style="width:48px"><span class="ck-cyc-unit">月</span></div>'
+    : '<input type="hidden" id="scyc-m" value="">';
+  overlay.innerHTML =
+    '<div style="background:var(--surface);border-radius:16px;padding:20px;max-width:360px;width:100%;box-shadow:0 20px 50px -12px rgba(0,0,0,0.3)" onclick="event.stopPropagation()">' +
+    '<div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px">🔢 回数（サイクル番号）を編集</div>' +
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:14px">' + p[1] + '月' + p[2] + '日（' + wd[dt.getDay()] + '）' + (curPeriod != null ? '／' + curPeriod + '限' : '') + '<br>' + (isNormal ? '通常授業（月4回サイクル）' : '講習（通し番号）') + '</div>' +
+    '<div style="display:flex;align-items:flex-end;gap:8px;justify-content:center;margin-bottom:14px">' +
+      '<div style="display:flex;flex-direction:column;align-items:center"><input class="ck-cyc-in" id="scyc-y" type="number" inputmode="numeric" placeholder="年度" value="' + (cur.year != null ? cur.year : fy) + '" style="width:64px"><span class="ck-cyc-unit">年度</span></div>' +
+      monthField +
+      '<div style="display:flex;flex-direction:column;align-items:center"><input class="ck-cyc-in" id="scyc-no" type="number" inputmode="numeric" min="1" placeholder="回" value="' + (cur.no != null ? cur.no : '') + '" style="width:48px"><span class="ck-cyc-unit">' + (isNormal ? '回目' : '回') + '</span></div>' +
+    '</div>' +
+    '<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:14px">' +
+      '<input type="checkbox" id="scyc-cascade" checked><span>この回を基準に、前後の同じ授業も自動で連番を振り直す</span></label>' +
+    '<button onclick="saveSessionCycle(\'' + escapeAttr(classId) + '\',\'' + dateISO + '\',\'' + (curPeriod != null ? curPeriod : '') + '\',' + isNormal + ')" style="width:100%;padding:12px;background:linear-gradient(135deg,#7A3E9D,#5E2E7A);border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;margin-bottom:8px">保存する</button>' +
+    '<button onclick="document.getElementById(\'session-cycle-modal\').remove()" style="width:100%;padding:10px;background:transparent;border:none;color:var(--muted);font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">閉じる</button>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function saveSessionCycle(classId, dateISO, periodStr, isNormal) {
+  const curPeriod = periodStr === '' ? null : parseInt(periodStr);
+  const y = parseInt(document.getElementById('scyc-y').value);
+  const mEl = document.getElementById('scyc-m');
+  const m = (isNormal && mEl && mEl.value !== '') ? parseInt(mEl.value) : null;
+  const no = parseInt(document.getElementById('scyc-no').value);
+  const cascade = !!document.getElementById('scyc-cascade')?.checked;
+  if (isNaN(no)) { showToast('回を入力してください', 'error'); return; }
+  if (isNaN(y)) { showToast('年度を入力してください', 'error'); return; }
+  if (isNormal && (isNaN(m) || m < 1 || m > 12)) { showToast('月を1〜12で入力してください', 'error'); return; }
+
+  showLoading('保存中...');
+  try {
+    // この回を更新
+    let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + dateISO;
+    q += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
+    await sbPatch('class_sessions', q, { cycle_year: y, cycle_month: isNormal ? m : null, cycle_no: no });
+
+    if (cascade) {
+      // 過去方向：この日付より前のセッションを日付降順で取り、遡って番号を振り直す（補習は番号を消費しない）
+      const earlier = await sbGet('class_sessions',
+        'class_master_id=eq.' + classId + '&session_date=lt.' + dateISO +
+        '&select=id,session_date,period,is_makeup&order=session_date.desc,period.desc') || [];
+      let back = { year: y, month: isNormal ? m : null, no: no };
+      for (const s of earlier) {
+        if (s.is_makeup) continue; // 補習は番号なしのまま
+        back = cyclePrev(back, isNormal);
+        await sbPatch('class_sessions', 'id=eq.' + s.id, { cycle_year: back.year, cycle_month: back.month, cycle_no: back.no });
+      }
+      // 未来方向：この日付より後のセッションを日付順に取り、連番を振り直す
+      const later = await sbGet('class_sessions',
+        'class_master_id=eq.' + classId + '&session_date=gt.' + dateISO +
+        '&select=id,session_date,period,is_makeup&order=session_date,period') || [];
+      let cyc = { year: y, month: isNormal ? m : null, no: no };
+      for (const s of later) {
+        if (s.is_makeup) continue; // 補習は番号なしのまま
+        cyc = cycleNext(cyc, isNormal);
+        await sbPatch('class_sessions', 'id=eq.' + s.id, { cycle_year: cyc.year, cycle_month: cyc.month, cycle_no: cyc.no });
+      }
+    }
+    hideLoading();
+    const ov = document.getElementById('session-cycle-modal'); if (ov) ov.remove();
+    showToast('🔢 回数を保存しました' + (cascade ? '（前後も連番更新）' : ''), 'success');
+    if (typeof loadStaffCalendar === 'function') { try { loadStaffCalendar(); } catch (e) {} }
+    if (typeof loadTodayClasses === 'function') { try { loadTodayClasses(); } catch (e) {} }
+    if (typeof loadSessionList === 'function') { try { loadSessionList(); } catch (e) {} }
+  } catch (e) { hideLoading(); showToast('エラー: ' + (e && e.message ? e.message : e), 'error'); }
+}
+
 // 授業日の「日付」を変更（生徒欠席などで日程を動かすとき）。session_date を PATCH。
 function openSessionDateEdit(classId, dateISO, periodStr) {
   const curPeriod = periodStr === '' ? null : parseInt(periodStr);
