@@ -4422,7 +4422,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dcq';
+const APP_VERSION = '20260702dcr';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -15848,8 +15848,16 @@ async function loadKarteStudents(classId) {
     }
     const nameById = {}; (staffStudents || []).forEach(s => { nameById[s.id] = s; });
     // デモ生徒は除外（enrollId も要るので select に id を追加）
-    const enrolls = await excludeDemoRows(await sbGetActiveEnrollments(
-      'class_master_id=eq.' + classId + '&select=id,student_id,start_cycle_year,start_cycle_month,start_cycle_no'));
+    // end_cycle_*/lap_done は das で追加した列。SQL未適用環境では 400 になるので、
+    // その場合は開始回だけの select にフォールバックする（クラッシュ防止）。
+    let enrolls;
+    try {
+      enrolls = await excludeDemoRows(await sbGetActiveEnrollments(
+        'class_master_id=eq.' + classId + '&select=id,student_id,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,lap_done'));
+    } catch (e) {
+      enrolls = await excludeDemoRows(await sbGetActiveEnrollments(
+        'class_master_id=eq.' + classId + '&select=id,student_id,start_cycle_year,start_cycle_month,start_cycle_no'));
+    }
     const seen = new Set();
     const rows = [];
     enrolls.forEach(e => {
@@ -15859,7 +15867,9 @@ async function loadKarteStudents(classId) {
       rows.push({
         enrollId: e.id,
         student: s,
-        cyc: { year: e.start_cycle_year, month: e.start_cycle_month, no: e.start_cycle_no }
+        cyc: { year: e.start_cycle_year, month: e.start_cycle_month, no: e.start_cycle_no },
+        endCyc: { year: e.end_cycle_year, month: e.end_cycle_month, no: e.end_cycle_no },
+        lapDone: e.lap_done === true
       });
     });
     rows.sort((a,b) => (a.student.grade||'').localeCompare(b.student.grade||'') || (a.student.name||'').localeCompare(b.student.name||''));
@@ -15963,6 +15973,26 @@ function renderKarteStudents(freeTarget) {
           '<input class="ck-cyc-in ck-cyc-n" type="number" inputmode="numeric" min="1" placeholder="回" value="' + (r.cyc.no != null ? r.cyc.no : '') + '" style="width:44px">' +
           '<span class="ck-cyc-unit">' + (ckStuIsNormal ? '回目' : '回') + '</span>' +
         '</div>' +
+        // das: 終了サイクル入力＋1周完了フラグ（超感覚英語・長文読解のみ）
+        (freeTarget
+          ? '<div class="ck-end-cyc" style="display:flex;align-items:center;gap:3px;flex-shrink:0;flex-wrap:wrap;margin-top:2px;padding-top:4px;border-top:1px dashed var(--border);width:100%">' +
+              '<span class="ck-cyc-unit" style="color:var(--muted)">終了</span>' +
+              '<input class="ck-cyc-in ck-ec-y" type="number" inputmode="numeric" placeholder="年度" value="' + (r.endCyc && r.endCyc.year != null ? r.endCyc.year : '') + '" style="width:52px">' +
+              '<span class="ck-cyc-unit">年度</span>' +
+              (ckStuIsNormal
+                ? '<input class="ck-cyc-in ck-ec-m" type="number" inputmode="numeric" min="1" max="12" placeholder="月" value="' + (r.endCyc && r.endCyc.month != null ? r.endCyc.month : '') + '" style="width:44px">' +
+                  '<span class="ck-cyc-unit">月</span>'
+                : '<input class="ck-cyc-in ck-ec-m" type="hidden" value="">') +
+              '<input class="ck-cyc-in ck-ec-n" type="number" inputmode="numeric" min="1" placeholder="回" value="' + (r.endCyc && r.endCyc.no != null ? r.endCyc.no : '') + '" style="width:44px">' +
+              '<span class="ck-cyc-unit">' + (ckStuIsNormal ? '回目' : '回') + '</span>' +
+              '<label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--text);cursor:pointer;margin-left:4px">' +
+                '<input type="checkbox" class="ck-lap-done"' + (r.lapDone ? ' checked' : '') + '>1周完了(以降無料)' +
+              '</label>' +
+              ((r.lap && r.lap.done >= LAP_SESSIONS && !r.lapDone)
+                ? '<span class="ck-cyc-badge" style="background:#EAF7EA;color:#3B6D11;border:1px solid #8CC98C">💡1周分に到達（' + r.lap.done + '回）</span>'
+                : '') +
+            '</div>'
+          : '') +
       '</div>';
     }).join('') +
     '</div>' +
@@ -15975,6 +16005,7 @@ async function saveKarteStartCycles() {
   const el = document.getElementById('ck-students');
   const rowEls = el.querySelectorAll('[data-crow]');
   const updates = [];
+  let lapDoneToConfirm = 0;
   rowEls.forEach(rowEl => {
     const i = parseInt(rowEl.dataset.crow);
     const r = ckStuRows[i];
@@ -15984,17 +16015,46 @@ async function saveKarteStartCycles() {
     const m = mRaw ? parseInt(mRaw) : null;
     const nRaw = rowEl.querySelector('.ck-cyc-n').value;
     const n = nRaw ? parseInt(nRaw) : null;
+
+    // --- 終了サイクル＋1周完了フラグ（freeTarget行のみDOMに存在）---
+    const ecYEl = rowEl.querySelector('.ck-ec-y');
+    const lapEl = rowEl.querySelector('.ck-lap-done');
+    let endCyc = null, lapDone = null;
+    if (ecYEl || lapEl) {
+      const ecY = ecYEl ? parseInt(ecYEl.value) : NaN;
+      const ecMRaw = rowEl.querySelector('.ck-ec-m') ? rowEl.querySelector('.ck-ec-m').value : '';
+      const ecM = ecMRaw ? parseInt(ecMRaw) : null;
+      const ecNRaw = rowEl.querySelector('.ck-ec-n') ? rowEl.querySelector('.ck-ec-n').value : '';
+      const ecN = ecNRaw ? parseInt(ecNRaw) : null;
+      // 終了は「回」が入っていれば有効、空ならクリア扱い。
+      if (ecN && ecY && (!ckStuIsNormal || (ecM >= 1 && ecM <= 12))) {
+        endCyc = { year: ecY, month: ckStuIsNormal ? ecM : null, no: ecN };
+      } else {
+        endCyc = 'clear';   // 未入力＝クリア
+      }
+      lapDone = lapEl ? lapEl.checked : false;
+      if (lapDone && !r.lapDone) lapDoneToConfirm++;   // 新規にONにした行だけ確認対象
+    }
+
+    // --- 開始サイクル ---
     // 年度は初期値(今年度)が入っているので、「回」が空＝未入力とみなす。
     // 既に設定済みの行で「回」を空にした場合はクリア扱い。
+    let startPart = null;
     if (!n) {
-      if (r.cyc.no != null) updates.push({ enrollId: r.enrollId, clear: true });
-      return;
+      if (r.cyc.no != null) startPart = 'clear';
+    } else if (y && !(ckStuIsNormal && (!m || m < 1 || m > 12))) {
+      startPart = { year: y, month: ckStuIsNormal ? m : null, no: n };
     }
-    if (!y) return;
-    if (ckStuIsNormal && (!m || m < 1 || m > 12)) return;
-    updates.push({ enrollId: r.enrollId, year: y, month: ckStuIsNormal ? m : null, no: n });
+
+    // 何も変化がなければスキップ
+    if (startPart == null && endCyc == null && lapDone == null) return;
+    updates.push({ enrollId: r.enrollId, startPart, endCyc, lapDone });
   });
   if (!updates.length) { showToast('入力がありません', 'error'); return; }
+  // 人間確認：1周完了(以降無料)を新たにONにした行があれば最終確認
+  if (lapDoneToConfirm > 0) {
+    if (!confirm(lapDoneToConfirm + '名を「1周完了（以降無料・受講任意）」にします。よろしいですか？')) return;
+  }
   showLoading('保存中...');
   try {
     // 該当回のセッション日を引くため、この授業のセッションを一度だけ取得
@@ -16011,19 +16071,35 @@ async function saveKarteStartCycles() {
     } catch (e) { /* 日付が引けなくても回数は保存する */ }
     let saved = 0;
     for (const u of updates) {
-      const body = u.clear
-        ? { start_cycle_year: null, start_cycle_month: null, start_cycle_no: null }
-        : { start_cycle_year: u.year, start_cycle_month: u.month, start_cycle_no: u.no };
-      if (!u.clear) {
-        const k = u.year + '|' + (u.month == null ? '' : u.month) + '|' + u.no;
+      const body = {};
+      // 開始サイクル
+      if (u.startPart === 'clear') {
+        body.start_cycle_year = null; body.start_cycle_month = null; body.start_cycle_no = null;
+      } else if (u.startPart) {
+        body.start_cycle_year = u.startPart.year;
+        body.start_cycle_month = u.startPart.month;
+        body.start_cycle_no = u.startPart.no;
+        const k = u.startPart.year + '|' + (u.startPart.month == null ? '' : u.startPart.month) + '|' + u.startPart.no;
         // 該当回の授業日が登録済みなら開始日も自動セット（未登録なら回数だけ記録）
         if (sessMap[k]) body.started_on = sessMap[k];
       }
+      // 終了サイクル
+      if (u.endCyc === 'clear') {
+        body.end_cycle_year = null; body.end_cycle_month = null; body.end_cycle_no = null;
+      } else if (u.endCyc) {
+        body.end_cycle_year = u.endCyc.year;
+        body.end_cycle_month = u.endCyc.month;
+        body.end_cycle_no = u.endCyc.no;
+        const k = u.endCyc.year + '|' + (u.endCyc.month == null ? '' : u.endCyc.month) + '|' + u.endCyc.no;
+        if (sessMap[k]) body.ended_on = sessMap[k];
+      }
+      // 1周完了フラグ
+      if (u.lapDone != null) body.lap_done = u.lapDone;
       await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(u.enrollId), body);
       saved++;
     }
     hideLoading();
-    showToast('💾 ' + saved + '名の開始回を保存しました', 'success');
+    showToast('💾 ' + saved + '名の受講サイクルを保存しました', 'success');
     loadKarteStudents(ckStuClassId);
   } catch (e) {
     hideLoading();
