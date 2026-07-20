@@ -4422,7 +4422,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dcl';
+const APP_VERSION = '20260702dcm';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -7298,7 +7298,7 @@ async function loadHomeSchedule() {
   const endISO = end.getFullYear() + '-' + String(end.getMonth() + 1).padStart(2, '0') + '-' + String(end.getDate()).padStart(2, '0');
   try {
     const [sessions, events] = await Promise.all([
-      sbGet('class_sessions', 'session_date=gte.' + todayISO + '&session_date=lte.' + endISO + '&select=class_master_id,period,start_time,end_time,session_date&order=session_date,period') || [],
+      sbGet('class_sessions', 'session_date=gte.' + todayISO + '&session_date=lte.' + endISO + '&select=class_master_id,period,start_time,end_time,session_date,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date,period') || [],
       sbGet('events', 'event_date=gte.' + todayISO + '&event_date=lte.' + endISO + '&select=title,event_date,color,scope,target_schools,target_grades,target_ids,created_by&order=event_date').catch(() => [])
     ]);
 
@@ -7717,7 +7717,7 @@ async function loadStaffHomeCalendar() {
     const lastISO = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(lastDate).padStart(2, '0');
 
     const [sessions, staffList, events, staffBdays, studentBdays, myReports, myTodos, monthCheckins] = await Promise.all([
-      sbGet('class_sessions', 'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO + '&select=class_master_id,period,start_time,end_time,session_date&order=session_date,period'),
+      sbGet('class_sessions', 'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO + '&select=class_master_id,period,start_time,end_time,session_date,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date,period'),
       sbGet('staff', 'select=id,name'),
       sbGet('events', 'event_date=lte.' + lastISO + '&or=(end_date.gte.' + firstISO + ',and(end_date.is.null,event_date.gte.' + firstISO + '))&select=title,event_date,end_date,detail,color,scope,target_schools,target_grades,target_ids,created_by').catch(() => []),
       sbGet('staff', 'birthday=not.is.null&select=name,birthday').catch(() => []),
@@ -15927,7 +15927,7 @@ function renderKarteStudents(freeTarget) {
   const el = document.getElementById('ck-students');
   if (!el) return;
   const fy = getFiscalYearJST();   // 未設定の行は今年度を初期表示（◀▶で前後に動かせる）
-  el.innerHTML = '<div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.5">受講開始の回（◯年度 ◯月 ◯回目）を入れて保存すると、開始日も自動でセットされます。' +
+  el.innerHTML = '<div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.5">受講開始の回（◯年度 ◯月 ◯回目）を入れて保存すると、開始日も自動でセットされます。<br>💡 何月の何回目かは、カレンダーや授業日の各コマに「○月○回目」バッジで表示されます。それを見て開始回を入れてください。' +
       (freeTarget ? '<br>この講座は起点から' + LAP_SESSIONS + '回（＝1年分）を超えると2周目＝無料・受講任意になります。' : '') +
     '</div>' +
     '<div class="ck-stu-rows">' +
@@ -17787,7 +17787,7 @@ async function loadStaffCalendar() {
 
     // 並行取得：当月の授業 / 講師マップ / イベント / スタッフ誕生日 / 生徒誕生日 / 自分の報告書
     const [sessions, staffList, events, staffBdays, studentBdays, myReports] = await Promise.all([
-      sbGet('class_sessions', 'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO + '&select=class_master_id,period,start_time,end_time,session_date&order=session_date,period'),
+      sbGet('class_sessions', 'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO + '&select=class_master_id,period,start_time,end_time,session_date,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date,period'),
       sbGet('staff', 'select=id,name'),
       sbGet('events', 'event_date=lte.' + lastISO + '&or=(end_date.gte.' + firstISO + ',and(end_date.is.null,event_date.gte.' + firstISO + '))&select=title,event_date,end_date,detail,color,scope,target_schools,target_grades,target_ids,created_by').catch(() => []),
       sbGet('staff', 'birthday=not.is.null&select=name,birthday').catch(() => []),
@@ -17837,7 +17837,9 @@ async function loadStaffCalendar() {
         teacher_id: teacherId,
         teacher_name: teacherId ? (staffNameMap[teacherId] || '') : '',
         mine: !!(teacherId && currentStaff && teacherId === currentStaff.id),
-        change_log: chg
+        change_log: chg,
+        cycle_label: (typeof sessionCycleLabel === 'function') ? sessionCycleLabel({ cycle_year: s.cycle_year, cycle_month: s.cycle_month, cycle_no: s.cycle_no }) : '',
+        is_makeup: s.is_makeup
       };
     });
 
@@ -18028,8 +18030,11 @@ function openStaffCalModal(dateISO, simple) {
           escapeHtml(String(s.change_log.new_date || '').slice(5).replace('-', '/')) + ' に変更' +
           (s.change_log.changed_by_name ? '（' + escapeHtml(s.change_log.changed_by_name) + '）' : '') + '</div>'
         : '';
+      const cycBadge = s.is_makeup
+        ? '<span style="font-size:9px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:10px;padding:1px 6px;margin-left:6px">🔁 補習</span>'
+        : (s.cycle_label ? '<span style="font-size:9px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);border-radius:10px;padding:1px 6px;margin-left:6px">' + escapeHtml(s.cycle_label) + '</span>' : '');
       body += '<div style="background:' + (s.mine ? 'var(--orange-l)' : 'var(--surface)') + ';border:1px solid ' + (s.mine ? 'var(--orange)' : 'var(--border)') + ';border-radius:8px;padding:8px 10px;margin-bottom:6px">' +
-        '<div style="font-size:13px;font-weight:700;color:var(--text)">' + (s.period ? s.period + '限 ' : '') + escapeHtml(s.class_name) + mineBadge + '</div>' +
+        '<div style="font-size:13px;font-weight:700;color:var(--text)">' + (s.period ? s.period + '限 ' : '') + escapeHtml(s.class_name) + mineBadge + cycBadge + '</div>' +
         '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + (time ? time : '時刻未設定') + (s.teacher_name ? '　' + escapeHtml(s.teacher_name) + '先生' : '') + editBtn + '</div>' +
         chgBadge +
         repHtml +
