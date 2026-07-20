@@ -4422,7 +4422,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dcs';
+const APP_VERSION = '20260702dct';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29361,6 +29361,30 @@ async function renderSvInterviews() {
       students = students.filter(s => s.is_active === false && s.inactive_reason === '退塾');
     }
     // 'all'（退塾者含む）は在籍・退塾・卒業すべて（除外のみ除外済み）
+
+    // roster（名簿台帳）側の退塾者を合算。
+    // 退塾者の実データは students ではなく roster 台帳に入っている（退塾処理を台帳側で管理）ため、
+    // 「退塾者含む」「退塾者のみ」では roster の status='退塾' も学校で絞って取り込む。
+    // students に既にいる子（正規化氏名一致）は重複するので落とす。
+    if (svRosterFilter === 'all' || svRosterFilter === 'left') {
+      try {
+        const rosterOut = await sbGet('roster',
+          'school=eq.' + encodeURIComponent(svSchool) + '&status=eq.' + encodeURIComponent('退塾') +
+          '&select=id,name,grade,course_track,enroll_date,withdraw_date,membership_status') || [];
+        const existNorm = new Set(students.map(s => normalizeName(s.name || '')));
+        rosterOut.forEach(r => {
+          const nn = normalizeName(r.name || '');
+          if (existNorm.has(nn)) return;   // students 側と重複
+          existNorm.add(nn);
+          students.push({
+            id: null, name: r.name, grade: r.grade, course_track: r.course_track,
+            enroll_date: r.enroll_date, is_active: false, inactive_reason: '退塾',
+            membership_status: r.membership_status, _roster: true,
+            withdraw_date: r.withdraw_date
+          });
+        });
+      } catch (e) { /* roster が取れなくても students 分は出す */ }
+    }
   } catch (e) {
     sec.innerHTML = '<div class="sv-card-h">👥 学年別名簿（この学校）</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">生徒の取得に失敗しました。</div>';
     return;
@@ -29373,12 +29397,12 @@ async function renderSvInterviews() {
       '<div class="sv-placeholder">' + emptyMsg + '</div>';
     return;
   }
-  const ids = students.map(s => s.id);
+  const ids = students.map(s => s.id).filter(Boolean);   // roster由来(id=null)は除外
   const idList = ids.map(x => '"' + x + '"').join(',');
 
   // 2) 現在の受講（class_enrollments → class_master 名）
   const subjectsByStudent = {};
-  try {
+  if (idList) try {
     const enr = await sbGetActiveEnrollments('student_id=in.(' + idList + ')&select=student_id,class_master_id') || [];
     const cmIds = [...new Set(enr.map(e => e.class_master_id).filter(Boolean))];
     let cmName = {};
@@ -29395,7 +29419,7 @@ async function renderSvInterviews() {
 
   // 3) 面談記録（生徒ID群で取得）
   let ivRows = [];
-  try {
+  if (idList) try {
     ivRows = await sbGet('student_interviews',
       'student_id=in.(' + idList + ')&select=id,student_id,interview_date,interviewer,note,student_note,share_to_parent&order=interview_date.desc') || [];
   } catch (e) { ivRows = []; }
@@ -29464,7 +29488,13 @@ async function renderSvInterviews() {
       const seasonalBadge = (s.membership_status === '時期別のみ')
         ? '<span style="font-size:9px;color:#1E5A8A;background:#E3F0FA;border-radius:6px;padding:1px 5px;margin-left:5px">時期別のみ</span>'
         : '';
-      html += '<td style="padding:6px;white-space:nowrap;font-weight:700"><span onclick="openInterviewKarte(\'' + escapeAttr(String(s.id)) + '\',\'school\')" style="color:#2D6CB6;cursor:pointer;text-decoration:underline">' + escapeHtml(s.name || '') + '</span>' + statusBadge + seasonalBadge + '</td>';
+      const rosterBadge = s._roster
+        ? '<span style="font-size:9px;color:#fff;background:#999;border-radius:6px;padding:1px 5px;margin-left:5px">名簿</span>'
+        : '';
+      const nameCell = s._roster
+        ? '<span style="color:var(--text)">' + escapeHtml(s.name || '') + '</span>'
+        : '<span onclick="openInterviewKarte(\'' + escapeAttr(String(s.id)) + '\',\'school\')" style="color:#2D6CB6;cursor:pointer;text-decoration:underline">' + escapeHtml(s.name || '') + '</span>';
+      html += '<td style="padding:6px;white-space:nowrap;font-weight:700">' + nameCell + statusBadge + rosterBadge + seasonalBadge + '</td>';
       html += '<td style="padding:6px;white-space:nowrap;color:var(--muted)">' + escapeHtml(s.course_track || '—') + '</td>';
       html += '<td style="padding:6px">' + (subs.length
         ? subs.map(x => '<span style="display:inline-block;font-size:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:1px 6px;margin:1px 2px 1px 0;white-space:nowrap">' + escapeHtml(x) + '</span>').join('')
