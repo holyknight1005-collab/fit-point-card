@@ -495,7 +495,17 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
   </div>
 </div>
 
-<!-- dch: 講習 一括受講登録モーダル -->
+<!-- dcl: 生徒 授業日程一覧モーダル -->
+<div id="stusched-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:673;align-items:center;justify-content:center;padding:16px">
+  <div style="background:var(--bg);border-radius:16px;padding:18px;max-width:460px;width:100%;max-height:88vh;overflow-y:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div style="font-size:15px;font-weight:800;color:#2D6CB6">📚 授業日程一覧</div>
+      <button onclick="closeStudentClassSchedule()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="stusched-body"><div style="font-size:13px;color:var(--muted);padding:10px">読み込み中…</div></div>
+  </div>
+</div>
+
 <div id="bulkenroll-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:671;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:640px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -4412,7 +4422,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dch';
+const APP_VERSION = '20260702dcl';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6427,6 +6437,76 @@ async function doCheckout(skipConfirm) {
 
 
 function switchTab(tab, el) { currentTab = tab; if (tab !== 'monthly') monthOffset = 0; document.querySelectorAll('#screen-student .tab-btn').forEach(b => b.classList.remove('active')); el.classList.add('active'); renderHistory(tab); }
+
+// 生徒：授業日程一覧（通常授業＝表示中の月、時期別講習＝全日程）
+async function openStudentClassSchedule() {
+  if (!currentStudent) return;
+  document.getElementById('stusched-modal').style.display = 'flex';
+  const body = document.getElementById('stusched-body');
+  body.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:10px">読み込み中…</div>';
+  try {
+    // 受講中の授業
+    const enr = await sbGetActiveEnrollments('student_id=eq.' + currentStudent.id + '&select=class_master_id') || [];
+    const cmIds = [...new Set(enr.map(e => e.class_master_id).filter(Boolean))];
+    if (!cmIds.length) { body.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:10px">受講中の授業がありません。</div>'; return; }
+    const cms = await sbGet('class_master', 'id=in.(' + cmIds.map(x => '"' + x + '"').join(',') + ')&select=id,name,subject,category') || [];
+    const cmById = {}; (cms || []).forEach(c => { cmById[c.id] = c; });
+    // セッション取得
+    const sessions = await sbGet('class_sessions', 'class_master_id=in.(' + cmIds.map(x => '"' + x + '"').join(',') + ')&select=class_master_id,session_date,period,start_time,end_time&order=session_date') || [];
+    // 表示中の月（monthly の offset に合わせる）
+    const now = new Date();
+    const base = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+    const y = base.getFullYear(), m = base.getMonth() + 1;
+    const monthPrefix = y + '-' + String(m).padStart(2, '0');
+    const wd = ['日','月','火','水','木','金','土'];
+    const todayStr = getTodayJST();
+
+    // 授業ごとにセッションをまとめる
+    const byClass = {};
+    (sessions || []).forEach(s => { (byClass[s.class_master_id] = byClass[s.class_master_id] || []).push(s); });
+
+    // 通常/高卒生 と 時期別講習に分ける
+    const normalCards = [], seasonalCards = [];
+    cmIds.forEach(cid => {
+      const cm = cmById[cid]; if (!cm) return;
+      const cat = cm.category || 'normal';
+      const meta = classCategoryMeta(cat);
+      const isSeasonal = (cat !== 'normal' && cat !== 'kosotsu');
+      let list = byClass[cid] || [];
+      // 通常授業は表示中の月のみ、時期別講習は全日程（未来寄り）
+      if (!isSeasonal) list = list.filter(s => (s.session_date || '').startsWith(monthPrefix));
+      list.sort((a, b) => (a.session_date || '').localeCompare(b.session_date || '') || ((a.period || 0) - (b.period || 0)));
+      if (!list.length && !isSeasonal) return; // 通常でこの月に無ければ非表示
+      const rows = list.map(s => {
+        const d = s.session_date ? new Date(s.session_date + 'T00:00:00+09:00') : null;
+        const dlabel = d ? ((d.getMonth() + 1) + '/' + d.getDate() + '(' + wd[d.getDay()] + ')') : '';
+        const t = (s.start_time ? String(s.start_time).slice(0,5) : '') + (s.end_time ? '〜' + String(s.end_time).slice(0,5) : '');
+        const per = s.period ? (s.period + '限 ') : '';
+        const past = s.session_date && s.session_date < todayStr;
+        return '<div style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--border);' + (past ? 'opacity:.45' : '') + '">' +
+          '<span style="font-size:12px;font-weight:700;color:' + (past ? 'var(--muted)' : '#2D6CB6') + ';min-width:66px">' + dlabel + '</span>' +
+          '<span style="font-size:12px;color:var(--text)">' + per + t + '</span></div>';
+      }).join('');
+      const card = '<div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:10px;background:var(--surface)">' +
+        '<div style="font-size:13px;font-weight:800;color:var(--text);margin-bottom:6px">' + meta.icon + ' ' + escapeHtml(cm.name || '') +
+        '<span style="font-size:10px;color:var(--muted);font-weight:400"> ' + escapeHtml(cm.subject || '') + '</span></div>' +
+        (rows || '<div style="font-size:11px;color:var(--muted)">日程が登録されていません。</div>') + '</div>';
+      if (isSeasonal) seasonalCards.push(card); else normalCards.push(card);
+    });
+
+    let html = '';
+    html += '<div style="font-size:12px;font-weight:800;color:#2D6CB6;margin:2px 0 6px">📘 通常授業（' + y + '年' + m + '月）</div>';
+    html += normalCards.length ? normalCards.join('') : '<div style="font-size:12px;color:var(--muted);padding:4px 0 10px">この月の通常授業の日程はありません。</div>';
+    if (seasonalCards.length) {
+      html += '<div style="font-size:12px;font-weight:800;color:#C6851B;margin:12px 0 6px">☀️ 講習（全日程）</div>';
+      html += seasonalCards.join('');
+    }
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<div style="font-size:13px;color:#C0392B;padding:10px">日程の取得に失敗しました。</div>';
+  }
+}
+function closeStudentClassSchedule() { document.getElementById('stusched-modal').style.display = 'none'; }
 // チェックインで獲得したポイントを日付ごとに集計してマップ化する。
 // checkins.stay_minutes（在室分数）から 30分=1pt で算出するので、
 // point_logs の有無に関係なく過去・未来とも正確。
@@ -6513,6 +6593,9 @@ function renderHistoryBase(tab, checkins, summaryId, listId) {
       calHtml += '<div class="' + cls + '">' + d + '</div>';
     }
     calHtml += '</div>';
+    if (!isDetail && currentStudent) {
+      calHtml += '<button onclick="openStudentClassSchedule()" style="width:100%;margin-top:12px;padding:11px;background:linear-gradient(135deg,#5B8FF9,#3A6FD8);border:none;border-radius:10px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📚 授業日程一覧を見る</button>';
+    }
     sEl.innerHTML = '';
     lEl.innerHTML = calHtml;
   }
@@ -16492,6 +16575,9 @@ async function saveClassTeachers() {
       showToast('担当講師を保存しました（' + selected.length + '名）', 'success');
     }
     loadClassMasterList();
+    // カレンダー・ホームの授業表示にも担当講師を反映（開いていれば再読込）
+    if (typeof loadStaffCalendar === 'function') { try { loadStaffCalendar(); } catch (e) {} }
+    if (typeof loadTodayClasses === 'function') { try { loadTodayClasses(); } catch (e) {} }
   } catch (e) {
     hideLoading();
     showToast('エラー: ' + e.message, 'error');
@@ -17723,9 +17809,24 @@ async function loadStaffCalendar() {
       } catch(e) { /* 担当が引けなくても授業名は出す */ }
     }
 
+    // 日程変更ログを取得（表示中の授業に対して最新の変更を紐付け）
+    let changeByKey = {};
+    if (classIds.length) {
+      try {
+        const logs = await sbGet('session_change_logs',
+          'class_master_id=in.(' + classIds.map(x => '"' + x + '"').join(',') + ')&select=class_master_id,period,old_date,new_date,changed_by_name,created_at&order=created_at.desc') || [];
+        (logs || []).forEach(lg => {
+          const key = lg.class_master_id + '|' + lg.new_date + '|' + (lg.period == null ? '' : lg.period);
+          if (!changeByKey[key]) changeByKey[key] = lg; // 最新(降順先頭)のみ
+        });
+      } catch (e) { /* テーブル未作成なら無視 */ }
+    }
+
     staffCalSessions = (sessions || []).map(s => {
       const cm = teacherByClass[s.class_master_id] || {};
       const teacherId = cm.teacher_staff_id || null;
+      const ckey = s.class_master_id + '|' + s.session_date + '|' + (s.period == null ? '' : s.period);
+      const chg = changeByKey[ckey] || null;
       return {
         date: s.session_date,
         period: s.period,
@@ -17735,7 +17836,8 @@ async function loadStaffCalendar() {
         class_master_id: s.class_master_id,
         teacher_id: teacherId,
         teacher_name: teacherId ? (staffNameMap[teacherId] || '') : '',
-        mine: !!(teacherId && currentStaff && teacherId === currentStaff.id)
+        mine: !!(teacherId && currentStaff && teacherId === currentStaff.id),
+        change_log: chg
       };
     });
 
@@ -17918,10 +18020,18 @@ function openStaffCalModal(dateISO, simple) {
       }
       const editBtn = s.class_master_id
         ? '<button onclick="openSessionTimeEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.start_time ? String(s.start_time).slice(0,5) : '') + '\',\'' + (s.end_time ? String(s.end_time).slice(0,5) : '') + '\')" style="margin-left:8px;font-size:10px;font-weight:700;color:#2D6DB5;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">⏱ 時間変更</button>'
+          + '<button onclick="openSessionDateEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\')" style="margin-left:6px;font-size:10px;font-weight:700;color:#96690F;background:#FEF3E0;border:1px solid #E8C98A;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📅 日程変更</button>'
+        : '';
+      const chgBadge = s.change_log
+        ? '<div style="font-size:10px;color:#96690F;background:#FEF3E0;border:1px solid #E8C98A;border-radius:6px;padding:2px 7px;margin-top:4px;display:inline-block">📅 ' +
+          (s.change_log.old_date ? escapeHtml(String(s.change_log.old_date).slice(5).replace('-', '/')) + '→' : '') +
+          escapeHtml(String(s.change_log.new_date || '').slice(5).replace('-', '/')) + ' に変更' +
+          (s.change_log.changed_by_name ? '（' + escapeHtml(s.change_log.changed_by_name) + '）' : '') + '</div>'
         : '';
       body += '<div style="background:' + (s.mine ? 'var(--orange-l)' : 'var(--surface)') + ';border:1px solid ' + (s.mine ? 'var(--orange)' : 'var(--border)') + ';border-radius:8px;padding:8px 10px;margin-bottom:6px">' +
         '<div style="font-size:13px;font-weight:700;color:var(--text)">' + (s.period ? s.period + '限 ' : '') + escapeHtml(s.class_name) + mineBadge + '</div>' +
         '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + (time ? time : '時刻未設定') + (s.teacher_name ? '　' + escapeHtml(s.teacher_name) + '先生' : '') + editBtn + '</div>' +
+        chgBadge +
         repHtml +
       '</div>';
     });
@@ -18000,6 +18110,68 @@ function addEventFromCalModal(dateISO) {
 }
 
 // 既存セッションの時間を変更（日付モーダルの授業 → 時間ピッカー → PATCH）
+// 授業日の「日付」を変更（生徒欠席などで日程を動かすとき）。session_date を PATCH。
+function openSessionDateEdit(classId, dateISO, periodStr) {
+  const curPeriod = periodStr === '' ? null : parseInt(periodStr);
+  const p = dateISO.split('-').map(Number);
+  const wd = ['日','月','火','水','木','金','土'];
+  const dt = new Date(p[0], p[1]-1, p[2]);
+  let overlay = document.getElementById('session-date-modal');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'session-date-modal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.onclick = function(e){ if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML =
+    '<div style="background:var(--surface);border-radius:16px;padding:20px;max-width:340px;width:100%;box-shadow:0 20px 50px -12px rgba(0,0,0,0.3)" onclick="event.stopPropagation()">' +
+    '<div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px">📅 授業日を変更</div>' +
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:14px">現在：' + p[1] + '月' + p[2] + '日（' + wd[dt.getDay()] + '）' + (curPeriod != null ? '／' + curPeriod + '限' : '') + '</div>' +
+    '<div class="form-label">新しい日付</div>' +
+    '<input class="form-input-sm" type="date" id="session-date-new" value="' + dateISO + '" style="width:100%;margin-bottom:14px">' +
+    '<div style="font-size:10px;color:var(--muted);margin-bottom:12px;line-height:1.5">※ 出席の記録がある場合は、その記録も新しい日付の授業として一緒に移動します。</div>' +
+    '<button onclick="saveSessionDate(\'' + escapeAttr(classId) + '\',\'' + dateISO + '\',\'' + (curPeriod != null ? curPeriod : '') + '\')" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;margin-bottom:8px">変更する</button>' +
+    '<button onclick="document.getElementById(\'session-date-modal\').remove()" style="width:100%;padding:10px;background:transparent;border:none;color:var(--muted);font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">閉じる</button>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+async function saveSessionDate(classId, oldDate, periodStr) {
+  const newDate = document.getElementById('session-date-new').value;
+  if (!newDate) { showToast('新しい日付を選んでください', 'error'); return; }
+  if (newDate === oldDate) { document.getElementById('session-date-modal').remove(); return; }
+  const curPeriod = periodStr === '' ? null : parseInt(periodStr);
+  showLoading('変更中...');
+  try {
+    let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + oldDate;
+    q += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
+    await sbPatch('class_sessions', q, { session_date: newDate });
+    // 出席記録（session_attendance）も同じ日付に移動（存在すれば）
+    try {
+      let aq = 'class_master_id=eq.' + classId + '&session_date=eq.' + oldDate;
+      aq += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
+      await sbPatch('session_attendance', aq, { session_date: newDate });
+    } catch (e) { /* session_attendance に該当なし/列違いは無視 */ }
+    // 変更履歴を記録（誰が・いつ・どの日付→どの日付か）
+    try {
+      await sbPost('session_change_logs', {
+        class_master_id: classId,
+        period: (curPeriod === null ? null : curPeriod),
+        old_date: oldDate,
+        new_date: newDate,
+        changed_by: currentStaff ? (currentStaff.staff_id || '') : '',
+        changed_by_name: currentStaff ? (currentStaff.name || '') : ''
+      });
+    } catch (e) { /* create_session_change_logs.sql 未実行でも変更自体は成功させる */ }
+    hideLoading();
+    const ov = document.getElementById('session-date-modal'); if (ov) ov.remove();
+    showToast('📅 授業日を変更しました', 'success');
+    if (typeof closeStaffCalModal === 'function') closeStaffCalModal();
+    if (typeof loadStaffCalendar === 'function') { try { loadStaffCalendar(); } catch (e) {} }
+    if (typeof loadStaffHomeCalendar === 'function') { try { loadStaffHomeCalendar(); } catch (e) {} }
+    if (typeof loadTodayClasses === 'function') { try { loadTodayClasses(); } catch (e) {} }
+  } catch (e) { hideLoading(); showToast('エラー: ' + (e && e.message ? e.message : e), 'error'); }
+}
+
 function openSessionTimeEdit(classId, dateISO, periodStr, startStr, endStr) {
   const curPeriod = periodStr === '' ? null : parseInt(periodStr);
   const p = dateISO.split('-').map(Number);
