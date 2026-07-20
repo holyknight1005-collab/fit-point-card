@@ -4422,7 +4422,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dcr';
+const APP_VERSION = '20260702dcs';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29322,6 +29322,23 @@ async function saveSvGradeNote(grade) {
 // ============================================================
 let svIvExpanded = {}; // interview id -> bool
 let svRosterGradeOpen = {}; // grade key -> bool (名簿の学年アコーディオン)
+let svRosterFilter = 'all'; // 'active'=現在在籍 / 'all'=退塾者含む / 'left'=退塾者のみ
+
+// 名簿の絞り込みボタンバー（現在在籍 / 退塾者含む / 退塾者のみ）
+function svRosterFilterBar() {
+  const opts = [['active', '現在在籍'], ['all', '退塾者含む'], ['left', '退塾者のみ']];
+  return '<div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">' +
+    opts.map(([v, label]) => {
+      const on = svRosterFilter === v;
+      return '<button onclick="svSetRosterFilter(\'' + v + '\')" style="padding:5px 12px;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;border:1.5px solid ' +
+        (on ? 'var(--orange)' : 'var(--border)') + ';background:' + (on ? 'var(--orange)' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--muted)') + '">' + label + '</button>';
+    }).join('') +
+    '</div>';
+}
+function svSetRosterFilter(v) {
+  svRosterFilter = v;
+  renderSvInterviews();
+}
 let svInoutPeriod = 'month';  // 'month' | 'fy' | 'all'
 let svInoutKind = 'all';      // 'all' | 'join' | 'leave' | 'prospect' | 'visit'
 
@@ -29334,15 +29351,26 @@ async function renderSvInterviews() {
   let students = [];
   try {
     students = await sbGet('students',
-      'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason') || [];
+      'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason,membership_status') || [];
     // 除外（デモ・テスト）は落とす。退塾・卒業は含める。
     students = students.filter(s => s.inactive_reason !== '除外');
+    // 名簿フィルタ（現在在籍 / 退塾者含む / 退塾者のみ）
+    if (svRosterFilter === 'active') {
+      students = students.filter(s => s.is_active !== false);
+    } else if (svRosterFilter === 'left') {
+      students = students.filter(s => s.is_active === false && s.inactive_reason === '退塾');
+    }
+    // 'all'（退塾者含む）は在籍・退塾・卒業すべて（除外のみ除外済み）
   } catch (e) {
     sec.innerHTML = '<div class="sv-card-h">👥 学年別名簿（この学校）</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">生徒の取得に失敗しました。</div>';
     return;
   }
   if (!students.length) {
-    sec.innerHTML = '<div class="sv-card-h">👥 学年別名簿（この学校）</div><div class="sv-placeholder">この学校の在籍生徒がいません。</div>';
+    const emptyMsg = svRosterFilter === 'active' ? 'この学校の在籍生徒がいません。'
+      : svRosterFilter === 'left' ? 'この学校の退塾者はいません。'
+      : 'この学校の生徒がいません。';
+    sec.innerHTML = '<div class="sv-card-h">👥 学年別名簿（この学校）</div>' + svRosterFilterBar() +
+      '<div class="sv-placeholder">' + emptyMsg + '</div>';
     return;
   }
   const ids = students.map(s => s.id);
@@ -29403,7 +29431,10 @@ async function renderSvInterviews() {
   const md = (d) => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10)) : '?';
 
   let html = '<div class="sv-card-h">👥 学年別名簿（この学校）</div>';
-  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／' + students.length + '名（入塾日順・退塾/卒業含む）</div>';
+  html += svRosterFilterBar();
+  const filterLabel = svRosterFilter === 'active' ? '現在在籍のみ'
+    : svRosterFilter === 'left' ? '退塾者のみ' : '退塾/卒業含む';
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／' + students.length + '名（入塾日順・' + filterLabel + '）</div>';
 
   const gradeOrder = [['1', '高1'], ['2', '高2'], ['3', '高3'], ['other', 'その他']];
   gradeOrder.forEach(([gk, glabel]) => {
@@ -29430,7 +29461,10 @@ async function renderSvInterviews() {
           ? '<span style="font-size:9px;color:#C0392B;background:#FCE9E7;border-radius:6px;padding:1px 5px;margin-left:5px">退塾</span>'
           : '<span style="font-size:9px;color:#7A6A2A;background:#F3EEDD;border-radius:6px;padding:1px 5px;margin-left:5px">卒業</span>')
         : '';
-      html += '<td style="padding:6px;white-space:nowrap;font-weight:700"><span onclick="openInterviewKarte(\'' + escapeAttr(String(s.id)) + '\',\'school\')" style="color:#2D6CB6;cursor:pointer;text-decoration:underline">' + escapeHtml(s.name || '') + '</span>' + statusBadge + '</td>';
+      const seasonalBadge = (s.membership_status === '時期別のみ')
+        ? '<span style="font-size:9px;color:#1E5A8A;background:#E3F0FA;border-radius:6px;padding:1px 5px;margin-left:5px">時期別のみ</span>'
+        : '';
+      html += '<td style="padding:6px;white-space:nowrap;font-weight:700"><span onclick="openInterviewKarte(\'' + escapeAttr(String(s.id)) + '\',\'school\')" style="color:#2D6CB6;cursor:pointer;text-decoration:underline">' + escapeHtml(s.name || '') + '</span>' + statusBadge + seasonalBadge + '</td>';
       html += '<td style="padding:6px;white-space:nowrap;color:var(--muted)">' + escapeHtml(s.course_track || '—') + '</td>';
       html += '<td style="padding:6px">' + (subs.length
         ? subs.map(x => '<span style="display:inline-block;font-size:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:1px 6px;margin:1px 2px 1px 0;white-space:nowrap">' + escapeHtml(x) + '</span>').join('')
