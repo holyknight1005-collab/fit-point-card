@@ -4598,7 +4598,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702ddm';
+const APP_VERSION = '20260702ddn';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -30586,7 +30586,7 @@ async function renderSvWithdrawAnalysis() {
 
   // 退塾者を集める（students確定＋roster退塾）。理由カテゴリと退塾日を取る。
   // allMode のときは school フィルタを外して全校を対象にする。
-  const rows = [];   // {reason, date}
+  const rows = [];   // {reason, date, grade}
   const schoolFilterStu = allMode ? '' : ('school=eq.' + encodeURIComponent(svSchool) + '&');
   const schoolFilterRos = allMode ? '' : ('school=eq.' + encodeURIComponent(svSchool) + '&');
   try {
@@ -30594,20 +30594,21 @@ async function renderSvWithdrawAnalysis() {
     try {
       stu = await sbGet('students',
         schoolFilterStu + 'is_active=eq.false&inactive_reason=eq.' + encodeURIComponent('退塾') +
-        '&select=withdraw_reason,withdraw_effective_date') || [];
+        '&select=withdraw_reason,withdraw_effective_date,grade') || [];
     } catch (e) { stu = []; }
-    stu.forEach(s => rows.push({ reason: s.withdraw_reason || '', date: s.withdraw_effective_date || '' }));
+    stu.forEach(s => rows.push({ reason: s.withdraw_reason || '', date: s.withdraw_effective_date || '', grade: s.grade || '' }));
   } catch (e) {}
   try {
     let ros = [];
     try {
       ros = await sbGet('roster',
         'is_active=eq.true&' + schoolFilterRos + 'status=eq.' + encodeURIComponent('退塾') +
-        '&select=withdraw_reason,note,withdraw_date') || [];
+        '&select=withdraw_reason,note,withdraw_date,grade') || [];
     } catch (e) { ros = []; }
     ros.forEach(r => rows.push({
       reason: (r.withdraw_reason != null && r.withdraw_reason !== '') ? r.withdraw_reason : (r.note || ''),
-      date: r.withdraw_date || ''
+      date: r.withdraw_date || '',
+      grade: r.grade || ''
     }));
   } catch (e) {}
 
@@ -30632,6 +30633,7 @@ async function renderSvWithdrawAnalysis() {
     let c = r.reason;
     if (!c) { c = '未分類'; }
     else if (!catSet.has(c)) { c = 'その他'; uncategorized++; }
+    r._cat = c;
     catCount[c] = (catCount[c] || 0) + 1;
     total++;
   });
@@ -30697,10 +30699,59 @@ async function renderSvWithdrawAnalysis() {
     '</div>';
   }
 
+  // ---- 学年別内訳（学年ごとの積み上げ横棒：理由カテゴリ色で分割）----
+  // 学年の並び順：正規化して 小1..小6, 中1..中3, 高1..高3, その他/未設定。
+  function gradeOrderKey(g) {
+    if (!g) return 999;
+    const s = String(g);
+    let base = 500, num = 0;
+    const m = s.match(/(\d+)/);
+    if (m) num = parseInt(m[1], 10);
+    if (/小/.test(s)) base = 0;
+    else if (/中/.test(s)) base = 100;
+    else if (/高/.test(s)) base = 200;
+    else if (/年/.test(s) && m) base = 100; // 「2年」等は中学扱いにせず、数字だけで並べる用途。中高混在時は下の表示で学年名そのまま出す
+    return base + num;
+  }
+  const gradeMap = {}; // grade -> { total, cats:{cat:n} }
+  rows.forEach(r => {
+    const g = r.grade || '未設定';
+    if (!gradeMap[g]) gradeMap[g] = { total: 0, cats: {} };
+    gradeMap[g].total++;
+    gradeMap[g].cats[r._cat] = (gradeMap[g].cats[r._cat] || 0) + 1;
+  });
+  const gradeKeys = Object.keys(gradeMap).sort((a, b) => {
+    const ka = gradeOrderKey(a), kb = gradeOrderKey(b);
+    if (ka !== kb) return ka - kb;
+    return a.localeCompare(b, 'ja');
+  });
+  let gradeBlock = '';
+  if (gradeKeys.length) {
+    const gMax = Math.max.apply(null, gradeKeys.map(g => gradeMap[g].total));
+    gradeBlock = '<div style="margin-top:16px">' +
+      '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px">学年別の内訳（棒の色＝退塾理由）</div>' +
+      gradeKeys.map(g => {
+        const gd = gradeMap[g];
+        // その学年内で理由カテゴリ順に積み上げ
+        const segs = order.filter(c => gd.cats[c]).map(c => {
+          const n = gd.cats[c];
+          const w = Math.round(n / gMax * 100);
+          return '<div title="' + escapeHtml(g + '／' + c + '：' + n + '名') + '" style="width:' + w + '%;height:100%;background:' + (palette[c] || '#999') + '"></div>';
+        }).join('');
+        return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">' +
+          '<span style="font-size:11px;color:var(--muted);width:52px;flex:0 0 auto;text-align:right">' + escapeHtml(g) + '</span>' +
+          '<div style="flex:1;background:var(--surface2);border-radius:5px;overflow:hidden;height:16px;display:flex">' + segs + '</div>' +
+          '<span style="font-size:11px;font-weight:700;color:var(--text);width:28px;text-align:right">' + gd.total + '</span>' +
+        '</div>';
+      }).join('') +
+    '</div>';
+  }
+
   let html = '<div class="sv-card-h">📉 退塾理由の分析（' + scopeLabel + '）</div>';
   html += toggle;
   html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">' + (allMode ? '全校の' : '') + '名簿・生徒の退塾理由（カテゴリ）を集計しています。カテゴリ外の記述は「その他」に寄せています。</div>';
   html += '<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">' + donut + '<div style="flex:1;min-width:180px">' + legend + '</div></div>';
+  html += gradeBlock;
   html += timeline;
   if (uncategorized > 0) {
     html += '<div style="font-size:10px;color:var(--muted);margin-top:8px">※ カテゴリ未設定・旧形式の記述 ' + uncategorized + ' 件を「その他」に含めています。名簿の編集でカテゴリを選び直すと正確になります。</div>';
