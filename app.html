@@ -3858,6 +3858,17 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         </div>
         <div id="ana-withdraw-section" class="sv-card" style="padding:14px"></div>
       </div>
+
+      <!-- ===== 入塾分析（ファネル・全校／学校別・専用） ===== -->
+      <div style="border-top:2px solid var(--border);margin-top:20px;padding-top:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <div style="font-size:14px;font-weight:800;color:var(--text)">🚀 入塾分析</div>
+          <select id="ana-funnel-school" class="form-select" onchange="renderAnaFunnel()" style="font-size:12px;padding:5px 8px;max-width:180px">
+            <option value="__all__">全校まとめ</option>
+          </select>
+        </div>
+        <div id="ana-funnel-section" class="sv-card" style="padding:14px"></div>
+      </div>
     </div>
 
     <!-- 名簿照合タブ -->
@@ -4299,6 +4310,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <button onclick="openBulkEnroll()" style="width:100%;margin-top:8px;padding:9px;background:linear-gradient(135deg,#E9A93C,#C6851B);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">☀️ 生徒に講習を一括受講登録</button>
       </div>
       <div class="section-title">登録済み授業</div>
+      <div id="cm-filter-bar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
       <div id="cm-list" style="display:flex;flex-direction:column;gap:8px"></div>
     <!-- 授業日登録 -->
     <div id="manage-class-session" style="display:flex;flex-direction:column;gap:10px;margin-top:16px;padding-top:16px;border-top:2px dashed var(--border)">
@@ -4616,7 +4628,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702ddp';
+const APP_VERSION = '20260702dds';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -15470,6 +15482,9 @@ function classColorOf(cm) {
   return '#E8923A';
 }
 let classMasterList = [];
+let cmCategoryFilter = 'all';   // 授業管理の区分フィルタ（all / normal / summer / ...）
+let cmTeacherNames = {};        // classId -> [name,...]（loadClassMasterList で構築、renderCmList で使用）
+let cmSessionCount = {};        // classId -> 登録済み回数（同上）
 let sessionRows = [];
 let pendingSessions = [];
 let csClassOptsHtml = '<option value="">授業を選択</option>'; // 後方互換（未使用）
@@ -15504,7 +15519,7 @@ async function loadClassMasterList() {
     return;
   }
   // 追加担当（class_teachers）を取得して授業ID -> 講師名配列 を作る（主担当∪追加担当）。
-  const cmTeacherNames = {}; // classId -> [name,...]
+  cmTeacherNames = {}; // classId -> [name,...]
   try {
     const allIds = classMasterList.map(c => c.id);
     const staffList = await sbGet('staff', 'select=id,name') || [];
@@ -15529,7 +15544,7 @@ async function loadClassMasterList() {
     }
   } catch (e) { /* 講師名が引けなくても一覧は出す */ }
   // 講習（total_sessions あり）の登録済み回数を数える（補習は除外）→「全8回中6回」判定用
-  const cmSessionCount = {};
+  cmSessionCount = {};
   try {
     const courseIds = classMasterList.filter(c => c.total_sessions).map(c => c.id);
     if (courseIds.length) {
@@ -15538,8 +15553,54 @@ async function loadClassMasterList() {
       sess.forEach(s => { cmSessionCount[s.class_master_id] = (cmSessionCount[s.class_master_id] || 0) + 1; });
     }
   } catch (e) { /* 数えられなくても一覧は出す */ }
+  renderCmList();
+}
+
+function setCmCategoryFilter(key) {
+  cmCategoryFilter = key || 'all';
+  renderCmList();
+}
+
+// 授業管理の一覧を描画（区分フィルタ対応）。データ取得は loadClassMasterList 側。
+function renderCmList() {
+  const el = document.getElementById('cm-list');
+  if (!el) return;
+
+  // --- 区分フィルタバー：データに存在する区分だけ出す ---
+  const bar = document.getElementById('cm-filter-bar');
+  if (bar) {
+    const counts = {};
+    classMasterList.forEach(c => { const k = c.category || 'normal'; counts[k] = (counts[k] || 0) + 1; });
+    // CLASS_CATEGORIES の並び順で、存在する区分のみボタン化
+    const present = CLASS_CATEGORIES.filter(cat => counts[cat.key]);
+    const total = classMasterList.length;
+    // 選択中の区分が消えていたら all に戻す
+    if (cmCategoryFilter !== 'all' && !counts[cmCategoryFilter]) cmCategoryFilter = 'all';
+    let btns = '';
+    const mkBtn = (key, label, n) => {
+      const on = (cmCategoryFilter === key);
+      return '<button onclick="setCmCategoryFilter(\'' + key + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;border:1px solid ' +
+        (on ? 'var(--orange)' : 'var(--border)') + ';background:' + (on ? 'var(--orange-d)' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--text)') + '">' +
+        escapeHtml(label) + '<span style="opacity:.7;margin-left:4px">' + n + '</span></button>';
+    };
+    btns += mkBtn('all', 'すべて', total);
+    present.forEach(cat => { btns += mkBtn(cat.key, cat.icon + ' ' + cat.label, counts[cat.key]); });
+    // 区分が1種類しかないならバーは不要（すべて＋1個 = 冗長）
+    bar.innerHTML = (present.length <= 1) ? '' : btns;
+  }
+
+  // --- フィルタ適用 ---
+  const filtered = (cmCategoryFilter === 'all')
+    ? classMasterList
+    : classMasterList.filter(c => (c.category || 'normal') === cmCategoryFilter);
+
+  if (!filtered.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">この区分の授業はありません</div>';
+    return;
+  }
+
   const subjGroups = {};
-  classMasterList.forEach(c => {
+  filtered.forEach(c => {
     if (!subjGroups[c.subject]) subjGroups[c.subject] = [];
     subjGroups[c.subject].push(c);
   });
@@ -29138,7 +29199,7 @@ async function openSchoolView(backTo) {
     renderSvInout();
     renderSvWeekly();
     renderSvWithdrawAnalysis({ school: svSchool, allMode: false, showToggle: false });
-    renderSvEnrollFunnel();
+    renderSvEnrollFunnel({ school: svSchool, allMode: false });
     if (status) status.textContent = '';
   } catch (e) {
     if (sec) sec.innerHTML = '<div class="sv-card-h">📊 請求ベース在籍人数</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">在籍データの取得に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
@@ -29258,7 +29319,7 @@ function setSvSchool(s) {
     renderSvGradeNotes, renderSvInterviews, renderSvReconcile, renderSvCalendar,
     renderSvInout, renderSvWeekly,
     () => renderSvWithdrawAnalysis({ school: svSchool, allMode: false, showToggle: false }),
-    renderSvEnrollFunnel
+    () => renderSvEnrollFunnel({ school: svSchool, allMode: false })
   ];
   _svRenderers.forEach(fn => {
     try {
@@ -30649,7 +30710,7 @@ async function renderSvWithdrawAnalysis(opts) {
 
   // 退塾者を集める（students確定＋roster退塾）。理由カテゴリと退塾日を取る。
   // allMode のときは school フィルタを外して全校を対象にする。
-  const rows = [];   // {reason, date, grade}
+  const rows = [];   // {reason, date, grade, name, note, school}
   const schoolFilterStu = allMode ? '' : ('school=eq.' + encodeURIComponent(school) + '&');
   const schoolFilterRos = allMode ? '' : ('school=eq.' + encodeURIComponent(school) + '&');
   try {
@@ -30657,17 +30718,20 @@ async function renderSvWithdrawAnalysis(opts) {
     try {
       stu = await sbGet('students',
         schoolFilterStu + 'is_active=eq.false&inactive_reason=eq.' + encodeURIComponent('退塾') +
-        '&select=withdraw_reason,withdraw_effective_date,grade,withdraw_grade_adj') || [];
+        '&select=name,school,withdraw_reason,withdraw_reason_note,withdraw_effective_date,grade,withdraw_grade_adj') || [];
     } catch (e) {
-      // withdraw_grade_adj 未適用環境フォールバック
+      // 列未適用環境フォールバック（段階的に落とす）
       try {
         stu = await sbGet('students',
           schoolFilterStu + 'is_active=eq.false&inactive_reason=eq.' + encodeURIComponent('退塾') +
-          '&select=withdraw_reason,withdraw_effective_date,grade') || [];
+          '&select=name,school,withdraw_reason,withdraw_effective_date,grade') || [];
       } catch (e2) { stu = []; }
     }
     stu.forEach(s => rows.push({
+      name: s.name || '',
+      school: s.school || '',
       reason: s.withdraw_reason || '',
+      note: s.withdraw_reason_note || '',
       date: s.withdraw_effective_date || '',
       grade: withdrawTimeGrade(s.grade || '', s.withdraw_effective_date || '', s.withdraw_grade_adj || '')
     }));
@@ -30677,16 +30741,21 @@ async function renderSvWithdrawAnalysis(opts) {
     try {
       ros = await sbGet('roster',
         'is_active=eq.true&' + schoolFilterRos + 'status=eq.' + encodeURIComponent('退塾') +
-        '&select=withdraw_reason,note,withdraw_date,grade,withdraw_grade_adj') || [];
+        '&select=name,school,withdraw_reason,withdraw_reason_note,note,withdraw_date,grade,withdraw_grade_adj') || [];
     } catch (e) {
       try {
         ros = await sbGet('roster',
           'is_active=eq.true&' + schoolFilterRos + 'status=eq.' + encodeURIComponent('退塾') +
-          '&select=withdraw_reason,note,withdraw_date,grade') || [];
+          '&select=name,school,withdraw_reason,note,withdraw_date,grade') || [];
       } catch (e2) { ros = []; }
     }
     ros.forEach(r => rows.push({
+      name: r.name || '',
+      school: r.school || '',
       reason: (r.withdraw_reason != null && r.withdraw_reason !== '') ? r.withdraw_reason : (r.note || ''),
+      // 補足記述：専用列 withdraw_reason_note 優先。無ければ、reason に昇格しなかった旧 note を補足として拾う
+      note: (r.withdraw_reason_note != null && r.withdraw_reason_note !== '') ? r.withdraw_reason_note
+            : ((r.withdraw_reason != null && r.withdraw_reason !== '') ? (r.note || '') : ''),
       date: r.withdraw_date || '',
       grade: withdrawTimeGrade(r.grade || '', r.withdraw_date || '', r.withdraw_grade_adj || '')
     }));
@@ -30827,11 +30896,47 @@ async function renderSvWithdrawAnalysis(opts) {
     '</div>';
   }
 
+  // ---- カテゴリ別の記述一覧（折りたたみ）：責任者が個別につつける ----
+  // カテゴリごとに、その退塾者を名前・退塾日・退塾時学年・補足記述つきで並べる。
+  const rowsByCat = {};
+  rows.forEach(r => { (rowsByCat[r._cat] = rowsByCat[r._cat] || []).push(r); });
+  const catDetailItems = order.filter(c => rowsByCat[c] && rowsByCat[c].length);
+  let catDetail = '';
+  if (catDetailItems.length) {
+    catDetail = '<div style="margin-top:16px">' +
+      '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px">カテゴリ別の内訳（タップで展開）</div>' +
+      catDetailItems.map(c => {
+        const list = rowsByCat[c].slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+        const col = palette[c] || '#999';
+        const body = list.map(r => {
+          const dateStr = r.date ? (r.date.slice(0, 4) + '/' + r.date.slice(5, 7)) : '—';
+          const gradeStr = r.grade || '学年不明';
+          const schoolStr = allMode && r.school ? ('・' + escapeHtml(r.school)) : '';
+          const noteStr = r.note ? escapeHtml(r.note) : '<span style="color:var(--muted)">（補足記述なし）</span>';
+          return '<div style="border-top:1px solid var(--border);padding:7px 2px">' +
+            '<div style="font-size:12px;font-weight:700;color:var(--text)">' + escapeHtml(r.name || '（氏名不明）') +
+              '<span style="font-weight:400;color:var(--muted);font-size:11px">　' + gradeStr + '・退塾 ' + dateStr + schoolStr + '</span></div>' +
+            '<div style="font-size:12px;color:var(--text);margin-top:2px;line-height:1.5;white-space:pre-wrap">' + noteStr + '</div>' +
+          '</div>';
+        }).join('');
+        return '<details style="border:1px solid var(--border);border-radius:8px;margin-bottom:6px;overflow:hidden">' +
+          '<summary style="cursor:pointer;padding:8px 10px;font-size:12px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:8px;list-style:none">' +
+            '<span style="width:11px;height:11px;border-radius:3px;background:' + col + ';flex:0 0 auto"></span>' +
+            '<span style="flex:1">' + escapeHtml(c) + '</span>' +
+            '<span style="color:var(--muted);font-weight:700">' + list.length + '名</span>' +
+          '</summary>' +
+          '<div style="padding:0 10px 8px 10px">' + body + '</div>' +
+        '</details>';
+      }).join('') +
+    '</div>';
+  }
+
   let html = '<div class="sv-card-h">📉 退塾理由の分析（' + escapeHtml(scopeLabel) + '）</div>';
   html += toggle;
   html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">' + (allMode ? '全校の' : '') + '名簿・生徒の退塾理由（カテゴリ）を集計しています。カテゴリ外の記述は「その他」に寄せています。</div>';
   html += '<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">' + donut + '<div style="flex:1;min-width:180px">' + legend + '</div></div>';
   html += gradeBlock;
+  html += catDetail;
   html += timeline;
   if (uncategorized > 0) {
     html += '<div style="font-size:10px;color:var(--muted);margin-top:8px">※ カテゴリ未設定・旧形式の記述 ' + uncategorized + ' 件を「その他」に含めています。名簿の編集でカテゴリを選び直すと正確になります。</div>';
@@ -30843,23 +30948,54 @@ async function renderSvWithdrawAnalysis(opts) {
 // 入塾までの流れ分析（この学校）：ファネル＋入塾者の内訳（担当者・体験科目）
 //   prospects（この学校）を軸に、trials/visits を紐付けて各段階の通過を数える。
 // ============================================================
-async function renderSvEnrollFunnel() {
-  const sec = document.getElementById('sv-enroll-funnel-section');
-  if (!sec || !svSchool) return;
-  sec.innerHTML = '<div class="sv-card-h">🚀 入塾までの流れ分析（この学校）</div><div class="sv-placeholder">読み込み中…</div>';
+async function renderSvEnrollFunnel(opts) {
+  opts = opts || {};
+  const targetId = opts.targetId || 'sv-enroll-funnel-section';
+  const school = ('school' in opts) ? opts.school : svSchool;
+  const allMode = ('allMode' in opts) ? !!opts.allMode : false;
+  const sec = document.getElementById(targetId);
+  if (!sec) return;
+  if (!allMode && !school) return;
+  const scopeLabel = allMode ? '全校' : school;
+  const headH = '<div class="sv-card-h">🚀 入塾までの流れ分析（' + escapeHtml(scopeLabel) + '）</div>';
+  sec.innerHTML = headH + '<div class="sv-placeholder">読み込み中…</div>';
+
+  // allMode のときは school フィルタを外して全校の見込みを対象にする。
+  // 担当校スコープがあれば all でもその範囲に絞る。
+  let scopeSchools = null;
+  if (allMode && saMyPerms && !saMyPerms.admin && Array.isArray(saMyPerms.school_scope) && saMyPerms.school_scope.length) {
+    scopeSchools = saMyPerms.school_scope.slice();
+  }
 
   let pros = [], trials = [], visits = [];
+  const selCols = 'id,name,school,status,assigned_to,enrolled_student_id,created_at,line_registered_date,interview_date,parent_interview_date';
   try {
-    pros = await sbGet('prospects',
-      'school=eq.' + encodeURIComponent(svSchool) +
-      '&select=id,name,status,assigned_to,enrolled_student_id,created_at,line_registered_date,interview_date,parent_interview_date') || [];
+    let q;
+    if (allMode) {
+      if (scopeSchools && scopeSchools.length) {
+        q = 'school=in.(' + scopeSchools.map(s => '"' + s + '"').join(',') + ')&select=' + selCols;
+      } else {
+        q = 'select=' + selCols;
+      }
+    } else {
+      q = 'school=eq.' + encodeURIComponent(school) + '&select=' + selCols;
+    }
+    pros = await sbGet('prospects', q) || [];
   } catch (e) {
-    sec.innerHTML = '<div class="sv-card-h">🚀 入塾までの流れ分析（この学校）</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">見込みデータの取得に失敗しました。</div>';
-    return;
+    // 列未適用環境フォールバック（school 列なし等）
+    try {
+      const selColsFb = 'id,name,status,assigned_to,enrolled_student_id,created_at,line_registered_date,interview_date,parent_interview_date';
+      const qFb = allMode ? ('select=' + selColsFb)
+        : ('school=eq.' + encodeURIComponent(school) + '&select=' + selColsFb);
+      pros = await sbGet('prospects', qFb) || [];
+    } catch (e2) {
+      sec.innerHTML = headH + '<div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">見込みデータの取得に失敗しました。</div>';
+      return;
+    }
   }
   if (!pros.length) {
-    sec.innerHTML = '<div class="sv-card-h">🚀 入塾までの流れ分析（この学校）</div>' +
-      '<div class="sv-placeholder">この学校の見込み（来塾）データがまだありません。入退塾管理で見込みを登録すると、ここに入塾までの流れが集計されます。</div>';
+    sec.innerHTML = headH +
+      '<div class="sv-placeholder">' + (allMode ? '全校の' : 'この学校の') + '見込み（来塾）データがまだありません。入退塾管理で見込みを登録すると、ここに入塾までの流れが集計されます。</div>';
     return;
   }
   const pIds = pros.map(p => p.id);
@@ -30925,14 +31061,35 @@ async function renderSvEnrollFunnel() {
   if (enrolledNoTrial) subjRows += '<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0;color:var(--muted)"><span>体験なしで入塾</span><span style="font-weight:700">' + enrolledNoTrial + '名</span></div>';
   if (!subjRows) subjRows = '<div style="font-size:11px;color:var(--muted)">入塾者なし</div>';
 
+  // ---- 全校時：学校別の入塾内訳 ----
+  let schoolRowsHtml = '';
+  if (allMode) {
+    const bySchool = {};   // school -> {total, enrolled}
+    pros.forEach(p => {
+      const k = p.school || '(未設定)';
+      (bySchool[k] = bySchool[k] || { total: 0, enrolled: 0 }).total++;
+    });
+    enrolled.forEach(p => {
+      const k = p.school || '(未設定)';
+      (bySchool[k] = bySchool[k] || { total: 0, enrolled: 0 }).enrolled++;
+    });
+    const rows = Object.keys(bySchool).sort((a, b) => bySchool[b].enrolled - bySchool[a].enrolled).map(k => {
+      const o = bySchool[k];
+      const rate = o.total ? Math.round(o.enrolled / o.total * 100) : 0;
+      return '<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0"><span style="color:var(--text)">' + escapeHtml(k) + '</span><span style="font-weight:700;color:var(--muted)">' + o.enrolled + ' / ' + o.total + '名（' + rate + '%）</span></div>';
+    }).join('') || '<div style="font-size:11px;color:var(--muted)">データなし</div>';
+    schoolRowsHtml = '<div style="flex:1;min-width:150px"><div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:5px">学校別の入塾（入塾/見込み）</div>' + rows + '</div>';
+  }
+
   const convRate = total ? Math.round(enrolledN / total * 100) : 0;
 
-  let html = '<div class="sv-card-h">🚀 入塾までの流れ分析（この学校）</div>';
+  let html = headH;
   html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">見込み（来塾）が問い合わせから入塾に至るまでの各段階の通過人数です。母数は見込み ' + total + ' 名、入塾 ' + enrolledN + ' 名（入塾率 ' + convRate + '%）。</div>';
   html += funnel;
   html += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:14px">';
   html += '<div style="flex:1;min-width:150px"><div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:5px">担当者別の入塾</div>' + staffRows + '</div>';
   html += '<div style="flex:1;min-width:150px"><div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:5px">体験科目別の入塾</div>' + subjRows + '</div>';
+  html += schoolRowsHtml;
   html += '</div>';
   sec.innerHTML = html;
 }
@@ -32257,6 +32414,8 @@ async function loadStudentAnalysis() {
   saRender();
   populateAnaWithdrawSchools();
   renderAnaWithdraw();
+  populateAnaFunnelSchools();
+  renderAnaFunnel();
 }
 
 // 退塾分析（専用ページ）：学校セレクタを埋めて描画。学校別UIの renderSvWithdrawAnalysis を全校/学校指定で流用。
@@ -32284,6 +32443,31 @@ function renderAnaWithdraw() {
     school: allMode ? null : v,
     allMode: allMode,
     showToggle: false
+  });
+}
+
+// 入塾分析（専用ページ）：学校セレクタを埋めて描画。学校別UIの renderSvEnrollFunnel を全校/学校指定で流用。
+function populateAnaFunnelSchools() {
+  const sel = document.getElementById('ana-funnel-school');
+  if (!sel) return;
+  const cur = sel.value || '__all__';
+  let schools = SA_SCHOOLS.slice();
+  if (saMyPerms && !saMyPerms.admin && Array.isArray(saMyPerms.school_scope) && saMyPerms.school_scope.length) {
+    schools = SA_SCHOOLS.filter(s => saMyPerms.school_scope.indexOf(s) >= 0);
+  }
+  let html = '<option value="__all__">全校まとめ</option>';
+  schools.forEach(s => { html += '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>'; });
+  sel.innerHTML = html;
+  sel.value = (cur && (cur === '__all__' || schools.indexOf(cur) >= 0)) ? cur : '__all__';
+}
+function renderAnaFunnel() {
+  const sel = document.getElementById('ana-funnel-school');
+  const v = sel ? sel.value : '__all__';
+  const allMode = (v === '__all__');
+  renderSvEnrollFunnel({
+    targetId: 'ana-funnel-section',
+    school: allMode ? null : v,
+    allMode: allMode
   });
 }
 
