@@ -1142,6 +1142,13 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="svedit-withdraw-fields" style="display:none">
         <div style="font-size:11px;color:var(--muted);margin-bottom:3px">退塾日</div>
         <input class="form-input-sm" type="date" id="svedit-withdraw-date" style="width:100%;margin-bottom:8px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:3px">退塾時の学年 <span id="svedit-wgrade-hint" style="color:var(--muted);font-weight:400"></span></div>
+        <select class="form-select" id="svedit-withdraw-grade" style="width:100%;font-size:13px;margin-bottom:8px">
+          <option value="">（自動：退塾日から推定）</option>
+          <option value="1年">1年</option>
+          <option value="2年">2年</option>
+          <option value="3年">3年</option>
+        </select>
         <div style="font-size:11px;color:var(--muted);margin-bottom:3px">退塾理由（カテゴリ）</div>
         <select class="form-select" id="svedit-withdraw-reason" style="width:100%;font-size:13px;margin-bottom:8px">
           <option value="">（未設定）</option>
@@ -4598,7 +4605,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702ddn';
+const APP_VERSION = '20260702ddo';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -28885,6 +28892,31 @@ function currentFiscalStartYear() {
   const m = parseInt(todayStr.slice(5, 7), 10);
   return (m >= 4) ? y : (y - 1);
 }
+// 任意の YYYY-MM-DD が属する年度の開始年（4月の年）。
+function fiscalStartYearOf(dateStr) {
+  if (!dateStr || dateStr.length < 7) return null;
+  const y = parseInt(dateStr.slice(0, 4), 10);
+  const m = parseInt(dateStr.slice(5, 7), 10);
+  if (isNaN(y) || isNaN(m)) return null;
+  return (m >= 4) ? y : (y - 1);
+}
+// 退塾時学年の逆算：現在学年(1年/2年/3年)と退塾日から、退塾した年度の学年を推定。
+//   進級は年度(4月)で1つ上がる前提。今年度との年度差ぶんだけ現在学年から遡る。
+//   1年未満に落ちる場合は推定不可として '' を返す（手動設定を促す）。
+//   手動調整値(adj)があればそれを最優先。
+function withdrawTimeGrade(curGrade, withdrawDate, adj) {
+  if (adj) return adj;
+  if (!curGrade) return '';
+  const m = String(curGrade).match(/(\d+)/);
+  if (!m) return '';
+  const curNum = parseInt(m[1], 10);
+  const wfy = fiscalStartYearOf(withdrawDate);
+  if (wfy == null) return curGrade; // 退塾日不明なら現在学年をそのまま
+  const diff = currentFiscalStartYear() - wfy; // 何年度ぶん遡るか
+  const n = curNum - diff;
+  if (n < 1 || n > 6) return ''; // 範囲外は推定不可
+  return n + '年';
+}
 // 指定年度（開始年=4月の年）の12ヶ月メタ配列を 4月→翌3月 の順で返す。
 function trendFiscalMonths(fyStart) {
   const arr = [];
@@ -29753,6 +29785,13 @@ function svOpenEditStudent(id) {
   // 退塾日・理由（roster は withdraw_date / withdraw_reason(旧note)、students は withdraw_effective_date / withdraw_reason）
   document.getElementById('svedit-withdraw-date').value = isRoster ? (s.withdraw_date || '') : (s.withdraw_effective_date || '');
   document.getElementById('svedit-withdraw-reason').value = s.withdraw_reason || '';
+  // 退塾時学年：保存済み手動調整値を初期表示。ヒントに逆算値を出す。
+  const wgSel = document.getElementById('svedit-withdraw-grade');
+  if (wgSel) wgSel.value = s.withdraw_grade_adj || '';
+  const wdate = isRoster ? (s.withdraw_date || '') : (s.withdraw_effective_date || '');
+  const est = withdrawTimeGrade(s.grade || '', wdate, '');
+  const hintEl = document.getElementById('svedit-wgrade-hint');
+  if (hintEl) hintEl.textContent = est ? ('（自動推定：' + est + '）') : '（自動推定できません。手動で選んでください）';
   const noteEl = document.getElementById('svedit-withdraw-note');
   if (noteEl) noteEl.value = s.withdraw_reason_note || '';
   // roster由来は「除外」を出さない（roster台帳には除外概念が無いため）
@@ -29948,6 +29987,8 @@ async function saveSvEdit() {
   const status = document.getElementById('svedit-status').value;
   const wdate = document.getElementById('svedit-withdraw-date').value || null;
   const wreason = document.getElementById('svedit-withdraw-reason').value.trim();
+  const wgradeEl = document.getElementById('svedit-withdraw-grade');
+  const wgrade = wgradeEl ? wgradeEl.value.trim() : '';
   const wnoteEl = document.getElementById('svedit-withdraw-note');
   const wnote = wnoteEl ? wnoteEl.value.trim() : '';
 
@@ -29966,10 +30007,12 @@ async function saveSvEdit() {
       rbody.withdraw_date = wdate;
       rbody.withdraw_reason = wreason || null;   // 専用列。未適用環境では下でnoteに再保存
       rbody.withdraw_reason_note = wnote || null;
+      rbody.withdraw_grade_adj = wgrade || null;  // 退塾時学年の手動調整（空=逆算に任せる）
     } else {
       // 在籍に戻す（卒業は roster に概念が無いので在籍扱い）
       rbody.status = '在籍';
       rbody.withdraw_date = null;
+      rbody.withdraw_grade_adj = null;
     }
     showLoading('保存中...');
     try {
@@ -30017,6 +30060,7 @@ async function saveSvEdit() {
     body.withdraw_effective_date = wdate;
     body.withdraw_reason = wreason || null;
     body.withdraw_reason_note = wnote || null;
+    body.withdraw_grade_adj = wgrade || null;
   } else if (status === '除外') {
     body.is_active = false; body.inactive_reason = '除外'; body.inactive_at = new Date().toISOString();
     body.withdraw_status = null;
@@ -30075,9 +30119,9 @@ async function renderSvInterviews() {
   try {
     try {
       students = await sbGet('students',
-        'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason,membership_status,withdraw_effective_date,withdraw_reason,withdraw_reason_note') || [];
+        'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason,membership_status,withdraw_effective_date,withdraw_reason,withdraw_reason_note,withdraw_grade_adj') || [];
     } catch (eNote) {
-      // withdraw_reason_note 列が未適用の環境向けフォールバック
+      // withdraw_reason_note / withdraw_grade_adj 列が未適用の環境向けフォールバック
       students = await sbGet('students',
         'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason,membership_status,withdraw_effective_date,withdraw_reason') || [];
     }
@@ -30102,7 +30146,7 @@ async function renderSvInterviews() {
         try {
           rosterOut = await sbGet('roster',
             'is_active=eq.true&school=eq.' + encodeURIComponent(svSchool) + '&status=eq.' + encodeURIComponent('退塾') +
-            '&select=id,name,school,grade,course_track,enroll_date,withdraw_date,membership_status,note,withdraw_reason,withdraw_reason_note,status') || [];
+            '&select=id,name,school,grade,course_track,enroll_date,withdraw_date,membership_status,note,withdraw_reason,withdraw_reason_note,status,withdraw_grade_adj') || [];
         } catch (e2) {
           rosterOut = await sbGet('roster',
             'is_active=eq.true&school=eq.' + encodeURIComponent(svSchool) + '&status=eq.' + encodeURIComponent('退塾') +
@@ -30121,6 +30165,7 @@ async function renderSvInterviews() {
             // 退塾理由：withdraw_reason 優先、無ければ旧 note
             withdraw_reason: (r.withdraw_reason != null && r.withdraw_reason !== '') ? r.withdraw_reason : (r.note || ''),
             withdraw_reason_note: r.withdraw_reason_note || '',
+            withdraw_grade_adj: r.withdraw_grade_adj || '',
             note: r.note, status: r.status
           });
         });
@@ -30594,21 +30639,38 @@ async function renderSvWithdrawAnalysis() {
     try {
       stu = await sbGet('students',
         schoolFilterStu + 'is_active=eq.false&inactive_reason=eq.' + encodeURIComponent('退塾') +
-        '&select=withdraw_reason,withdraw_effective_date,grade') || [];
-    } catch (e) { stu = []; }
-    stu.forEach(s => rows.push({ reason: s.withdraw_reason || '', date: s.withdraw_effective_date || '', grade: s.grade || '' }));
+        '&select=withdraw_reason,withdraw_effective_date,grade,withdraw_grade_adj') || [];
+    } catch (e) {
+      // withdraw_grade_adj 未適用環境フォールバック
+      try {
+        stu = await sbGet('students',
+          schoolFilterStu + 'is_active=eq.false&inactive_reason=eq.' + encodeURIComponent('退塾') +
+          '&select=withdraw_reason,withdraw_effective_date,grade') || [];
+      } catch (e2) { stu = []; }
+    }
+    stu.forEach(s => rows.push({
+      reason: s.withdraw_reason || '',
+      date: s.withdraw_effective_date || '',
+      grade: withdrawTimeGrade(s.grade || '', s.withdraw_effective_date || '', s.withdraw_grade_adj || '')
+    }));
   } catch (e) {}
   try {
     let ros = [];
     try {
       ros = await sbGet('roster',
         'is_active=eq.true&' + schoolFilterRos + 'status=eq.' + encodeURIComponent('退塾') +
-        '&select=withdraw_reason,note,withdraw_date,grade') || [];
-    } catch (e) { ros = []; }
+        '&select=withdraw_reason,note,withdraw_date,grade,withdraw_grade_adj') || [];
+    } catch (e) {
+      try {
+        ros = await sbGet('roster',
+          'is_active=eq.true&' + schoolFilterRos + 'status=eq.' + encodeURIComponent('退塾') +
+          '&select=withdraw_reason,note,withdraw_date,grade') || [];
+      } catch (e2) { ros = []; }
+    }
     ros.forEach(r => rows.push({
       reason: (r.withdraw_reason != null && r.withdraw_reason !== '') ? r.withdraw_reason : (r.note || ''),
       date: r.withdraw_date || '',
-      grade: r.grade || ''
+      grade: withdrawTimeGrade(r.grade || '', r.withdraw_date || '', r.withdraw_grade_adj || '')
     }));
   } catch (e) {}
 
@@ -30729,7 +30791,7 @@ async function renderSvWithdrawAnalysis() {
   if (gradeKeys.length) {
     const gMax = Math.max.apply(null, gradeKeys.map(g => gradeMap[g].total));
     gradeBlock = '<div style="margin-top:16px">' +
-      '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px">学年別の内訳（棒の色＝退塾理由）</div>' +
+      '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px">学年別の内訳（退塾時の学年／棒の色＝退塾理由）</div>' +
       gradeKeys.map(g => {
         const gd = gradeMap[g];
         // その学年内で理由カテゴリ順に積み上げ
