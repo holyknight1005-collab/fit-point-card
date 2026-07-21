@@ -4663,7 +4663,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dec';
+const APP_VERSION = '20260702dee';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -28341,6 +28341,8 @@ const ANALYSIS_ITEMS = [
 const DASHBOARD_PERM_ITEM = { key: 'dashboard', label: '経営サマリー（ホーム上部・人数/入退塾）' };
 // TODO管理者：全体ToDo一覧・進捗マトリクスを閲覧できる（admin以外に付与する場合）
 const TODO_PERM_ITEM = { key: 'todo_manager', label: 'TODO管理者（全員のToDo進捗を閲覧）' };
+// 過去在籍の手入力：分析タブの「過去の在籍を手入力（学校×学年×月）」を編集できる
+const ANNUAL_INPUT_PERM_ITEM = { key: 'annual_input', label: '過去在籍の手入力（学校×学年×月の人数入力）' };
 
 // 現在のスタッフの権限（{perms:{}, school_scope:'all'|[]}）。ログイン後に読み込む。
 let saMyPerms = null;
@@ -28656,6 +28658,7 @@ async function loadStaffPermEditor() {
     + '<input type="checkbox" class="perm-item-cb" value="' + key + '"' + (perms[key] === true ? ' checked' : '') + '> ' + escapeHtml(label) + '</label>';
   itemsBox.innerHTML = permRow(DASHBOARD_PERM_ITEM.key, DASHBOARD_PERM_ITEM.label, true)
     + permRow(TODO_PERM_ITEM.key, TODO_PERM_ITEM.label, true)
+    + permRow(ANNUAL_INPUT_PERM_ITEM.key, ANNUAL_INPUT_PERM_ITEM.label, true)
     + ANALYSIS_ITEMS.map(it => permRow(it.key, it.label, false)).join('');
 
   // スコープ
@@ -29271,31 +29274,37 @@ async function renderEnrollmentTrend() {
   }
   stu = stu.filter(s => s.inactive_reason !== '除外');
 
-  // roster（アプリ未登録分）を氏名＋学校でstudents優先・二重計上防止して合算
+  // 在籍・入退塾は students を「正」とする（single source of truth）。
+  // 以前は roster（アプリ未登録分）を氏名＋学校で合算していたが、
+  // 表記ゆれ（暉/睴・崎/﨑 等）で突合が外れ二重計上する原因になっていた。
+  // 担当者登録時に students の「名簿生」行を作る運用に統一したため、roster 合算は行わない。
+  // → 学校別UIの名簿（students基準）と請求ベース在籍が必ず一致する。
   let rosterPersons = [];
-  try {
-    let rosterRows;
+  const SV_MERGE_ROSTER_INTO_TREND = false; // 合算を復活させたいときだけ true
+  if (SV_MERGE_ROSTER_INTO_TREND) {
     try {
-      rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status,membership_status') || [];
-    } catch (eR) {
-      rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status') || [];
-    }
-    const allStu = await sbGet('students', 'select=name,school') || [];
-    const stuKeys = new Set(); const stuNames = new Set();
-    allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
-    rosterRows.forEach(r => {
-      if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
-      const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
-      // 退塾だが退塾日が空 → 退塾時期不明。「今月退塾」の誤表示を避けるため推移から除外。
-      if (isOut && !r.withdraw_date) return;
-      rosterPersons.push({
-        _enroll: r.enroll_date || null,
-        _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null,
-        _school: r.school || '', _grade: r.grade || '', _name: r.name || '(名前なし)',
-        _membership: r.membership_status || '通常'
+      let rosterRows;
+      try {
+        rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status,membership_status') || [];
+      } catch (eR) {
+        rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status') || [];
+      }
+      const allStu = await sbGet('students', 'select=name,school') || [];
+      const stuKeys = new Set(); const stuNames = new Set();
+      allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
+      rosterRows.forEach(r => {
+        if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
+        const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+        if (isOut && !r.withdraw_date) return;
+        rosterPersons.push({
+          _enroll: r.enroll_date || null,
+          _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null,
+          _school: r.school || '', _grade: r.grade || '', _name: r.name || '(名前なし)',
+          _membership: r.membership_status || '通常'
+        });
       });
-    });
-  } catch (e) { rosterPersons = []; }
+    } catch (e) { rosterPersons = []; }
+  }
 
   // 各人の入塾基準日（YYYY-MM-DD）と退塾発効日（確定のみ）を正規化
   // 入塾基準は enroll_date（入塾日）のみ。アプリ登録日(created_at)は入塾日と一致しないため使わない。
@@ -29662,23 +29671,25 @@ async function svEnsureTrendData() {
    }
   }
   stu = stu.filter(s => s.inactive_reason !== '除外');
-  // roster（アプリ未登録分）
+  // roster 合算は行わない（在籍は students を正とする。理由は上の trend 構築を参照）
   let rosterPersons = [];
-  try {
-    let rosterRows;
-    try { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status,membership_status') || []; }
-    catch (eR) { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status') || []; }
-    // 突合用の名簿は既に取得済みの stu を流用（students の再取得を省いて高速化）
-    const allStu = stu;
-    const stuKeys = new Set(); const stuNames = new Set();
-    allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
-    rosterRows.forEach(r => {
-      if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
-      const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
-      if (isOut && !r.withdraw_date) return;
-      rosterPersons.push({ _enroll: r.enroll_date || null, _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null, _school: r.school || '', _grade: r.grade || '', _name: r.name || '(名前なし)', _membership: r.membership_status || '通常' });
-    });
-  } catch (e) { rosterPersons = []; }
+  const SV_MERGE_ROSTER_INTO_TREND2 = false;
+  if (SV_MERGE_ROSTER_INTO_TREND2) {
+    try {
+      let rosterRows;
+      try { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status,membership_status') || []; }
+      catch (eR) { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status') || []; }
+      const allStu = stu;
+      const stuKeys = new Set(); const stuNames = new Set();
+      allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
+      rosterRows.forEach(r => {
+        if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
+        const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+        if (isOut && !r.withdraw_date) return;
+        rosterPersons.push({ _enroll: r.enroll_date || null, _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null, _school: r.school || '', _grade: r.grade || '', _name: r.name || '(名前なし)', _membership: r.membership_status || '通常' });
+      });
+    } catch (e) { rosterPersons = []; }
+  }
   const persons = [];
   stu.forEach(s => {
     let enroll = s.enroll_date || null;
@@ -31673,7 +31684,7 @@ function annualMetricLabel(mk) { return (mk === 'joined') ? '新規入塾' : (mk
 function renderAnnualInput() {
   const wrap = document.getElementById('sa-annual-input');
   if (!wrap) return;
-  const canSee = (currentStaff && currentStaff.role === 'admin');
+  const canSee = (typeof saCanView === 'function') ? saCanView('annual_input') : (currentStaff && currentStaff.role === 'admin');
   if (!canSee) { wrap.innerHTML = ''; return; }
 
   const metric = annualInputMetric;
@@ -31754,6 +31765,9 @@ function onAnnualMetricChange(mk) {
 }
 
 async function saveAnnualEnrollment() {
+  if (typeof saCanView === 'function' && !saCanView('annual_input')) {
+    showToast('過去在籍の手入力の権限がありません', 'error'); return;
+  }
   const y = annualInputYear, school = annualInputSchool, metric = annualInputMetric;
   const mLabel = annualMetricLabel(metric);
   showLoading('保存中...');
@@ -32568,7 +32582,9 @@ async function loadExecDashboard() {
       if (!enroll && !withdraw) return;
       persons.push({ enroll: enroll, withdraw: withdraw });
     });
-    // roster（アプリ未登録分）も合算
+    // roster 合算は行わない（在籍は students を正とする。方針統一）
+    const EXEC_MERGE_ROSTER = false;
+    if (EXEC_MERGE_ROSTER) {
     try {
       const rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,enroll_date,withdraw_date,status,membership_status') || [];
       const allStu = await sbGet('students', 'select=name,school') || [];
@@ -32606,6 +32622,7 @@ async function loadExecDashboard() {
         });
       } catch (e2) { /* roster無しは無視 */ }
     }
+    } // end if(EXEC_MERGE_ROSTER)
   } catch (e) {
     wrap.innerHTML = '<div style="background:#FDF2F2;border:1px solid #E8B4B4;border-radius:12px;padding:14px;margin-bottom:14px;color:#A04040;font-size:12px">経営サマリーの集計に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
     return;
