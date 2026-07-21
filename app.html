@@ -3847,6 +3847,17 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <button onclick="setSaChartType('pie',this)" class="sa-ct-btn" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🥧 円グラフ</button>
       </div>
       <div id="sa-body"><div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div></div>
+
+      <!-- ===== 退塾分析（全校／学校別・専用） ===== -->
+      <div style="border-top:2px solid var(--border);margin-top:20px;padding-top:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <div style="font-size:14px;font-weight:800;color:var(--text)">📉 退塾分析</div>
+          <select id="ana-withdraw-school" class="form-select" onchange="renderAnaWithdraw()" style="font-size:12px;padding:5px 8px;max-width:180px">
+            <option value="__all__">全校まとめ</option>
+          </select>
+        </div>
+        <div id="ana-withdraw-section" class="sv-card" style="padding:14px"></div>
+      </div>
     </div>
 
     <!-- 名簿照合タブ -->
@@ -4605,7 +4616,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702ddo';
+const APP_VERSION = '20260702ddp';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29126,7 +29137,7 @@ async function openSchoolView(backTo) {
     renderSvCalendar();
     renderSvInout();
     renderSvWeekly();
-    renderSvWithdrawAnalysis();
+    renderSvWithdrawAnalysis({ school: svSchool, allMode: false, showToggle: false });
     renderSvEnrollFunnel();
     if (status) status.textContent = '';
   } catch (e) {
@@ -29245,7 +29256,9 @@ function setSvSchool(s) {
   const _svRenderers = [
     renderSvSchoolTabs, renderSvPeriodBar, renderSvEnroll, renderSvGoal,
     renderSvGradeNotes, renderSvInterviews, renderSvReconcile, renderSvCalendar,
-    renderSvInout, renderSvWeekly, renderSvWithdrawAnalysis, renderSvEnrollFunnel
+    renderSvInout, renderSvWeekly,
+    () => renderSvWithdrawAnalysis({ school: svSchool, allMode: false, showToggle: false }),
+    renderSvEnrollFunnel
   ];
   _svRenderers.forEach(fn => {
     try {
@@ -30619,21 +30632,26 @@ async function renderSvWeekly() {
 // ============================================================
 function setSvWithdrawScope(scope) {
   svWithdrawScope = (scope === 'all') ? 'all' : 'school';
-  renderSvWithdrawAnalysis();
+  renderSvWithdrawAnalysis({ school: svSchool, allMode: false, showToggle: false });
 }
 
-async function renderSvWithdrawAnalysis() {
-  const sec = document.getElementById('sv-withdraw-analysis-section');
-  if (!sec || !svSchool) return;
-  const allMode = (svWithdrawScope === 'all');
-  const scopeLabel = allMode ? '全校' : 'この学校';
-  sec.innerHTML = '<div class="sv-card-h">📉 退塾理由の分析（' + scopeLabel + '）</div><div class="sv-placeholder">読み込み中…</div>';
+async function renderSvWithdrawAnalysis(opts) {
+  opts = opts || {};
+  const targetId = opts.targetId || 'sv-withdraw-analysis-section';
+  const school = ('school' in opts) ? opts.school : svSchool;
+  const allMode = ('allMode' in opts) ? !!opts.allMode : (svWithdrawScope === 'all');
+  const showToggle = ('showToggle' in opts) ? !!opts.showToggle : true;
+  const sec = document.getElementById(targetId);
+  if (!sec) return;
+  if (!allMode && !school) return;
+  const scopeLabel = allMode ? '全校' : school;
+  sec.innerHTML = '<div class="sv-card-h">📉 退塾理由の分析（' + escapeHtml(scopeLabel) + '）</div><div class="sv-placeholder">読み込み中…</div>';
 
   // 退塾者を集める（students確定＋roster退塾）。理由カテゴリと退塾日を取る。
   // allMode のときは school フィルタを外して全校を対象にする。
   const rows = [];   // {reason, date, grade}
-  const schoolFilterStu = allMode ? '' : ('school=eq.' + encodeURIComponent(svSchool) + '&');
-  const schoolFilterRos = allMode ? '' : ('school=eq.' + encodeURIComponent(svSchool) + '&');
+  const schoolFilterStu = allMode ? '' : ('school=eq.' + encodeURIComponent(school) + '&');
+  const schoolFilterRos = allMode ? '' : ('school=eq.' + encodeURIComponent(school) + '&');
   try {
     let stu = [];
     try {
@@ -30674,14 +30692,14 @@ async function renderSvWithdrawAnalysis() {
     }));
   } catch (e) {}
 
-  // ---- スコープ切替トグル（データ有無に関わらず常に表示）----
-  const toggle = '<div style="display:inline-flex;gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:10px">' +
+  // ---- スコープ切替トグル（学校別UI版のみ表示）----
+  const toggle = !showToggle ? '' : ('<div style="display:inline-flex;gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:10px">' +
     '<button onclick="setSvWithdrawScope(\'school\')" style="border:none;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer;background:' + (allMode ? 'var(--surface2)' : 'var(--accent)') + ';color:' + (allMode ? 'var(--muted)' : '#fff') + '">この学校</button>' +
     '<button onclick="setSvWithdrawScope(\'all\')" style="border:none;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer;background:' + (allMode ? 'var(--accent)' : 'var(--surface2)') + ';color:' + (allMode ? '#fff' : 'var(--muted)') + '">全校</button>' +
-  '</div>';
+  '</div>');
 
   if (!rows.length) {
-    sec.innerHTML = '<div class="sv-card-h">📉 退塾理由の分析（' + scopeLabel + '）</div>' + toggle +
+    sec.innerHTML = '<div class="sv-card-h">📉 退塾理由の分析（' + escapeHtml(scopeLabel) + '）</div>' + toggle +
       '<div class="sv-placeholder">' + (allMode ? '全校の退塾者データがまだありません。' : 'この学校の退塾者データがまだありません。') +
       '名簿の「✏️編集」で退塾理由（カテゴリ）を入力すると、ここに集計されます。</div>';
     return;
@@ -30809,7 +30827,7 @@ async function renderSvWithdrawAnalysis() {
     '</div>';
   }
 
-  let html = '<div class="sv-card-h">📉 退塾理由の分析（' + scopeLabel + '）</div>';
+  let html = '<div class="sv-card-h">📉 退塾理由の分析（' + escapeHtml(scopeLabel) + '）</div>';
   html += toggle;
   html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">' + (allMode ? '全校の' : '') + '名簿・生徒の退塾理由（カテゴリ）を集計しています。カテゴリ外の記述は「その他」に寄せています。</div>';
   html += '<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">' + donut + '<div style="flex:1;min-width:180px">' + legend + '</div></div>';
@@ -32237,6 +32255,36 @@ async function loadStudentAnalysis() {
 
   saData = { students: students, total: total, studentSubjects: studentSubjects, appN: studentsRaw.length, rosterOnlyN: rosterOnlyN, enrolls: enrolls, teacherMap: teacherMap, scopeSchools: scopeSchools };
   saRender();
+  populateAnaWithdrawSchools();
+  renderAnaWithdraw();
+}
+
+// 退塾分析（専用ページ）：学校セレクタを埋めて描画。学校別UIの renderSvWithdrawAnalysis を全校/学校指定で流用。
+function populateAnaWithdrawSchools() {
+  const sel = document.getElementById('ana-withdraw-school');
+  if (!sel) return;
+  const cur = sel.value || '__all__';
+  // 担当校スコープがあれば絞る（admin/全校権限は全部）
+  let schools = SA_SCHOOLS.slice();
+  if (saMyPerms && !saMyPerms.admin && Array.isArray(saMyPerms.school_scope) && saMyPerms.school_scope.length) {
+    schools = SA_SCHOOLS.filter(s => saMyPerms.school_scope.indexOf(s) >= 0);
+  }
+  let html = '<option value="__all__">全校まとめ</option>';
+  schools.forEach(s => { html += '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>'; });
+  sel.innerHTML = html;
+  // 選択値を復元（無ければ全校）
+  sel.value = (cur && (cur === '__all__' || schools.indexOf(cur) >= 0)) ? cur : '__all__';
+}
+function renderAnaWithdraw() {
+  const sel = document.getElementById('ana-withdraw-school');
+  const v = sel ? sel.value : '__all__';
+  const allMode = (v === '__all__');
+  renderSvWithdrawAnalysis({
+    targetId: 'ana-withdraw-section',
+    school: allMode ? null : v,
+    allMode: allMode,
+    showToggle: false
+  });
 }
 
 // モードに応じて描画（新方式：選択中の1項目だけを表示）
