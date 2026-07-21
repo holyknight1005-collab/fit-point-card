@@ -2078,6 +2078,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <input type="text" class="form-select" id="detail-name" placeholder="氏名" style="width:100%;font-size:13px">
           <div style="font-size:10px;color:var(--muted);margin-top:3px">名簿（CSV）と表記が違うと照合できません。名簿の氏名に合わせると人数集計が正しくなります。</div>
         </div>
+        <div style="margin-bottom:8px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">ふりがな（あいうえお順の並び替え用）</div>
+          <input type="text" class="form-select" id="detail-name-kana" placeholder="例：やまだ あや" style="width:100%;font-size:13px">
+          <div style="font-size:10px;color:var(--muted);margin-top:3px">ひらがなで入力すると、生徒一覧が正確なあいうえお順に並びます。未入力でも漢字名で近い順に並びます。</div>
+        </div>
         <div style="display:flex;gap:8px;margin-bottom:8px">
           <div style="flex:1">
             <div style="font-size:11px;color:var(--muted);margin-bottom:4px">性別</div>
@@ -4632,7 +4637,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702ddw';
+const APP_VERSION = '20260702ddz';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6428,6 +6433,7 @@ function renderProxyList() {
     box.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:12px;padding:18px">該当する生徒がいません</div>';
     return;
   }
+  list.sort((a, b) => studentSortKey(a).localeCompare(studentSortKey(b), 'ja'));
   box.innerHTML = list.map(function(s) {
     const done = proxyTodayIds.has(s.id);
     const sub = ((s.school || '') + ' ' + (s.grade || '')).trim();
@@ -8670,6 +8676,8 @@ async function saveStudentAttributes() {
   const nameEl = document.getElementById('detail-name');
   const name = nameEl ? nameEl.value.trim() : (detailStudent.name || '');
   if (!name) { showToast('氏名を入力してください', 'error'); return; }
+  const nameKanaEl = document.getElementById('detail-name-kana');
+  const nameKana = nameKanaEl ? (nameKanaEl.value.trim() || null) : null;
   const gender = document.getElementById('detail-gender').value;
   const club = getClubValue('detail');
   const birthday = getBirthdayValue('detail');
@@ -8692,22 +8700,29 @@ async function saveStudentAttributes() {
   const examKind = (examFinished && examKindEl) ? (examKindEl.value.trim() || null) : null;
   if (examFinished && !examOn) { hideLoading(); showToast('受験終了日を入力してください', 'error'); return; }
   try {
-    const base = { name: name, gender: gender || null, club: club || null, birthday: birthday, school: school || null, grade: grade || null, school_detail: schoolDetail || null };
+    const base = { name: name, name_kana: nameKana, gender: gender || null, club: club || null, birthday: birthday, school: school || null, grade: grade || null, school_detail: schoolDetail || null };
     const examFields = { exam_finished: examFinished, exam_finished_on: examOn, exam_finish_kind: examKind };
+    // name_kana 列が無い旧環境向けに、base から name_kana を外した版も用意
+    const baseNoKana = Object.assign({}, base); delete baseNoKana.name_kana;
     try {
       await sbPatch('students', 'id=eq.' + detailStudent.id, Object.assign({}, base, { membership_status: membership }, examFields));
       detailStudent.membership_status = membership;
       Object.assign(detailStudent, examFields);
     } catch (e0) {
-      // membership_status / exam_* 列が無い旧環境 → 外して保存
+      // membership_status / exam_* / name_kana 列が無い旧環境 → 段階的に外して保存
       try {
         await sbPatch('students', 'id=eq.' + detailStudent.id, Object.assign({}, base, { membership_status: membership }));
         detailStudent.membership_status = membership;
       } catch (e1) {
-        await sbPatch('students', 'id=eq.' + detailStudent.id, base);
+        try {
+          await sbPatch('students', 'id=eq.' + detailStudent.id, base);
+        } catch (e2) {
+          await sbPatch('students', 'id=eq.' + detailStudent.id, baseNoKana);
+        }
       }
     }
     detailStudent.name = name;
+    detailStudent.name_kana = nameKana;
     detailStudent.gender = gender;
     detailStudent.club = club;
     detailStudent.birthday = birthday;
@@ -9023,6 +9038,7 @@ async function openStudentDetail(idx, from) {
     const yearCount = detailCheckins.filter(d => new Date(d) >= april).length;
     document.getElementById('detail-name-header').textContent = s.name;
     var dn = document.getElementById('detail-name'); if (dn) dn.value = s.name || '';
+    var dnk = document.getElementById('detail-name-kana'); if (dnk) dnk.value = s.name_kana || '';
     document.getElementById('detail-avatar').textContent = s.name[0];
     // 写真があれば表示
     if (s.photo_url) {
@@ -9330,12 +9346,18 @@ async function approveApplication(id, name, email, school, grade) {
 
   showLoading('承認中...');
   try {
-    // 申請レコードから実校名（school_detail）を取得（onclick引数を増やさず安全に拾う）
+    // 申請レコードから実校名（school_detail）とふりがな（name_kana）を取得
     let schoolDetail = null;
+    let nameKana = null;
     try {
-      const appRows = await sbGet('student_applications', 'id=eq.' + id + '&select=school_detail');
-      if (appRows && appRows[0]) schoolDetail = appRows[0].school_detail || null;
-    } catch(_) { schoolDetail = null; }
+      const appRows = await sbGet('student_applications', 'id=eq.' + id + '&select=school_detail,name_kana');
+      if (appRows && appRows[0]) { schoolDetail = appRows[0].school_detail || null; nameKana = appRows[0].name_kana || null; }
+    } catch(_) {
+      try {
+        const appRows2 = await sbGet('student_applications', 'id=eq.' + id + '&select=school_detail');
+        if (appRows2 && appRows2[0]) schoolDetail = appRows2[0].school_detail || null;
+      } catch(__) { schoolDetail = null; }
+    }
 
     // 自動昇格：同名・同校の「名簿生（roster_only）」が既にいれば、新規作成せずその行を昇格。
     // （メール/PIN を付与し roster_only=false。出欠・科目・集計の履歴をそのまま引き継ぐ）
@@ -9348,16 +9370,24 @@ async function approveApplication(id, name, email, school, grade) {
       // ① まず既にアプリ登録済み（roster_only でない実アカウント）が同一人物ならそれを優先し、新規作成しない
       const realHit = cand.find(s => s.roster_only !== true && rosterKey(s.name, s.school) === key);
       if (realHit) {
-        // 実アカウントが既に存在 → 重複を作らず、メール/PINを最新で更新
-        await sbPatch('students', 'id=eq.' + realHit.id, { email: email, pin: pin, student_no: pin });
+        // 実アカウントが既に存在 → 重複を作らず、メール/PIN/ふりがなを最新で更新
+        try {
+          await sbPatch('students', 'id=eq.' + realHit.id, { email: email, pin: pin, student_no: pin, name_kana: nameKana });
+        } catch (eK) {
+          await sbPatch('students', 'id=eq.' + realHit.id, { email: email, pin: pin, student_no: pin });
+        }
         promoted = true;
       } else {
         // ② 名簿生（roster_only）がいれば昇格
         const hit = cand.find(s => s.roster_only === true && rosterKey(s.name, s.school) === key);
         if (hit) {
-          await sbPatch('students', 'id=eq.' + hit.id, {
-            email: email, pin: pin, student_no: pin, roster_only: false
-          });
+          const promoteBody = { email: email, pin: pin, student_no: pin, roster_only: false, name_kana: nameKana };
+          try {
+            await sbPatch('students', 'id=eq.' + hit.id, promoteBody);
+          } catch (eK) {
+            const b = Object.assign({}, promoteBody); delete b.name_kana;
+            await sbPatch('students', 'id=eq.' + hit.id, b);
+          }
           promoted = true;
         }
       }
@@ -9374,7 +9404,7 @@ async function approveApplication(id, name, email, school, grade) {
         if (hitR) enrollFromRoster = hitR.enroll_date;
       } catch (e) { /* roster 未取得なら空欄で続行 */ }
       await insertStudentWithEnrollDate({
-        name, email, pin,
+        name, name_kana: nameKana, email, pin,
         student_no: pin,
         school, grade,
         school_detail: schoolDetail,
@@ -15537,6 +15567,16 @@ function subjectOrderKey(subj) {
 function subjectGroupsSorted(subjGroups) {
   return Object.entries(subjGroups).sort((a, b) => subjectOrderKey(a[0]) - subjectOrderKey(b[0]));
 }
+// 生徒配列を氏名の日本語順（あいうえお順）で並べ替える。
+// ふりがな（name_kana）があればそれを優先。無ければ漢字名の localeCompare('ja') で近似。
+function studentSortKey(s) {
+  return String((s && s.name_kana) || (s && s.name) || '');
+}
+function sortStudentsJa(list) {
+  return (list || []).slice().sort((a, b) =>
+    studentSortKey(a).localeCompare(studentSortKey(b), 'ja')
+  );
+}
 // 授業ラベル用の色パレット（スタッフが授業ごとに選択）
 // 授業区分（時期別講習）の定義
 const CLASS_CATEGORIES = [
@@ -16744,7 +16784,9 @@ async function openBulkEnroll() {
   document.getElementById('bulkenroll-search').value = '';
   // データ読み込み
   try { bulkEnrollClasses = await sbGet('class_master', 'is_active=eq.true&select=id,name,subject,category,grade_level&order=subject,name') || []; } catch (e) { bulkEnrollClasses = []; }
-  try { bulkEnrollStudents = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade&order=school,grade,name') || []; } catch (e) { bulkEnrollStudents = []; }
+  try { bulkEnrollStudents = await sbGet('students', 'is_active=eq.true&select=id,name,name_kana,school,grade&order=school,grade,name') || []; } catch (e) {
+    try { bulkEnrollStudents = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade&order=school,grade,name') || []; } catch (e2) { bulkEnrollStudents = []; }
+  }
   renderBulkEnrollGradeFilter();
   renderBulkEnrollSchoolFilter();
   renderBulkEnrollClasses();
@@ -16801,6 +16843,11 @@ function renderBulkEnrollClasses() {
     });
   }
   if (!list.length) { box.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:6px">この区分・学年の授業がありません。</div>'; return; }
+  // 教科順（英語→国語→数学→理科→社会→その他）→ 授業名の日本語順で並べる
+  list = list.slice().sort((a, b) =>
+    (subjectOrderKey(a.subject) - subjectOrderKey(b.subject)) ||
+    String(a.name || '').localeCompare(String(b.name || ''), 'ja')
+  );
   box.innerHTML = list.map(c => {
     const on = bulkEnrollSelClasses.has(c.id);
     const gr = c.grade_level ? ('（' + c.grade_level.split(',').map(g => g + '年').join('・') + '）') : '';
@@ -16823,6 +16870,7 @@ function renderBulkEnrollStudents() {
   if (bulkEnrollGradeFilter) list = list.filter(s => bulkGradeMatches(String(s.grade || '').replace(/[^0-9]/g, '')));
   if (q) list = list.filter(s => (String(s.name || '') + String(s.school || '')).toLowerCase().includes(q));
   if (!list.length) { box.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:6px">該当なし</div>'; return; }
+  list = sortStudentsJa(list);
   box.innerHTML = list.map(s => {
     const on = bulkEnrollSelStudents.has(s.id);
     const gr = s.grade ? (String(s.grade).replace(/[^0-9]/g, '') + '年') : '';

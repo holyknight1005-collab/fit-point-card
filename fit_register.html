@@ -47,8 +47,24 @@ body{background:var(--bg);color:var(--text);font-family:"Noto Sans JP",sans-seri
   <div class="card-sub">必要事項を入力して送信してください。スタッフが確認後、パスワードをお知らせします。</div>
 
   <div class="field-wrap">
-    <label class="field-label" for="inp-name">氏名<span class="req">*</span></label>
-    <input class="field-input" id="inp-name" type="text" placeholder="田中 太郎" autocomplete="name">
+    <label class="field-label">氏名<span class="req">*</span></label>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <div style="flex:1">
+        <input class="field-input" id="inp-sei" type="text" placeholder="姓（例：田中）" autocomplete="family-name">
+      </div>
+      <div style="flex:1">
+        <input class="field-input" id="inp-mei" type="text" placeholder="名（例：太郎）" autocomplete="given-name">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <div style="flex:1">
+        <input class="field-input" id="inp-sei-kana" type="text" placeholder="せい（例：たなか）">
+      </div>
+      <div style="flex:1">
+        <input class="field-input" id="inp-mei-kana" type="text" placeholder="めい（例：たろう）">
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.5">ふりがなは<b>ひらがな</b>で入力してください（あいうえお順の並び替えに使います）。</div>
   </div>
 
   <div class="field-wrap">
@@ -124,7 +140,13 @@ function normalizeEmail(raw) {
 }
 
 async function submitForm() {
-  const name   = document.getElementById('inp-name').value.trim();
+  const sei     = document.getElementById('inp-sei').value.trim();
+  const mei     = document.getElementById('inp-mei').value.trim();
+  const seiKana = document.getElementById('inp-sei-kana').value.trim();
+  const meiKana = document.getElementById('inp-mei-kana').value.trim();
+  // 表記を統一：姓と名の間は全角スペース1つ。
+  const name      = (sei && mei) ? (sei + '　' + mei) : (sei || mei);
+  const nameKana  = (seiKana || meiKana) ? ((seiKana + '　' + meiKana).trim()) : '';
   const email  = normalizeEmail(document.getElementById('inp-email').value);
   const school = document.getElementById('inp-school').value;
   const grade  = document.getElementById('inp-grade').value;
@@ -136,7 +158,15 @@ async function submitForm() {
     schoolDetail = document.getElementById('inp-school-detail').value.trim();
   }
 
-  if (!name)  { errEl.textContent = '氏名を入力してください'; errEl.classList.add('show'); return; }
+  if (!sei)  { errEl.textContent = '姓（苗字）を入力してください'; errEl.classList.add('show'); return; }
+  if (!mei)  { errEl.textContent = '名（名前）を入力してください'; errEl.classList.add('show'); return; }
+  if (!seiKana) { errEl.textContent = '姓のふりがな（ひらがな）を入力してください'; errEl.classList.add('show'); return; }
+  if (!meiKana) { errEl.textContent = '名のふりがな（ひらがな）を入力してください'; errEl.classList.add('show'); return; }
+  // ふりがなはひらがな（＋長音符・スペース）のみ
+  const kanaOk = /^[ぁ-ゖー\u3000\s]+$/;
+  if (!kanaOk.test(seiKana) || !kanaOk.test(meiKana)) {
+    errEl.textContent = 'ふりがなは「ひらがな」で入力してください'; errEl.classList.add('show'); return;
+  }
   if (!email) { errEl.textContent = 'メールアドレスを入力してください'; errEl.classList.add('show'); return; }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { errEl.textContent = 'メールアドレスの形式が正しくありません'; errEl.classList.add('show'); return; }
   if (!school){ errEl.textContent = '学校を選択してください'; errEl.classList.add('show'); return; }
@@ -161,7 +191,8 @@ async function submitForm() {
       return;
     }
 
-    const res = await fetch(SB_URL + '/rest/v1/student_applications', {
+    const appBody = { name: name, name_kana: nameKana || null, email: email, school: school, school_detail: schoolDetail || null, grade: grade, status: 'pending' };
+    let res = await fetch(SB_URL + '/rest/v1/student_applications', {
       method: 'POST',
       headers: {
         'apikey': SB_KEY,
@@ -169,8 +200,27 @@ async function submitForm() {
         'Content-Type': 'application/json',
         'Prefer': 'return=minimal'
       },
-      body: JSON.stringify({ name: name, email: email, school: school, school_detail: schoolDetail || null, grade: grade, status: 'pending' })
+      body: JSON.stringify(appBody)
     });
+    // name_kana 列が student_applications に無い旧環境向けフォールバック
+    if (!res.ok) {
+      const t = await res.text();
+      if (/name_kana|column|PGRST|schema/i.test(t)) {
+        const b2 = Object.assign({}, appBody); delete b2.name_kana;
+        res = await fetch(SB_URL + '/rest/v1/student_applications', {
+          method: 'POST',
+          headers: {
+            'apikey': SB_KEY,
+            'Authorization': 'Bearer ' + SB_KEY,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal'
+          },
+          body: JSON.stringify(b2)
+        });
+      } else {
+        throw new Error(t);
+      }
+    }
 
     if (!res.ok) {
       const errText = await res.text();
