@@ -2812,6 +2812,18 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <div class="sv-placeholder">読み込み中…</div>
       </div>
     </div>
+
+    <!-- ===== 最下段：退塾理由の分析 ===== -->
+    <div class="sv-card" id="sv-withdraw-analysis-section">
+      <div class="sv-card-h">📉 退塾理由の分析（この学校）</div>
+      <div class="sv-placeholder">読み込み中…</div>
+    </div>
+
+    <!-- ===== 入塾までの流れ分析 ===== -->
+    <div class="sv-card" id="sv-enroll-funnel-section">
+      <div class="sv-card-h">🚀 入塾までの流れ分析（この学校）</div>
+      <div class="sv-placeholder">読み込み中…</div>
+    </div>
   </div>
 </div>
 
@@ -4586,7 +4598,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702ddh';
+const APP_VERSION = '20260702ddj';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29192,7 +29204,7 @@ function renderSvSchoolTabs() {
   }).join('');
 }
 
-function setSvSchool(s) { svSchool = s; renderSvSchoolTabs(); renderSvPeriodBar(); renderSvEnroll(); renderSvGoal(); renderSvGradeNotes(); renderSvInterviews(); renderSvReconcile(); renderSvCalendar(); renderSvInout(); renderSvWeekly(); }
+function setSvSchool(s) { svSchool = s; renderSvSchoolTabs(); renderSvPeriodBar(); renderSvEnroll(); renderSvGoal(); renderSvGradeNotes(); renderSvInterviews(); renderSvReconcile(); renderSvCalendar(); renderSvInout(); renderSvWeekly(); renderSvWithdrawAnalysis(); renderSvEnrollFunnel(); }
 function setSvMemMode(m) { svMemMode = m; renderSvEnroll(); renderSvGoal(); }
 function setSvFY(y) { svFY = parseInt(y, 10); renderSvEnroll(); renderSvGoal(); }
 function toggleSvPrevYear() { svShowPrevYear = !svShowPrevYear; renderSvEnroll(); }
@@ -30534,6 +30546,226 @@ async function renderSvWeekly() {
     }
     html += '</div>';
   });
+  sec.innerHTML = html;
+}
+
+// ============================================================
+// 退塾理由の分析（この学校）：カテゴリ別ドーナツ＋退塾月の推移
+//   students（確定退塾）＋ roster（退塾）を合算。カテゴリ外の値は「その他/未分類」に寄せる。
+// ============================================================
+async function renderSvWithdrawAnalysis() {
+  const sec = document.getElementById('sv-withdraw-analysis-section');
+  if (!sec || !svSchool) return;
+  sec.innerHTML = '<div class="sv-card-h">📉 退塾理由の分析（この学校）</div><div class="sv-placeholder">読み込み中…</div>';
+
+  // 退塾者を集める（students確定＋roster退塾）。理由カテゴリと退塾日を取る。
+  const rows = [];   // {reason, date}
+  try {
+    let stu = [];
+    try {
+      stu = await sbGet('students',
+        'school=eq.' + encodeURIComponent(svSchool) + '&is_active=eq.false&inactive_reason=eq.' + encodeURIComponent('退塾') +
+        '&select=withdraw_reason,withdraw_effective_date') || [];
+    } catch (e) { stu = []; }
+    stu.forEach(s => rows.push({ reason: s.withdraw_reason || '', date: s.withdraw_effective_date || '' }));
+  } catch (e) {}
+  try {
+    let ros = [];
+    try {
+      ros = await sbGet('roster',
+        'is_active=eq.true&school=eq.' + encodeURIComponent(svSchool) + '&status=eq.' + encodeURIComponent('退塾') +
+        '&select=withdraw_reason,note,withdraw_date') || [];
+    } catch (e) { ros = []; }
+    ros.forEach(r => rows.push({
+      reason: (r.withdraw_reason != null && r.withdraw_reason !== '') ? r.withdraw_reason : (r.note || ''),
+      date: r.withdraw_date || ''
+    }));
+  } catch (e) {}
+
+  if (!rows.length) {
+    sec.innerHTML = '<div class="sv-card-h">📉 退塾理由の分析（この学校）</div>' +
+      '<div class="sv-placeholder">この学校の退塾者データがまだありません。名簿の「✏️編集」で退塾理由（カテゴリ）を入力すると、ここに集計されます。</div>';
+    return;
+  }
+
+  // カテゴリ集計（正リスト外は「その他/未分類」へ）
+  const catSet = new Set(END_REASON_OPTIONS);
+  const catCount = {};
+  let total = 0, uncategorized = 0;
+  rows.forEach(r => {
+    let c = r.reason;
+    if (!c) { c = '未分類'; }
+    else if (!catSet.has(c)) { c = 'その他'; uncategorized++; }
+    catCount[c] = (catCount[c] || 0) + 1;
+    total++;
+  });
+  // 表示順：正リスト順＋未分類を最後に
+  const order = END_REASON_OPTIONS.concat(['未分類']);
+  const items = order.filter(c => catCount[c]).map(c => ({ cat: c, n: catCount[c] }));
+
+  // 退塾月の推移（YYYY-MM 別件数）。日付が無いものは除外。
+  const byMonth = {};
+  rows.forEach(r => {
+    if (!r.date || r.date.length < 7) return;
+    const ym = r.date.slice(0, 7);
+    byMonth[ym] = (byMonth[ym] || 0) + 1;
+  });
+  const months = Object.keys(byMonth).sort();
+
+  // ---- ドーナツ（SVG）----
+  const palette = {
+    '成績不振': '#B84A4A', 'fitの雰囲気': '#B5741A', 'fit内での人間関係': '#D08A2A',
+    '授業スタイルが合わない': '#2D5FA6', '先生が苦手': '#4A82C4', '経済的な面': '#5F2DA6',
+    '学校に行けなくなった': '#8A5FC4', '進路変更': '#3B6D11', 'その他': '#8A8A8A',
+    '予定通り終了': '#5A9E3C', '未分類': '#B0B0B0'
+  };
+  const cx = 90, cy = 90, r = 70, rIn = 42, C = Math.PI * 2 * r;
+  let acc = 0;
+  const segs = items.map(it => {
+    const frac = it.n / total;
+    const dash = frac * C;
+    const seg = '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + (palette[it.cat] || '#999') + '" stroke-width="' + (r - rIn) + '" stroke-dasharray="' + dash + ' ' + (C - dash) + '" stroke-dashoffset="' + (-acc) + '" transform="rotate(-90 ' + cx + ' ' + cy + ')"></circle>';
+    acc += dash;
+    return seg;
+  }).join('');
+  const donut = '<svg viewBox="0 0 180 180" style="width:170px;height:170px;flex:0 0 auto">' + segs +
+    '<text x="' + cx + '" y="' + (cy - 4) + '" text-anchor="middle" style="font-size:26px;font-weight:800;fill:var(--text)">' + total + '</text>' +
+    '<text x="' + cx + '" y="' + (cy + 16) + '" text-anchor="middle" style="font-size:11px;fill:var(--muted)">名の退塾</text></svg>';
+
+  // ---- 凡例 ----
+  const legend = items.map(it => {
+    const pct = Math.round(it.n / total * 100);
+    return '<div style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0">' +
+      '<span style="width:11px;height:11px;border-radius:3px;background:' + (palette[it.cat] || '#999') + ';flex:0 0 auto"></span>' +
+      '<span style="color:var(--text);flex:1">' + escapeHtml(it.cat) + '</span>' +
+      '<span style="color:var(--muted);font-weight:700">' + it.n + '名（' + pct + '%）</span>' +
+    '</div>';
+  }).join('');
+
+  // ---- 月別推移（横棒）----
+  let timeline = '';
+  if (months.length) {
+    const maxN = Math.max.apply(null, months.map(m => byMonth[m]));
+    timeline = '<div style="margin-top:14px">' +
+      '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px">退塾日の推移（月別）</div>' +
+      months.map(m => {
+        const n = byMonth[m];
+        const w = Math.round(n / maxN * 100);
+        const label = m.slice(0, 4) + '/' + m.slice(5, 7);
+        return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">' +
+          '<span style="font-size:11px;color:var(--muted);width:52px;flex:0 0 auto">' + label + '</span>' +
+          '<div style="flex:1;background:var(--surface2);border-radius:5px;overflow:hidden;height:16px"><div style="width:' + w + '%;height:100%;background:linear-gradient(90deg,#C0392B,#E67E7E);border-radius:5px"></div></div>' +
+          '<span style="font-size:11px;font-weight:700;color:var(--text);width:28px;text-align:right">' + n + '</span>' +
+        '</div>';
+      }).join('') +
+    '</div>';
+  }
+
+  let html = '<div class="sv-card-h">📉 退塾理由の分析（この学校）</div>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">名簿・生徒の退塾理由（カテゴリ）を集計しています。カテゴリ外の記述は「その他」に寄せています。</div>';
+  html += '<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">' + donut + '<div style="flex:1;min-width:180px">' + legend + '</div></div>';
+  html += timeline;
+  if (uncategorized > 0) {
+    html += '<div style="font-size:10px;color:var(--muted);margin-top:8px">※ カテゴリ未設定・旧形式の記述 ' + uncategorized + ' 件を「その他」に含めています。名簿の編集でカテゴリを選び直すと正確になります。</div>';
+  }
+  sec.innerHTML = html;
+}
+
+// ============================================================
+// 入塾までの流れ分析（この学校）：ファネル＋入塾者の内訳（担当者・体験科目）
+//   prospects（この学校）を軸に、trials/visits を紐付けて各段階の通過を数える。
+// ============================================================
+async function renderSvEnrollFunnel() {
+  const sec = document.getElementById('sv-enroll-funnel-section');
+  if (!sec || !svSchool) return;
+  sec.innerHTML = '<div class="sv-card-h">🚀 入塾までの流れ分析（この学校）</div><div class="sv-placeholder">読み込み中…</div>';
+
+  let pros = [], trials = [], visits = [];
+  try {
+    pros = await sbGet('prospects',
+      'school=eq.' + encodeURIComponent(svSchool) +
+      '&select=id,name,status,assigned_to,enrolled_student_id,created_at,line_registered_date,interview_date,parent_interview_date') || [];
+  } catch (e) {
+    sec.innerHTML = '<div class="sv-card-h">🚀 入塾までの流れ分析（この学校）</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">見込みデータの取得に失敗しました。</div>';
+    return;
+  }
+  if (!pros.length) {
+    sec.innerHTML = '<div class="sv-card-h">🚀 入塾までの流れ分析（この学校）</div>' +
+      '<div class="sv-placeholder">この学校の見込み（来塾）データがまだありません。入退塾管理で見込みを登録すると、ここに入塾までの流れが集計されます。</div>';
+    return;
+  }
+  const pIds = pros.map(p => p.id);
+  const idIn = pIds.map(x => '"' + x + '"').join(',');
+  try { trials = await sbGet('prospect_trials', 'prospect_id=in.(' + idIn + ')&select=prospect_id,subject,attended') || []; } catch (e) { trials = []; }
+  try { visits = await sbGet('prospect_visits', 'prospect_id=in.(' + idIn + ')&select=prospect_id,visit_date') || []; } catch (e) { visits = []; }
+
+  const trialByP = {};   // prospect_id -> [trials]
+  trials.forEach(t => { (trialByP[t.prospect_id] = trialByP[t.prospect_id] || []).push(t); });
+  const visitByP = {};
+  visits.forEach(v => { (visitByP[v.prospect_id] = visitByP[v.prospect_id] || []).push(v); });
+
+  // 各段階の通過判定
+  const total = pros.length;
+  const hasLine = pros.filter(p => p.line_registered_date).length;
+  const hasVisit = pros.filter(p => (visitByP[p.id] || []).length).length;
+  const hasTrial = pros.filter(p => (trialByP[p.id] || []).length).length;
+  const hasInterview = pros.filter(p => p.interview_date || p.parent_interview_date).length;
+  const enrolled = pros.filter(p => p.enrolled_student_id || (p._status || normalizeProspectStatus(p.status)) === '入塾');
+  const enrolledN = enrolled.length;
+
+  // ---- ファネル（縦の階段バー）----
+  const steps = [
+    { label: '問い合わせ', n: total, color: '#2D5FA6' },
+    { label: 'LINE登録', n: hasLine, color: '#2E86C1' },
+    { label: 'イベント来場', n: hasVisit, color: '#17A589' },
+    { label: '体験授業', n: hasTrial, color: '#F5A623' },
+    { label: '面談', n: hasInterview, color: '#E67E22' },
+    { label: '入塾', n: enrolledN, color: '#1E8449' }
+  ];
+  const funnel = steps.map(s => {
+    const w = total ? Math.round(s.n / total * 100) : 0;
+    const pct = total ? Math.round(s.n / total * 100) : 0;
+    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">' +
+      '<span style="font-size:11px;color:var(--muted);width:80px;flex:0 0 auto;text-align:right">' + s.label + '</span>' +
+      '<div style="flex:1;background:var(--surface2);border-radius:6px;overflow:hidden;height:22px;position:relative">' +
+        '<div style="width:' + Math.max(w, 3) + '%;height:100%;background:' + s.color + ';border-radius:6px;display:flex;align-items:center;justify-content:flex-end;padding-right:6px">' +
+          '<span style="font-size:11px;font-weight:800;color:#fff">' + s.n + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<span style="font-size:10px;color:var(--muted);width:36px;flex:0 0 auto">' + pct + '%</span>' +
+    '</div>';
+  }).join('');
+
+  // ---- 入塾者の内訳：担当者別 ----
+  const byStaff = {};
+  enrolled.forEach(p => { const k = p.assigned_to || '(未設定)'; byStaff[k] = (byStaff[k] || 0) + 1; });
+  const staffRows = Object.keys(byStaff).sort((a, b) => byStaff[b] - byStaff[a]).map(k =>
+    '<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0"><span style="color:var(--text)">' + escapeHtml(k) + '</span><span style="font-weight:700;color:var(--muted)">' + byStaff[k] + '名</span></div>'
+  ).join('') || '<div style="font-size:11px;color:var(--muted)">入塾者なし</div>';
+
+  // ---- 入塾者の内訳：体験科目別（体験ありの入塾者）----
+  const bySubject = {};
+  let enrolledNoTrial = 0;
+  enrolled.forEach(p => {
+    const ts = trialByP[p.id] || [];
+    if (!ts.length) { enrolledNoTrial++; return; }
+    ts.forEach(t => { const k = t.subject || '(科目不明)'; bySubject[k] = (bySubject[k] || 0) + 1; });
+  });
+  let subjRows = Object.keys(bySubject).sort((a, b) => bySubject[b] - bySubject[a]).map(k =>
+    '<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0"><span style="color:var(--text)">' + escapeHtml(k) + '</span><span style="font-weight:700;color:var(--muted)">' + bySubject[k] + '件</span></div>'
+  ).join('');
+  if (enrolledNoTrial) subjRows += '<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0;color:var(--muted)"><span>体験なしで入塾</span><span style="font-weight:700">' + enrolledNoTrial + '名</span></div>';
+  if (!subjRows) subjRows = '<div style="font-size:11px;color:var(--muted)">入塾者なし</div>';
+
+  const convRate = total ? Math.round(enrolledN / total * 100) : 0;
+
+  let html = '<div class="sv-card-h">🚀 入塾までの流れ分析（この学校）</div>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">見込み（来塾）が問い合わせから入塾に至るまでの各段階の通過人数です。母数は見込み ' + total + ' 名、入塾 ' + enrolledN + ' 名（入塾率 ' + convRate + '%）。</div>';
+  html += funnel;
+  html += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:14px">';
+  html += '<div style="flex:1;min-width:150px"><div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:5px">担当者別の入塾</div>' + staffRows + '</div>';
+  html += '<div style="flex:1;min-width:150px"><div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:5px">体験科目別の入塾</div>' + subjRows + '</div>';
+  html += '</div>';
   sec.innerHTML = html;
 }
 
