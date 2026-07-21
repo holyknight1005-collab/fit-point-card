@@ -4598,7 +4598,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702ddj';
+const APP_VERSION = '20260702ddk';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29067,6 +29067,7 @@ function setTrendMembershipMode(mode) { trendMembershipMode = mode; recomputeTre
 //   専用の状態（svSchool / svFY / svMemMode）で描画する。
 // ============================================================
 let svSchool = null;          // 選択中の学校名
+let svWithdrawScope = 'school'; // 退塾分析の集計範囲：'school'=この学校 / 'all'=全校
 let svFY = null;              // 表示年度（開始年）。null=今年度
 let svMemMode = 'all';        // 'all' | 'regular' | 'seasonal'
 let svShowPrevYear = false;   // 昨年度ブロックを表示するか（デフォルト非表示）
@@ -30553,18 +30554,28 @@ async function renderSvWeekly() {
 // 退塾理由の分析（この学校）：カテゴリ別ドーナツ＋退塾月の推移
 //   students（確定退塾）＋ roster（退塾）を合算。カテゴリ外の値は「その他/未分類」に寄せる。
 // ============================================================
+function setSvWithdrawScope(scope) {
+  svWithdrawScope = (scope === 'all') ? 'all' : 'school';
+  renderSvWithdrawAnalysis();
+}
+
 async function renderSvWithdrawAnalysis() {
   const sec = document.getElementById('sv-withdraw-analysis-section');
   if (!sec || !svSchool) return;
-  sec.innerHTML = '<div class="sv-card-h">📉 退塾理由の分析（この学校）</div><div class="sv-placeholder">読み込み中…</div>';
+  const allMode = (svWithdrawScope === 'all');
+  const scopeLabel = allMode ? '全校' : 'この学校';
+  sec.innerHTML = '<div class="sv-card-h">📉 退塾理由の分析（' + scopeLabel + '）</div><div class="sv-placeholder">読み込み中…</div>';
 
   // 退塾者を集める（students確定＋roster退塾）。理由カテゴリと退塾日を取る。
+  // allMode のときは school フィルタを外して全校を対象にする。
   const rows = [];   // {reason, date}
+  const schoolFilterStu = allMode ? '' : ('school=eq.' + encodeURIComponent(svSchool) + '&');
+  const schoolFilterRos = allMode ? '' : ('school=eq.' + encodeURIComponent(svSchool) + '&');
   try {
     let stu = [];
     try {
       stu = await sbGet('students',
-        'school=eq.' + encodeURIComponent(svSchool) + '&is_active=eq.false&inactive_reason=eq.' + encodeURIComponent('退塾') +
+        schoolFilterStu + 'is_active=eq.false&inactive_reason=eq.' + encodeURIComponent('退塾') +
         '&select=withdraw_reason,withdraw_effective_date') || [];
     } catch (e) { stu = []; }
     stu.forEach(s => rows.push({ reason: s.withdraw_reason || '', date: s.withdraw_effective_date || '' }));
@@ -30573,7 +30584,7 @@ async function renderSvWithdrawAnalysis() {
     let ros = [];
     try {
       ros = await sbGet('roster',
-        'is_active=eq.true&school=eq.' + encodeURIComponent(svSchool) + '&status=eq.' + encodeURIComponent('退塾') +
+        'is_active=eq.true&' + schoolFilterRos + 'status=eq.' + encodeURIComponent('退塾') +
         '&select=withdraw_reason,note,withdraw_date') || [];
     } catch (e) { ros = []; }
     ros.forEach(r => rows.push({
@@ -30582,9 +30593,16 @@ async function renderSvWithdrawAnalysis() {
     }));
   } catch (e) {}
 
+  // ---- スコープ切替トグル（データ有無に関わらず常に表示）----
+  const toggle = '<div style="display:inline-flex;gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:10px">' +
+    '<button onclick="setSvWithdrawScope(\'school\')" style="border:none;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer;background:' + (allMode ? 'var(--surface2)' : 'var(--accent)') + ';color:' + (allMode ? 'var(--muted)' : '#fff') + '">この学校</button>' +
+    '<button onclick="setSvWithdrawScope(\'all\')" style="border:none;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer;background:' + (allMode ? 'var(--accent)' : 'var(--surface2)') + ';color:' + (allMode ? '#fff' : 'var(--muted)') + '">全校</button>' +
+  '</div>';
+
   if (!rows.length) {
-    sec.innerHTML = '<div class="sv-card-h">📉 退塾理由の分析（この学校）</div>' +
-      '<div class="sv-placeholder">この学校の退塾者データがまだありません。名簿の「✏️編集」で退塾理由（カテゴリ）を入力すると、ここに集計されます。</div>';
+    sec.innerHTML = '<div class="sv-card-h">📉 退塾理由の分析（' + scopeLabel + '）</div>' + toggle +
+      '<div class="sv-placeholder">' + (allMode ? '全校の退塾者データがまだありません。' : 'この学校の退塾者データがまだありません。') +
+      '名簿の「✏️編集」で退塾理由（カテゴリ）を入力すると、ここに集計されます。</div>';
     return;
   }
 
@@ -30661,8 +30679,9 @@ async function renderSvWithdrawAnalysis() {
     '</div>';
   }
 
-  let html = '<div class="sv-card-h">📉 退塾理由の分析（この学校）</div>';
-  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">名簿・生徒の退塾理由（カテゴリ）を集計しています。カテゴリ外の記述は「その他」に寄せています。</div>';
+  let html = '<div class="sv-card-h">📉 退塾理由の分析（' + scopeLabel + '）</div>';
+  html += toggle;
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">' + (allMode ? '全校の' : '') + '名簿・生徒の退塾理由（カテゴリ）を集計しています。カテゴリ外の記述は「その他」に寄せています。</div>';
   html += '<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">' + donut + '<div style="flex:1;min-width:180px">' + legend + '</div></div>';
   html += timeline;
   if (uncategorized > 0) {
