@@ -1178,6 +1178,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="svedit-enroll-list" style="max-height:34vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px"><div style="font-size:11px;color:var(--muted)">読み込み中…</div></div>
     </div>
 
+    <div style="display:flex;gap:8px;border-top:1px solid var(--border);padding-top:12px;margin-top:4px;position:sticky;bottom:0;background:var(--bg)">
+      <button onclick="closeSvEdit()" style="flex:0 0 auto;padding:12px 16px;font-size:13px;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">閉じる</button>
+      <button onclick="saveSvEdit()" style="flex:1;padding:12px;font-size:14px;font-weight:700;border-radius:8px;border:none;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;cursor:pointer;font-family:'Noto Sans JP',sans-serif">💾 保存する</button>
+    </div>
+
   </div>
 </div>
 
@@ -4658,7 +4663,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dea';
+const APP_VERSION = '20260702dec';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29841,7 +29846,9 @@ function renderSvEnroll() {
     }
     html += '</tbody></table></div>';
     html += '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※在籍は各月末時点（今年度は実データ、過去年度は手入力 annual_enrollment）。入塾＝各月の新規入塾数、退塾＝各月の退塾数。' + (svShowPrevYear ? '前年差異＝' + fyStart + '年度 − ' + (fyStart - 1) + '年度の在籍合計。' : '「＋昨年度と比較」で昨年度・前年差異を表示。') + '空欄は未来月または未入力。</div>';
+    html += '<div id="sv-enroll-missing-note" style="margin-top:6px"></div>';
     el.innerHTML = html;
+    updateSvEnrollMissingNote(svSchool);
   } finally {
     trendFilter.school = savedFilter.school;
     trendFilter.grade = savedFilter.grade;
@@ -29849,8 +29856,32 @@ function renderSvEnroll() {
   }
 }
 
-// ============================================================
-// 3半期目標（staff_goals）：学校×年度×期（1=7月末/2=12月末/3=3月末）
+// 在籍集計に未反映の生徒（入塾日 enroll_date 未入力の在籍者）を数えて注記表示。
+// 在籍推移は「入塾日が無い在籍者」を集計から除外するため、名簿の人数とズレる原因になる。
+async function updateSvEnrollMissingNote(school) {
+  const note = document.getElementById('sv-enroll-missing-note');
+  if (!note || !school) return;
+  try {
+    const rows = await sbGet('students',
+      'school=eq.' + encodeURIComponent(school) + '&is_active=eq.true&enroll_date=is.null&select=name,grade') || [];
+    // 除外扱いは対象外（在籍者のみ）
+    if (!rows.length) { note.innerHTML = ''; return; }
+    const byGrade = {};
+    rows.forEach(r => { const g = r.grade || '(学年未設定)'; byGrade[g] = (byGrade[g] || 0) + 1; });
+    const parts = Object.keys(byGrade).sort((a, b) => gradeOrderKey(a) - gradeOrderKey(b))
+      .map(g => g + ' ' + byGrade[g] + '名');
+    const names = rows.map(r => r.name).filter(Boolean).join('、');
+    note.innerHTML =
+      '<div style="font-size:11px;color:#9A5A1A;background:#FBF1E0;border:1px solid #E0A96F;border-radius:8px;padding:8px 10px;line-height:1.6">' +
+      '⚠️ 入塾日が未入力のため<b>在籍数に未反映</b>の生徒が <b>' + rows.length + '名</b>います（' + escapeHtml(parts.join('・')) + '）。' +
+      '名簿の学年別人数と、この請求ベース在籍数がその分ズレます。<br>' +
+      '<span style="color:var(--muted)">対象：' + escapeHtml(names) + '</span><br>' +
+      '各生徒の「編集」から<b>入塾日</b>を入れると、在籍数に反映され一致します。</div>';
+  } catch (e) {
+    note.innerHTML = ''; // 失敗時は黙って何も出さない
+  }
+}
+
 //   目標＝入塾数(target_enroll)＋期末在籍(target_active)。
 //   実績＝期末在籍は在籍推移エンジン（trendFiscalSeries）から各期末月を拾う。
 //   入塾実績は現状トレンドに月次入塾数がまとまっていないため、目標のみ表示し
