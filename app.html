@@ -525,6 +525,10 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <option value="kosotsu">🎓 高卒生</option>
         </select></div>
     </div>
+    <div style="margin-bottom:10px">
+      <div class="form-label">対象学年でしぼる（講座・生徒 両方に効きます）</div>
+      <div id="bulkenroll-grade-filter" class="filter-bar"></div>
+    </div>
     <div style="display:flex;gap:14px;flex-wrap:wrap">
       <div style="flex:1 1 260px;min-width:240px">
         <div style="font-size:12px;font-weight:800;color:var(--text);margin-bottom:6px">① 講座を選ぶ</div>
@@ -4628,7 +4632,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702ddu';
+const APP_VERSION = '20260702ddw';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -15523,6 +15527,16 @@ function closePhotoModal() {
 // ===== 授業マスター管理 =====
 const PERIODS = {1:['10:20','11:50'],2:['12:30','14:00'],3:['14:20','15:50'],4:['16:10','17:40'],5:['18:00','19:30'],6:['19:50','21:20']};
 const SUBJ_COLORS = {'英語':'#2D5FA6','国語':'#8B2020','数学':'#7B2D8B','理科':'#1A7340','社会':'#8B6020','その他':'#5A5A5A'};
+// 教科の統一表示順（英語が最需要）。グループ表示は必ずこの順に並べる。
+const SUBJECT_DISPLAY_ORDER = ['英語', '国語', '数学', '理科', '社会', 'その他'];
+function subjectOrderKey(subj) {
+  const i = SUBJECT_DISPLAY_ORDER.indexOf(subj);
+  return i < 0 ? SUBJECT_DISPLAY_ORDER.length : i; // 未知の教科は末尾
+}
+// subjGroups（{教科: [...]}）を統一順で [教科, list] の配列にして返す
+function subjectGroupsSorted(subjGroups) {
+  return Object.entries(subjGroups).sort((a, b) => subjectOrderKey(a[0]) - subjectOrderKey(b[0]));
+}
 // 授業ラベル用の色パレット（スタッフが授業ごとに選択）
 // 授業区分（時期別講習）の定義
 const CLASS_CATEGORIES = [
@@ -15693,7 +15707,7 @@ function renderCmList() {
     if (!subjGroups[c.subject]) subjGroups[c.subject] = [];
     subjGroups[c.subject].push(c);
   });
-  el.innerHTML = Object.entries(subjGroups).map(([subj, list]) =>
+  el.innerHTML = subjectGroupsSorted(subjGroups).map(([subj, list]) =>
     '<div style="margin-bottom:8px">' +
     '<div style="font-size:11px;font-weight:700;color:' + (SUBJ_COLORS[subj]||'#5A5A5A') + ';padding:4px 0;border-bottom:1px solid var(--border);margin-bottom:4px">' + subj + '</div>' +
     list.map(c => {
@@ -16719,16 +16733,19 @@ let bulkEnrollStudents = [];  // {id,name,school,grade}
 let bulkEnrollSelClasses = new Set();
 let bulkEnrollSelStudents = new Set();
 let bulkEnrollSchoolFilter = '';
+let bulkEnrollGradeFilter = '';   // ''=すべて / '3'=3年 / '12'=1・2年
 
 async function openBulkEnroll() {
   document.getElementById('bulkenroll-modal').style.display = 'flex';
   bulkEnrollSelClasses = new Set();
   bulkEnrollSelStudents = new Set();
   bulkEnrollSchoolFilter = '';
+  bulkEnrollGradeFilter = '';
   document.getElementById('bulkenroll-search').value = '';
   // データ読み込み
   try { bulkEnrollClasses = await sbGet('class_master', 'is_active=eq.true&select=id,name,subject,category,grade_level&order=subject,name') || []; } catch (e) { bulkEnrollClasses = []; }
   try { bulkEnrollStudents = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade&order=school,grade,name') || []; } catch (e) { bulkEnrollStudents = []; }
+  renderBulkEnrollGradeFilter();
   renderBulkEnrollSchoolFilter();
   renderBulkEnrollClasses();
   renderBulkEnrollStudents();
@@ -16746,12 +16763,44 @@ function renderBulkEnrollSchoolFilter() {
 }
 function setBulkEnrollSchool(v) { bulkEnrollSchoolFilter = v; renderBulkEnrollSchoolFilter(); renderBulkEnrollStudents(); }
 
+// 学年フィルタ（講座・生徒 両方に効く）。''=すべて / '3'=3年 / '12'=1・2年。
+function renderBulkEnrollGradeFilter() {
+  const box = document.getElementById('bulkenroll-grade-filter');
+  if (!box) return;
+  const opts = [['', 'すべて'], ['3', '3年'], ['12', '1・2年']];
+  box.innerHTML = opts.map(([val, lbl]) =>
+    '<button onclick="setBulkEnrollGrade(\'' + val + '\')" style="padding:3px 9px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:inherit;' +
+    (bulkEnrollGradeFilter === val ? 'border:1.5px solid #E9A93C;background:#E9A93C;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + lbl + '</button>'
+  ).join('');
+}
+function setBulkEnrollGrade(v) {
+  bulkEnrollGradeFilter = v;
+  renderBulkEnrollGradeFilter();
+  renderBulkEnrollClasses();
+  renderBulkEnrollStudents();
+}
+// 学年フィルタに、その学年（数字文字列 '1'/'2'/'3'）が該当するか
+function bulkGradeMatches(gradeDigit) {
+  if (!bulkEnrollGradeFilter) return true;            // すべて
+  if (bulkEnrollGradeFilter === '3') return gradeDigit === '3';
+  if (bulkEnrollGradeFilter === '12') return (gradeDigit === '1' || gradeDigit === '2');
+  return true;
+}
+
 function renderBulkEnrollClasses() {
   const box = document.getElementById('bulkenroll-classes');
   if (!box) return;
   const cat = document.getElementById('bulkenroll-category').value;
-  const list = bulkEnrollClasses.filter(c => (c.category || 'normal') === cat);
-  if (!list.length) { box.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:6px">この区分の授業がありません。先に「⚡ 授業をまとめて登録」で作成してください。</div>'; return; }
+  let list = bulkEnrollClasses.filter(c => (c.category || 'normal') === cat);
+  // 対象学年フィルタ：講座の grade_level のいずれかが該当すれば表示。学年なし講座は常に表示。
+  if (bulkEnrollGradeFilter) {
+    list = list.filter(c => {
+      const grades = (c.grade_level || '').split(',').map(g => g.replace(/[^0-9]/g, '')).filter(Boolean);
+      if (!grades.length) return true; // 学年未設定は隠さない
+      return grades.some(g => bulkGradeMatches(g));
+    });
+  }
+  if (!list.length) { box.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:6px">この区分・学年の授業がありません。</div>'; return; }
   box.innerHTML = list.map(c => {
     const on = bulkEnrollSelClasses.has(c.id);
     const gr = c.grade_level ? ('（' + c.grade_level.split(',').map(g => g + '年').join('・') + '）') : '';
@@ -16771,6 +16820,7 @@ function renderBulkEnrollStudents() {
   const q = (document.getElementById('bulkenroll-search').value || '').trim().toLowerCase();
   let list = bulkEnrollStudents;
   if (bulkEnrollSchoolFilter) list = list.filter(s => s.school === bulkEnrollSchoolFilter);
+  if (bulkEnrollGradeFilter) list = list.filter(s => bulkGradeMatches(String(s.grade || '').replace(/[^0-9]/g, '')));
   if (q) list = list.filter(s => (String(s.name || '') + String(s.school || '')).toLowerCase().includes(q));
   if (!list.length) { box.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:6px">該当なし</div>'; return; }
   box.innerHTML = list.map(s => {
@@ -18178,7 +18228,7 @@ function renderBackfillClassOptions() {
   const subjGroups = {};
   filtered.forEach(m => { (subjGroups[m.subject || 'その他'] = subjGroups[m.subject || 'その他'] || []).push(m); });
   sel.innerHTML = '<option value="">授業を選択してください</option>' +
-    Object.entries(subjGroups).map(([s, list]) =>
+    subjectGroupsSorted(subjGroups).map(([s, list]) =>
       '<optgroup label="── ' + escapeHtml(s) + ' ──">' +
       list.map(m => '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>').join('') +
       '</optgroup>').join('');
@@ -18249,7 +18299,7 @@ function renderEnrollClassOptions() {
     return;
   }
   sel.innerHTML = '<option value="">授業を選択してください</option>' +
-    Object.entries(subjGroups).map(([s, list]) =>
+    subjectGroupsSorted(subjGroups).map(([s, list]) =>
       '<optgroup label="── ' + escapeHtml(s) + ' ──">' +
       list.map(m => '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>').join('') +
       '</optgroup>'
