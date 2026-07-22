@@ -4663,7 +4663,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dee';
+const APP_VERSION = '20260702def';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -8759,6 +8759,11 @@ async function saveStudentAttributes() {
     if (hdr) hdr.textContent = name;
     hideLoading();
     showToast('✅ 属性を保存しました', 'success');
+    // 氏名・学校を直した結果、同一人物の行が既にあれば統合を提案（出欠ごと消す事故の防止）
+    try {
+      const merged = await offerMergeAfterRename(detailStudent.id, name, school, nameKana);
+      if (merged) backFromDetail();
+    } catch (eM) { /* 提案に失敗しても保存は成功しているので無視 */ }
   } catch(e) {
     hideLoading();
     showToast('エラー: ' + e.message, 'error');
@@ -34150,15 +34155,15 @@ function isPlaceholderAccount(s) {
 // 仮アカウント（重複）をワンタップ除外：is_active=false + inactive_reason='除外'
 // 除外後は照合対象から外れ、警告が消える。念のため受講データの有無を確認して警告。
 async function excludeDuplicateStudent(studentId, name) {
-  // 受講講座が紐づいていないか確認（0ptでも念のため）
-  let enrollCount = 0;
-  try {
-    const enr = await sbGet('class_enrollments', 'student_id=eq.' + studentId + '&select=id') || [];
-    enrollCount = enr.length;
-  } catch (e) { enrollCount = 0; }
+  // 消えるもの（出欠・来塾・ポイント・受講）を数えて明示する
+  const h = await countStudentHistory(studentId);
+  const summary = historySummaryText(h);
   let msg = '「' + name + '」を集計から除外します（名簿由来の仮アカウントとして論理削除）。\n本人の実アカウント（ポイントや受講がある方）は残ります。';
-  if (enrollCount > 0) {
-    msg += '\n\n⚠️ この仮アカウントには受講講座が ' + enrollCount + ' 件ひも付いています。除外するとそれらも集計から外れます。続けますか？';
+  if (historyTotal(h) > 0) {
+    msg += '\n\n⚠️ この生徒には履歴があります：' + summary + '\n\n'
+      + '同一人物の重複であれば、除外ではなく「重複生徒の統合」を使ってください。\n'
+      + '統合なら出欠・ポイントを残す側へ引き継げます。除外するとこれらは集計から外れます。\n\n'
+      + '本当に除外しますか？';
   }
   if (!confirm(msg)) return;
   showLoading('除外中...');
@@ -34198,22 +34203,139 @@ function isRealAccount(s) {
   return !isRosterMail; // 実メール＝アプリ登録済み
 }
 
+// ===== 履歴件数の確認（除外・統合の事故防止） =====
+// 出欠・ポイント・受講・来塾の件数を数える。削除/除外の前に「消えるもの」を可視化する。
+async function countStudentHistory(studentId) {
+  const out = { attendance: 0, points: 0, enrollments: 0, checkins: 0 };
+  const one = async (tbl, key) => {
+    try {
+      const rows = await sbGet(tbl, 'student_id=eq.' + encodeURIComponent(studentId) + '&select=id&limit=500') || [];
+      out[key] = rows.length;
+    } catch (e) { /* 列/テーブル無しは0のまま */ }
+  };
+  await one('session_attendance', 'attendance');
+  await one('point_logs', 'points');
+  await one('class_enrollments', 'enrollments');
+  await one('checkins', 'checkins');
+  return out;
+}
+function historySummaryText(h) {
+  const parts = [];
+  if (h.attendance) parts.push('出欠 ' + h.attendance + '件');
+  if (h.checkins)   parts.push('来塾 ' + h.checkins + '件');
+  if (h.points)     parts.push('ポイント履歴 ' + h.points + '件');
+  if (h.enrollments)parts.push('受講 ' + h.enrollments + '件');
+  return parts.join('・');
+}
+function historyTotal(h) { return (h.attendance || 0) + (h.points || 0) + (h.enrollments || 0) + (h.checkins || 0); }
+
+// ===== 氏名・学校を直したときの「同一人物かも」検出 =====
+// 名前を正しく直した瞬間に、同じ氏名＋学校（またはふりがな一致）の別行が既にあれば統合を提案する。
+// これにより「別人だと思って古い方を消す→出欠ごと消える」事故を防ぐ。
+async function findSameStudentCandidates(studentId, name, school, nameKana) {
+  try {
+    const rows = await sbGet('students',
+      'is_active=eq.true&select=id,name,name_kana,school,grade,email,points,enroll_date&limit=2000') || [];
+    const key = rosterKey(name, school);
+    const kana = normalizeName(nameKana || '');
+    return rows.filter(s => {
+      if (s.id === studentId) return false;
+      if (s.inactive_reason === '除外') return false;
+      const sameKey = (rosterKey(s.name, s.school) === key);
+      const sameKana = kana && s.name_kana && (normalizeName(s.name_kana) === kana)
+        && (String(s.school || '') === String(school || ''));
+      return sameKey || sameKana;
+    });
+  } catch (e) { return []; }
+}
+
+// 保存後に呼ぶ：同一人物候補がいれば統合を提案し、承諾されたら履歴を付け替えて1行にまとめる。
+async function offerMergeAfterRename(studentId, name, school, nameKana) {
+  const cands = await findSameStudentCandidates(studentId, name, school, nameKana);
+  if (!cands.length) return false;
+
+  // 相手の履歴を見て、どちらを残すのが安全かを提示（実アカウント優先、次に履歴が多い方）
+  const me = { id: studentId, name: name, school: school };
+  const other = cands[0];
+  const [hMe, hOther] = await Promise.all([countStudentHistory(studentId), countStudentHistory(other.id)]);
+  const meReal = false; // 呼び出し元で厳密判定しないため、実アカウント判定は other 側のみ利用
+  const otherReal = isRealAccount(other);
+
+  // 残す側の推奨：実アカウント（本人がアプリ登録済み）を優先。同条件なら履歴が多い方。
+  const keepOther = otherReal || (historyTotal(hOther) > historyTotal(hMe));
+  const keepId = keepOther ? other.id : studentId;
+  const fromId = keepOther ? studentId : other.id;
+  const keepLabel = keepOther ? (other.name + '（アプリ登録済み側）') : name;
+  const fromLabel = keepOther ? name : other.name;
+
+  let msg = '同じ生徒がもう1件あります。\n\n';
+  msg += '・' + name + '（今直した方）… ' + (historySummaryText(hMe) || '履歴なし') + '\n';
+  msg += '・' + other.name + '（既存）… ' + (historySummaryText(hOther) || '履歴なし') + '\n\n';
+  msg += '同一人物なら統合できます。\n「' + keepLabel + '」に履歴（出欠・ポイント・受講など）をまとめ、\n「' + fromLabel + '」は除外します。\n\n';
+  msg += '※統合は取り消せません。別人の場合は「キャンセル」してください。\n\n統合しますか？';
+  if (!confirm(msg)) return false;
+
+  showLoading('統合中...');
+  try {
+    for (const tbl of MERGE_STUDENT_TABLES) {
+      try { await sbPatch(tbl, 'student_id=eq.' + encodeURIComponent(fromId), { student_id: keepId }); }
+      catch (e) { /* 列が無い/該当なしは無視 */ }
+    }
+    for (const tbl of MERGE_TARGET_STUDENT_TABLES) {
+      try { await sbPatch(tbl, 'target_student_id=eq.' + encodeURIComponent(fromId), { target_student_id: keepId }); }
+      catch (e) {}
+    }
+    // 残す側に入塾日/ふりがなが無ければ、消す側から補完
+    try {
+      const fromRows = await sbGet('students', 'id=eq.' + encodeURIComponent(fromId) + '&select=enroll_date,name_kana') || [];
+      const keepRows = await sbGet('students', 'id=eq.' + encodeURIComponent(keepId) + '&select=enroll_date,name_kana') || [];
+      const f = fromRows[0] || {}, k = keepRows[0] || {};
+      const patch = {};
+      if (f.enroll_date && !k.enroll_date) patch.enroll_date = f.enroll_date;
+      if (f.name_kana && !k.name_kana) patch.name_kana = f.name_kana;
+      if (Object.keys(patch).length) await sbPatch('students', 'id=eq.' + encodeURIComponent(keepId), patch);
+    } catch (e) {}
+    // 消す側を除外
+    await sbPatch('students', 'id=eq.' + encodeURIComponent(fromId),
+      { is_active: false, inactive_at: new Date().toISOString(), inactive_reason: '除外' });
+    demoStudentIdSet = null;
+    hideLoading();
+    showToast('✅ 同一人物として統合しました（出欠・ポイントは引き継ぎ済み）', 'success');
+    return true;
+  } catch (e) {
+    hideLoading();
+    showToast('統合に失敗しました：' + (e && e.message ? e.message : e), 'error');
+    return false;
+  }
+}
+
 async function detectDuplicateStudents() {
   const area = document.getElementById('dup-merge-area');
   if (!area) return;
   area.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">検出中…</div>';
   let students = [];
   try {
-    students = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade,email,points,roster_only,enroll_date&order=created_at') || [];
+    students = await sbGet('students', 'is_active=eq.true&select=id,name,name_kana,school,grade,email,points,roster_only,enroll_date&order=created_at') || [];
   } catch (e) {
-    area.innerHTML = '<div style="font-size:12px;color:#C0392B;padding:8px">生徒の取得に失敗しました。</div>';
-    return;
+    try {
+      students = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade,email,points,roster_only,enroll_date&order=created_at') || [];
+    } catch (e2) {
+      area.innerHTML = '<div style="font-size:12px;color:#C0392B;padding:8px">生徒の取得に失敗しました。</div>';
+      return;
+    }
   }
   students = students.filter(s => s.inactive_reason !== '除外');
-  // rosterKey でグルーピング
+  // rosterKey（氏名＋学校）でグルーピング。
+  // さらに「ふりがな＋学校」でも同一視する（例：スタッフがひらがな登録、本人が漢字登録のケース）。
   const groups = {};
+  const kanaIndex = {};   // かな＋学校 -> 代表キー
   students.forEach(s => {
-    const k = rosterKey(s.name, s.school);
+    let k = rosterKey(s.name, s.school);
+    const kana = s.name_kana ? (normalizeName(s.name_kana) + '|' + normalizeName(s.school || '')) : '';
+    if (kana) {
+      if (kanaIndex[kana] && kanaIndex[kana] !== k) k = kanaIndex[kana];  // 既存の同かな組に寄せる
+      else kanaIndex[kana] = k;
+    }
     (groups[k] = groups[k] || []).push(s);
   });
   const dupGroups = Object.keys(groups).map(k => groups[k]).filter(g => g.length >= 2);
