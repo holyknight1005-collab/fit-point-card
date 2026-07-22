@@ -4743,7 +4743,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702der';
+const APP_VERSION = '20260702det';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -7295,7 +7295,7 @@ async function loadHomeMyTodos() {
     const ordered = dated.concat(undated);
 
     const overdue = dated.filter(t => t.due_date < today && !isTodoAwaitingApproval(t)).length;
-    const head = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:2px">' +
+    const head = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:2px;grid-column:1/-1">' +
       '<span style="font-size:11px;color:var(--muted)">未完了 ' + todos.length + '件</span>' +
       (overdue > 0 ? '<span style="font-size:10px;background:var(--red-l);color:var(--red);padding:1px 8px;border-radius:10px;font-weight:700">⚠️ 期限切れ ' + overdue + '</span>' : '') +
       (undated.length ? '<span style="font-size:10px;background:var(--surface2);color:var(--muted);padding:1px 8px;border-radius:10px">期限なし ' + undated.length + '</span>' : '') +
@@ -14733,17 +14733,22 @@ function setTodoKind(kind) {
 
 // 指定ToDo群の架電履歴をまとめて取得してキャッシュする
 async function loadTodoCallLogs(todoIds) {
-  todoCallLogCache = {};
   const ids = (todoIds || []).filter(Boolean);
-  if (!ids.length) return;
+  if (!ids.length) { todoCallLogCache = {}; return; }
   try {
     const inList = ids.map(i => '"' + i + '"').join(',');
     const rows = await sbGet('todo_call_logs',
       'todo_id=in.(' + inList + ')&order=called_at.desc&select=*') || [];
+    // ローカルに組み立ててから一括で差し替える。
+    // 複数の描画関数（ホーム/設定/日付モーダル）が同時に走ると、
+    // 「共有キャッシュを空にする → await → push」の間に処理が交錯し、
+    // 同じ行が二重に積まれて回数が倍に見える不具合になるため。
+    const next = {};
     rows.forEach(r => {
-      if (!todoCallLogCache[r.todo_id]) todoCallLogCache[r.todo_id] = [];
-      todoCallLogCache[r.todo_id].push(r);
+      if (!next[r.todo_id]) next[r.todo_id] = [];
+      next[r.todo_id].push(r);
     });
+    todoCallLogCache = next;
   } catch (e) { /* 未適用環境でも表示は妨げない */ }
 }
 
@@ -14774,7 +14779,9 @@ function openTodoCall(id, title, due) {
   if (dEl) dEl.value = nowJst.date;
   if (tEl) tEl.value = nowJst.time;
   renderTodoCallResults();
+  todoCallModalLogs = [];
   renderTodoCallHistory();
+  reloadTodoCallModalLogs();
   const box = document.getElementById('todo-call-box');
   box.style.display = 'flex';
   box.style.alignItems = 'center';
@@ -14832,10 +14839,24 @@ function todoCallNextDue(due) {
   return dt.getFullYear() + '-' + p(dt.getMonth() + 1) + '-' + p(dt.getDate());
 }
 
+// モーダル表示中の架電履歴。共有キャッシュ(todoCallLogCache)は他の描画で
+// 上書きされうるので、モーダルは自前で取得した配列を使う。
+let todoCallModalLogs = [];
+let todoCallSaving = false;   // 記録ボタンの二重送信ガード
+
+async function reloadTodoCallModalLogs() {
+  if (!todoCallTargetId) { todoCallModalLogs = []; return; }
+  try {
+    todoCallModalLogs = await sbGet('todo_call_logs',
+      'todo_id=eq.' + todoCallTargetId + '&order=called_at.desc&select=*') || [];
+  } catch (e) { todoCallModalLogs = []; }
+  renderTodoCallHistory();
+}
+
 function renderTodoCallHistory() {
   const el = document.getElementById('todo-call-history');
   if (!el) return;
-  const logs = todoCallLogCache[todoCallTargetId] || [];
+  const logs = todoCallModalLogs || [];
   if (!logs.length) { el.innerHTML = '<div style="font-size:11px;color:var(--muted);text-align:center">まだ架電記録はありません</div>'; return; }
   el.innerHTML = '<div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:6px">これまでの記録（' + logs.length + '回）</div>' +
     logs.map(l => {
@@ -14872,6 +14893,8 @@ async function saveTodoCallLog() {
   if (!dVal) { showToast('かけた日付を入力してください', 'error'); return; }
   const calledIso = jstToIso(dVal, tVal || '00:00');
   if (!calledIso) { showToast('日時の形式が正しくありません', 'error'); return; }
+  if (todoCallSaving) return;   // 連打による二重登録を防ぐ
+  todoCallSaving = true;
   showLoading('記録中...');
   try {
     await sbPost('todo_call_logs', {
@@ -14897,6 +14920,8 @@ async function saveTodoCallLog() {
   } catch (e) {
     hideLoading();
     showToast('エラー: ' + e.message, 'error');
+  } finally {
+    todoCallSaving = false;
   }
 }
 
@@ -19461,15 +19486,54 @@ async function loadHomeSentTodos() {
     });
     el.innerHTML = Object.values(groups).map(g => {
       const over = g.due && g.due < today;
-      return '<div style="background:var(--surface);border:1px solid ' + (over ? '#F5BABA' : 'var(--border)') + ';border-radius:8px;padding:7px 10px">' +
-        '<div style="font-size:12px;font-weight:500;color:var(--text)">' + escapeHtml(g.title) + '</div>' +
-        '<div style="font-size:10px;color:var(--muted);margin-top:2px">' + escapeHtml(g.names.join('・')) +
-          (g.due ? ' · <span style="color:' + (over ? 'var(--red)' : 'var(--muted)') + ';font-weight:' + (over ? '700' : '400') + '">期限 ' + g.due.replace(/-/g, '/') + (over ? ' ⚠️' : '') + '</span>' : '') +
-        '</div></div>';
+      return '<div onclick="openSentTodoDetail(\'' + escapeAttr(g.title) + '\')" title="タップで詳細を開く" style="background:var(--surface);border:1px solid ' + (over ? '#F5BABA' : 'var(--border)') + ';border-radius:8px;padding:7px 10px;cursor:pointer;display:flex;align-items:center;gap:8px">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:12px;font-weight:500;color:var(--text)">' + escapeHtml(g.title) + '</div>' +
+          '<div style="font-size:10px;color:var(--muted);margin-top:2px">' + escapeHtml(g.names.join('・')) +
+            (g.due ? ' · <span style="color:' + (over ? 'var(--red)' : 'var(--muted)') + ';font-weight:' + (over ? '700' : '400') + '">期限 ' + g.due.replace(/-/g, '/') + (over ? ' ⚠️' : '') + '</span>' : '') +
+          '</div>' +
+        '</div>' +
+        '<span style="font-size:14px;color:var(--muted);flex-shrink:0">›</span>' +
+      '</div>';
     }).join('');
   } catch (e) {
     el.innerHTML = '<div style="font-size:11px;color:var(--red)">読み込みに失敗しました</div>';
   }
+}
+
+// ホームの「自分が依頼したToDo」をタップ → 設定＞ToDoタブの該当依頼を開いて表示
+function openSentTodoDetail(title) {
+  openStaffManage('todo');
+  // 依頼一覧の描画完了を待ってから、タイトル一致のグループを展開してスクロール
+  let tries = 0;
+  const tick = setInterval(() => {
+    tries++;
+    const box = document.getElementById('sm-sent-todos');
+    const cards = box ? box.children : null;
+    if (cards && cards.length) {
+      clearInterval(tick);
+      for (let i = 0; i < cards.length; i++) {
+        const card = cards[i];
+        const head = card.querySelector('div[onclick^="toggleSentGroup"]');
+        const t = head ? (head.textContent || '') : '';
+        if (t.indexOf(title) !== -1) {
+          // グループIDは見出しの onclick から直接読む（並び順に依存しない）
+          const oc = head ? head.getAttribute('onclick') : '';
+          const m = oc && oc.match(/sent-group-(\d+)/);
+          const gid = m ? ('sent-group-' + m[1]) : null;
+          const inner = gid ? document.getElementById(gid) : null;
+          if (inner && inner.style.display === 'none') toggleSentGroup(gid);
+          card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          // 一瞬ハイライトして「これ」と分かるようにする
+          const orig = card.style.boxShadow;
+          card.style.boxShadow = '0 0 0 3px var(--orange)';
+          setTimeout(() => { card.style.boxShadow = orig; }, 1600);
+          break;
+        }
+      }
+    }
+    if (tries > 40) clearInterval(tick); // 約4秒で諦める
+  }, 100);
 }
 
 // ===== ToDo依頼モーダル（ホーム・設定タブ・日付モーダル共用・deq） =====
