@@ -1854,13 +1854,13 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="today-tasks-section" style="background:linear-gradient(135deg,#FFF8EC,#FFFFFF);border:1.5px solid var(--orange);border-radius:var(--radius);padding:14px 16px">
       <div onclick="toggleTodayTasks()" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
         <div style="display:flex;align-items:center;gap:8px">
-          <span id="today-tasks-caret" style="font-size:12px;color:var(--orange-d);transition:transform 0.2s">▶</span>
+          <span id="today-tasks-caret" style="font-size:12px;color:var(--orange-d);transition:transform 0.2s;transform:rotate(90deg)">▶</span>
           <span style="font-size:14px;font-weight:700;color:var(--orange-d)">📌 今日やること</span>
           <span id="today-tasks-count" style="font-size:11px;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);padding:1px 8px;border-radius:20px;font-weight:700">読み込み中...</span>
           <span id="today-tasks-alldone" style="display:none;font-size:11px;color:var(--green-d);background:var(--green-l);padding:2px 8px;border-radius:20px;font-weight:700">✅ 完了！</span>
         </div>
       </div>
-      <div id="today-tasks-list" style="display:none;flex-direction:column;gap:8px;margin-top:10px">
+      <div id="today-tasks-list" style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
         <div style="font-size:12px;color:var(--muted)">読み込み中...</div>
       </div>
     </div>
@@ -3515,6 +3515,28 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           </div>
         </div>
       </div>
+      <!-- この日を期限にToDoを依頼するモーダル -->
+      <div id="todo-quick-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:600;align-items:center;justify-content:center">
+        <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:360px;max-height:86vh;overflow-y:auto">
+          <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">📨 ToDoを依頼する</div>
+          <div id="todo-quick-date" style="font-size:11px;color:var(--muted);margin-bottom:12px"></div>
+          <div class="form-label">種別</div>
+          <div style="display:flex;gap:7px;margin-bottom:12px">
+            <button type="button" id="todo-quick-kind-normal" onclick="setQuickTodoKind('normal')">📝 通常</button>
+            <button type="button" id="todo-quick-kind-call" onclick="setQuickTodoKind('call')">☎️ 電話折り返し</button>
+          </div>
+          <div class="form-label">担当者（複数選択可）</div>
+          <div id="todo-quick-staff" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
+          <div class="form-label">タイトル</div>
+          <input class="form-input-sm" id="todo-quick-title" type="text" placeholder="例：山田さん保護者へ折り返し" style="margin-bottom:10px">
+          <div class="form-label">詳細（任意）</div>
+          <textarea id="todo-quick-detail" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;height:52px;resize:none;font-family:'Noto Sans JP',sans-serif;margin-bottom:12px"></textarea>
+          <div style="display:flex;gap:8px">
+            <button onclick="saveTodoQuickAdd()" style="flex:1;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">依頼する</button>
+            <button onclick="closeTodoQuickAdd()" style="flex:1;padding:11px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--muted);font-size:13px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">キャンセル</button>
+          </div>
+        </div>
+      </div>
       <!-- 架電記録モーダル -->
       <div id="todo-call-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:500;align-items:center;justify-content:center">
         <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:360px;max-height:86vh;overflow-y:auto">
@@ -4724,7 +4746,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702den';
+const APP_VERSION = '20260702deo';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -7250,30 +7272,86 @@ async function loadStaffRanking() {
 }
 
 // ===== 自分へのToDo（ホーム上部・コンパクト表示） =====
+// ===== ホーム：カレンダー上部の「自分へのToDo」（deo） =====
+// 期限つき・期限なしをまとめて常時表示する。期限なしToDoはカレンダーの
+// マス目に出せないため、ここが唯一の表示場所になる。
 async function loadHomeMyTodos() {
-  const box = document.getElementById('home-mytodo-list');
-  if (!box || !currentStaff) return;
+  const el = document.getElementById('home-mytodo-list');
+  if (!el || !currentStaff) return;
   try {
-    const todos = await sbGet('staff_todos',
-      'to_staff_id=eq.' + currentStaff.id + '&is_done=eq.false&order=due_date.asc&select=*,from:from_staff_id(name)');
-    if (!todos || !todos.length) {
-      box.innerHTML = '<div style="font-size:12px;color:var(--muted)">未完了のToDoはありません ✨</div>';
+    const all = await sbGet('staff_todos',
+      'to_staff_id=eq.' + currentStaff.id +
+      '&or=(is_done.eq.false,and(needs_approval.eq.true,approved_at.is.null))' +
+      '&order=due_date.asc&select=*,from:from_staff_id(name)') || [];
+    const todos = all.filter(t => !t.is_done || isTodoAwaitingApproval(t));
+    if (!todos.length) {
+      el.innerHTML = '<div style="font-size:12px;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 13px;text-align:center">未完了のToDoはありません ✨</div>';
       return;
     }
+    // 電話ToDoの架電履歴をまとめて取得
+    await loadTodoCallLogs(todos.filter(t => t.todo_kind === 'call').map(t => t.id));
+
     const today = getTodayJST();
-    box.innerHTML = todos.slice(0, 5).map(function(t){
-      const due = t.due_date ? t.due_date : '';
-      const overdue = due && due < today;
-      const dueLabel = due ? ('<span style="font-size:10px;color:' + (overdue ? 'var(--red)' : 'var(--muted)') + ';font-weight:700">' + (overdue ? '期限超過 ' : '〆 ') + due.slice(5).replace('-','/') + '</span>') : '';
-      const fromName = (t.from && t.from.name && t.from.id !== currentStaff.id) ? ('<span style="font-size:10px;color:var(--muted)">from ' + t.from.name + '</span>') : '';
-      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--surface);border:1px solid #D8EAC8;border-radius:10px;padding:8px 11px">' +
-        '<span style="font-size:13px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (t.title || '(無題)') + '</span>' +
-        '<span style="display:flex;align-items:center;gap:8px;flex-shrink:0">' + fromName + dueLabel + '</span>' +
-        '</div>';
-    }).join('') + (todos.length > 5 ? '<div style="font-size:11px;color:var(--muted);text-align:center;margin-top:2px">ほか ' + (todos.length - 5) + ' 件</div>' : '');
-  } catch(e) {
-    box.innerHTML = '<div style="font-size:12px;color:var(--muted)">読み込みに失敗しました</div>';
+    // 期限あり（日付順）→ 期限なし の順に並べる
+    const dated = todos.filter(t => t.due_date).sort((a, b) => a.due_date.localeCompare(b.due_date));
+    const undated = todos.filter(t => !t.due_date);
+    const ordered = dated.concat(undated);
+
+    const overdue = dated.filter(t => t.due_date < today && !isTodoAwaitingApproval(t)).length;
+    const head = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:2px">' +
+      '<span style="font-size:11px;color:var(--muted)">未完了 ' + todos.length + '件</span>' +
+      (overdue > 0 ? '<span style="font-size:10px;background:var(--red-l);color:var(--red);padding:1px 8px;border-radius:10px;font-weight:700">⚠️ 期限切れ ' + overdue + '</span>' : '') +
+      (undated.length ? '<span style="font-size:10px;background:var(--surface2);color:var(--muted);padding:1px 8px;border-radius:10px">期限なし ' + undated.length + '</span>' : '') +
+      '</div>';
+
+    el.innerHTML = head + ordered.map(t => homeTodoRowHtml(t, today)).join('');
+  } catch (e) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--red)">ToDoの読み込みに失敗しました</div>';
   }
+}
+
+// ホームのToDo1行分。完了ボタン＋（電話ToDoなら）架電記録ボタン。
+function homeTodoRowHtml(t, today) {
+  const waiting = isTodoAwaitingApproval(t);
+  const isOverdue = !waiting && t.due_date && t.due_date < today;
+  const isToday = !waiting && t.due_date === today;
+  const border = waiting ? '#C7B8E0' : (isOverdue ? '#F5BABA' : (isToday ? 'var(--orange)' : 'var(--border)'));
+  const bg = isOverdue ? '#FDF4F4' : (isToday ? '#FFFBF3' : 'var(--surface)');
+
+  const btn = waiting
+    ? '<div title="承認待ち" style="width:22px;height:22px;border-radius:50%;background:#EDE7F6;border:2px solid #9C86C4;flex-shrink:0;margin-top:1px;display:flex;align-items:center;justify-content:center;font-size:11px">🔍</div>'
+    : '<button onclick="doneTodo(\'' + t.id + '\')" title="完了にする" style="width:22px;height:22px;border:2px solid var(--orange);border-radius:50%;background:#fff;cursor:pointer;flex-shrink:0;margin-top:1px"></button>';
+
+  let dueLabel;
+  if (!t.due_date) {
+    dueLabel = '<span style="font-size:10px;background:var(--surface2);color:var(--muted);padding:1px 7px;border-radius:10px">期限なし</span>';
+  } else {
+    const txt = t.due_date.replace(/-/g, '/') + (isOverdue ? ' ⚠️' : (isToday ? '（今日）' : ''));
+    dueLabel = '<span style="font-size:10px;color:' + (isOverdue ? 'var(--red)' : (isToday ? 'var(--orange-d)' : 'var(--muted)')) + ';font-weight:' + (isOverdue || isToday ? '700' : '400') + '">期限：' + txt + '</span>';
+  }
+
+  const callBtn = (t.todo_kind === 'call' && !waiting)
+    ? '<button onclick="openTodoCall(\'' + t.id + '\',\'' + escapeAttr(t.title || '') + '\',\'' + (t.due_date || '') + '\')" style="padding:3px 10px;background:#E8F0FA;border:1px solid #9CC0E8;border-radius:8px;font-size:10px;cursor:pointer;color:#2D6CB6;font-weight:700;font-family:\'Noto Sans JP\',sans-serif">☎️ 架電を記録</button>'
+    : '';
+
+  return '<div style="background:' + bg + ';border:1.5px solid ' + border + ';border-radius:8px;padding:9px 12px;display:flex;align-items:flex-start;gap:9px">' +
+    btn +
+    '<div style="flex:1;min-width:0">' +
+      '<div style="font-size:13px;font-weight:500;color:var(--text)">' + escapeHtml(t.title || '') +
+        (waiting ? ' <span style="font-size:10px;background:#EDE7F6;color:#6B4FA0;padding:1px 7px;border-radius:10px;font-weight:700">🔍 承認待ち</span>' : '') +
+        (t.todo_kind === 'call' ? ' <span style="font-size:10px;background:#E8F0FA;color:#2D6CB6;padding:1px 7px;border-radius:10px;font-weight:700">☎️ 電話</span>' : '') +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:3px">' +
+        '<span style="font-size:10px;color:var(--muted)">' + escapeHtml(t.from?.name || '') + 'から</span>' +
+        dueLabel +
+      '</div>' +
+      (t.detail ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">' + escapeHtml(t.detail) + '</div>' : '') +
+      (!t.is_done && t.rejected_at ? '<div style="font-size:11px;color:#B06A3A;margin-top:5px;background:#FBF0E6;border-radius:6px;padding:5px 8px">🔙 差し戻されました' + (t.reject_note ? '：' + escapeHtml(t.reject_note) : '') + '</div>' : '') +
+      ((callBtn || todoCallSummaryHtml(t.id))
+        ? '<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:6px">' + callBtn + todoCallSummaryHtml(t.id) + '</div>'
+        : '') +
+    '</div>' +
+  '</div>';
 }
 
 // ===== 今日やること（スタッフトップ集計） =====
@@ -7392,13 +7470,7 @@ async function loadTodayTasks() {
       items.push(taskRow('📝', '報告書', '未記入 ' + unfilledReportCount + '件', false, "openUnfilledReports()", unfilledReportCount > 0));
     }
 
-    // ToDoタスク（3日以内の締切）
-    if (dueCount === 0) {
-      items.push(taskRow('✅', '締切が近いToDo', 'なし', true, "openTaskTodo()"));
-    } else {
-      const sub = dueCount + '件' + (overdueCount > 0 ? '（期限切れ ' + overdueCount + '件）' : '');
-      items.push(taskRow('✅', '締切が近いToDo', sub, false, "openTaskTodo()", overdueCount > 0));
-    }
+    // ToDoはカレンダー上部の「📬 自分へのToDo」バーに集約したため、ここには出さない
 
     // ===== 授業の復習の承認（自分の担当授業ぶん）=====
     // 主担当（teacher_staff_id）∪ 追加担当（class_teachers）の授業に対する承認待ちを数える。
@@ -7437,9 +7509,8 @@ async function loadTodayTasks() {
       if (sessions.length > 0) parts.push('授業' + sessions.length + '件');
       if (unfilledReportCount > 0) parts.push('報告書' + unfilledReportCount + '件');
       if (myReviewPending > 0) parts.push('承認' + myReviewPending + '件');
-      if (dueCount > 0) parts.push('ToDo' + dueCount + '件' + (overdueCount > 0 ? '⚠' : ''));
-      countEl.textContent = parts.length ? parts.join('・') : 'ToDo0件';
-      // 期限切れToDoがあれば赤く強調
+      countEl.textContent = parts.length ? parts.join('・') : 'なし';
+      // 期限切れToDoがあれば赤く強調（ToDo自体はカレンダー上部バーに表示）
       if (overdueCount > 0) {
         countEl.style.color = 'var(--red)';
         countEl.style.background = '#FDECEC';
@@ -7451,8 +7522,8 @@ async function loadTodayTasks() {
       }
     }
 
-    // すべて完了か（報告書未記入なし＆3日以内ToDoなし＆承認待ちなし）
-    if (unfilledReportCount === 0 && dueCount === 0 && myReviewPending === 0) {
+    // すべて完了か（報告書未記入なし＆承認待ちなし。ToDoはカレンダー上部バー側で管理）
+    if (unfilledReportCount === 0 && myReviewPending === 0) {
       doneTag.style.display = 'inline-block';
     } else {
       doneTag.style.display = 'none';
@@ -14838,6 +14909,14 @@ function refreshTodoViews() {
   if (typeof loadHomeStaffPoints === 'function') loadHomeStaffPoints();
   if (typeof loadTodayTasks === 'function') loadTodayTasks();
   if (typeof loadStaffHomeCalendar === 'function') loadStaffHomeCalendar();
+  // 日付モーダルを開いたまま完了/架電した場合、その中のToDo一覧も更新する
+  try {
+    const zone = document.getElementById('staffcal-todo-zone');
+    const modal = document.getElementById('staffcal-modal');
+    if (zone && modal && modal.style.display === 'flex' && staffCalModalDate) {
+      loadStaffCalDayTodos(staffCalModalDate);
+    }
+  } catch (e) {}
 }
 
 async function loadMyTodos() {
@@ -19298,14 +19377,152 @@ function openStaffCalModal(dateISO, simple) {
     }
   }
 
-  // 予定が何もない日は案内を先に
-  if (!body) body = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">この日の予定はまだありません</div>';
+  // ToDo欄（中身は非同期で埋める）
+  body += '<div id="staffcal-todo-zone"><div style="font-size:12px;font-weight:700;color:#2D6CB6;margin-bottom:6px">✅ この日のToDo</div>' +
+    '<div style="font-size:11px;color:var(--muted)">読み込み中...</div></div>';
 
   // この日に予定を追加（カレンダーアプリ風：日付クリック→追加）
   body += '<button onclick="addEventFromCalModal(\'' + dateISO + '\')" style="width:100%;margin-top:4px;padding:11px;font-size:13px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1.5px dashed var(--orange);border-radius:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">＋ この日に予定を追加</button>';
+  body += '<button onclick="openTodoQuickAdd(\'' + dateISO + '\')" style="width:100%;margin-top:2px;padding:11px;font-size:13px;font-weight:700;color:#2D6CB6;background:#EAF3FB;border:1.5px dashed #6FA8E0;border-radius:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">＋ この日を期限にToDoを依頼</button>';
 
   document.getElementById('staffcal-modal-body').innerHTML = body;
+  loadStaffCalDayTodos(dateISO);
   document.getElementById('staffcal-modal').style.display = 'flex';
+}
+
+// ===== 日付モーダル内のToDo（deo） =====
+// その日を期限とする自分のToDoを表示し、完了・架電記録をその場でできるようにする。
+async function loadStaffCalDayTodos(dateISO) {
+  const zone = document.getElementById('staffcal-todo-zone');
+  if (!zone || !currentStaff) return;
+  const head = '<div style="font-size:12px;font-weight:700;color:#2D6CB6;margin-bottom:6px">✅ この日のToDo</div>';
+  try {
+    const rows = await sbGet('staff_todos',
+      'to_staff_id=eq.' + currentStaff.id + '&due_date=eq.' + dateISO +
+      '&select=*,from:from_staff_id(name)&order=is_done.asc') || [];
+    if (!rows.length) {
+      zone.innerHTML = head + '<div style="font-size:11px;color:var(--muted)">この日が期限のToDoはありません</div>';
+      return;
+    }
+    await loadTodoCallLogs(rows.filter(t => t.todo_kind === 'call').map(t => t.id));
+    const today = getTodayJST();
+    zone.innerHTML = head + rows.map(t => {
+      if (t.is_done && !isTodoAwaitingApproval(t)) {
+        return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:6px;display:flex;align-items:center;gap:8px">' +
+          '<span style="font-size:13px">✅</span>' +
+          '<span style="font-size:12px;color:var(--muted);text-decoration:line-through">' + escapeHtml(t.title || '') + '</span></div>';
+      }
+      return homeTodoRowHtml(t, today);
+    }).join('');
+  } catch (e) {
+    zone.innerHTML = head + '<div style="font-size:11px;color:var(--red)">ToDoの読み込みに失敗しました</div>';
+  }
+}
+
+// ===== 日付モーダルからのToDoクイック依頼 =====
+let quickTodoDate = null;
+function openTodoQuickAdd(dateISO) {
+  quickTodoDate = dateISO;
+  const box = document.getElementById('todo-quick-box');
+  if (!box) return;
+  const lbl = document.getElementById('todo-quick-date');
+  if (lbl) lbl.textContent = dateISO.replace(/-/g, '/') + ' を期限にします';
+  const ti = document.getElementById('todo-quick-title');
+  if (ti) ti.value = '';
+  const de = document.getElementById('todo-quick-detail');
+  if (de) de.value = '';
+  quickTodoKind = 'normal';
+  renderQuickTodoKind();
+  renderQuickTodoStaff();
+  // 設定＞ToDoタブを一度も開いていないと allStaffList が空なので、その場で取りに行く
+  if (!(typeof allStaffList !== 'undefined' && allStaffList && allStaffList.length)) {
+    sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id')
+      .then(raw => {
+        allStaffList = (raw || []).filter(s => (s.staff_id || '').toLowerCase() !== 'fit001');
+        renderQuickTodoStaff();
+      })
+      .catch(() => {});
+  }
+  box.style.display = 'flex';
+  box.style.alignItems = 'center';
+  box.style.justifyContent = 'center';
+}
+
+function closeTodoQuickAdd() {
+  const box = document.getElementById('todo-quick-box');
+  if (box) box.style.display = 'none';
+  quickTodoDate = null;
+}
+
+let quickTodoKind = 'normal';
+function setQuickTodoKind(k) { quickTodoKind = (k === 'call') ? 'call' : 'normal'; renderQuickTodoKind(); }
+function renderQuickTodoKind() {
+  const on = 'background:var(--orange);border:1.5px solid var(--orange-d);color:#fff;font-weight:700;';
+  const off = 'background:var(--surface);border:1.5px solid var(--border);color:var(--muted);font-weight:500;';
+  const base = "padding:6px 12px;border-radius:16px;font-size:11px;cursor:pointer;font-family:'Noto Sans JP',sans-serif;";
+  const n = document.getElementById('todo-quick-kind-normal');
+  const c = document.getElementById('todo-quick-kind-call');
+  if (n) n.style.cssText = base + (quickTodoKind === 'normal' ? on : off);
+  if (c) c.style.cssText = base + (quickTodoKind === 'call' ? on : off);
+}
+
+// 担当者チップ（自分を既定で選択）
+let quickTodoSel = new Set();
+function renderQuickTodoStaff() {
+  const el = document.getElementById('todo-quick-staff');
+  if (!el) return;
+  const list = (typeof allStaffList !== 'undefined' && allStaffList) ? allStaffList : [];
+  if (!list.length) {
+    el.innerHTML = '<div style="font-size:11px;color:var(--muted)">担当者一覧を読み込めていません</div>';
+    return;
+  }
+  if (!quickTodoSel.size && currentStaff) quickTodoSel = new Set([currentStaff.id]);
+  el.innerHTML = list.map(s => {
+    const on = quickTodoSel.has(s.id);
+    return '<button type="button" onclick="toggleQuickTodoStaff(\'' + s.id + '\')" style="padding:5px 11px;border-radius:16px;font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+      (on ? 'background:var(--orange);border:1.5px solid var(--orange-d);color:#fff;font-weight:700' : 'background:var(--surface);border:1.5px solid var(--border);color:var(--muted)') +
+      '">' + escapeHtml(s.name || '') + '</button>';
+  }).join('');
+}
+function toggleQuickTodoStaff(id) {
+  if (quickTodoSel.has(id)) quickTodoSel.delete(id); else quickTodoSel.add(id);
+  renderQuickTodoStaff();
+}
+
+async function saveTodoQuickAdd() {
+  if (!quickTodoDate) return;
+  const title = (document.getElementById('todo-quick-title') || {}).value || '';
+  const detail = (document.getElementById('todo-quick-detail') || {}).value || '';
+  if (!title.trim()) { showToast('タイトルを入力してください', 'error'); return; }
+  if (!quickTodoSel.size) { showToast('担当者を選んでください', 'error'); return; }
+  const dateISO = quickTodoDate;
+  showLoading('依頼中...');
+  try {
+    for (const sid of quickTodoSel) {
+      const body = {
+        from_staff_id: currentStaff.id,
+        to_staff_id: sid,
+        title: title.trim(),
+        detail: detail.trim() || null,
+        due_date: dateISO,
+        todo_kind: quickTodoKind
+      };
+      await sbPost('staff_todos', body).catch(async (err) => {
+        if (/column|PGRST|400/i.test(String(err && err.message || err))) {
+          const b = Object.assign({}, body); delete b.todo_kind;
+          await sbPost('staff_todos', b);
+        } else throw err;
+      });
+    }
+    hideLoading();
+    showToast('📨 ' + quickTodoSel.size + '名にToDoを依頼しました', 'success');
+    closeTodoQuickAdd();
+    loadStaffCalDayTodos(dateISO);
+    refreshTodoViews();
+  } catch (e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
 }
 
 // 日付モーダル → カレンダー登録（その日付を初期値に、個人の予定をデフォルト選択）
