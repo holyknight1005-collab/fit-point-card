@@ -2808,6 +2808,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <div style="font-size:18px;font-weight:800;color:var(--text)">🏫 学校別ページ</div>
         <div style="font-size:12px;color:var(--muted)">学校ミーティング 実績進捗＆行動計画</div>
       </div>
+      <button onclick="refreshSchoolView()" id="sv-refresh-btn" class="page-btn" style="padding:6px 12px;flex:0 0 auto" title="登録・変更した内容をこのページに反映します">🔄 最新に更新</button>
       <div id="sv-status" style="flex:0 0 auto;font-size:11px;color:var(--muted)"></div>
     </div>
     <!-- 学校選択タブ -->
@@ -4692,7 +4693,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dej';
+const APP_VERSION = '20260702dek';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29801,6 +29802,39 @@ function renderSvSchoolTabs() {
     return '<button type="button" onclick="setSvSchool(\'' + escapeAttr(s) + '\')" style="padding:6px 13px;border-radius:16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;border:1.5px solid ' +
       (on ? '#2D6CB6' : 'var(--border)') + ';background:' + (on ? '#2D6CB6' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--muted)') + '">' + escapeHtml(s) + '</button>';
   }).join('');
+}
+
+// 学校別ページを最新データで再描画する。
+// 生徒の新規登録・学年変更・退塾処理などを別画面で行っても、トレンドキャッシュが
+// 生きているため openSchoolView では古い数字のまま。ここで明示的に捨てて取り直す。
+async function refreshSchoolView() {
+  const btn = document.getElementById('sv-refresh-btn');
+  const status = document.getElementById('sv-status');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+  if (status) status.textContent = '更新中…';
+  try {
+    // トレンドキャッシュを破棄 → svEnsureTrendData が再取得する
+    trendPersonsCache = [];
+    trendAnnualRows = [];
+    trendAllMonths = [];
+    await svEnsureTrendData();
+    renderSvEnroll();
+    renderSvGoal();
+    renderSvGradeNotes();
+    renderSvInterviews();
+    renderSvCalendar();
+    renderSvInout();
+    renderSvWeekly();
+    renderSvWithdrawAnalysis({ school: svSchool, allMode: svWithdrawScope === 'all', showToggle: false });
+    renderSvEnrollFunnel({ school: svSchool, allMode: svWithdrawScope === 'all' });
+    if (status) status.textContent = '';
+    showToast('最新のデータに更新しました', 'success');
+  } catch (e) {
+    if (status) status.textContent = '';
+    showToast('更新に失敗しました：' + (e && e.message || ''), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+  }
 }
 
 function setSvSchool(s) {
