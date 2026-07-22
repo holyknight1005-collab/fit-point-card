@@ -3374,6 +3374,14 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <button onclick="toggleAllStaffCheck()" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">全員選択/解除</button>
         </div>
         <div>
+          <div class="form-label">種別</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" id="todo-kind-normal" onclick="setTodoKind('normal')" style="padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📝 通常</button>
+            <button type="button" id="todo-kind-call" onclick="setTodoKind('call')" style="padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">☎️ 電話折り返し</button>
+          </div>
+          <div id="todo-kind-hint" style="font-size:10px;color:var(--muted);margin-top:5px;display:none">かけた履歴を1回ずつ記録できます。繋がらなかった場合はToDoは未完了のまま残り、期日当日なら翌日に延びます。</div>
+        </div>
+        <div>
           <div class="form-label">タイトル</div>
           <input class="form-input-sm" id="todo-title" type="text" placeholder="例：来週の授業プリント作成">
         </div>
@@ -3505,6 +3513,23 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
             <button onclick="saveTodoReject()" style="flex:1;padding:11px;background:linear-gradient(135deg,#D08A5A,#B06A3A);border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">差し戻す</button>
             <button onclick="closeTodoReject()" style="flex:1;padding:11px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--muted);font-size:13px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">キャンセル</button>
           </div>
+        </div>
+      </div>
+      <!-- 架電記録モーダル -->
+      <div id="todo-call-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:500;align-items:center;justify-content:center">
+        <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:360px;max-height:86vh;overflow-y:auto">
+          <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">☎️ 架電を記録</div>
+          <div id="todo-call-target" style="font-size:11px;color:var(--muted);margin-bottom:12px"></div>
+          <div class="form-label">結果</div>
+          <div id="todo-call-results" style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px"></div>
+          <div class="form-label">メモ（任意）</div>
+          <textarea id="todo-call-note" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;height:56px;resize:none;font-family:'Noto Sans JP',sans-serif;margin-bottom:10px" placeholder="例：19時以降にかけ直し希望"></textarea>
+          <div id="todo-call-effect" style="font-size:11px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;margin-bottom:12px"></div>
+          <div style="display:flex;gap:8px">
+            <button onclick="saveTodoCallLog()" style="flex:1;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">記録する</button>
+            <button onclick="closeTodoCall()" style="flex:1;padding:11px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--muted);font-size:13px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">キャンセル</button>
+          </div>
+          <div id="todo-call-history" style="margin-top:14px"></div>
         </div>
       </div>
     </div>
@@ -4693,7 +4718,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dek';
+const APP_VERSION = '20260702del';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -5515,6 +5540,7 @@ function checkInstallGuide() {
 window.addEventListener('load', function() {
   try { applyViewMode(); } catch(e) {}
   try { initSubjectSelects(); } catch(e) {}
+  try { setTodoKind('normal'); } catch(e) {}
   // バージョン表示（読み込まれている実際のapp.htmlの版を表示）
   try {
     const b = document.getElementById('app-version-badge');
@@ -14518,7 +14544,16 @@ async function createStaffTodo() {
         from_staff_id: currentStaff.id,
         to_staff_id: check.value,
         title, detail, due_date: due || null,
-        needs_approval: needsApproval
+        needs_approval: needsApproval,
+        todo_kind: newTodoKind
+      }).catch(async (err) => {
+        // todo_kind 列が未適用の環境 → 種別なしで登録
+        if (/column|PGRST|400/i.test(String(err && err.message || err))) {
+          await sbPost('staff_todos', {
+            from_staff_id: currentStaff.id, to_staff_id: check.value,
+            title, detail, due_date: due || null, needs_approval: needsApproval
+          });
+        } else throw err;
       });
     }
     hideLoading();
@@ -14543,17 +14578,219 @@ async function createMyTodo() {
     await sbPost('staff_todos', {
       from_staff_id: currentStaff.id,
       to_staff_id: currentStaff.id,
-      title, detail, due_date: due || null
+      title, detail, due_date: due || null,
+      todo_kind: newTodoKind
+    }).catch(async (err) => {
+      if (/column|PGRST|400/i.test(String(err && err.message || err))) {
+        await sbPost('staff_todos', {
+          from_staff_id: currentStaff.id, to_staff_id: currentStaff.id,
+          title, detail, due_date: due || null
+        });
+      } else throw err;
     });
     hideLoading();
     showToast('➕ 自分のToDoに追加しました', 'success');
     document.getElementById('todo-title').value = '';
     document.getElementById('todo-detail').value = '';
     document.getElementById('todo-due').value = '';
+    setTodoKind('normal');
     document.querySelectorAll('.todo-staff-check').forEach(c => c.checked = false);
     document.querySelectorAll('.todo-staff-chip').forEach(applyTodoChipStyle);
     refreshTodoViews();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+// ===== 電話折り返しToDo（del） =====
+// 架電結果の定義。connected 以外は「繋がらなかった」扱いで、期日当日なら翌日に延ばす。
+const CALL_RESULTS = [
+  { key: 'no_answer',    label: '不在（応答なし）', icon: '📵', connected: false },
+  { key: 'voicemail',    label: '留守電に入れた',   icon: '📼', connected: false },
+  { key: 'busy',         label: '話し中',           icon: '⏳', connected: false },
+  { key: 'wrong_time',   label: '時間帯が悪い',     icon: '🕐', connected: false },
+  { key: 'callback_req', label: 'かけ直し依頼',     icon: '🔁', connected: false },
+  { key: 'connected',    label: '繋がった',         icon: '✅', connected: true }
+];
+function callResultDef(key) {
+  return CALL_RESULTS.find(r => r.key === key) || { key: key, label: key || '—', icon: '☎️', connected: false };
+}
+
+let todoCallTargetId = null;   // 記録対象のToDo id
+let todoCallTargetDue = null;  // そのToDoの現在の期日
+let todoCallResult = 'no_answer';
+let todoCallLogCache = {};     // { todo_id: [log, ...] } カード表示用
+
+// 作成フォームの種別（'normal' | 'call'）
+let newTodoKind = 'normal';
+function setTodoKind(kind) {
+  newTodoKind = (kind === 'call') ? 'call' : 'normal';
+  const nb = document.getElementById('todo-kind-normal');
+  const cb = document.getElementById('todo-kind-call');
+  const hint = document.getElementById('todo-kind-hint');
+  const on = 'background:var(--orange);border:1.5px solid var(--orange-d);color:white;font-weight:700;';
+  const off = 'background:var(--surface);border:1.5px solid var(--border);color:var(--muted);font-weight:500;';
+  if (nb) nb.style.cssText = "padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif;" + (newTodoKind === 'normal' ? on : off);
+  if (cb) cb.style.cssText = "padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif;" + (newTodoKind === 'call' ? on : off);
+  if (hint) hint.style.display = (newTodoKind === 'call') ? 'block' : 'none';
+  const title = document.getElementById('todo-title');
+  if (title) title.placeholder = (newTodoKind === 'call') ? '例：山田さん保護者へ折り返し' : '例：来週の授業プリント作成';
+}
+
+// 指定ToDo群の架電履歴をまとめて取得してキャッシュする
+async function loadTodoCallLogs(todoIds) {
+  todoCallLogCache = {};
+  const ids = (todoIds || []).filter(Boolean);
+  if (!ids.length) return;
+  try {
+    const inList = ids.map(i => '"' + i + '"').join(',');
+    const rows = await sbGet('todo_call_logs',
+      'todo_id=in.(' + inList + ')&order=called_at.desc&select=*') || [];
+    rows.forEach(r => {
+      if (!todoCallLogCache[r.todo_id]) todoCallLogCache[r.todo_id] = [];
+      todoCallLogCache[r.todo_id].push(r);
+    });
+  } catch (e) { /* 未適用環境でも表示は妨げない */ }
+}
+
+// カードに出す要約（☎️ N回・最終 7/22 18:40）
+function todoCallSummaryHtml(todoId) {
+  const logs = todoCallLogCache[todoId];
+  if (!logs || !logs.length) return '';
+  const last = logs[0];
+  const d = new Date(last.called_at);
+  const when = d.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const def = callResultDef(last.result);
+  return '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#E8F0FA;color:#2D6CB6;font-weight:700">☎️ ' + logs.length + '回</span>' +
+    '<span style="font-size:10px;color:var(--muted)">最終 ' + escapeHtml(when) + ' ' + def.icon + escapeHtml(def.label) + '</span>';
+}
+
+function openTodoCall(id, title, due) {
+  todoCallTargetId = id;
+  todoCallTargetDue = due || null;
+  todoCallResult = 'no_answer';
+  const t = document.getElementById('todo-call-target');
+  if (t) t.textContent = title || '';
+  const note = document.getElementById('todo-call-note');
+  if (note) note.value = '';
+  renderTodoCallResults();
+  renderTodoCallHistory();
+  const box = document.getElementById('todo-call-box');
+  box.style.display = 'flex';
+  box.style.alignItems = 'center';
+  box.style.justifyContent = 'center';
+}
+
+function closeTodoCall() {
+  document.getElementById('todo-call-box').style.display = 'none';
+  todoCallTargetId = null;
+  todoCallTargetDue = null;
+}
+
+function setTodoCallResult(key) {
+  todoCallResult = key;
+  renderTodoCallResults();
+}
+
+function renderTodoCallResults() {
+  const el = document.getElementById('todo-call-results');
+  if (!el) return;
+  el.innerHTML = CALL_RESULTS.map(r => {
+    const on = (r.key === todoCallResult);
+    return '<button type="button" onclick="setTodoCallResult(\'' + r.key + '\')" style="padding:6px 11px;border-radius:16px;font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+      (on ? 'background:var(--orange);border:1.5px solid var(--orange-d);color:white;font-weight:700' : 'background:var(--surface);border:1.5px solid var(--border);color:var(--muted)') +
+      '">' + r.icon + ' ' + escapeHtml(r.label) + '</button>';
+  }).join('');
+  // 期日がどうなるかを明示する
+  const eff = document.getElementById('todo-call-effect');
+  if (eff) {
+    const def = callResultDef(todoCallResult);
+    if (def.connected) {
+      eff.textContent = '✅ 繋がった記録として残します。用件が済んでいれば、カードの完了ボタンでToDoを閉じてください。';
+    } else {
+      const nd = todoCallNextDue(todoCallTargetDue);
+      eff.textContent = nd
+        ? '📅 ToDoは未完了のまま。期日を ' + todoCallTargetDue.replace(/-/g, '/') + ' → ' + nd.replace(/-/g, '/') + ' に延ばします。'
+        : 'ToDoは未完了のまま残ります。期日は変更しません。';
+    }
+  }
+}
+
+// 繋がらなかったときの新しい期日。
+// 期日が未設定 → null（変更しない）／期日が未来 → null（期限内なので触らない）
+// 期日が今日または過去 → 翌日
+function todoCallNextDue(due) {
+  if (!due) return null;
+  const today = getTodayJST();
+  if (due > today) return null;
+  const y = parseInt(due.slice(0, 4), 10);
+  const m = parseInt(due.slice(5, 7), 10);
+  const d = parseInt(due.slice(8, 10), 10);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + 1);
+  const p = n => String(n).padStart(2, '0');
+  return dt.getFullYear() + '-' + p(dt.getMonth() + 1) + '-' + p(dt.getDate());
+}
+
+function renderTodoCallHistory() {
+  const el = document.getElementById('todo-call-history');
+  if (!el) return;
+  const logs = todoCallLogCache[todoCallTargetId] || [];
+  if (!logs.length) { el.innerHTML = '<div style="font-size:11px;color:var(--muted);text-align:center">まだ架電記録はありません</div>'; return; }
+  el.innerHTML = '<div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:6px">これまでの記録（' + logs.length + '回）</div>' +
+    logs.map(l => {
+      const def = callResultDef(l.result);
+      const when = new Date(l.called_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const who = staffNameById(l.staff_id);
+      return '<div style="border-top:1px solid var(--border);padding:6px 2px">' +
+        '<div style="font-size:11px;color:var(--text)">' + def.icon + ' ' + escapeHtml(def.label) +
+        ' <span style="color:var(--muted)">' + escapeHtml(when) + '・' + escapeHtml(who) + '</span></div>' +
+        (l.note ? '<div style="font-size:10px;color:var(--muted);margin-top:2px">' + escapeHtml(l.note) + '</div>' : '') +
+      '</div>';
+    }).join('');
+}
+
+// staff_id から表示名を引く（キャッシュがなければIDをそのまま出す）
+function staffNameById(id) {
+  if (!id) return '—';
+  if (currentStaff && currentStaff.id === id) return currentStaff.name || id;
+  try {
+    if (typeof allStaffList !== 'undefined' && allStaffList) {
+      const hit = allStaffList.find(s => s.id === id);
+      if (hit) return hit.name || id;
+    }
+  } catch (e) {}
+  return id;
+}
+
+async function saveTodoCallLog() {
+  if (!todoCallTargetId) return;
+  const note = document.getElementById('todo-call-note').value.trim();
+  const def = callResultDef(todoCallResult);
+  showLoading('記録中...');
+  try {
+    await sbPost('todo_call_logs', {
+      todo_id: todoCallTargetId,
+      staff_id: currentStaff.id,
+      called_at: new Date().toISOString(),
+      result: todoCallResult,
+      note: note || null
+    });
+    // 繋がらなかった場合、期日当日または超過なら翌日へ延ばす
+    let moved = null;
+    if (!def.connected) {
+      const nd = todoCallNextDue(todoCallTargetDue);
+      if (nd) {
+        await sbPatch('staff_todos', 'id=eq.' + todoCallTargetId, { due_date: nd, due_updated_at: new Date().toISOString() });
+        moved = nd;
+      }
+    }
+    hideLoading();
+    closeTodoCall();
+    showToast(def.icon + ' ' + def.label + 'を記録しました' + (moved ? '（期日を' + moved.replace(/-/g, '/') + 'に延長）' : ''), 'success');
+    refreshTodoViews();
+  } catch (e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
 }
 
 // ToDoに変更があった時、設定画面とホーム側の表示をまとめて更新
@@ -14590,6 +14827,8 @@ async function loadMyTodos() {
       await sbPatch('staff_todos', 'id=in.(' + ids + ')', { read_at: nowIso });
     }
   } catch(e) { /* 既読記録失敗は表示を妨げない */ }
+  // 電話ToDoの架電履歴をまとめて取得（カードに回数と最終架電を出す）
+  await loadTodoCallLogs(todos.filter(t => t.todo_kind === 'call').map(t => t.id));
   el.innerHTML = todos.map(t => {
     const today = getTodayJST();
     const waiting = isTodoAwaitingApproval(t);
@@ -14610,6 +14849,12 @@ async function loadMyTodos() {
         '</div>' +
         (t.detail ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">' + t.detail + '</div>' : '') +
         (!t.is_done && t.rejected_at ? '<div style="font-size:11px;color:#B06A3A;margin-top:5px;background:#FBF0E6;border-radius:6px;padding:5px 8px">🔙 差し戻されました' + (t.reject_note ? '：' + t.reject_note : '') + '</div>' : '') +
+        (t.todo_kind === 'call' && !waiting
+          ? '<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:7px">' +
+              '<button onclick="openTodoCall(\'' + t.id + '\',\'' + escapeAttr(t.title || '') + '\',\'' + (t.due_date || '') + '\')" style="padding:4px 11px;background:#E8F0FA;border:1px solid #9CC0E8;border-radius:8px;font-size:11px;cursor:pointer;color:#2D6CB6;font-weight:700;font-family:\'Noto Sans JP\',sans-serif">☎️ 架電を記録</button>' +
+              todoCallSummaryHtml(t.id) +
+            '</div>'
+          : '') +
       '</div>' +
     '</div>';
   }).join('');
