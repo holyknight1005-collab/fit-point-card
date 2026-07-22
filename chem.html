@@ -401,7 +401,7 @@ function staffOpenPractice(){
   document.getElementById('home-hello').textContent=(currentStaff.name||'スタッフ')+'さん（確認モード）';
   const pill=document.getElementById('student-points');
   if(pill) pill.parentNode.style.display='none';
-  renderHomeCards();
+  loadStudentFlags().then(renderHomeCards);
 }
 
 const APP_KEY = 'chem';
@@ -434,6 +434,46 @@ async function checkAppAccess(){
   }
 }
 
+/* ============================================================ */
+/* 受講フラグ判定                                               */
+/*  生徒の現役 class_enrollments からクラス名を取り、           */
+/*  CLASS_FLAG_RULES に一致すればフラグを立てる。               */
+/*  例: 「モルマスター」を含むクラスの子 → flag 'molmaster'     */
+/*  スタッフは全フラグON（確認できるように）。                  */
+/* ============================================================ */
+const CLASS_FLAG_RULES = [
+  { flag:'molmaster', match:/モルマスター|mol\s*master/i }
+];
+let currentFlags = {};   // 例 { molmaster:true }
+let myClassNames = [];   // デバッグ・表示用
+
+async function loadStudentFlags(){
+  currentFlags = {};
+  myClassNames = [];
+  try{
+    if(currentStaff){
+      // スタッフは全フラグON
+      CLASS_FLAG_RULES.forEach(r=>{ currentFlags[r.flag]=true; });
+      return;
+    }
+    if(!currentStudent) return;
+    const enr = await sbGet('class_enrollments',
+      'student_id=eq.'+encodeURIComponent(currentStudent.id)
+      +'&ended_on=is.null&select=class_master_id,class_master(name)');
+    (enr||[]).forEach(e=>{
+      const nm = (e.class_master && e.class_master.name) ? e.class_master.name : '';
+      if(nm) myClassNames.push(nm);
+    });
+    CLASS_FLAG_RULES.forEach(r=>{
+      if(myClassNames.some(nm=>r.match.test(nm))) currentFlags[r.flag]=true;
+    });
+  }catch(e){
+    // 取得失敗時はフラグなし（＝通常表示）。締め出しはしない。
+    currentFlags = {};
+  }
+}
+function hasFlag(f){ return !!currentFlags[f]; }
+
 async function afterLogin(){
   const acc = await checkAppAccess();
   hideLoading();
@@ -443,6 +483,7 @@ async function afterLogin(){
     showScreen('screen-denied');
     return;
   }
+  await loadStudentFlags();
   document.getElementById('home-hello').textContent=(currentStudent.name||'')+'さん、こんにちは';
   document.getElementById('student-points').textContent=(currentStudent.points||0).toLocaleString();
   showScreen('screen-home');
@@ -455,8 +496,28 @@ function renderHomeCards(){
   if(typeof chemRenderStreak==='function') chemRenderStreak();
   const wrap=document.getElementById('chem-cards');
   wrap.innerHTML='';
+
+  /* 受講フラグのあるグループを先頭に並べ替える */
+  let order = CHEM_ORDER.slice();
+  const flaggedGroups = Object.keys(CHEM_GROUPS).filter(g=>{
+    const gd=CHEM_GROUPS[g];
+    return gd.flagKey && hasFlag(gd.flagKey);
+  });
+  if(flaggedGroups.length){
+    const isFlagged = k => flaggedGroups.indexOf((CHEM_DATA[k]||{}).group)!==-1;
+    order = order.filter(isFlagged).concat(order.filter(k=>!isFlagged(k)));
+    // 「あなたはこれをやろう」バナー
+    const names = flaggedGroups.map(g=>CHEM_GROUPS[g].label).join('・');
+    const banner=document.createElement('div');
+    banner.style.cssText='background:linear-gradient(135deg,#FFF4E3,#FFE9CC);border:1.5px solid #E8A33D;border-radius:14px;padding:13px 15px;margin-bottom:14px;display:flex;align-items:center;gap:10px';
+    banner.innerHTML='<span style="font-size:22px">🎯</span>'
+      +'<div><div style="font-size:13px;font-weight:900;color:#8A5510">今週のあなたの課題</div>'
+      +'<div style="font-size:12px;color:#A2721F;margin-top:2px">'+names+' を優先してやろう！</div></div>';
+    wrap.appendChild(banner);
+  }
+
   let lastGroup=null;
-  CHEM_ORDER.forEach(key=>{
+  order.forEach(key=>{
     const d=CHEM_DATA[key];
     // グループ見出し（化学基礎①／②）
     const g=d.group||null;
@@ -464,7 +525,9 @@ function renderHomeCards(){
       const gd=CHEM_GROUPS[g];
       const head=document.createElement('div');
       head.style.cssText='margin:'+(lastGroup?'18px':'2px')+' 0 8px;display:flex;align-items:baseline;gap:8px';
-      head.innerHTML='<span style="font-size:14px;font-weight:900;color:#0E4D33">'+gd.label+'</span>'
+      const isTarget = gd.flagKey && hasFlag(gd.flagKey);
+      head.innerHTML='<span style="font-size:14px;font-weight:900;color:'+(isTarget?'#8A5510':'#0E4D33')+'">'+gd.label+'</span>'
+        +(isTarget?'<span style="font-size:10px;font-weight:800;color:#fff;background:#E8A33D;border-radius:999px;padding:2px 8px">受講中</span>':'')
         +'<span style="font-size:11px;color:#7A8F86">'+gd.sub+'</span>';
       wrap.appendChild(head);
       lastGroup=g;
@@ -482,7 +545,9 @@ function renderHomeCards(){
         : '残り'+remainQ+' / 全'+totalQ+'問';
     }
     const card=document.createElement('div');
-    card.style.cssText='background:#fff;border:1px solid #DCEDE4;border-left:4px solid '+d.color+';border-radius:14px;padding:15px 16px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.05)';
+    const gdCard = d.group ? CHEM_GROUPS[d.group] : null;
+    const cardTarget = gdCard && gdCard.flagKey && hasFlag(gdCard.flagKey);
+    card.style.cssText='background:'+(cardTarget?'#FFFCF6':'#fff')+';border:1px solid '+(cardTarget?'#F0D6A8':'#DCEDE4')+';border-left:4px solid '+d.color+';border-radius:14px;padding:15px 16px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.05)';
     card.onclick=()=>chemStart(key);
     card.innerHTML='<div style="display:flex;align-items:center;gap:10px">'
       +'<span style="font-size:22px">'+d.icon+'</span>'
@@ -564,7 +629,8 @@ const CHEM_GROUPS = {
   basic1: { label:'化学基礎①', sub:'物質量の手前まで' },
   basic2: { label:'化学基礎②', sub:'物質量・濃度' },
   inorg:  { label:'無機化学①', sub:'各族の性質・気体の製法' },
-  precip: { label:'無機化学②', sub:'沈殿・錯イオン' }
+  precip: { label:'無機化学②', sub:'沈殿・錯イオン' },
+  molmaster: { label:'モルマスター', sub:'化学式と名前を覚える（1年生）', flagKey:'molmaster' }
 };
 
 const CHEM_DATA = {
@@ -1105,6 +1171,240 @@ const CHEM_DATA = {
 
   /* ===== 無機化学 ===== */
 
+
+  /* ===== モルマスター（1年生・化学式暗記） ===== */
+
+  molname: {
+    group:'molmaster',
+    title:'名前→化学式', icon:'📝', color:'#C26A1B', type:'choice', pick:12,
+    sub:'物質名から化学式を選ぶ（モル計算の土台）',
+    pool:[
+      {subject:'【水】の化学式は？', answer:'H₂O', choices:['Na₂CO₃','SO₃','(NH₄)₂SO₄','H₂O'], explain:'H:1×2 + O:16（H₂O＝18）'},
+      {subject:'【二酸化炭素】の化学式は？', answer:'CO₂', choices:['FeS','CH₄','CO₂','K₂SO₄'], explain:'C:12 + O:16×2（CO₂＝44）'},
+      {subject:'【一酸化炭素】の化学式は？', answer:'CO', choices:['KNO₃','C₂H₆','CO','Ca(NO₃)₂'], explain:'C:12 + O:16（CO＝28）'},
+      {subject:'【酸素】の化学式は？', answer:'O₂', choices:['NaCl','CH₄','CH₃COOH','O₂'], explain:'O:16×2（O₂＝32）'},
+      {subject:'【水素】の化学式は？', answer:'H₂', choices:['H₂','NaCl','Cl₂','NH₃'], explain:'H:1×2（H₂＝2）'},
+      {subject:'【窒素】の化学式は？', answer:'N₂', choices:['Ba(OH)₂','CH₃COOH','N₂','SO₂'], explain:'N:14×2（N₂＝28）'},
+      {subject:'【塩素】の化学式は？', answer:'Cl₂', choices:['CaSO₄','C₂H₆','C₂H₅OH','Cl₂'], explain:'Cl:35.5×2（Cl₂＝71）'},
+      {subject:'【アンモニア】の化学式は？', answer:'NH₃', choices:['NH₃','MnO₂','AgNO₃','Al(OH)₃'], explain:'N:14 + H:1×3（NH₃＝17）'},
+      {subject:'【メタン】の化学式は？', answer:'CH₄', choices:['MgCl₂','CH₄','Mg(OH)₂','K₂SO₄'], explain:'C:12 + H:1×4（CH₄＝16）'},
+      {subject:'【エタン】の化学式は？', answer:'C₂H₆', choices:['C₂H₆','Mg(OH)₂','C₂H₄','CuSO₄·5H₂O'], explain:'C:12×2 + H:1×6（C₂H₆＝30）'},
+      {subject:'【プロパン】の化学式は？', answer:'C₃H₈', choices:['C₂H₆','KOH','C₃H₈','CH₃COOH'], explain:'C:12×3 + H:1×8（C₃H₈＝44）'},
+      {subject:'【エチレン】の化学式は？', answer:'C₂H₄', choices:['SO₃','KNO₃','SiO₂','C₂H₄'], explain:'C:12×2 + H:1×4（C₂H₄＝28）'},
+      {subject:'【アセチレン】の化学式は？', answer:'C₂H₂', choices:['C₂H₂','Al(OH)₃','CaCO₃','K₂CO₃'], explain:'C:12×2 + H:1×2（C₂H₂＝26）'},
+      {subject:'【エタノール】の化学式は？', answer:'C₂H₅OH', choices:['CH₄','C₂H₅OH','C₂H₄','BaCl₂'], explain:'C:12×2 + H:1×6 + O:16（C₂H₅OH＝46）'},
+      {subject:'【メタノール】の化学式は？', answer:'CH₃OH', choices:['CH₃OH','NH₃','MgO','Ba(OH)₂'], explain:'C:12 + H:1×4 + O:16（CH₃OH＝32）'},
+      {subject:'【グルコース（ブドウ糖）】の化学式は？', answer:'C₆H₁₂O₆', choices:['K₂CO₃','CuO','C₆H₁₂O₆','CO'], explain:'C:12×6 + H:1×12 + O:16×6（C₆H₁₂O₆＝180）'},
+      {subject:'【酢酸】の化学式は？', answer:'CH₃COOH', choices:['MnO₂','H₃PO₄','CH₃COOH','NH₃'], explain:'C:12×2 + H:1×4 + O:16×2（CH₃COOH＝60）'},
+      {subject:'【塩化水素】の化学式は？', answer:'HCl', choices:['HCl','MnO₂','C₃H₈','(NH₄)₂SO₄'], explain:'H:1 + Cl:35.5（HCl＝36.5）'},
+      {subject:'【硫化水素】の化学式は？', answer:'H₂S', choices:['H₂S','NaOH','Ca(NO₃)₂','HCl'], explain:'H:1×2 + S:32（H₂S＝34）'},
+      {subject:'【二酸化硫黄】の化学式は？', answer:'SO₂', choices:['KCl','BaSO₄','SO₂','Na₂SO₄'], explain:'S:32 + O:16×2（SO₂＝64）'},
+      {subject:'【三酸化硫黄】の化学式は？', answer:'SO₃', choices:['SO₂','SO₃','KCl','CO₂'], explain:'S:32 + O:16×3（SO₃＝80）'},
+      {subject:'【一酸化窒素】の化学式は？', answer:'NO', choices:['NO','KOH','H₂O','NH₄Cl'], explain:'N:14 + O:16（NO＝30）'},
+      {subject:'【二酸化窒素】の化学式は？', answer:'NO₂', choices:['KI','CH₃COOH','Al(OH)₃','NO₂'], explain:'N:14 + O:16×2（NO₂＝46）'},
+      {subject:'【オゾン】の化学式は？', answer:'O₃', choices:['O₃','(NH₄)₂SO₄','Al₂(SO₄)₃','C₂H₅OH'], explain:'O:16×3（O₃＝48）'},
+      {subject:'【過酸化水素】の化学式は？', answer:'H₂O₂', choices:['H₂SO₄','H₂O₂','CH₄','NH₃'], explain:'H:1×2 + O:16×2（H₂O₂＝34）'},
+      {subject:'【硫酸】の化学式は？', answer:'H₂SO₄', choices:['CH₃OH','CaCO₃','Cl₂','H₂SO₄'], explain:'H:1×2 + S:32 + O:16×4（H₂SO₄＝98）'},
+      {subject:'【硝酸】の化学式は？', answer:'HNO₃', choices:['K₂SO₄','C₂H₂','O₂','HNO₃'], explain:'H:1 + N:14 + O:16×3（HNO₃＝63）'},
+      {subject:'【炭酸】の化学式は？', answer:'H₂CO₃', choices:['K₂CO₃','H₂CO₃','SO₂','AlCl₃'], explain:'H:1×2 + C:12 + O:16×3（H₂CO₃＝62）'},
+      {subject:'【リン酸】の化学式は？', answer:'H₃PO₄', choices:['H₃PO₄','SiO₂','CH₃OH','CuO'], explain:'H:1×3 + P:31 + O:16×4（H₃PO₄＝98）'},
+      {subject:'【塩化ナトリウム】の化学式は？', answer:'NaCl', choices:['NaCl','C₃H₈','C₂H₅OH','H₂S'], explain:'Na:23 + Cl:35.5（NaCl＝58.5）'},
+      {subject:'【塩化カリウム】の化学式は？', answer:'KCl', choices:['SO₃','Na₂O','KBr','KCl'], explain:'K:39 + Cl:35.5（KCl＝74.5）'},
+      {subject:'【塩化カルシウム】の化学式は？', answer:'CaCl₂', choices:['H₂S','CaCl₂','CuSO₄·5H₂O','O₂'], explain:'Ca:40 + Cl:35.5×2（CaCl₂＝111）'},
+      {subject:'【塩化マグネシウム】の化学式は？', answer:'MgCl₂', choices:['KBr','MgCl₂','K₂SO₄','NH₄Cl'], explain:'Mg:24 + Cl:35.5×2（MgCl₂＝95）'},
+      {subject:'【塩化アルミニウム】の化学式は？', answer:'AlCl₃', choices:['NaHCO₃','H₃PO₄','AlCl₃','FeS'], explain:'Al:27 + Cl:35.5×3（AlCl₃＝133.5）'},
+      {subject:'【塩化アンモニウム】の化学式は？', answer:'NH₄Cl', choices:['H₂SO₄','NH₄Cl','NaCl','KBr'], explain:'N:14 + H:1×4 + Cl:35.5（NH₄Cl＝53.5）'},
+      {subject:'【塩化バリウム】の化学式は？', answer:'BaCl₂', choices:['Fe₂O₃','O₂','BaCl₂','NaOH'], explain:'Ba:137 + Cl:35.5×2（BaCl₂＝208）'},
+      {subject:'【水酸化ナトリウム】の化学式は？', answer:'NaOH', choices:['MgO','K₂CO₃','K₂SO₄','NaOH'], explain:'Na:23 + O:16 + H:1（NaOH＝40）'},
+      {subject:'【水酸化カリウム】の化学式は？', answer:'KOH', choices:['H₂SO₄','NaCl','KOH','Fe₂O₃'], explain:'K:39 + O:16 + H:1（KOH＝56）'},
+      {subject:'【水酸化カルシウム】の化学式は？', answer:'Ca(OH)₂', choices:['H₂O','K₂CO₃','Na₂O','Ca(OH)₂'], explain:'Ca:40 + (O:16+H:1)×2（Ca(OH)₂＝74）'},
+      {subject:'【水酸化マグネシウム】の化学式は？', answer:'Mg(OH)₂', choices:['Mg(OH)₂','H₂SO₄','Na₂O','CuSO₄'], explain:'Mg:24 + (O:16+H:1)×2（Mg(OH)₂＝58）'},
+      {subject:'【水酸化バリウム】の化学式は？', answer:'Ba(OH)₂', choices:['C₂H₄','Ba(OH)₂','(NH₄)₂SO₄','CuO'], explain:'Ba:137 + (O:16+H:1)×2（Ba(OH)₂＝171）'},
+      {subject:'【水酸化アルミニウム】の化学式は？', answer:'Al(OH)₃', choices:['NO','SO₃','CH₃COOH','Al(OH)₃'], explain:'Al:27 + (O:16+H:1)×3（Al(OH)₃＝78）'},
+      {subject:'【炭酸ナトリウム】の化学式は？', answer:'Na₂CO₃', choices:['K₂CO₃','Na₂CO₃','Fe₂O₃','H₂S'], explain:'Na:23×2 + C:12 + O:16×3（Na₂CO₃＝106）'},
+      {subject:'【炭酸水素ナトリウム】の化学式は？', answer:'NaHCO₃', choices:['CO₂','NaHCO₃','C₂H₅OH','CO'], explain:'Na:23 + H:1 + C:12 + O:16×3（NaHCO₃＝84）'},
+      {subject:'【炭酸カルシウム】の化学式は？', answer:'CaCO₃', choices:['O₂','CaCO₃','MgCl₂','H₂CO₃'], explain:'Ca:40 + C:12 + O:16×3（CaCO₃＝100）'},
+      {subject:'【炭酸カリウム】の化学式は？', answer:'K₂CO₃', choices:['AlCl₃','KNO₃','K₂CO₃','Al(OH)₃'], explain:'K:39×2 + C:12 + O:16×3（K₂CO₃＝138）'},
+      {subject:'【硫酸ナトリウム】の化学式は？', answer:'Na₂SO₄', choices:['KNO₃','Na₂SO₄','KBr','Al₂O₃'], explain:'Na:23×2 + S:32 + O:16×4（Na₂SO₄＝142）'},
+      {subject:'【硫酸カリウム】の化学式は？', answer:'K₂SO₄', choices:['CuSO₄·5H₂O','KI','K₂SO₄','CO'], explain:'K:39×2 + S:32 + O:16×4（K₂SO₄＝174）'},
+      {subject:'【硫酸カルシウム】の化学式は？', answer:'CaSO₄', choices:['SO₂','CaSO₄','NO₂','H₂S'], explain:'Ca:40 + S:32 + O:16×4（CaSO₄＝136）'},
+      {subject:'【硫酸バリウム】の化学式は？', answer:'BaSO₄', choices:['NH₃','Al(OH)₃','BaSO₄','KBr'], explain:'Ba:137 + S:32 + O:16×4（BaSO₄＝233）'},
+      {subject:'【硫酸銅(II)】の化学式は？', answer:'CuSO₄', choices:['H₂O₂','CaCl₂','BaCl₂','CuSO₄'], explain:'Cu:64 + S:32 + O:16×4（CuSO₄＝160）'},
+      {subject:'【硫酸アンモニウム】の化学式は？', answer:'(NH₄)₂SO₄', choices:['O₂','(NH₄)₂SO₄','CaO','CH₄'], explain:'(N:14+H:1×4)×2 + S:32 + O:16×4（(NH₄)₂SO₄＝132）'},
+      {subject:'【硫酸アルミニウム】の化学式は？', answer:'Al₂(SO₄)₃', choices:['BaCl₂','Al₂(SO₄)₃','MgO','KI'], explain:'Al:27×2 + (S:32+O:16×4)×3（Al₂(SO₄)₃＝342）'},
+      {subject:'【硝酸ナトリウム】の化学式は？', answer:'NaNO₃', choices:['AlCl₃','KBr','NaNO₃','H₂SO₄'], explain:'Na:23 + N:14 + O:16×3（NaNO₃＝85）'},
+      {subject:'【硝酸カリウム】の化学式は？', answer:'KNO₃', choices:['C₆H₁₂O₆','CaO','KNO₃','CuSO₄'], explain:'K:39 + N:14 + O:16×3（KNO₃＝101）'},
+      {subject:'【硝酸銀】の化学式は？', answer:'AgNO₃', choices:['KNO₃','H₂CO₃','AgNO₃','C₂H₆'], explain:'Ag:108 + N:14 + O:16×3（AgNO₃＝170）'},
+      {subject:'【硝酸カルシウム】の化学式は？', answer:'Ca(NO₃)₂', choices:['H₂S','Ca(NO₃)₂','MgCl₂','Na₂SO₄'], explain:'Ca:40 + (N:14+O:16×3)×2（Ca(NO₃)₂＝164）'},
+      {subject:'【酸化カルシウム】の化学式は？', answer:'CaO', choices:['SiO₂','CaO','CuSO₄','C₂H₂'], explain:'Ca:40 + O:16（CaO＝56）'},
+      {subject:'【酸化マグネシウム】の化学式は？', answer:'MgO', choices:['MgO','AgNO₃','SO₃','KI'], explain:'Mg:24 + O:16（MgO＝40）'},
+      {subject:'【酸化アルミニウム】の化学式は？', answer:'Al₂O₃', choices:['Ba(OH)₂','H₂SO₄','K₂CO₃','Al₂O₃'], explain:'Al:27×2 + O:16×3（Al₂O₃＝102）'},
+      {subject:'【酸化銅(II)】の化学式は？', answer:'CuO', choices:['CO','CuO','NaHCO₃','MgO'], explain:'Cu:64 + O:16（CuO＝80）'},
+      {subject:'【酸化鉄(III)】の化学式は？', answer:'Fe₂O₃', choices:['BaSO₄','Fe₂O₃','KBr','Na₂CO₃'], explain:'Fe:56×2 + O:16×3（Fe₂O₃＝160）'},
+      {subject:'【酸化ナトリウム】の化学式は？', answer:'Na₂O', choices:['C₂H₅OH','NaCl','CH₃OH','Na₂O'], explain:'Na:23×2 + O:16（Na₂O＝62）'},
+      {subject:'【二酸化ケイ素】の化学式は？', answer:'SiO₂', choices:['SiO₂','O₃','NH₄Cl','N₂'], explain:'Si:28 + O:16×2（SiO₂＝60）'},
+      {subject:'【二酸化マンガン】の化学式は？', answer:'MnO₂', choices:['MnO₂','(NH₄)₂SO₄','SO₂','KI'], explain:'Mn:55 + O:16×2（MnO₂＝87）'},
+      {subject:'【硫化鉄(II)】の化学式は？', answer:'FeS', choices:['BaCl₂','FeS','NH₃','C₂H₄'], explain:'Fe:56 + S:32（FeS＝88）'},
+      {subject:'【ヨウ化カリウム】の化学式は？', answer:'KI', choices:['NH₄Cl','C₂H₄','KI','CO'], explain:'K:39 + I:127（KI＝166）'},
+      {subject:'【臭化カリウム】の化学式は？', answer:'KBr', choices:['AlCl₃','CH₄','KBr','C₆H₁₂O₆'], explain:'K:39 + Br:80（KBr＝119）'},
+      {subject:'【硫酸銅(II)五水和物】の化学式は？', answer:'CuSO₄·5H₂O', choices:['NaNO₃','CH₃COOH','NH₄Cl','CuSO₄·5H₂O'], explain:'CuSO₄:160 + H₂O:18×5（CuSO₄·5H₂O＝250）'},
+    ]
+  },
+
+  molformula: {
+    group:'molmaster',
+    title:'化学式→名前', icon:'🔎', color:'#1B7A52', type:'choice', pick:12,
+    sub:'化学式を見て物質名を答える（逆向き練習）',
+    pool:[
+      {subject:'【H₂O】の名称は？', answer:'水', choices:['グルコース（ブドウ糖）','一酸化窒素','塩化アンモニウム','水'], explain:'モル質量 18 g/mol（H:1×2 + O:16）'},
+      {subject:'【CO₂】の名称は？', answer:'二酸化炭素', choices:['炭酸','二酸化炭素','水酸化バリウム','硫酸銅(II)五水和物'], explain:'モル質量 44 g/mol（C:12 + O:16×2）'},
+      {subject:'【CO】の名称は？', answer:'一酸化炭素', choices:['塩化バリウム','酸素','一酸化炭素','炭酸カリウム'], explain:'モル質量 28 g/mol（C:12 + O:16）'},
+      {subject:'【O₂】の名称は？', answer:'酸素', choices:['硫化鉄(II)','一酸化炭素','酸素','硫酸'], explain:'モル質量 32 g/mol（O:16×2）'},
+      {subject:'【H₂】の名称は？', answer:'水素', choices:['水素','メタノール','硝酸カルシウム','二酸化マンガン'], explain:'モル質量 2 g/mol（H:1×2）'},
+      {subject:'【N₂】の名称は？', answer:'窒素', choices:['炭酸カルシウム','窒素','塩化カリウム','リン酸'], explain:'モル質量 28 g/mol（N:14×2）'},
+      {subject:'【Cl₂】の名称は？', answer:'塩素', choices:['アンモニア','炭酸カリウム','塩素','硫酸アルミニウム'], explain:'モル質量 71 g/mol（Cl:35.5×2）'},
+      {subject:'【NH₃】の名称は？', answer:'アンモニア', choices:['硝酸カルシウム','塩化アルミニウム','一酸化窒素','アンモニア'], explain:'モル質量 17 g/mol（N:14 + H:1×3）'},
+      {subject:'【CH₄】の名称は？', answer:'メタン', choices:['塩化マグネシウム','硫化鉄(II)','メタン','水酸化カリウム'], explain:'モル質量 16 g/mol（C:12 + H:1×4）'},
+      {subject:'【C₂H₆】の名称は？', answer:'エタン', choices:['一酸化窒素','過酸化水素','エタン','塩化バリウム'], explain:'モル質量 30 g/mol（C:12×2 + H:1×6）'},
+      {subject:'【C₃H₈】の名称は？', answer:'プロパン', choices:['炭酸水素ナトリウム','炭酸ナトリウム','プロパン','硫酸カリウム'], explain:'モル質量 44 g/mol（C:12×3 + H:1×8）'},
+      {subject:'【C₂H₄】の名称は？', answer:'エチレン', choices:['過酸化水素','硫酸ナトリウム','リン酸','エチレン'], explain:'モル質量 28 g/mol（C:12×2 + H:1×4）'},
+      {subject:'【C₂H₂】の名称は？', answer:'アセチレン', choices:['水酸化ナトリウム','酸化鉄(III)','アセチレン','プロパン'], explain:'モル質量 26 g/mol（C:12×2 + H:1×2）'},
+      {subject:'【C₂H₅OH】の名称は？', answer:'エタノール', choices:['エチレン','エタノール','塩化アンモニウム','二酸化硫黄'], explain:'モル質量 46 g/mol（C:12×2 + H:1×6 + O:16）'},
+      {subject:'【CH₃OH】の名称は？', answer:'メタノール', choices:['硫酸アンモニウム','メタノール','水酸化マグネシウム','一酸化炭素'], explain:'モル質量 32 g/mol（C:12 + H:1×4 + O:16）'},
+      {subject:'【C₆H₁₂O₆】の名称は？', answer:'グルコース（ブドウ糖）', choices:['グルコース（ブドウ糖）','硫酸銅(II)五水和物','プロパン','三酸化硫黄'], explain:'モル質量 180 g/mol（C:12×6 + H:1×12 + O:16×6）'},
+      {subject:'【CH₃COOH】の名称は？', answer:'酢酸', choices:['二酸化硫黄','三酸化硫黄','水酸化カリウム','酢酸'], explain:'モル質量 60 g/mol（C:12×2 + H:1×4 + O:16×2）'},
+      {subject:'【HCl】の名称は？', answer:'塩化水素', choices:['硫化鉄(II)','硫酸銅(II)五水和物','硫化水素','塩化水素'], explain:'モル質量 36.5 g/mol（H:1 + Cl:35.5）'},
+      {subject:'【H₂S】の名称は？', answer:'硫化水素', choices:['硫化水素','窒素','酸素','プロパン'], explain:'モル質量 34 g/mol（H:1×2 + S:32）'},
+      {subject:'【SO₂】の名称は？', answer:'二酸化硫黄', choices:['エタノール','酸化マグネシウム','硫酸バリウム','二酸化硫黄'], explain:'モル質量 64 g/mol（S:32 + O:16×2）'},
+      {subject:'【SO₃】の名称は？', answer:'三酸化硫黄', choices:['二酸化ケイ素','塩化アンモニウム','塩化マグネシウム','三酸化硫黄'], explain:'モル質量 80 g/mol（S:32 + O:16×3）'},
+      {subject:'【NO】の名称は？', answer:'一酸化窒素', choices:['硫酸銅(II)五水和物','硫化鉄(II)','エチレン','一酸化窒素'], explain:'モル質量 30 g/mol（N:14 + O:16）'},
+      {subject:'【NO₂】の名称は？', answer:'二酸化窒素', choices:['塩化アンモニウム','二酸化窒素','エタン','塩化アルミニウム'], explain:'モル質量 46 g/mol（N:14 + O:16×2）'},
+      {subject:'【O₃】の名称は？', answer:'オゾン', choices:['酸化アルミニウム','塩化カリウム','オゾン','二酸化マンガン'], explain:'モル質量 48 g/mol（O:16×3）'},
+      {subject:'【H₂O₂】の名称は？', answer:'過酸化水素', choices:['水酸化カリウム','硝酸','窒素','過酸化水素'], explain:'モル質量 34 g/mol（H:1×2 + O:16×2）'},
+      {subject:'【H₂SO₄】の名称は？', answer:'硫酸', choices:['塩化アルミニウム','水酸化マグネシウム','硫酸','炭酸水素ナトリウム'], explain:'モル質量 98 g/mol（H:1×2 + S:32 + O:16×4）'},
+      {subject:'【HNO₃】の名称は？', answer:'硝酸', choices:['アンモニア','塩化バリウム','二酸化ケイ素','硝酸'], explain:'モル質量 63 g/mol（H:1 + N:14 + O:16×3）'},
+      {subject:'【H₂CO₃】の名称は？', answer:'炭酸', choices:['炭酸','臭化カリウム','二酸化ケイ素','水酸化カルシウム'], explain:'モル質量 62 g/mol（H:1×2 + C:12 + O:16×3）'},
+      {subject:'【H₃PO₄】の名称は？', answer:'リン酸', choices:['硫酸','酸化銅(II)','リン酸','グルコース（ブドウ糖）'], explain:'モル質量 98 g/mol（H:1×3 + P:31 + O:16×4）'},
+      {subject:'【NaCl】の名称は？', answer:'塩化ナトリウム', choices:['酸化アルミニウム','一酸化炭素','水酸化カルシウム','塩化ナトリウム'], explain:'モル質量 58.5 g/mol（Na:23 + Cl:35.5）'},
+      {subject:'【KCl】の名称は？', answer:'塩化カリウム', choices:['硝酸','硫酸銅(II)','塩化カリウム','塩化バリウム'], explain:'モル質量 74.5 g/mol（K:39 + Cl:35.5）'},
+      {subject:'【CaCl₂】の名称は？', answer:'塩化カルシウム', choices:['塩化アンモニウム','硫化水素','塩化カルシウム','硫酸銅(II)五水和物'], explain:'モル質量 111 g/mol（Ca:40 + Cl:35.5×2）'},
+      {subject:'【MgCl₂】の名称は？', answer:'塩化マグネシウム', choices:['塩化マグネシウム','硫酸カリウム','メタノール','塩化ナトリウム'], explain:'モル質量 95 g/mol（Mg:24 + Cl:35.5×2）'},
+      {subject:'【AlCl₃】の名称は？', answer:'塩化アルミニウム', choices:['塩化アルミニウム','酸素','三酸化硫黄','水'], explain:'モル質量 133.5 g/mol（Al:27 + Cl:35.5×3）'},
+      {subject:'【NH₄Cl】の名称は？', answer:'塩化アンモニウム', choices:['塩化アンモニウム','水酸化マグネシウム','硫酸アルミニウム','硫化水素'], explain:'モル質量 53.5 g/mol（N:14 + H:1×4 + Cl:35.5）'},
+      {subject:'【BaCl₂】の名称は？', answer:'塩化バリウム', choices:['炭酸水素ナトリウム','グルコース（ブドウ糖）','水酸化アルミニウム','塩化バリウム'], explain:'モル質量 208 g/mol（Ba:137 + Cl:35.5×2）'},
+      {subject:'【NaOH】の名称は？', answer:'水酸化ナトリウム', choices:['硫酸','硫酸アンモニウム','グルコース（ブドウ糖）','水酸化ナトリウム'], explain:'モル質量 40 g/mol（Na:23 + O:16 + H:1）'},
+      {subject:'【KOH】の名称は？', answer:'水酸化カリウム', choices:['硫酸カルシウム','水酸化カリウム','塩化マグネシウム','メタン'], explain:'モル質量 56 g/mol（K:39 + O:16 + H:1）'},
+      {subject:'【Ca(OH)₂】の名称は？', answer:'水酸化カルシウム', choices:['硝酸銀','塩化バリウム','硫酸カリウム','水酸化カルシウム'], explain:'モル質量 74 g/mol（Ca:40 + (O:16+H:1)×2）'},
+      {subject:'【Mg(OH)₂】の名称は？', answer:'水酸化マグネシウム', choices:['水酸化マグネシウム','水酸化ナトリウム','二酸化硫黄','塩素'], explain:'モル質量 58 g/mol（Mg:24 + (O:16+H:1)×2）'},
+      {subject:'【Ba(OH)₂】の名称は？', answer:'水酸化バリウム', choices:['過酸化水素','水酸化バリウム','ヨウ化カリウム','水酸化アルミニウム'], explain:'モル質量 171 g/mol（Ba:137 + (O:16+H:1)×2）'},
+      {subject:'【Al(OH)₃】の名称は？', answer:'水酸化アルミニウム', choices:['プロパン','硫酸アルミニウム','硝酸','水酸化アルミニウム'], explain:'モル質量 78 g/mol（Al:27 + (O:16+H:1)×3）'},
+      {subject:'【Na₂CO₃】の名称は？', answer:'炭酸ナトリウム', choices:['酸化マグネシウム','塩化水素','炭酸ナトリウム','水酸化ナトリウム'], explain:'モル質量 106 g/mol（Na:23×2 + C:12 + O:16×3）'},
+      {subject:'【NaHCO₃】の名称は？', answer:'炭酸水素ナトリウム', choices:['炭酸水素ナトリウム','硝酸カリウム','一酸化窒素','酸化鉄(III)'], explain:'モル質量 84 g/mol（Na:23 + H:1 + C:12 + O:16×3）'},
+      {subject:'【CaCO₃】の名称は？', answer:'炭酸カルシウム', choices:['炭酸カルシウム','塩化アルミニウム','硫酸アルミニウム','塩化マグネシウム'], explain:'モル質量 100 g/mol（Ca:40 + C:12 + O:16×3）'},
+      {subject:'【K₂CO₃】の名称は？', answer:'炭酸カリウム', choices:['一酸化窒素','グルコース（ブドウ糖）','炭酸カリウム','硫酸アンモニウム'], explain:'モル質量 138 g/mol（K:39×2 + C:12 + O:16×3）'},
+      {subject:'【Na₂SO₄】の名称は？', answer:'硫酸ナトリウム', choices:['硫酸ナトリウム','二酸化マンガン','硫化鉄(II)','リン酸'], explain:'モル質量 142 g/mol（Na:23×2 + S:32 + O:16×4）'},
+      {subject:'【K₂SO₄】の名称は？', answer:'硫酸カリウム', choices:['過酸化水素','塩化水素','硫酸カリウム','硝酸銀'], explain:'モル質量 174 g/mol（K:39×2 + S:32 + O:16×4）'},
+      {subject:'【CaSO₄】の名称は？', answer:'硫酸カルシウム', choices:['硫酸カルシウム','エチレン','水酸化バリウム','炭酸水素ナトリウム'], explain:'モル質量 136 g/mol（Ca:40 + S:32 + O:16×4）'},
+      {subject:'【BaSO₄】の名称は？', answer:'硫酸バリウム', choices:['一酸化炭素','硫酸バリウム','硫酸','硝酸ナトリウム'], explain:'モル質量 233 g/mol（Ba:137 + S:32 + O:16×4）'},
+      {subject:'【CuSO₄】の名称は？', answer:'硫酸銅(II)', choices:['炭酸水素ナトリウム','塩化アンモニウム','硫酸カルシウム','硫酸銅(II)'], explain:'モル質量 160 g/mol（Cu:64 + S:32 + O:16×4）'},
+      {subject:'【(NH₄)₂SO₄】の名称は？', answer:'硫酸アンモニウム', choices:['酢酸','硫化鉄(II)','硫酸アンモニウム','硫酸ナトリウム'], explain:'モル質量 132 g/mol（(N:14+H:1×4)×2 + S:32 + O:16×4）'},
+      {subject:'【Al₂(SO₄)₃】の名称は？', answer:'硫酸アルミニウム', choices:['硫酸アルミニウム','硫酸バリウム','塩化カルシウム','硫酸アンモニウム'], explain:'モル質量 342 g/mol（Al:27×2 + (S:32+O:16×4)×3）'},
+      {subject:'【NaNO₃】の名称は？', answer:'硝酸ナトリウム', choices:['硝酸ナトリウム','一酸化炭素','酢酸','水素'], explain:'モル質量 85 g/mol（Na:23 + N:14 + O:16×3）'},
+      {subject:'【KNO₃】の名称は？', answer:'硝酸カリウム', choices:['硝酸カリウム','二酸化ケイ素','水','エタン'], explain:'モル質量 101 g/mol（K:39 + N:14 + O:16×3）'},
+      {subject:'【AgNO₃】の名称は？', answer:'硝酸銀', choices:['エタノール','塩化カルシウム','硝酸銀','酸化マグネシウム'], explain:'モル質量 170 g/mol（Ag:108 + N:14 + O:16×3）'},
+      {subject:'【Ca(NO₃)₂】の名称は？', answer:'硝酸カルシウム', choices:['臭化カリウム','酸化アルミニウム','エタノール','硝酸カルシウム'], explain:'モル質量 164 g/mol（Ca:40 + (N:14+O:16×3)×2）'},
+      {subject:'【CaO】の名称は？', answer:'酸化カルシウム', choices:['塩化ナトリウム','水','酢酸','酸化カルシウム'], explain:'モル質量 56 g/mol（Ca:40 + O:16）'},
+      {subject:'【MgO】の名称は？', answer:'酸化マグネシウム', choices:['酢酸','酸化マグネシウム','塩化マグネシウム','硫酸銅(II)五水和物'], explain:'モル質量 40 g/mol（Mg:24 + O:16）'},
+      {subject:'【Al₂O₃】の名称は？', answer:'酸化アルミニウム', choices:['酸化アルミニウム','エタン','水酸化カルシウム','アセチレン'], explain:'モル質量 102 g/mol（Al:27×2 + O:16×3）'},
+      {subject:'【CuO】の名称は？', answer:'酸化銅(II)', choices:['酸化銅(II)','二酸化炭素','リン酸','水'], explain:'モル質量 80 g/mol（Cu:64 + O:16）'},
+      {subject:'【Fe₂O₃】の名称は？', answer:'酸化鉄(III)', choices:['酸化銅(II)','酸化鉄(III)','塩化カルシウム','水酸化バリウム'], explain:'モル質量 160 g/mol（Fe:56×2 + O:16×3）'},
+      {subject:'【Na₂O】の名称は？', answer:'酸化ナトリウム', choices:['酸素','硫酸アルミニウム','水酸化マグネシウム','酸化ナトリウム'], explain:'モル質量 62 g/mol（Na:23×2 + O:16）'},
+      {subject:'【SiO₂】の名称は？', answer:'二酸化ケイ素', choices:['プロパン','二酸化マンガン','二酸化ケイ素','硝酸ナトリウム'], explain:'モル質量 60 g/mol（Si:28 + O:16×2）'},
+      {subject:'【MnO₂】の名称は？', answer:'二酸化マンガン', choices:['二酸化ケイ素','硫酸カリウム','塩化ナトリウム','二酸化マンガン'], explain:'モル質量 87 g/mol（Mn:55 + O:16×2）'},
+      {subject:'【FeS】の名称は？', answer:'硫化鉄(II)', choices:['硫酸ナトリウム','硫酸銅(II)','硫化鉄(II)','硝酸ナトリウム'], explain:'モル質量 88 g/mol（Fe:56 + S:32）'},
+      {subject:'【KI】の名称は？', answer:'ヨウ化カリウム', choices:['メタン','二酸化マンガン','ヨウ化カリウム','硝酸'], explain:'モル質量 166 g/mol（K:39 + I:127）'},
+      {subject:'【KBr】の名称は？', answer:'臭化カリウム', choices:['臭化カリウム','塩化ナトリウム','酸化アルミニウム','過酸化水素'], explain:'モル質量 119 g/mol（K:39 + Br:80）'},
+      {subject:'【CuSO₄·5H₂O】の名称は？', answer:'硫酸銅(II)五水和物', choices:['硫酸銅(II)五水和物','二酸化ケイ素','オゾン','エタノール'], explain:'モル質量 250 g/mol（CuSO₄:160 + H₂O:18×5）'},
+    ]
+  },
+
+  molmass: {
+    group:'molmaster',
+    title:'化学式＋モル質量', icon:'⚖️', color:'#2563A8', type:'reveal', pick:12,
+    sub:'紙に化学式とモル質量を書いてから答え合わせ',
+    pool:[
+      {subject:'【水】の化学式と、モル質量（g/mol）を書け。', answer:'H₂O ／ 18 g/mol', explain:'H:1×2 + O:16'},
+      {subject:'【二酸化炭素】の化学式と、モル質量（g/mol）を書け。', answer:'CO₂ ／ 44 g/mol', explain:'C:12 + O:16×2'},
+      {subject:'【一酸化炭素】の化学式と、モル質量（g/mol）を書け。', answer:'CO ／ 28 g/mol', explain:'C:12 + O:16'},
+      {subject:'【酸素】の化学式と、モル質量（g/mol）を書け。', answer:'O₂ ／ 32 g/mol', explain:'O:16×2'},
+      {subject:'【水素】の化学式と、モル質量（g/mol）を書け。', answer:'H₂ ／ 2 g/mol', explain:'H:1×2'},
+      {subject:'【窒素】の化学式と、モル質量（g/mol）を書け。', answer:'N₂ ／ 28 g/mol', explain:'N:14×2'},
+      {subject:'【塩素】の化学式と、モル質量（g/mol）を書け。', answer:'Cl₂ ／ 71 g/mol', explain:'Cl:35.5×2'},
+      {subject:'【アンモニア】の化学式と、モル質量（g/mol）を書け。', answer:'NH₃ ／ 17 g/mol', explain:'N:14 + H:1×3'},
+      {subject:'【メタン】の化学式と、モル質量（g/mol）を書け。', answer:'CH₄ ／ 16 g/mol', explain:'C:12 + H:1×4'},
+      {subject:'【エタン】の化学式と、モル質量（g/mol）を書け。', answer:'C₂H₆ ／ 30 g/mol', explain:'C:12×2 + H:1×6'},
+      {subject:'【プロパン】の化学式と、モル質量（g/mol）を書け。', answer:'C₃H₈ ／ 44 g/mol', explain:'C:12×3 + H:1×8'},
+      {subject:'【エチレン】の化学式と、モル質量（g/mol）を書け。', answer:'C₂H₄ ／ 28 g/mol', explain:'C:12×2 + H:1×4'},
+      {subject:'【アセチレン】の化学式と、モル質量（g/mol）を書け。', answer:'C₂H₂ ／ 26 g/mol', explain:'C:12×2 + H:1×2'},
+      {subject:'【エタノール】の化学式と、モル質量（g/mol）を書け。', answer:'C₂H₅OH ／ 46 g/mol', explain:'C:12×2 + H:1×6 + O:16'},
+      {subject:'【メタノール】の化学式と、モル質量（g/mol）を書け。', answer:'CH₃OH ／ 32 g/mol', explain:'C:12 + H:1×4 + O:16'},
+      {subject:'【グルコース（ブドウ糖）】の化学式と、モル質量（g/mol）を書け。', answer:'C₆H₁₂O₆ ／ 180 g/mol', explain:'C:12×6 + H:1×12 + O:16×6'},
+      {subject:'【酢酸】の化学式と、モル質量（g/mol）を書け。', answer:'CH₃COOH ／ 60 g/mol', explain:'C:12×2 + H:1×4 + O:16×2'},
+      {subject:'【塩化水素】の化学式と、モル質量（g/mol）を書け。', answer:'HCl ／ 36.5 g/mol', explain:'H:1 + Cl:35.5'},
+      {subject:'【硫化水素】の化学式と、モル質量（g/mol）を書け。', answer:'H₂S ／ 34 g/mol', explain:'H:1×2 + S:32'},
+      {subject:'【二酸化硫黄】の化学式と、モル質量（g/mol）を書け。', answer:'SO₂ ／ 64 g/mol', explain:'S:32 + O:16×2'},
+      {subject:'【三酸化硫黄】の化学式と、モル質量（g/mol）を書け。', answer:'SO₃ ／ 80 g/mol', explain:'S:32 + O:16×3'},
+      {subject:'【一酸化窒素】の化学式と、モル質量（g/mol）を書け。', answer:'NO ／ 30 g/mol', explain:'N:14 + O:16'},
+      {subject:'【二酸化窒素】の化学式と、モル質量（g/mol）を書け。', answer:'NO₂ ／ 46 g/mol', explain:'N:14 + O:16×2'},
+      {subject:'【オゾン】の化学式と、モル質量（g/mol）を書け。', answer:'O₃ ／ 48 g/mol', explain:'O:16×3'},
+      {subject:'【過酸化水素】の化学式と、モル質量（g/mol）を書け。', answer:'H₂O₂ ／ 34 g/mol', explain:'H:1×2 + O:16×2'},
+      {subject:'【硫酸】の化学式と、モル質量（g/mol）を書け。', answer:'H₂SO₄ ／ 98 g/mol', explain:'H:1×2 + S:32 + O:16×4'},
+      {subject:'【硝酸】の化学式と、モル質量（g/mol）を書け。', answer:'HNO₃ ／ 63 g/mol', explain:'H:1 + N:14 + O:16×3'},
+      {subject:'【炭酸】の化学式と、モル質量（g/mol）を書け。', answer:'H₂CO₃ ／ 62 g/mol', explain:'H:1×2 + C:12 + O:16×3'},
+      {subject:'【リン酸】の化学式と、モル質量（g/mol）を書け。', answer:'H₃PO₄ ／ 98 g/mol', explain:'H:1×3 + P:31 + O:16×4'},
+      {subject:'【塩化ナトリウム】の化学式と、モル質量（g/mol）を書け。', answer:'NaCl ／ 58.5 g/mol', explain:'Na:23 + Cl:35.5'},
+      {subject:'【塩化カリウム】の化学式と、モル質量（g/mol）を書け。', answer:'KCl ／ 74.5 g/mol', explain:'K:39 + Cl:35.5'},
+      {subject:'【塩化カルシウム】の化学式と、モル質量（g/mol）を書け。', answer:'CaCl₂ ／ 111 g/mol', explain:'Ca:40 + Cl:35.5×2'},
+      {subject:'【塩化マグネシウム】の化学式と、モル質量（g/mol）を書け。', answer:'MgCl₂ ／ 95 g/mol', explain:'Mg:24 + Cl:35.5×2'},
+      {subject:'【塩化アルミニウム】の化学式と、モル質量（g/mol）を書け。', answer:'AlCl₃ ／ 133.5 g/mol', explain:'Al:27 + Cl:35.5×3'},
+      {subject:'【塩化アンモニウム】の化学式と、モル質量（g/mol）を書け。', answer:'NH₄Cl ／ 53.5 g/mol', explain:'N:14 + H:1×4 + Cl:35.5'},
+      {subject:'【塩化バリウム】の化学式と、モル質量（g/mol）を書け。', answer:'BaCl₂ ／ 208 g/mol', explain:'Ba:137 + Cl:35.5×2'},
+      {subject:'【水酸化ナトリウム】の化学式と、モル質量（g/mol）を書け。', answer:'NaOH ／ 40 g/mol', explain:'Na:23 + O:16 + H:1'},
+      {subject:'【水酸化カリウム】の化学式と、モル質量（g/mol）を書け。', answer:'KOH ／ 56 g/mol', explain:'K:39 + O:16 + H:1'},
+      {subject:'【水酸化カルシウム】の化学式と、モル質量（g/mol）を書け。', answer:'Ca(OH)₂ ／ 74 g/mol', explain:'Ca:40 + (O:16+H:1)×2'},
+      {subject:'【水酸化マグネシウム】の化学式と、モル質量（g/mol）を書け。', answer:'Mg(OH)₂ ／ 58 g/mol', explain:'Mg:24 + (O:16+H:1)×2'},
+      {subject:'【水酸化バリウム】の化学式と、モル質量（g/mol）を書け。', answer:'Ba(OH)₂ ／ 171 g/mol', explain:'Ba:137 + (O:16+H:1)×2'},
+      {subject:'【水酸化アルミニウム】の化学式と、モル質量（g/mol）を書け。', answer:'Al(OH)₃ ／ 78 g/mol', explain:'Al:27 + (O:16+H:1)×3'},
+      {subject:'【炭酸ナトリウム】の化学式と、モル質量（g/mol）を書け。', answer:'Na₂CO₃ ／ 106 g/mol', explain:'Na:23×2 + C:12 + O:16×3'},
+      {subject:'【炭酸水素ナトリウム】の化学式と、モル質量（g/mol）を書け。', answer:'NaHCO₃ ／ 84 g/mol', explain:'Na:23 + H:1 + C:12 + O:16×3'},
+      {subject:'【炭酸カルシウム】の化学式と、モル質量（g/mol）を書け。', answer:'CaCO₃ ／ 100 g/mol', explain:'Ca:40 + C:12 + O:16×3'},
+      {subject:'【炭酸カリウム】の化学式と、モル質量（g/mol）を書け。', answer:'K₂CO₃ ／ 138 g/mol', explain:'K:39×2 + C:12 + O:16×3'},
+      {subject:'【硫酸ナトリウム】の化学式と、モル質量（g/mol）を書け。', answer:'Na₂SO₄ ／ 142 g/mol', explain:'Na:23×2 + S:32 + O:16×4'},
+      {subject:'【硫酸カリウム】の化学式と、モル質量（g/mol）を書け。', answer:'K₂SO₄ ／ 174 g/mol', explain:'K:39×2 + S:32 + O:16×4'},
+      {subject:'【硫酸カルシウム】の化学式と、モル質量（g/mol）を書け。', answer:'CaSO₄ ／ 136 g/mol', explain:'Ca:40 + S:32 + O:16×4'},
+      {subject:'【硫酸バリウム】の化学式と、モル質量（g/mol）を書け。', answer:'BaSO₄ ／ 233 g/mol', explain:'Ba:137 + S:32 + O:16×4'},
+      {subject:'【硫酸銅(II)】の化学式と、モル質量（g/mol）を書け。', answer:'CuSO₄ ／ 160 g/mol', explain:'Cu:64 + S:32 + O:16×4'},
+      {subject:'【硫酸アンモニウム】の化学式と、モル質量（g/mol）を書け。', answer:'(NH₄)₂SO₄ ／ 132 g/mol', explain:'(N:14+H:1×4)×2 + S:32 + O:16×4'},
+      {subject:'【硫酸アルミニウム】の化学式と、モル質量（g/mol）を書け。', answer:'Al₂(SO₄)₃ ／ 342 g/mol', explain:'Al:27×2 + (S:32+O:16×4)×3'},
+      {subject:'【硝酸ナトリウム】の化学式と、モル質量（g/mol）を書け。', answer:'NaNO₃ ／ 85 g/mol', explain:'Na:23 + N:14 + O:16×3'},
+      {subject:'【硝酸カリウム】の化学式と、モル質量（g/mol）を書け。', answer:'KNO₃ ／ 101 g/mol', explain:'K:39 + N:14 + O:16×3'},
+      {subject:'【硝酸銀】の化学式と、モル質量（g/mol）を書け。', answer:'AgNO₃ ／ 170 g/mol', explain:'Ag:108 + N:14 + O:16×3'},
+      {subject:'【硝酸カルシウム】の化学式と、モル質量（g/mol）を書け。', answer:'Ca(NO₃)₂ ／ 164 g/mol', explain:'Ca:40 + (N:14+O:16×3)×2'},
+      {subject:'【酸化カルシウム】の化学式と、モル質量（g/mol）を書け。', answer:'CaO ／ 56 g/mol', explain:'Ca:40 + O:16'},
+      {subject:'【酸化マグネシウム】の化学式と、モル質量（g/mol）を書け。', answer:'MgO ／ 40 g/mol', explain:'Mg:24 + O:16'},
+      {subject:'【酸化アルミニウム】の化学式と、モル質量（g/mol）を書け。', answer:'Al₂O₃ ／ 102 g/mol', explain:'Al:27×2 + O:16×3'},
+      {subject:'【酸化銅(II)】の化学式と、モル質量（g/mol）を書け。', answer:'CuO ／ 80 g/mol', explain:'Cu:64 + O:16'},
+      {subject:'【酸化鉄(III)】の化学式と、モル質量（g/mol）を書け。', answer:'Fe₂O₃ ／ 160 g/mol', explain:'Fe:56×2 + O:16×3'},
+      {subject:'【酸化ナトリウム】の化学式と、モル質量（g/mol）を書け。', answer:'Na₂O ／ 62 g/mol', explain:'Na:23×2 + O:16'},
+      {subject:'【二酸化ケイ素】の化学式と、モル質量（g/mol）を書け。', answer:'SiO₂ ／ 60 g/mol', explain:'Si:28 + O:16×2'},
+      {subject:'【二酸化マンガン】の化学式と、モル質量（g/mol）を書け。', answer:'MnO₂ ／ 87 g/mol', explain:'Mn:55 + O:16×2'},
+      {subject:'【硫化鉄(II)】の化学式と、モル質量（g/mol）を書け。', answer:'FeS ／ 88 g/mol', explain:'Fe:56 + S:32'},
+      {subject:'【ヨウ化カリウム】の化学式と、モル質量（g/mol）を書け。', answer:'KI ／ 166 g/mol', explain:'K:39 + I:127'},
+      {subject:'【臭化カリウム】の化学式と、モル質量（g/mol）を書け。', answer:'KBr ／ 119 g/mol', explain:'K:39 + Br:80'},
+      {subject:'【硫酸銅(II)五水和物】の化学式と、モル質量（g/mol）を書け。', answer:'CuSO₄·5H₂O ／ 250 g/mol', explain:'CuSO₄:160 + H₂O:18×5'},
+    ]
+  },
+
   alkali: {
     group:'inorg',
     title:'アルカリ金属', icon:'🧂', color:'#B5342B', type:'choice', pick:12,
@@ -1467,13 +1767,13 @@ const CHEM_DATA = {
   precipitate: {
     group:'precip',
     title:'沈殿・錯イオン', icon:'🧫', color:'#6B7A8F', type:'multi', pick:10,
-    sub:'試薬と選択肢が毎回ランダム',
+    sub:'沈殿の有無・色｜毎回ランダム',
     dynamic:true,
     gen:function(n){ return chemGenPrecipSet(n); }
   }
 
 };
-const CHEM_ORDER = ['knowledge','separation','symbol','econfig','ion','element','formula','lewis','knowledge2','mole','concentration','alkali','alkaliearth','nspal','halogen','h2so4no3','industrial','gasprep','gasequation','precipitate'];
+const CHEM_ORDER = ['knowledge','separation','symbol','econfig','ion','element','formula','lewis','knowledge2','mole','concentration','molname','molformula','molmass','alkali','alkaliearth','nspal','halogen','h2so4no3','industrial','gasprep','gasequation','precipitate'];
 
 let chemCur=null, chemIdx=0, chemScore=0, chemQset=[];
 
@@ -1508,44 +1808,106 @@ function chemResetMastered(partKey){
 /* ========================================================= */
 
 /* 出題対象の金属イオン（沈殿するかどうかを試薬ごとに定義） */
-const PPT_IONS = ['Ag⁺','Pb²⁺','Ba²⁺','Ca²⁺','Sr²⁺','Cu²⁺','Zn²⁺','Al³⁺','Fe³⁺','Fe²⁺','Ni²⁺','Mg²⁺','Sn²⁺','Na⁺','K⁺','NH₄⁺'];
+/* 出題対象の金属イオン（沈殿するかどうかを試薬ごとに定義） */
+const PPT_IONS = ['Ag⁺','Pb²⁺','Ba²⁺','Ca²⁺','Sr²⁺','Cu²⁺','Zn²⁺','Al³⁺','Fe³⁺','Fe²⁺','Sn²⁺','Na⁺','K⁺','NH₄⁺'];
 
-/* 各試薬について「沈殿する（または溶ける）イオン」を定義 */
+/* 各試薬について「沈殿する（または溶ける）イオン」を定義
+   hit     : 沈殿する（NaOH過剰・NH₃過剰では「溶ける」）イオン
+   exclude : その試薬では判定が割れる／高校範囲で問われないので選択肢に出さないイオン
+   note    : 解答時に出す解説                                            */
 const PPT_RULES = [
   { key:'Cl',    label:'塩化物イオン Cl⁻',      ask:'加えると沈殿する',   verb:'沈殿する',
     hit:['Ag⁺','Pb²⁺'],
     note:'塩化物で沈殿するのは Ag⁺・Pb²⁺ だけ。「銀・鉛」。AgCl は白、PbCl₂ は白（熱水に溶ける）。' },
+
   { key:'SO4',   label:'硫酸イオン SO₄²⁻',      ask:'加えると沈殿する',   verb:'沈殿する',
-    hit:['Ba²⁺','Ca²⁺','Sr²⁺','Pb²⁺'],
-    exclude:['Ag⁺'],   /* Ag₂SO₄ は微溶で「沈殿する／しない」が割れるため出題しない */
-    note:'アルカリ土類金属（Ca・Sr・Ba）＋ Pb²⁺。「バリウム・カルシウム・鉛」。すべて白色沈殿。' },
+    hit:['Ba²⁺','Ca²⁺','Pb²⁺'],
+    /* Ag₂SO₄ は微溶で判定が割れる。Sr²⁺ は高校ではほぼ問われないので出題しない */
+    exclude:['Ag⁺','Sr²⁺'],
+    note:'まずは Ba²⁺・Ca²⁺・Pb²⁺。すべて白色沈殿。BaSO₄ は塩酸にも溶けず、X線撮影の造影剤に使う。（発展：Sr²⁺ も同じく沈殿する）' },
+
   { key:'CO3',   label:'炭酸イオン CO₃²⁻',      ask:'加えると沈殿する',   verb:'沈殿する',
-    hit:['Ca²⁺','Ba²⁺','Sr²⁺','Ag⁺','Cu²⁺','Zn²⁺','Fe²⁺','Ni²⁺','Mg²⁺','Pb²⁺'],
-    note:'炭酸塩はアルカリ金属（Na⁺・K⁺）と NH₄⁺ 以外はほとんど沈殿する。塩酸を加えると CO₂ を出して溶ける。' },
+    hit:['Ca²⁺','Ba²⁺'],
+    /* 高校ではほぼ Ca・Ba しか問われないので、沈殿する側は Ca・Ba のみを正解にする。
+       Al³⁺・Fe³⁺・Sn²⁺ は炭酸塩が加水分解して沈殿しないので、ダミーとしてそのまま使える。 */
+    exclude:['Sr²⁺','Ag⁺','Cu²⁺','Zn²⁺','Fe²⁺','Pb²⁺'],
+    note:'まずは Ca²⁺・Ba²⁺ の2つ。どちらも白色沈殿（CaCO₃・BaCO₃）で、塩酸を加えると CO₂ を出して溶ける。（発展：Sr²⁺・Ag⁺・Cu²⁺・Zn²⁺・Pb²⁺ なども炭酸塩は沈殿する。アルカリ金属イオンと NH₄⁺ 以外はほぼ沈殿すると考えてよい）' },
+
   { key:'CrO4',  label:'クロム酸イオン CrO₄²⁻', ask:'加えると沈殿する',   verb:'沈殿する',
     hit:['Ag⁺','Pb²⁺','Ba²⁺'],
-    note:'Ag⁺（暗赤）・Pb²⁺（黄）・Ba²⁺（黄）の3つ。「銀・鉛・バリウム」。' },
-  { key:'S_acid',label:'硫化水素 H₂S（酸性条件）', ask:'通じると沈殿する', verb:'沈殿する',
+    note:'Ag⁺（暗赤色）・Pb²⁺（黄色）・Ba²⁺（黄色）の3つ。「銀・鉛・バリウム」。' },
+
+  { key:'S_acid',label:'硫化水素 H₂S（酸性条件）', ask:'通じると沈殿する', askNeg:'通じても沈殿しない', verb:'沈殿する',
     hit:['Ag⁺','Pb²⁺','Cu²⁺'],
-    note:'イオン化傾向が Sn より小さい金属（Cu・Ag・Pb）は酸性でも硫化物が沈殿。すべて黒色。' },
-  { key:'S_base',label:'硫化水素 H₂S（塩基性条件）', ask:'通じると沈殿する', verb:'沈殿する',
-    hit:['Ag⁺','Pb²⁺','Cu²⁺','Zn²⁺','Fe²⁺','Ni²⁺'],
-    note:'塩基性では Zn²⁺（白）・Fe²⁺（黒）・Ni²⁺（黒）も加わる。Na⁺・K⁺・Al³⁺ は条件によらず沈殿しない。' },
+    note:'イオン化傾向が Sn より小さい金属（Cu・Ag・Pb）は酸性でも硫化物が沈殿。CuS・Ag₂S・PbS はすべて黒色。※Fe³⁺ は H₂S に還元されて Fe²⁺ になるが（Fe³⁺ + H₂S → Fe²⁺ + S）、酸性では FeS は沈殿しないので、沈殿としては現れない。' },
+
+  { key:'S_base',label:'硫化水素 H₂S（塩基性条件）', ask:'通じると沈殿する', askNeg:'通じても沈殿しない', verb:'沈殿する',
+    hit:['Ag⁺','Pb²⁺','Cu²⁺','Zn²⁺','Fe²⁺','Fe³⁺'],
+    note:'塩基性では Zn²⁺（白色）・Fe²⁺（黒色）も加わる。Fe³⁺ は H₂S に還元されて Fe²⁺ になり、黒色の FeS として沈殿する。Na⁺・K⁺・Al³⁺ は条件によらず沈殿しない。' },
+
   { key:'OH_few',label:'水酸化ナトリウム NaOH（少量）', ask:'加えると沈殿する', verb:'沈殿する',
-    hit:['Ag⁺','Pb²⁺','Cu²⁺','Zn²⁺','Al³⁺','Fe³⁺','Fe²⁺','Ni²⁺','Mg²⁺','Sn²⁺'],
-    note:'アルカリ金属イオン・NH₄⁺・アルカリ土類金属イオン以外はほぼ水酸化物が沈殿する。' },
-  { key:'NaOH_ex', label:'水酸化ナトリウム NaOH（過剰）', ask:'加えると錯イオンになって溶ける', verb:'溶ける',
+    hit:['Ag⁺','Pb²⁺','Cu²⁺','Zn²⁺','Al³⁺','Fe³⁺','Fe²⁺','Sn²⁺'],
+    note:'アルカリ金属イオン・NH₄⁺・アルカリ土類金属イオン以外はほぼ水酸化物が沈殿する。Ag⁺ だけは AgOH ではなく褐色の Ag₂O になる。' },
+
+  { key:'NaOH_ex', label:'水酸化ナトリウム NaOH（過剰）', ask:'加えると錯イオンになって溶ける', askNeg:'加えても溶けずに沈殿が残る', verb:'溶ける',
     hit:['Al³⁺','Zn²⁺','Sn²⁺','Pb²⁺'],
     note:'両性元素「ああすんなり（Al・Zn・Sn・Pb）」。[Al(OH)₄]⁻・[Zn(OH)₄]²⁻ などになる。' },
-  { key:'NH3_ex',  label:'アンモニア水 NH₃（過剰）',      ask:'加えると錯イオンになって溶ける', verb:'溶ける',
-    hit:['Ag⁺','Cu²⁺','Zn²⁺','Ni²⁺'],
-    note:'「銀・銅・亜鉛・ニッケル」。[Ag(NH₃)₂]⁺・[Cu(NH₃)₄]²⁺（深青）・[Zn(NH₃)₄]²⁺。Al³⁺ が溶けないのが NaOH との違い。' }
+
+  { key:'NH3_ex',  label:'アンモニア水 NH₃（過剰）',      ask:'加えると錯イオンになって溶ける', askNeg:'加えても溶けずに沈殿が残る', verb:'溶ける',
+    hit:['Ag⁺','Cu²⁺','Zn²⁺'],
+    note:'「銀・銅・亜鉛」。[Ag(NH₃)₂]⁺・[Cu(NH₃)₄]²⁺（深青色）・[Zn(NH₃)₄]²⁺。Al³⁺ が溶けないのが NaOH との違い。' }
+];
+
+/* --- 沈殿の色（沈殿名 → 色）。色あてクイズに使う --- */
+const PPT_COLORS = [
+  { name:'AgCl',      color:'白',     note:'塩化銀。光に当てると分解して黒くなる（感光性）。過剰アンモニア水に溶けて [Ag(NH₃)₂]⁺ になる。' },
+  { name:'AgBr',      color:'淡黄',   note:'臭化銀。写真フィルムに使われた。' },
+  { name:'AgI',       color:'黄',     note:'ヨウ化銀。ハロゲン化銀は Cl→Br→I の順に色が濃くなる。' },
+  { name:'Ag₂CrO₄',   color:'暗赤',   note:'クロム酸銀。クロム酸塩のなかでこれだけ暗赤色（他は黄色）。' },
+  { name:'Ag₂O',      color:'褐',     note:'酸化銀。Ag⁺ に NaOH を加えると AgOH ではなくこれが沈殿する。' },
+  { name:'Ag₂S',      color:'黒',     note:'硫化銀。硫化物はほとんど黒色。' },
+  { name:'PbCl₂',     color:'白',     note:'塩化鉛(II)。熱水を加えると溶けるのが特徴。' },
+  { name:'PbSO₄',     color:'白',     note:'硫酸鉛(II)。' },
+  { name:'PbCrO₄',    color:'黄',     note:'クロム酸鉛(II)。黄色顔料に使われた。' },
+  { name:'PbS',       color:'黒',     note:'硫化鉛(II)。酢酸鉛紙が黒変するのは、これができるから。' },
+  { name:'BaSO₄',     color:'白',     note:'硫酸バリウム。塩酸にも溶けず、X線撮影の造影剤に使う。' },
+  { name:'BaCrO₄',    color:'黄',     note:'クロム酸バリウム。' },
+  { name:'BaCO₃',     color:'白',     note:'炭酸バリウム。塩酸を加えると CO₂ を出して溶ける。' },
+  { name:'CaCO₃',     color:'白',     note:'炭酸カルシウム。石灰水に CO₂ を通じたときの白濁の正体。' },
+  { name:'CaSO₄',     color:'白',     note:'硫酸カルシウム。セッコウの主成分。' },
+  { name:'CuS',       color:'黒',     note:'硫化銅(II)。酸性でも沈殿する。' },
+  { name:'Cu(OH)₂',   color:'青白',   note:'水酸化銅(II)。過剰アンモニア水に溶けて深青色の [Cu(NH₃)₄]²⁺ になる。' },
+  { name:'ZnS',       color:'白',     note:'硫化亜鉛。硫化物のなかで数少ない「黒くない」もの。塩基性でのみ沈殿。' },
+  { name:'Zn(OH)₂',   color:'白',     note:'水酸化亜鉛。過剰の NaOH にも過剰のアンモニア水にも溶ける。' },
+  { name:'Al(OH)₃',   color:'白',     note:'水酸化アルミニウム。両性水酸化物で、過剰 NaOH に溶けるが過剰 NH₃ には溶けない。' },
+  { name:'Fe(OH)₃',   color:'赤褐',   note:'水酸化鉄(III)。Fe³⁺ の検出に使う。' },
+  { name:'Fe(OH)₂',   color:'緑白',   note:'水酸化鉄(II)。空気中で酸化されて赤褐色の Fe(OH)₃ になる。' },
+  { name:'FeS',       color:'黒',     note:'硫化鉄(II)。塩基性でのみ沈殿。' }
+];
+
+/* --- 水溶液そのものに色がついている金属イオン --- */
+const ION_COLORS = [
+  { name:'Cu²⁺',            color:'青',     note:'銅(II)イオン。硫酸銅(II)水溶液の青色。' },
+  { name:'Fe²⁺',            color:'淡緑',   note:'鉄(II)イオン。酸化されると黄褐色の Fe³⁺ になる。' },
+  { name:'Fe³⁺',            color:'黄褐',   note:'鉄(III)イオン。' },
+  { name:'Ni²⁺',            color:'緑',     note:'ニッケル(II)イオン。' },
+  { name:'Cr³⁺',            color:'緑',     note:'クロム(III)イオン。' },
+  { name:'Mn²⁺',            color:'淡桃',   note:'マンガン(II)イオン。ほとんど無色に近い淡いピンク。' },
+  { name:'MnO₄⁻',           color:'赤紫',   note:'過マンガン酸イオン。酸化剤として使うと Mn²⁺（ほぼ無色）に変わる。' },
+  { name:'CrO₄²⁻',          color:'黄',     note:'クロム酸イオン。塩基性で安定。酸を加えると Cr₂O₇²⁻（橙赤）に変わる。' },
+  { name:'Cr₂O₇²⁻',         color:'橙赤',   note:'二クロム酸イオン。酸性で安定。塩基を加えると CrO₄²⁻（黄）に変わる。' },
+  { name:'[Cu(NH₃)₄]²⁺',    color:'深青',   note:'テトラアンミン銅(II)イオン。Cu²⁺ に過剰のアンモニア水を加えるとできる。' },
+  { name:'Ag⁺',             color:'無色',   note:'銀イオンの水溶液は無色。沈殿には色がつくものが多い。' },
+  { name:'Zn²⁺',            color:'無色',   note:'亜鉛イオンの水溶液は無色。' },
+  { name:'Al³⁺',            color:'無色',   note:'アルミニウムイオンの水溶液は無色。' },
+  { name:'Na⁺',             color:'無色',   note:'アルカリ金属イオンの水溶液は無色。' },
+  { name:'Ca²⁺',            color:'無色',   note:'アルカリ土類金属イオンの水溶液は無色。' }
 ];
 
 /* 沈殿問題を1問ぶんランダムに組み立てる
    - 試薬をランダムに選ぶ
-   - 「する側」から1〜3個、「しない側」から埋めて計6〜8択にする
-   - 正解が0個にならないよう必ず1個以上入れる                   */
+   - 「する側」「しない側」の在庫に合わせて 6〜8択をつくる
+   - 正解が0個／全部正解にならないよう個数を調整する               */
 function chemGenPrecipQ(rule, positive){
   const ex   = rule.exclude || [];
   const pool = PPT_IONS.filter(i=> ex.indexOf(i)<0);   // その試薬で判定が割れるイオンは除外
@@ -1557,9 +1919,9 @@ function chemGenPrecipQ(rule, positive){
 
   // 選択肢は 6〜8 個。ただし「正解側」「ダミー側」の在庫を超えられない
   const total = Math.min(6 + Math.floor(Math.random()*3), want.length + other.length);
-  // ダミーは 1個以上・在庫まで。残りが正解になるので、正解も1個以上になるよう調整
+  // ダミーは1個以上・在庫まで。正解側の在庫が足りないぶんはダミーで埋める
   const maxDummy = Math.min(other.length, total-1);
-  const minDummy = Math.max(1, total - want.length);   // 正解側の在庫が足りないぶんはダミーで埋める
+  const minDummy = Math.max(1, total - want.length);
   const nDummy = minDummy + Math.floor(Math.random()*(maxDummy - minDummy + 1));
   const nAns   = total - nDummy;
 
@@ -1569,32 +1931,113 @@ function chemGenPrecipQ(rule, positive){
 
   const head = positive
     ? rule.label+'を'+rule.ask+'金属イオンをすべて選べ。'
-    : rule.label+'を'+rule.ask.replace(/沈殿する/,'沈殿しない').replace(/錯イオンになって溶ける/,'加えても溶けずに沈殿が残る')+'金属イオンをすべて選べ。';
+    : rule.label+'を'+(rule.askNeg || rule.ask.replace(/沈殿する/,'沈殿しない'))+'金属イオンをすべて選べ。';
 
+  return { type:'multi', subject:head, answers:answers, choices:choices, explain:rule.note, _dyn:true };
+}
+
+/* --- 単発の固定問題（動的パートに混ぜる。ひっかけ・特記事項用） --- */
+const PPT_SPECIALS = [
+  { type:'choice', subject:'酸性条件で Fe³⁺ の水溶液に H₂S を通じるとどうなる？',
+    answer:'還元されて Fe²⁺ になるが、沈殿はしない',
+    choices:['還元されて Fe²⁺ になるが、沈殿はしない','黒色の FeS が沈殿する','赤褐色の Fe(OH)₃ が沈殿する','変化しない'],
+    explain:'Fe³⁺ + H₂S → Fe²⁺ + S。H₂S は還元剤なので Fe³⁺ を Fe²⁺ に還元する。ただし Fe²⁺ は酸性では硫化物が沈殿しないので、沈殿としては現れない（淡黄色の S は析出する）。' },
+  { type:'choice', subject:'塩基性条件で Fe³⁺ の水溶液に H₂S を通じるとどうなる？',
+    answer:'還元されて Fe²⁺ になり、黒色の FeS が沈殿する',
+    choices:['還元されて Fe²⁺ になり、黒色の FeS が沈殿する','Fe³⁺ のまま Fe₂S₃ が沈殿する','沈殿しない','白色の FeS が沈殿する'],
+    explain:'まず H₂S に還元されて Fe³⁺ → Fe²⁺ となり、塩基性では Fe²⁺ の硫化物が沈殿するので、黒色の FeS が得られる。Fe³⁺ の硫化物（Fe₂S₃）ができるわけではない点に注意。' },
+  { type:'choice', subject:'Fe³⁺ に H₂S を通じたとき、同時に析出する淡黄色の物質は？',
+    answer:'S（硫黄）',
+    choices:['S（硫黄）','FeS','Fe(OH)₃','Fe₂O₃'],
+    explain:'H₂S が還元剤としてはたらいて酸化され、硫黄 S になる。Fe³⁺ + H₂S → Fe²⁺ + S。' },
+  { type:'choice', subject:'H₂S が Fe³⁺ を Fe²⁺ に変えるのは、H₂S がどうはたらくから？',
+    answer:'還元剤',
+    choices:['還元剤','酸化剤','触媒','乾燥剤'],
+    explain:'H₂S は電子を与える性質が強い代表的な還元剤。相手（Fe³⁺）を還元して自分は S に酸化される。' },
+  { type:'choice', subject:'Fe²⁺ の水溶液に塩基性条件で H₂S を通じるとどうなる？',
+    answer:'黒色の FeS が沈殿する',
+    choices:['黒色の FeS が沈殿する','白色の FeS が沈殿する','還元されて Fe になる','変化しない'],
+    explain:'Fe²⁺ は塩基性・中性でのみ硫化物が沈殿する。酸性では沈殿しない。' },
+  { type:'choice', subject:'Ag⁺ に少量の NaOH を加えると生じる褐色の沈殿は？',
+    answer:'Ag₂O',
+    choices:['Ag₂O','AgOH','Ag₂CO₃','AgCl'],
+    explain:'AgOH は不安定ですぐ分解し、褐色の酸化銀 Ag₂O になる。' },
+  { type:'choice', subject:'Fe(OH)₂ を空気中に放置するとどうなる？',
+    answer:'酸化されて赤褐色の Fe(OH)₃ になる',
+    choices:['酸化されて赤褐色の Fe(OH)₃ になる','溶けて無色になる','黒くなる','変化しない'],
+    explain:'緑白色の Fe(OH)₂ は空気酸化を受けやすく、赤褐色の Fe(OH)₃ に変わる。' }
+];
+
+/* 色あて問題：「この沈殿は何色？」（4択） */
+function chemGenColorQ(list, unit){
+  const item = chemSample(list, 1)[0];
+  // ダミーは「色の名前」の重複を除いてから選ぶ（白が2つ並ぶのを防ぐ）
+  const otherColors = [];
+  list.forEach(x=>{ if(x.color!==item.color && otherColors.indexOf(x.color)<0) otherColors.push(x.color); });
+  if(otherColors.length<3) return null;
+  const choices = chemSample([item.color].concat(chemSample(otherColors, 3)));
+  return {
+    type:'choice',
+    subject: item.name+' の'+unit+'は何色？',
+    answer: item.color,
+    choices: choices,
+    explain: item.note,
+    _dyn:true
+  };
+}
+
+/* 色あて問題（逆引き）：「〇色の沈殿はどれ？」（複数選択） */
+function chemGenColorPickQ(list, unit){
+  // 同じ色のものが2つ以上ある色を選ぶ
+  const byColor = {};
+  list.forEach(x=>{ (byColor[x.color]=byColor[x.color]||[]).push(x); });
+  const usable = Object.keys(byColor).filter(c=> byColor[c].length>=2 && list.length-byColor[c].length>=2);
+  if(!usable.length) return null;
+  const color = chemSample(usable,1)[0];
+  const hit  = byColor[color];
+  const miss = list.filter(x=>x.color!==color);
+
+  const nAns   = Math.min(hit.length, 1 + Math.floor(Math.random()*3));
+  const total  = Math.min(6 + Math.floor(Math.random()*2), nAns + miss.length);
+  const nDummy = total - nAns;
+  const answers = chemSample(hit, nAns).map(x=>x.name);
+  const dummies = chemSample(miss, nDummy).map(x=>x.name);
   return {
     type:'multi',
-    subject: head,
+    subject: color+'色の'+unit+'をすべて選べ。',
     answers: answers,
-    choices: choices,
-    explain: rule.note,
-    _dyn: true
+    choices: chemSample(answers.concat(dummies)),
+    explain: hit.map(x=>x.name+'＝'+x.color).join('　/　'),
+    _dyn:true
   };
 }
 
 /* 沈殿パートの1セット（n問）を生成。試薬が偏らないよう順に回す */
 function chemGenPrecipSet(n){
-  const rules = chemSample(PPT_RULES);   // 試薬の順番をシャッフル
+  const rules = chemSample(PPT_RULES);       // 試薬の順番をシャッフル
+  const specials = chemSample(PPT_SPECIALS); // 特記問題の順番もシャッフル
   const out = [];
-  let i = 0;
-  let guard = 0;
+  let i = 0, s = 0, guard = 0;
   while(out.length < n && guard < n*20){
     guard++;
-    const rule = rules[i % rules.length];
-    i++;
-    // 「する側」を6割、「しない側」を4割くらいで出す
-    const positive = Math.random() < 0.6;
-    const q = chemGenPrecipQ(rule, positive);
-    if(q) out.push(q);
+    const roll = Math.random();
+    let q = null;
+    if(roll < 0.15){
+      q = chemGenColorQ(PPT_COLORS, '沈殿');        // 沈殿の色あて（4択）
+    } else if(roll < 0.22){
+      q = chemGenColorPickQ(PPT_COLORS, '沈殿');    // 色から沈殿を選ぶ（複数）
+    } else if(roll < 0.31){
+      q = chemGenColorQ(ION_COLORS, '水溶液');      // イオンそのものの色（4択）
+    } else if(roll < 0.42){
+      q = specials[s % specials.length]; s++;       // ひっかけ・特記事項
+      q = Object.assign({}, q, {choices: chemSample(q.choices), _dyn:true});
+    } else {
+      const rule = rules[i % rules.length]; i++;
+      // 「する側」を6割、「しない側」を4割くらいで出す
+      q = chemGenPrecipQ(rule, Math.random() < 0.6);
+    }
+    // 同じ問題文が同一セットに入らないようにする
+    if(q && !out.some(o=>o.subject===q.subject)) out.push(q);
   }
   return out;
 }
