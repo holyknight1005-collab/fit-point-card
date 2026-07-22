@@ -3520,6 +3520,12 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:360px;max-height:86vh;overflow-y:auto">
           <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">☎️ 架電を記録</div>
           <div id="todo-call-target" style="font-size:11px;color:var(--muted);margin-bottom:12px"></div>
+          <div class="form-label">かけた日時</div>
+          <div style="display:flex;gap:8px;margin-bottom:4px">
+            <input type="date" id="todo-call-date" class="form-input-sm" style="flex:1.4;min-width:0">
+            <input type="time" id="todo-call-time" class="form-input-sm" style="flex:1;min-width:0">
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:12px">記録した日時が初期値です。あとから入力する場合は変更してください。</div>
           <div class="form-label">結果</div>
           <div id="todo-call-results" style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px"></div>
           <div class="form-label">メモ（任意）</div>
@@ -4718,7 +4724,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702del';
+const APP_VERSION = '20260702dem';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -14614,6 +14620,25 @@ function callResultDef(key) {
   return CALL_RESULTS.find(r => r.key === key) || { key: key, label: key || '—', icon: '☎️', connected: false };
 }
 
+// 現在のJST日時を {date:'YYYY-MM-DD', time:'HH:MM'} で返す。
+// getTodayJST() は日付文字列しか返さないため、時刻はここで別に組み立てる。
+function jstNowParts() {
+  const jst = new Date(Date.now() + 9 * 3600 * 1000); // UTCに+9してUTCゲッタで読む
+  const p = n => String(n).padStart(2, '0');
+  return {
+    date: jst.getUTCFullYear() + '-' + p(jst.getUTCMonth() + 1) + '-' + p(jst.getUTCDate()),
+    time: p(jst.getUTCHours()) + ':' + p(jst.getUTCMinutes())
+  };
+}
+// JSTの日付＋時刻（'YYYY-MM-DD','HH:MM'）を timestamptz 用のISO文字列に変換する。
+// new Date('YYYY-MM-DD HH:MM') は環境依存なので使わず、+09:00 を明示して組み立てる。
+function jstToIso(dateStr, timeStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ''))) return null;
+  const t = /^\d{2}:\d{2}$/.test(String(timeStr || '')) ? timeStr : '00:00';
+  const d = new Date(dateStr + 'T' + t + ':00+09:00');
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 let todoCallTargetId = null;   // 記録対象のToDo id
 let todoCallTargetDue = null;  // そのToDoの現在の期日
 let todoCallResult = 'no_answer';
@@ -14671,6 +14696,12 @@ function openTodoCall(id, title, due) {
   if (t) t.textContent = title || '';
   const note = document.getElementById('todo-call-note');
   if (note) note.value = '';
+  // かけた日時の初期値＝今（JST）。あとから記録する場合は手で直せる。
+  const nowJst = jstNowParts();
+  const dEl = document.getElementById('todo-call-date');
+  const tEl = document.getElementById('todo-call-time');
+  if (dEl) dEl.value = nowJst.date;
+  if (tEl) tEl.value = nowJst.time;
   renderTodoCallResults();
   renderTodoCallHistory();
   const box = document.getElementById('todo-call-box');
@@ -14765,12 +14796,17 @@ async function saveTodoCallLog() {
   if (!todoCallTargetId) return;
   const note = document.getElementById('todo-call-note').value.trim();
   const def = callResultDef(todoCallResult);
+  const dVal = (document.getElementById('todo-call-date') || {}).value || '';
+  const tVal = (document.getElementById('todo-call-time') || {}).value || '';
+  if (!dVal) { showToast('かけた日付を入力してください', 'error'); return; }
+  const calledIso = jstToIso(dVal, tVal || '00:00');
+  if (!calledIso) { showToast('日時の形式が正しくありません', 'error'); return; }
   showLoading('記録中...');
   try {
     await sbPost('todo_call_logs', {
       todo_id: todoCallTargetId,
       staff_id: currentStaff.id,
-      called_at: new Date().toISOString(),
+      called_at: calledIso,
       result: todoCallResult,
       note: note || null
     });
