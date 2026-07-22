@@ -4431,10 +4431,16 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
             各スタッフが生徒分析タブで見られる項目と、対象の学校範囲を設定します。未設定のスタッフは何も見られません（管理者は常に全部見られます）。
           </div>
           <div style="border:1px solid #C9E0F5;border-radius:8px;padding:10px;margin-bottom:14px;background:#F4F9FE">
-            <div style="font-size:12px;font-weight:800;color:#1E4276;margin-bottom:4px">🏫 学校担当をまとめて設定</div>
-            <div style="font-size:10px;color:var(--muted);line-height:1.5;margin-bottom:8px">全スタッフの担当校を一覧でチェックして、一括保存できます。「全校」にチェックすると全ての学校を担当します（＝制限なし）。</div>
+            <div style="font-size:12px;font-weight:800;color:#1E4276;margin-bottom:4px">👀 閲覧できる学校をまとめて設定</div>
+            <div style="font-size:10px;color:var(--muted);line-height:1.5;margin-bottom:8px">生徒分析などで<b>見られる範囲</b>です。「全校」にチェックすると全ての学校を閲覧できます（＝制限なし）。ToDoの配布先とは別なので、下の「担当している学校」もあわせて設定してください。</div>
             <div id="perm-bulk-school-area" style="overflow-x:auto"><div style="font-size:12px;color:var(--muted);padding:6px">読み込み中…</div></div>
-            <button class="form-btn" onclick="saveBulkSchoolScope()" style="margin-top:10px">💾 学校担当をまとめて保存</button>
+            <button class="form-btn" onclick="saveBulkSchoolScope()" style="margin-top:10px">💾 閲覧範囲をまとめて保存</button>
+          </div>
+          <div style="border:1px solid #F5D9B0;border-radius:8px;padding:10px;margin-bottom:14px;background:#FFFAF2">
+            <div style="font-size:12px;font-weight:800;color:#8A5A16;margin-bottom:4px">🏫 担当している学校をまとめて設定（ToDoの配布先）</div>
+            <div style="font-size:10px;color:var(--muted);line-height:1.5;margin-bottom:8px">定例ToDoや「学校担当へ」の依頼は、<b>ここにチェックした学校ぶんだけ</b>届きます。上の閲覧範囲とは独立しているので、<b>全校を閲覧できる人にも担当校をつけられます</b>。担当が無い人は空のままにしてください。「SSS」は「その他」も含みます。</div>
+            <div id="perm-bulk-charge-area" style="overflow-x:auto"><div style="font-size:12px;color:var(--muted);padding:6px">読み込み中…</div></div>
+            <button class="form-btn" onclick="saveBulkChargeSchools()" style="margin-top:10px">💾 担当校をまとめて保存</button>
           </div>
           <div><div class="form-label">スタッフを選択（項目権限の詳細設定）</div>
             <select class="form-select" id="perm-staff-select" onchange="loadStaffPermEditor()"><option value="">選択してください</option></select>
@@ -4837,7 +4843,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dez';
+const APP_VERSION = '20260702dfa';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29801,6 +29807,7 @@ async function initStaffPermUI() {
         '<option value="' + escapeHtml(s.staff_id) + '">' + escapeHtml(s.staff_id + '：' + s.name) + '</option>').join('');
   } catch (e) {}
   renderBulkSchoolScope();
+  renderBulkChargeSchools();
 }
 
 // 全スタッフの学校担当を一覧表で表示（一括編集用）
@@ -29840,6 +29847,90 @@ async function renderBulkSchoolScope() {
   });
   html += '</tbody></table>';
   area.innerHTML = html;
+}
+
+// 全スタッフの「担当している学校」を一覧表で表示（ToDo配布先・一括編集用）
+// 閲覧範囲とは独立。「全校」列は作らない（担当は必ず明示列挙する方針のため）
+async function renderBulkChargeSchools() {
+  const area = document.getElementById('perm-bulk-charge-area');
+  if (!area) return;
+  area.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:6px">読み込み中…</div>';
+  let staffs = [], perms = [];
+  try {
+    staffs = await sbGet('staff', 'is_active=eq.true&select=staff_id,name,role&order=staff_id') || [];
+    perms = await sbGet('staff_permissions', 'select=staff_id,charge_schools') || [];
+  } catch (e) {
+    area.innerHTML = '<div style="font-size:12px;color:#C0392B;padding:6px">取得に失敗しました（charge_schools 列が未作成の可能性）。</div>';
+    return;
+  }
+  const chargeByStaff = {};
+  perms.forEach(p => { chargeByStaff[p.staff_id] = Array.isArray(p.charge_schools) ? p.charge_schools : []; });
+  const targets = staffs.filter(s => s.role !== 'admin');
+  if (!targets.length) { area.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:6px">対象スタッフがいません。</div>'; return; }
+
+  let html = '<table style="border-collapse:collapse;font-size:11px;white-space:nowrap"><thead><tr>' +
+    '<th style="position:sticky;left:0;background:var(--surface);padding:4px 8px;text-align:left;border-bottom:1px solid var(--border)">スタッフ</th>';
+  TODO_TARGET_SCHOOLS.forEach(sc => { html += '<th style="padding:4px 6px;border-bottom:1px solid var(--border)">' + escapeHtml(sc === 'SSS' ? 'SSS/その他' : sc) + '</th>'; });
+  html += '<th style="padding:4px 6px;border-bottom:1px solid var(--border)">クリア</th></tr></thead><tbody>';
+  targets.forEach(s => {
+    const charge = chargeByStaff[s.staff_id] || [];
+    html += '<tr data-staff="' + escapeAttr(s.staff_id) + '">';
+    html += '<td style="position:sticky;left:0;background:var(--surface);padding:4px 8px;border-bottom:1px solid var(--border);font-weight:700">' + escapeHtml(s.name || s.staff_id) + '<span style="font-size:9px;color:var(--muted)"> ' + escapeHtml(s.staff_id) + '</span></td>';
+    TODO_TARGET_SCHOOLS.forEach(sc => {
+      html += '<td style="padding:4px 6px;text-align:center;border-bottom:1px solid var(--border)"><input type="checkbox" class="bulk-charge-cb" data-staff="' + escapeAttr(s.staff_id) + '" value="' + escapeAttr(sc) + '"' + (isStaffInChargeOf(charge, sc) ? ' checked' : '') + '></td>';
+    });
+    html += '<td style="padding:4px 6px;text-align:center;border-bottom:1px solid var(--border)"><button onclick="clearBulkChargeRow(\'' + escapeAttr(s.staff_id) + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">×</button></td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  area.innerHTML = html;
+}
+
+// その行の担当校チェックを全部外す
+function clearBulkChargeRow(sid) {
+  document.querySelectorAll('.bulk-charge-cb[data-staff="' + sid + '"]').forEach(cb => { cb.checked = false; });
+}
+
+// 全スタッフの担当校を一括保存（upsert）
+async function saveBulkChargeSchools() {
+  const rows = document.querySelectorAll('#perm-bulk-charge-area tr[data-staff]');
+  if (!rows.length) return;
+  showLoading('保存中...');
+  let ok = 0, err = 0;
+  try {
+    // 既存を取得（perms / school_scope を保持したまま charge_schools だけ更新するため）
+    let existing = [];
+    try { existing = await sbGet('staff_permissions', 'select=staff_id,perms') || []; } catch (e) {}
+    const permsByStaff = {};
+    existing.forEach(p => { permsByStaff[p.staff_id] = p.perms || {}; });
+    const existingSet = new Set(existing.map(p => p.staff_id));
+
+    for (const tr of rows) {
+      const sid = tr.getAttribute('data-staff');
+      const sel = [];
+      tr.querySelectorAll('.bulk-charge-cb:checked').forEach(cb => {
+        sel.push(cb.value);
+        // SSSにチェックがあれば「その他」も保持する（生徒側の表記ゆれ受け皿）
+        if (cb.value === 'SSS') sel.push('その他');
+      });
+      const payload = { charge_schools: sel, updated_at: new Date().toISOString() };
+      try {
+        if (existingSet.has(sid)) {
+          await sbPatch('staff_permissions', 'staff_id=eq.' + encodeURIComponent(sid), payload);
+        } else {
+          // 新規行は school_scope を触らない（既定に任せる）
+          await sbPost('staff_permissions', Object.assign({ staff_id: sid, perms: permsByStaff[sid] || {} }, payload));
+        }
+        ok++;
+      } catch (e) { err++; }
+    }
+    hideLoading();
+    showToast('🏫 担当校を保存しました（' + ok + '件' + (err ? '／失敗' + err : '') + '）', err ? 'error' : 'success');
+    renderBulkChargeSchools();
+  } catch (e) {
+    hideLoading();
+    showToast('保存に失敗: ' + (e && e.message ? e.message : e), 'error');
+  }
 }
 
 // 「全校」チェックのトグルで、その行の学校チェックを無効化/有効化
