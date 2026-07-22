@@ -4724,7 +4724,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dem';
+const APP_VERSION = '20260702den';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -14815,7 +14815,7 @@ async function saveTodoCallLog() {
     if (!def.connected) {
       const nd = todoCallNextDue(todoCallTargetDue);
       if (nd) {
-        await sbPatch('staff_todos', 'id=eq.' + todoCallTargetId, { due_date: nd, due_updated_at: new Date().toISOString() });
+        await patchTodoDue('id=eq.' + todoCallTargetId, nd);
         moved = nd;
       }
     }
@@ -15108,12 +15108,25 @@ function closeTodoDueEdit() {
   editingTodoId = null;
 }
 
+// 期日を更新する。due_updated_at 列が未適用の環境では、その列を外して保存し直す。
+// （列が無いまま PATCH すると PGRST204 で保存自体が失敗するため）
+async function patchTodoDue(idFilter, newDue) {
+  const body = { due_date: newDue || null };
+  try {
+    await sbPatch('staff_todos', idFilter, Object.assign({}, body, { due_updated_at: new Date().toISOString() }));
+  } catch (e) {
+    if (/due_updated_at|PGRST204|column|400/i.test(String(e && e.message || e))) {
+      await sbPatch('staff_todos', idFilter, body);
+    } else throw e;
+  }
+}
+
 async function saveTodoDue() {
   if (!editingTodoId) return;
   const newDue = document.getElementById('todo-due-edit-input').value;
   showLoading('変更中...');
   try {
-    await sbPatch('staff_todos', 'id=eq.' + editingTodoId, { due_date: newDue || null, due_updated_at: new Date().toISOString() });
+    await patchTodoDue('id=eq.' + editingTodoId, newDue);
     hideLoading();
     showToast('📅 期日を変更しました', 'success');
     closeTodoDueEdit();
