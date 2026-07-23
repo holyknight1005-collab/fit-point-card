@@ -3873,6 +3873,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="att-matrix-view" style="display:none">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px">
           <span style="font-size:11px;color:var(--muted);flex:1">🔵青セル（来塾から自動）は1タップでそのまま○確定。違う子だけ、もう一度タップで ✕欠席 → <span style="color:#6B4FA0;font-weight:700">◐補習</span> に。下の「🔵全員そのまま確定」で青を一括確定、「保存」で確定。</span>
+          <span onclick="toggleAttSortMode()" id="att-sortbtn" style="font-size:11px;color:var(--orange-d);cursor:pointer;white-space:nowrap;border:1px solid var(--border);border-radius:6px;padding:4px 8px">🔤 あいうえお順</span>
           <span onclick="toggleAttGroupBySchool()" id="att-groupbtn" style="font-size:11px;color:var(--orange-d);cursor:pointer;white-space:nowrap;border:1px solid var(--border);border-radius:6px;padding:4px 8px">🏫 学校別 ▢</span>
         </div>
         <div style="font-size:10px;color:#185FA5;margin-bottom:8px">🔵 青いセルは来塾記録からの自動推定（未保存）です。タップ・保存で正式記録になります。</div>
@@ -4852,7 +4853,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dfc';
+const APP_VERSION = '20260702dfe';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -23535,8 +23536,11 @@ async function loadAttMatrix() {
     const checkins = await sbGet('checkins',
       'student_id=in.(' + studentIds.join(',') + ')&checkin_date=gte.' + minD +
       '&checkin_date=lte.' + maxD + '&select=student_id,checkin_date,created_at,checkout_time') || [];
+    // 保存済みの並び順を読んでから描画する（授業ごとに共有）
+    await loadAttCustomOrder(classId);
     hideLoading();
     buildAttMatrix(sessions, studentIds, atts, checkins);
+    attMatrix.classMasterId = classId;
     renderAttMatrix();
   } catch (e) {
     hideLoading();
@@ -23650,17 +23654,21 @@ function attRowRateHtml(sid) {
     (rate === null ? '—' : rate + '%') + '</td>';
 }
 
-function attStudentCellHtml(s) {
+function attStudentCellHtml(s, drag) {
   const avatar = s.photo_url
     ? '<div style="width:28px;height:28px;border-radius:50%;background-image:url(' + s.photo_url + ');background-size:cover;background-position:center;flex-shrink:0"></div>'
     : '<div style="width:28px;height:28px;border-radius:50%;background:var(--orange-l);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--orange-d);flex-shrink:0">' + escapeHtml((s.name||'?').charAt(0)) + '</div>';
   const sub = [s.grade ? s.grade + '年' : '', s.school || ''].filter(Boolean).join(' ');
+  const handle = drag
+    ? '<span style="font-size:13px;color:var(--muted);cursor:grab;flex-shrink:0;user-select:none" title="ドラッグして並び替え">⋮⋮</span>'
+    : '';
   return '<td style="position:sticky;left:0;background:var(--surface);padding:5px 8px;border-right:1px solid var(--border);z-index:1">' +
-    '<div onclick="openInterviewKarte(\'' + escapeAttr(s.id) + '\',\'att\')" style="display:flex;align-items:center;gap:7px;white-space:nowrap;cursor:pointer" title="カルテを開く">' + avatar +
+    '<div style="display:flex;align-items:center;gap:6px">' + handle +
+    '<div onclick="openInterviewKarte(\'' + escapeAttr(s.id) + '\',\'att\')" style="display:flex;align-items:center;gap:7px;white-space:nowrap;cursor:pointer;min-width:0" title="カルテを開く">' + avatar +
     '<div style="min-width:0"><div style="font-size:12px;color:var(--text)">' + escapeHtml(s.name||'(不明)') +
       '<span style="font-size:10px;color:var(--muted);margin-left:4px">›</span></div>' +
     (sub ? '<div style="font-size:9px;color:var(--muted)">' + escapeHtml(sub) + '</div>' : '') +
-    '</div></div></td>';
+    '</div></div></div></td>';
 }
 
 function attMatrixHeaderHtml() {
@@ -23693,6 +23701,163 @@ function attMatrixCycleLabel(info) {
   return info.cycle_month + '-' + circledNum(info.cycle_no);            // 通常＝7-①
 }
 
+// ===== 出席簿の並び順（授業ごとに共有・ドラッグで変更） =====
+// 'kana' = あいうえお順（既定） / 'custom' = 講師が並べた順
+let attSortMode = 'kana';
+let attCustomOrder = [];        // student_id の配列
+let attOrderDirty = false;      // 未保存の並び替えがあるか
+let attDragSrcId = null;
+
+// その授業の保存済み並び順を読む。無ければ空配列。
+async function loadAttCustomOrder(classMasterId) {
+  attCustomOrder = [];
+  attSortMode = 'kana';
+  attOrderDirty = false;
+  if (!classMasterId) return;
+  try {
+    const rows = await sbGet('class_student_order',
+      'class_master_id=eq.' + classMasterId + '&select=student_ids') || [];
+    const ids = rows.length && Array.isArray(rows[0].student_ids) ? rows[0].student_ids : [];
+    if (ids.length) { attCustomOrder = ids; attSortMode = 'custom'; }
+  } catch (e) { /* テーブル未作成でも表示は妨げない */ }
+}
+
+// 並び順に載っていない生徒（新規入塾など）は末尾に回す。
+// 保存済みIDのうち、今この授業に居ない生徒は無視する。
+function applyAttCustomOrder(students) {
+  const pos = {};
+  attCustomOrder.forEach((id, i) => { pos[id] = i; });
+  const known = [], unknown = [];
+  students.forEach(s => { (pos[s.id] != null ? known : unknown).push(s); });
+  known.sort((a, b) => pos[a.id] - pos[b.id]);
+  unknown.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ja'));
+  return known.concat(unknown);
+}
+
+function toggleAttSortMode() {
+  if (attGroupBySchool) {
+    showToast('「🏫 学校別」を外すと並び替えできます', 'info');
+    return;
+  }
+  if (attSortMode === 'custom' && attOrderDirty) {
+    if (!confirm('保存していない並び順があります。\nあいうえお順に切り替えると失われます。よろしいですか？')) return;
+    attOrderDirty = false;
+  }
+  attSortMode = (attSortMode === 'custom') ? 'kana' : 'custom';
+  // 初めてカスタムにするときは、今の表示順を初期値にする
+  if (attSortMode === 'custom' && !attCustomOrder.length && attMatrix) {
+    attCustomOrder = [...attMatrix.students]
+      .sort((a, b) => ((a.school||'')+(a.grade||'')+(a.name||''))
+        .localeCompare((b.school||'')+(b.grade||'')+(b.name||''), 'ja'))
+      .map(s => s.id);
+  }
+  renderAttMatrix();
+}
+
+function updateAttSortBtn() {
+  const b = document.getElementById('att-sortbtn');
+  if (!b) return;
+  // 学校別グループ表示中は学校ごとの並びが優先されるので、並び替えは使えない
+  if (attGroupBySchool) {
+    b.textContent = '🔤 並び順（学校別中は無効）';
+    b.style.color = 'var(--muted)';
+    b.style.opacity = '0.55';
+    return;
+  }
+  b.style.opacity = '1';
+  b.textContent = (attSortMode === 'custom')
+    ? ('✋ オリジナル順' + (attOrderDirty ? '（未保存）' : ''))
+    : '🔤 あいうえお順';
+  b.style.color = attOrderDirty ? 'var(--red)' : 'var(--orange-d)';
+}
+
+// ---- ドラッグ&ドロップ ----
+function attDragStart(ev, sid) {
+  attDragSrcId = sid;
+  try { ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('text/plain', sid); } catch (e) {}
+}
+function attDragOver(ev) {
+  if (!attDragSrcId) return;
+  ev.preventDefault();
+  try { ev.dataTransfer.dropEffect = 'move'; } catch (e) {}
+  const tr = ev.currentTarget;
+  if (tr) tr.style.borderTop = '2px solid var(--orange)';
+}
+function attDragLeave(ev) {
+  const tr = ev.currentTarget;
+  if (tr) tr.style.borderTop = '1px solid var(--border)';
+}
+function attDrop(ev, targetId) {
+  ev.preventDefault();
+  const tr = ev.currentTarget;
+  if (tr) tr.style.borderTop = '1px solid var(--border)';
+  const src = attDragSrcId;
+  attDragSrcId = null;
+  if (!src || src === targetId) return;
+  // 現在の表示順を基準に組み替える
+  const order = attCustomOrder.length ? [...attCustomOrder] : attMatrix.students.map(s => s.id);
+  const from = order.indexOf(src);
+  const to = order.indexOf(targetId);
+  if (from < 0 || to < 0) return;
+  order.splice(from, 1);
+  order.splice(to, 0, src);
+  attCustomOrder = order;
+  attSortMode = 'custom';
+  attOrderDirty = true;
+  renderAttMatrix();
+}
+
+async function saveAttCustomOrder() {
+  const cid = attMatrix && attMatrix.classMasterId;
+  if (!cid) { showToast('対象の授業が特定できません', 'error'); return; }
+  if (!attCustomOrder.length) { showToast('並び順がありません', 'error'); return; }
+  showLoading('並び順を保存中...');
+  try {
+    const existing = await sbGet('class_student_order',
+      'class_master_id=eq.' + cid + '&select=class_master_id') || [];
+    const payload = {
+      student_ids: attCustomOrder,
+      updated_by: currentStaff ? currentStaff.id : null,
+      updated_at: new Date().toISOString()
+    };
+    if (existing.length) {
+      await sbPatch('class_student_order', 'class_master_id=eq.' + cid, payload);
+    } else {
+      await sbPost('class_student_order', Object.assign({ class_master_id: cid }, payload));
+    }
+    attOrderDirty = false;
+    hideLoading();
+    showToast('✅ 並び順を保存しました（この授業の全員に反映）', 'success');
+    renderAttMatrix();
+  } catch (e) {
+    hideLoading();
+    showToast('保存エラー: ' + e.message + '（class_student_order テーブル未作成の可能性）', 'error');
+  }
+}
+
+// 保存済みの並び順を消して、あいうえお順に戻す
+async function resetAttCustomOrder() {
+  const cid = attMatrix && attMatrix.classMasterId;
+  if (!cid) return;
+  if (!confirm('この授業の並び順を消して、あいうえお順に戻します。\nよろしいですか？')) return;
+  showLoading('戻しています...');
+  try {
+    const existing = await sbGet('class_student_order',
+      'class_master_id=eq.' + cid + '&select=class_master_id') || [];
+    if (existing.length) {
+      // DELETEは剥がしてあるので、空配列にすることで「並び順なし」を表す
+      await sbPatch('class_student_order', 'class_master_id=eq.' + cid,
+        { student_ids: [], updated_by: currentStaff ? currentStaff.id : null, updated_at: new Date().toISOString() });
+    }
+    attCustomOrder = [];
+    attSortMode = 'kana';
+    attOrderDirty = false;
+    hideLoading();
+    showToast('🔤 あいうえお順に戻しました', 'success');
+    renderAttMatrix();
+  } catch (e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
 function renderAttMatrix() {
   const wrap = document.getElementById('att-matrix-wrap');
   if (!attMatrix || !attMatrix.students.length) return;
@@ -23716,15 +23881,32 @@ function renderAttMatrix() {
       });
     });
   } else {
-    const sorted = [...attMatrix.students].sort((a,b) =>
-      ((a.school||'')+(a.grade||'')+(a.name||'')).localeCompare((b.school||'')+(b.grade||'')+(b.name||''),'ja'));
+    const sorted = (attSortMode === 'custom')
+      ? applyAttCustomOrder(attMatrix.students)
+      : [...attMatrix.students].sort((a,b) =>
+          ((a.school||'')+(a.grade||'')+(a.name||'')).localeCompare((b.school||'')+(b.grade||'')+(b.name||''),'ja'));
+    const drag = (attSortMode === 'custom');
     sorted.forEach(s => {
-      bodyRows += '<tr style="border-top:1px solid var(--border)">' + attStudentCellHtml(s) +
+      const dragAttrs = drag
+        ? ' draggable="true" ondragstart="attDragStart(event,\'' + escapeAttr(s.id) + '\')"'
+          + ' ondragover="attDragOver(event)" ondragleave="attDragLeave(event)"'
+          + ' ondrop="attDrop(event,\'' + escapeAttr(s.id) + '\')" style="border-top:1px solid var(--border);cursor:grab"'
+        : ' style="border-top:1px solid var(--border)"';
+      bodyRows += '<tr' + dragAttrs + '>' + attStudentCellHtml(s, drag) +
         attMatrix.sessKeys.map(k => attCellHtml(s.id, k)).join('') + attRowRateHtml(s.id) + '</tr>';
     });
   }
 
-  wrap.innerHTML = '<table style="border-collapse:collapse;font-size:12px;min-width:100%"><thead>' + header + '</thead><tbody>' + bodyRows + attMatrixFooterHtml() + '</tbody></table>';
+  const orderBar = (attSortMode === 'custom' && !attGroupBySchool)
+    ? '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">'
+      + '<span style="font-size:11px;color:var(--muted);flex:1">⋮⋮ をつまんで行をドラッグすると並び替えできます。保存すると<b>この授業の全員</b>に反映されます。</span>'
+      + (attOrderDirty ? '<button onclick="saveAttCustomOrder()" style="padding:5px 12px;background:var(--orange);border:none;border-radius:7px;color:white;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 並び順を保存</button>' : '')
+      + '<button onclick="resetAttCustomOrder()" style="padding:5px 12px;background:var(--surface);border:1px solid var(--border);border-radius:7px;color:var(--muted);font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🔤 あいうえお順に戻す</button>'
+      + '</div>'
+    : '';
+
+  wrap.innerHTML = orderBar + '<table style="border-collapse:collapse;font-size:12px;min-width:100%"><thead>' + header + '</thead><tbody>' + bodyRows + attMatrixFooterHtml() + '</tbody></table>';
+  updateAttSortBtn();
   updateAttMatrixSaveBtn();
 }
 
@@ -29965,7 +30147,9 @@ async function renderBulkChargeSchools() {
   }
   const chargeByStaff = {};
   perms.forEach(p => { chargeByStaff[p.staff_id] = Array.isArray(p.charge_schools) ? p.charge_schools : []; });
-  const targets = staffs.filter(s => s.role !== 'admin');
+  // 閲覧範囲と違い、担当校はToDoの配布先なので admin も対象に含める
+  // （管理者でも学校担当を持つ人がいるため）
+  const targets = staffs.slice();
   if (!targets.length) { area.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:6px">対象スタッフがいません。</div>'; return; }
 
   let html = '<table style="border-collapse:collapse;font-size:11px;white-space:nowrap"><thead><tr>' +
