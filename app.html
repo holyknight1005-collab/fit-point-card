@@ -3059,6 +3059,10 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <input type="checkbox" id="todo-needs-approval" style="width:15px;height:15px;cursor:pointer;flex-shrink:0;margin-top:1px">
     <span style="font-size:12px;color:var(--text);line-height:1.5">🔍 完了時に自分の承認を必要にする<br><span style="font-size:10px;color:var(--muted)">担当者が完了しても承認待ちになり、承認するまでポイントは付きません</span></span>
   </label>
+  <label id="todo-private-row" style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;padding:9px 11px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm)">
+    <input type="checkbox" id="todo-is-private" style="width:15px;height:15px;cursor:pointer;flex-shrink:0;margin-top:1px">
+    <span style="font-size:12px;color:var(--text);line-height:1.5">🔒 非公開にする（入金チェックなど）<br><span style="font-size:10px;color:var(--muted)">担当者・依頼者・管理者以外には、進捗表や催促を含めて一切表示されません</span></span>
+  </label>
   <button onclick="createStaffTodo()" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📨 依頼する</button>
   <button onclick="createMyTodo()" style="width:100%;padding:11px;background:var(--surface);border:1.5px solid var(--orange);border-radius:var(--radius-sm);color:var(--orange-d);font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">➕ 自分のToDoに追加（担当者選択は不要）</button>
 </div>
@@ -4913,7 +4917,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dfm';
+const APP_VERSION = '20260702dfn';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -12404,9 +12408,10 @@ async function loadStaffMonitor() {
     window._monitorReports = {};
     (reports||[]).forEach(r => { window._monitorReports[r.report_date] = r; });
 
-    // ToDo状況
-    const doneTodos = (todos||[]).filter(t => t.is_done);
-    const pendingTodos = (todos||[]).filter(t => !t.is_done);
+    // ToDo状況（非公開ToDoは他人のモニタからは完全に除外）
+    const visibleTodos = filterVisibleTodos(todos);
+    const doneTodos = visibleTodos.filter(t => t.is_done);
+    const pendingTodos = visibleTodos.filter(t => !t.is_done);
     const todoHtml = '<div class="card-box"><div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">✅ ToDo状況（完了:' + doneTodos.length + ' / 未完了:' + pendingTodos.length + '）</div>' +
       (pendingTodos.length ? pendingTodos.map(t =>
         '<div style="font-size:12px;color:var(--text);padding:5px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px">' +
@@ -14852,6 +14857,7 @@ async function createStaffTodo() {
   const needsApproval = cmode === 'any' ? false : !!document.getElementById('todo-needs-approval')?.checked;
   // 一斉依頼をまとめる真のID。1名でも付けておく（あとから人を足せるように）
   const groupId = newTodoGroupId();
+  const isPrivate = !!document.getElementById('todo-is-private')?.checked;
   showLoading('作成中...');
   try {
     for (const toId of recipients) {
@@ -14862,10 +14868,14 @@ async function createStaffTodo() {
         needs_approval: needsApproval,
         todo_kind: newTodoKind,
         group_id: groupId,
-        completion_mode: cmode
+        completion_mode: cmode,
+        is_private: isPrivate
       }).catch(async (err) => {
         // todo_kind / group_id / completion_mode 列が未適用の環境 → 最小構成で登録
         if (/column|PGRST|400/i.test(String(err && err.message || err))) {
+          // 非公開指定のときは黙って公開ToDoに落とさない。
+          // 列が無いまま登録すると全員に見えてしまうため、ここは失敗させる。
+          if (isPrivate) throw new Error('非公開ToDoに必要な列がまだありません（add_todo_private.sql を実行してください）');
           await sbPost('staff_todos', {
             from_staff_id: currentStaff.id, to_staff_id: toId,
             title, detail, due_date: due || null, needs_approval: needsApproval
@@ -14879,6 +14889,7 @@ async function createStaffTodo() {
     document.getElementById('todo-detail').value = '';
     document.getElementById('todo-due').value = '';
     const naEl = document.getElementById('todo-needs-approval'); if (naEl) naEl.checked = false;
+    const pvEl = document.getElementById('todo-is-private'); if (pvEl) pvEl.checked = false;
     setTodoKind('normal');
     setTodoCompletionMode('each');
     closeTodoCreate();
@@ -14915,6 +14926,7 @@ async function createMyTodo() {
     document.getElementById('todo-title').value = '';
     document.getElementById('todo-detail').value = '';
     document.getElementById('todo-due').value = '';
+    const pvEl2 = document.getElementById('todo-is-private'); if (pvEl2) pvEl2.checked = false;
     setTodoKind('normal');
     setTodoTargetType('person');
     setTodoCompletionMode('each');
@@ -15079,9 +15091,12 @@ async function runRecurringTodoGeneration() {
           completion_mode: cmode,
           show_from: showFrom,
           approver_staff_id: approver,
-          template_id: tpl.id
+          template_id: tpl.id,
+          is_private: !!tpl.is_private
         }).catch(async (err) => {
           if (/column|PGRST|400/i.test(String(err && err.message || err))) {
+            // 非公開テンプレは公開ToDoとして生成しない（このテンプレだけ今月スキップ）
+            if (tpl.is_private) throw new Error('非公開ToDoの列が未適用');
             await sbPost('staff_todos', {
               from_staff_id: currentStaff.id, to_staff_id: toId,
               title: tpl.title, detail: tpl.detail || null, due_date: due
@@ -16032,6 +16047,7 @@ async function loadMyTodos() {
           (!t.is_done && t.needs_approval ? ' <span style="font-size:10px;background:var(--surface2);color:var(--muted);padding:1px 7px;border-radius:10px">承認制</span>' : '') +
         '</div>' +
         '<div style="font-size:10px;color:var(--muted);margin-top:2px">' + (isRecurringTodo(t) ? '🔁 定例' : escapeHtml(t.from?.name||'') + 'から') +
+          (t.is_private ? ' · 🔒 非公開' : '') +
           (t.due_date ? ' · 期限：<span style="color:' + (isOverdue?'var(--red)':'var(--muted)') + ';font-weight:' + (isOverdue?'700':'400') + '">' + t.due_date.replace(/-/g,'/') + (isOverdue?' ⚠️':'') + '</span>' : '') +
         '</div>' +
         (t.detail ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">' + t.detail + '</div>' : '') +
@@ -16059,10 +16075,14 @@ function isRecurringTodo(t) {
 }
 // カードの2行目に出す出所ラベル
 function todoOriginLabel(t) {
+  // 非公開バッジ。担当者に「これは他の人には見えていない」と伝えるため
+  const lock = (t && t.is_private)
+    ? '<span style="font-size:10px;background:#F3EDF7;color:#6B4C86;padding:1px 7px;border-radius:10px;font-weight:700;margin-left:5px">🔒 非公開</span>'
+    : '';
   if (isRecurringTodo(t)) {
-    return '<span style="font-size:10px;background:#EEF3F8;color:#4A6785;padding:1px 7px;border-radius:10px;font-weight:700">🔁 定例</span>';
+    return '<span style="font-size:10px;background:#EEF3F8;color:#4A6785;padding:1px 7px;border-radius:10px;font-weight:700">🔁 定例</span>' + lock;
   }
-  return '<span style="font-size:10px;color:var(--muted)">' + escapeHtml(t.from?.name || '') + 'から</span>';
+  return '<span style="font-size:10px;color:var(--muted)">' + escapeHtml(t.from?.name || '') + 'から</span>' + lock;
 }
 
 // 表示開始日（show_from）が来ていないToDoは担当者から完全に隠す。
@@ -16070,6 +16090,26 @@ function todoOriginLabel(t) {
 function isTodoVisibleNow(t) {
   if (!t || !t.show_from) return true;
   return getTodayJST() >= String(t.show_from);
+}
+
+// ===== 非公開ToDo（dfn） =====
+// 入金チェックなど、担当者と依頼者以外に見せたくない依頼。
+// 注意：これは UI 上の秘匿であって、DB レベルの秘匿ではない。
+// anon キーは全スタッフのアプリに埋まっているため、API を直接叩けば取得できる。
+// 本当に秘匿する必要が出たら Supabase 側の認証を作り直す必要がある。
+function canSeePrivateTodo(t) {
+  if (!t || !t.is_private) return true;              // 非公開でなければ誰でも見える
+  if (!currentStaff) return false;
+  if (currentStaff.role === 'admin') return true;    // 管理者は見える（合意済み）
+  if (t.to_staff_id === currentStaff.id) return true;      // 担当者本人
+  if (t.from_staff_id === currentStaff.id) return true;    // 依頼者本人
+  if (t.approver_staff_id === currentStaff.id) return true; // 承認者に指定された人
+  return false;
+}
+
+// 配列から見えないものを落とす。存在ごと消すので件数にも出ない。
+function filterVisibleTodos(rows) {
+  return (rows || []).filter(canSeePrivateTodo);
 }
 
 // 遅延判定は「担当者が完了を押した日（done_at）」で行う。
@@ -16467,7 +16507,9 @@ async function loadAllTodos() {
   if (!canManage) { allTodosData = []; return; }
   const todos = await sbGet('staff_todos',
     'order=created_at.desc&select=*,from:from_staff_id(name),to:to_staff_id(name,staff_id)') || [];
-  allTodosData = todos;
+  // 非公開ToDoはここで落とす。allTodosData を進捗表・催促・完了率が共有しているため、
+  // 入口で1回落とせば下流すべてから消える（件数・分母にも出ない）
+  allTodosData = filterVisibleTodos(todos);
   renderAllTodos();
   renderTodoMatrix();
   renderTodoFlat();
