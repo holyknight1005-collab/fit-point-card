@@ -4506,6 +4506,12 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
             <div id="perm-bulk-charge-area" style="overflow-x:auto"><div style="font-size:12px;color:var(--muted);padding:6px">読み込み中…</div></div>
             <button class="form-btn" onclick="saveBulkChargeSchools()" style="margin-top:10px">💾 担当校をまとめて保存</button>
           </div>
+          <div style="border:1px solid #CBE3D2;border-radius:8px;padding:10px;margin-bottom:14px;background:#F5FBF7">
+            <div style="font-size:12px;font-weight:800;color:#1E6B42;margin-bottom:4px">🏛 教科部門の所属をまとめて設定</div>
+            <div style="font-size:10px;color:var(--muted);line-height:1.5;margin-bottom:8px">部の運営メンバーです。<b>授業の担当とは別</b>なので、大学生講師のように授業は持つが部には入らない方はチェック不要です。ここにチェックがある人だけが「🏛 教科部門へ」の配布先になります。<b>誰も設定されていない間は、授業担当から自動で判定します。</b></div>
+            <div id="perm-bulk-dept-area" style="overflow-x:auto"><div style="font-size:12px;color:var(--muted);padding:6px">読み込み中…</div></div>
+            <button class="form-btn" onclick="saveBulkDepartments()" style="margin-top:10px">💾 部門所属をまとめて保存</button>
+          </div>
           <div><div class="form-label">スタッフを選択（項目権限の詳細設定）</div>
             <select class="form-select" id="perm-staff-select" onchange="loadStaffPermEditor()"><option value="">選択してください</option></select>
           </div>
@@ -4907,7 +4913,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dfl';
+const APP_VERSION = '20260702dfm';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -15541,6 +15547,9 @@ const SUBJECT_DEPARTMENTS = ['英語', '数学', '国語', '理科', '社会'];
 function subjectDeptLabel(s) { return s + '部'; }
 
 // 教科部門 → { staffIds:[uuid], classes:[{id,name}] }
+// 所属は staff_permissions.departments（明示指定）を優先する。
+// 誰も設定していない間だけ、授業担当から自動判定にフォールバックする
+// （移行期に部門が空になって配布できなくなるのを防ぐため）。
 async function loadSubjectDepartments() {
   const { byTeacher, classById, staffById } = await loadTeacherClassMap();
   const depts = {};
@@ -15548,21 +15557,46 @@ async function loadSubjectDepartments() {
     if (!depts[s]) depts[s] = { subject: s, staffIds: [], classes: [] };
     return depts[s];
   };
-  // 授業をその教科の部門に入れる
+  // 授業をその教科の部門に入れる（授業の集計は担当ベースのまま）
   Object.values(classById).forEach(c => {
     if (!c.subject) return;
     const d = ensure(c.subject);
     if (!d.classes.some(x => x.id === c.id)) d.classes.push({ id: c.id, name: c.name });
   });
-  // 担当している教科の部門にスタッフを入れる
-  Object.keys(byTeacher).forEach(sid => {
-    byTeacher[sid].forEach(c => {
-      if (!c.subject) return;
-      const d = ensure(c.subject);
-      if (d.staffIds.indexOf(sid) < 0) d.staffIds.push(sid);
+
+  // 明示的な所属を読む
+  let explicitAny = false;
+  try {
+    const perms = await sbGet('staff_permissions', 'select=staff_id,departments') || [];
+    // staff_permissions.staff_id は 'fit0NN'、配布に使うのは staff.id(uuid)
+    const uuidByCode = {};
+    Object.values(staffById).forEach(s => {
+      if (s && s.staff_id) uuidByCode[String(s.staff_id).toLowerCase()] = s.id;
     });
-  });
-  return { depts, staffById };
+    perms.forEach(p => {
+      const list = Array.isArray(p.departments) ? p.departments : [];
+      if (!list.length) return;
+      explicitAny = true;
+      const uuid = uuidByCode[String(p.staff_id || '').toLowerCase()];
+      if (!uuid) return;
+      list.forEach(sub => {
+        const d = ensure(sub);
+        if (d.staffIds.indexOf(uuid) < 0) d.staffIds.push(uuid);
+      });
+    });
+  } catch (e) { /* 列が無い環境では自動判定にまかせる */ }
+
+  // 明示指定が1件も無いときだけ、授業担当から自動判定する
+  if (!explicitAny) {
+    Object.keys(byTeacher).forEach(sid => {
+      byTeacher[sid].forEach(c => {
+        if (!c.subject) return;
+        const d = ensure(c.subject);
+        if (d.staffIds.indexOf(sid) < 0) d.staffIds.push(sid);
+      });
+    });
+  }
+  return { depts, staffById, explicitAny };
 }
 
 // 指定した教科部門に所属するスタッフID（ToDo配布先）
@@ -30679,6 +30713,7 @@ async function initStaffPermUI() {
   } catch (e) {}
   renderBulkSchoolScope();
   renderBulkChargeSchools();
+  renderBulkDepartments();
 }
 
 // 全スタッフの学校担当を一覧表で表示（一括編集用）
@@ -30718,6 +30753,82 @@ async function renderBulkSchoolScope() {
   });
   html += '</tbody></table>';
   area.innerHTML = html;
+}
+
+// 全スタッフの教科部門所属を一覧表で表示（部の運営メンバー・一括編集用）
+// 授業の担当とは別。大学生講師など授業は持つが部には入らない人を除けるようにする。
+async function renderBulkDepartments() {
+  const area = document.getElementById('perm-bulk-dept-area');
+  if (!area) return;
+  area.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:6px">読み込み中…</div>';
+  let staffs = [], perms = [];
+  try {
+    staffs = await sbGet('staff', 'is_active=eq.true&select=staff_id,name,role&order=staff_id') || [];
+    perms = await sbGet('staff_permissions', 'select=staff_id,departments') || [];
+  } catch (e) {
+    area.innerHTML = '<div style="font-size:12px;color:#C0392B;padding:6px">取得に失敗しました（departments 列が未作成の可能性）。</div>';
+    return;
+  }
+  const byStaff = {};
+  perms.forEach(p => { byStaff[p.staff_id] = Array.isArray(p.departments) ? p.departments : []; });
+  // 部門は運営メンバーなので admin も含める
+  const targets = staffs.slice();
+  if (!targets.length) { area.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:6px">対象スタッフがいません。</div>'; return; }
+
+  let html = '<table style="border-collapse:collapse;font-size:11px;white-space:nowrap"><thead><tr>' +
+    '<th style="position:sticky;left:0;background:var(--surface);padding:4px 8px;text-align:left;border-bottom:1px solid var(--border)">スタッフ</th>';
+  SUBJECT_DEPARTMENTS.forEach(s => { html += '<th style="padding:4px 6px;border-bottom:1px solid var(--border)">' + escapeHtml(subjectDeptLabel(s)) + '</th>'; });
+  html += '<th style="padding:4px 6px;border-bottom:1px solid var(--border)">クリア</th></tr></thead><tbody>';
+  targets.forEach(s => {
+    const mine = byStaff[s.staff_id] || [];
+    html += '<tr data-staff="' + escapeAttr(s.staff_id) + '">';
+    html += '<td style="position:sticky;left:0;background:var(--surface);padding:4px 8px;border-bottom:1px solid var(--border);font-weight:700">' + escapeHtml(s.name || s.staff_id) + '<span style="font-size:9px;color:var(--muted)"> ' + escapeHtml(s.staff_id) + '</span></td>';
+    SUBJECT_DEPARTMENTS.forEach(sub => {
+      html += '<td style="padding:4px 6px;text-align:center;border-bottom:1px solid var(--border)"><input type="checkbox" class="bulk-dept-cb" data-staff="' + escapeAttr(s.staff_id) + '" value="' + escapeAttr(sub) + '"' + (mine.indexOf(sub) >= 0 ? ' checked' : '') + '></td>';
+    });
+    html += '<td style="padding:4px 6px;text-align:center;border-bottom:1px solid var(--border)"><button onclick="clearBulkDeptRow(\'' + escapeAttr(s.staff_id) + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">×</button></td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  area.innerHTML = html;
+}
+
+function clearBulkDeptRow(sid) {
+  document.querySelectorAll('.bulk-dept-cb[data-staff="' + sid + '"]').forEach(cb => { cb.checked = false; });
+}
+
+async function saveBulkDepartments() {
+  const rows = document.querySelectorAll('#perm-bulk-dept-area tr[data-staff]');
+  if (!rows.length) return;
+  showLoading('保存中...');
+  let ok = 0, err = 0;
+  try {
+    let existing = [];
+    try { existing = await sbGet('staff_permissions', 'select=staff_id,perms') || []; } catch (e) {}
+    const permsByStaff = {};
+    existing.forEach(p => { permsByStaff[p.staff_id] = p.perms || {}; });
+    const existingSet = new Set(existing.map(p => p.staff_id));
+    for (const tr of rows) {
+      const sid = tr.getAttribute('data-staff');
+      const sel = [];
+      tr.querySelectorAll('.bulk-dept-cb:checked').forEach(cb => sel.push(cb.value));
+      const payload = { departments: sel, updated_at: new Date().toISOString() };
+      try {
+        if (existingSet.has(sid)) {
+          await sbPatch('staff_permissions', 'staff_id=eq.' + encodeURIComponent(sid), payload);
+        } else {
+          await sbPost('staff_permissions', Object.assign({ staff_id: sid, perms: permsByStaff[sid] || {} }, payload));
+        }
+        ok++;
+      } catch (e) { err++; }
+    }
+    hideLoading();
+    showToast('🏛 部門所属を保存しました（' + ok + '件' + (err ? '／失敗' + err : '') + '）', err ? 'error' : 'success');
+    renderBulkDepartments();
+  } catch (e) {
+    hideLoading();
+    showToast('保存に失敗: ' + (e && e.message ? e.message : e), 'error');
+  }
 }
 
 // 全スタッフの「担当している学校」を一覧表で表示（ToDo配布先・一括編集用）
