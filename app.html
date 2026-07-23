@@ -3163,6 +3163,37 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     </div>
   </div>
 </div>
+<div id="tsushin-edit-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:640;align-items:center;justify-content:center">
+  <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:400px;max-height:88vh;overflow-y:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <span style="font-size:15px;font-weight:700;color:var(--orange-d)">📡 通学設定</span>
+      <button onclick="closeTsushinEdit()" style="font-size:18px;color:var(--muted);background:none;border:none;cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="tsushin-edit-name" style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:12px"></div>
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div>
+        <div class="form-label">通学曜日</div>
+        <div id="tsushin-day-chips" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        <div style="font-size:10px;color:var(--muted);margin-top:5px">標準は月・木。人により+金。</div>
+      </div>
+      <div style="display:flex;gap:10px">
+        <div style="flex:1">
+          <div class="form-label">登校</div>
+          <input class="form-input-sm" id="tsushin-start" type="time" step="300">
+        </div>
+        <div style="flex:1">
+          <div class="form-label">下校</div>
+          <input class="form-input-sm" id="tsushin-end" type="time" step="300">
+        </div>
+      </div>
+      <div>
+        <div class="form-label">メモ（任意）</div>
+        <textarea id="tsushin-note" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;height:54px;resize:none;font-family:'Noto Sans JP',sans-serif" placeholder="通学に関する個別事情など"></textarea>
+      </div>
+      <button onclick="saveTsushinEdit()" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">保存する</button>
+    </div>
+  </div>
+</div>
 <div id="end-reason-modal" style="display:none;position:fixed;inset:0;z-index:670;background:rgba(0,0,0,0.55);align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:400px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
@@ -4917,7 +4948,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dfo';
+const APP_VERSION = '20260702dfp';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -27062,6 +27093,23 @@ function karteLoadProfile(s) {
   }
   html += row('希望科目', s.desired_subjects);
 
+  // --- 通信コース（該当者のみ・権限あり） ---
+  if (isTsushinStudent(s) && canSeeTsushin()) {
+    html += '<div style="font-size:11px;font-weight:700;color:var(--muted);margin:10px 0 2px">📡 通信コース</div>';
+    const dayTxt = tsushinDayLabel(s.tsushin_days) ||
+      (tsushinDayLabel(TSUSHIN_DEFAULT_DAYS) + '（既定）');
+    html += row('通学曜日', dayTxt);
+    html += row('登校時間', tsushinTimeLabel(s));
+    if (s.tsushin_note) html += row('メモ', s.tsushin_note);
+    html += '<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">' +
+      '<button onclick="openTsushinEdit(\'' + s.id + '\')" style="padding:5px 12px;background:var(--surface);border:1px solid var(--border);border-radius:7px;font-size:11px;cursor:pointer;color:var(--text);font-family:\'Noto Sans JP\',sans-serif">✏️ 通学設定を変更</button>' +
+      '<button onclick="setTsushinFlag(\'' + s.id + '\',false)" style="padding:5px 12px;background:var(--surface);border:1px solid var(--border);border-radius:7px;font-size:11px;cursor:pointer;color:var(--muted);font-family:\'Noto Sans JP\',sans-serif">通信コースから外す</button>' +
+      '</div>';
+  } else if (canSeeTsushin()) {
+    // 通信コースへの登録導線。通信担当のスタッフにだけ出す。
+    html += '<div style="margin-top:10px"><button onclick="setTsushinFlag(\'' + s.id + '\',true)" style="padding:5px 12px;background:var(--surface);border:1px dashed var(--border);border-radius:7px;font-size:11px;cursor:pointer;color:var(--muted);font-family:\'Noto Sans JP\',sans-serif">📡 通信コースに設定する</button></div>';
+  }
+
   el.innerHTML = karteSecShell('👤 プロフィール', html);
 }
 
@@ -30631,6 +30679,179 @@ const DASHBOARD_PERM_ITEM = { key: 'dashboard', label: '経営サマリー（ホ
 const TODO_PERM_ITEM = { key: 'todo_manager', label: 'TODO管理者（全員のToDo進捗を閲覧）' };
 // 過去在籍の手入力：分析タブの「過去の在籍を手入力（学校×学年×月）」を編集できる
 const ANNUAL_INPUT_PERM_ITEM = { key: 'annual_input', label: '過去在籍の手入力（学校×学年×月の人数入力）' };
+// 通信：通信コースの生徒情報・レポート進捗を閲覧できる（dfp）
+const TSUSHIN_PERM_ITEM = { key: 'tsushin', label: '通信コース（通学曜日・レポート進捗の閲覧／編集）' };
+
+// ===== 通信コース（dfp） =====
+// 通学は9:20〜14:00、月・木がスタンダードで人により+金。曜日は生徒ごとに持つ。
+const TSUSHIN_DEFAULT_START = '9:20';
+const TSUSHIN_DEFAULT_END   = '14:00';
+const TSUSHIN_DEFAULT_DAYS  = [1, 4];           // 月・木
+const TSUSHIN_DAY_LABELS    = ['日','月','火','水','木','金','土'];
+// 通学曜日として選べるのは平日のみ
+const TSUSHIN_SELECTABLE_DAYS = [1, 2, 3, 4, 5];
+
+function isTsushinStudent(s) {
+  return !!(s && s.is_tsushin);
+}
+
+// 通信コースを扱えるか。admin は saCanView 側で常に true になる。
+function canSeeTsushin() {
+  return (typeof saCanView === 'function') ? saCanView('tsushin') : false;
+}
+
+// [1,4] → '月・木'。未設定なら既定（月・木）を薄く出すのではなく「未設定」と明示する。
+function tsushinDayLabel(days) {
+  const a = Array.isArray(days) ? days.slice().sort((x, y) => x - y) : [];
+  if (!a.length) return '';
+  return a.map(d => TSUSHIN_DAY_LABELS[d] || '?').join('・');
+}
+
+// 登校時間の表示。未設定なら既定値を使う（生徒ごとに変えられるが、通常は9:20〜14:00）
+function tsushinTimeLabel(s) {
+  const st = (s && s.tsushin_start) || TSUSHIN_DEFAULT_START;
+  const en = (s && s.tsushin_end)   || TSUSHIN_DEFAULT_END;
+  return st + '〜' + en;
+}
+
+// その生徒にとって指定日が通学日か。曜日未設定なら既定（月・木）で判定する。
+// dateISO は 'YYYY-MM-DD' 文字列。JSTズレを避けるため new Date(y,m-1,d) で作る。
+function isTsushinSchoolDay(s, dateISO) {
+  if (!isTsushinStudent(s) || !dateISO) return false;
+  const p = String(dateISO).split('-');
+  if (p.length !== 3) return false;
+  const dow = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])).getDay();
+  const days = (Array.isArray(s.tsushin_days) && s.tsushin_days.length)
+    ? s.tsushin_days : TSUSHIN_DEFAULT_DAYS;
+  return days.indexOf(dow) >= 0;
+}
+
+// 通信コースの設定／解除。初回設定時は既定の曜日・時間を入れておく。
+async function setTsushinFlag(sid, on) {
+  if (!canSeeTsushin()) { showToast('権限がありません', 'error'); return; }
+  if (!on && !confirm('この生徒を通信コースから外しますか？\n（通学曜日などの設定は残ります）')) return;
+  showLoading('保存中...');
+  try {
+    const body = { is_tsushin: !!on };
+    if (on) {
+      // 初回だけ既定値を入れる。既に設定済みなら上書きしない。
+      const cur = (typeof karteStudent !== 'undefined' && karteStudent && karteStudent.id === sid) ? karteStudent : null;
+      if (!cur || !Array.isArray(cur.tsushin_days) || !cur.tsushin_days.length) {
+        body.tsushin_days = TSUSHIN_DEFAULT_DAYS.slice();
+        body.tsushin_start = TSUSHIN_DEFAULT_START;
+        body.tsushin_end = TSUSHIN_DEFAULT_END;
+      }
+    }
+    await sbPatch('students', 'id=eq.' + sid, body);
+    if (typeof karteStudent !== 'undefined' && karteStudent && karteStudent.id === sid) {
+      Object.assign(karteStudent, body);
+      try { karteLoadProfile(karteStudent); } catch (e) {}
+    }
+    hideLoading();
+    showToast(on ? '📡 通信コースに設定しました' : '通信コースから外しました', 'success');
+  } catch (e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
+}
+
+// ---- 通学設定の編集モーダル ----
+let tsushinEditId = '';
+let tsushinEditDays = [];
+
+function openTsushinEdit(sid) {
+  if (!canSeeTsushin()) { showToast('権限がありません', 'error'); return; }
+  const s = (typeof karteStudent !== 'undefined' && karteStudent && karteStudent.id === sid)
+    ? karteStudent : null;
+  tsushinEditId = sid;
+  tsushinEditDays = (s && Array.isArray(s.tsushin_days) && s.tsushin_days.length)
+    ? s.tsushin_days.slice() : TSUSHIN_DEFAULT_DAYS.slice();
+  const nm = document.getElementById('tsushin-edit-name');
+  if (nm) nm.textContent = s ? (s.name || '') : '';
+  const st = document.getElementById('tsushin-start');
+  const en = document.getElementById('tsushin-end');
+  // input[type=time] は 'HH:MM' の2桁必須。'9:20' のままだと表示されない
+  if (st) st.value = toTsushinTimeInput((s && s.tsushin_start) || TSUSHIN_DEFAULT_START);
+  if (en) en.value = toTsushinTimeInput((s && s.tsushin_end) || TSUSHIN_DEFAULT_END);
+  const nt = document.getElementById('tsushin-note');
+  if (nt) nt.value = (s && s.tsushin_note) || '';
+  renderTsushinDayChips();
+  const box = document.getElementById('tsushin-edit-box');
+  if (box) box.style.display = 'flex';
+}
+
+// '9:20' → '09:20'（input[type=time] 用）
+function toTsushinTimeInput(t) {
+  const m = String(t || '').match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return '';
+  return String(m[1]).padStart(2, '0') + ':' + m[2];
+}
+
+// '09:20' → '9:20'（表示用に先頭ゼロを落とす）
+function fromTsushinTimeInput(t) {
+  const m = String(t || '').match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  return String(Number(m[1])) + ':' + m[2];
+}
+
+function renderTsushinDayChips() {
+  const el = document.getElementById('tsushin-day-chips');
+  if (!el) return;
+  el.innerHTML = TSUSHIN_SELECTABLE_DAYS.map(d => {
+    const on = tsushinEditDays.indexOf(d) >= 0;
+    const style = on
+      ? 'background:var(--orange);border:1.5px solid var(--orange-d);color:white;font-weight:700;'
+      : 'background:var(--surface);border:1.5px solid var(--border);color:var(--muted);font-weight:500;';
+    return '<button type="button" onclick="toggleTsushinDay(' + d + ')" style="' + style +
+      "padding:7px 15px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif\">" +
+      TSUSHIN_DAY_LABELS[d] + '</button>';
+  }).join('');
+}
+
+function toggleTsushinDay(d) {
+  const i = tsushinEditDays.indexOf(d);
+  if (i >= 0) tsushinEditDays.splice(i, 1);
+  else tsushinEditDays.push(d);
+  tsushinEditDays.sort((a, b) => a - b);
+  renderTsushinDayChips();
+}
+
+function closeTsushinEdit() {
+  const box = document.getElementById('tsushin-edit-box');
+  if (box) box.style.display = 'none';
+  tsushinEditId = '';
+}
+
+async function saveTsushinEdit() {
+  if (!tsushinEditId) return;
+  if (!tsushinEditDays.length) { showToast('通学曜日を1つ以上選んでください', 'error'); return; }
+  const start = fromTsushinTimeInput(document.getElementById('tsushin-start')?.value);
+  const end   = fromTsushinTimeInput(document.getElementById('tsushin-end')?.value);
+  const note  = (document.getElementById('tsushin-note')?.value || '').trim();
+  showLoading('保存中...');
+  try {
+    await sbPatch('students', 'id=eq.' + tsushinEditId, {
+      tsushin_days: tsushinEditDays,
+      tsushin_start: start,
+      tsushin_end: end,
+      tsushin_note: note || null
+    });
+    // 開いているカルテに即反映（読み直さずに済ませる）
+    if (typeof karteStudent !== 'undefined' && karteStudent && karteStudent.id === tsushinEditId) {
+      karteStudent.tsushin_days = tsushinEditDays;
+      karteStudent.tsushin_start = start;
+      karteStudent.tsushin_end = end;
+      karteStudent.tsushin_note = note || null;
+      try { karteLoadProfile(karteStudent); } catch (e) {}
+    }
+    hideLoading();
+    closeTsushinEdit();
+    showToast('📡 通学設定を保存しました', 'success');
+  } catch (e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
+}
 
 // 現在のスタッフの権限（{perms:{}, school_scope:'all'|[]}）。ログイン後に読み込む。
 let saMyPerms = null;
@@ -31121,6 +31342,7 @@ async function loadStaffPermEditor() {
   itemsBox.innerHTML = permRow(DASHBOARD_PERM_ITEM.key, DASHBOARD_PERM_ITEM.label, true)
     + permRow(TODO_PERM_ITEM.key, TODO_PERM_ITEM.label, true)
     + permRow(ANNUAL_INPUT_PERM_ITEM.key, ANNUAL_INPUT_PERM_ITEM.label, true)
+    + permRow(TSUSHIN_PERM_ITEM.key, TSUSHIN_PERM_ITEM.label, true)
     + ANALYSIS_ITEMS.map(it => permRow(it.key, it.label, false)).join('');
 
   // スコープ
