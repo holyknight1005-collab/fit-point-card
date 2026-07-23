@@ -3624,7 +3624,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <div class="section-title" style="margin:0">📊 進捗・催促</div>
         <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);cursor:pointer">
           <input type="checkbox" id="todo-matrix-pending-only" onchange="renderTodoMatrix()" style="width:14px;height:14px;cursor:pointer">
-          未完了の人だけ表示
+          未完了の人だけ表示（完了済みは隠れます）
         </label>
       </div>
       <div id="sm-todo-matrix" style="margin-top:8px"></div>
@@ -4917,7 +4917,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dfn';
+const APP_VERSION = '20260702dfo';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -16550,13 +16550,90 @@ function renderTodoMatrix() {
     return;
   }
 
-  el.innerHTML = list.map(g => {
+  // 進行中（1人でも未完了）と 完了済み（全員完了）に分ける。
+  // 依頼が溜まっても進行中が埋もれないようにするため。
+  const active = list.filter(g => g.rows.some(t => !t.is_done));
+  // 完了済みは「完了した順」で新しいものを上に（作成順だと古い完了が上に来てしまう）
+  const done = list.filter(g => !g.rows.some(t => !t.is_done))
+    .map(g => {
+      const last = g.rows.reduce((mx, t) => {
+        const d = String(t.done_at || '');
+        return d > mx ? d : mx;
+      }, '');
+      return Object.assign({}, g, { _doneAt: last });
+    })
+    .sort((a, b) => String(b._doneAt || '').localeCompare(String(a._doneAt || '')));
+
+  const activeHtml = active.length
+    ? active.map(g => renderTodoMatrixCard(g, pendingOnly, today)).join('')
+    : '<div style="font-size:12px;color:var(--green-d);background:var(--green-l);border-radius:8px;padding:10px 13px;text-align:center">進行中の依頼はありません ✨</div>';
+
+  let html =
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
+      '<span style="font-size:12px;font-weight:700;color:var(--text)">🔵 進行中</span>' +
+      '<span style="font-size:10px;color:var(--muted)">' + active.length + '件</span>' +
+    '</div>' + activeHtml;
+
+  // 完了済み：折りたたみ＋10件ずつ
+  if (done.length) {
+    const shown = Math.min(todoMatrixDoneShown, done.length);
+    const open = todoMatrixDoneOpen;
+    html +=
+      '<div onclick="toggleTodoMatrixDone()" style="display:flex;align-items:center;gap:7px;margin-top:16px;cursor:pointer;user-select:none">' +
+        '<span style="font-size:13px;color:var(--muted);display:inline-block;transition:transform 0.2s;transform:rotate(' + (open ? '90' : '0') + 'deg)">›</span>' +
+        '<span style="font-size:12px;font-weight:700;color:var(--text)">✅ 完了済み</span>' +
+        '<span style="font-size:10px;color:var(--muted)">' + done.length + '件</span>' +
+      '</div>';
+    if (open) {
+      html += '<div style="margin-top:8px">' +
+        done.slice(0, shown).map(g => renderTodoMatrixCard(g, false, today)).join('') +
+        '</div>';
+      if (done.length > shown) {
+        const rest = done.length - shown;
+        const more = Math.min(10, rest);
+        html += '<div style="display:flex;gap:8px;justify-content:center;margin-top:4px">' +
+          '<button onclick="showMoreTodoMatrixDone(' + more + ')" style="padding:6px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11px;cursor:pointer;color:var(--text);font-family:\'Noto Sans JP\',sans-serif">さらに' + more + '件</button>' +
+          '<button onclick="showMoreTodoMatrixDone(9999)" style="padding:6px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11px;cursor:pointer;color:var(--muted);font-family:\'Noto Sans JP\',sans-serif">全' + done.length + '件を表示</button>' +
+          '</div>';
+      } else if (done.length > 10) {
+        html += '<div style="display:flex;justify-content:center;margin-top:4px">' +
+          '<button onclick="collapseTodoMatrixDone()" style="padding:6px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11px;cursor:pointer;color:var(--muted);font-family:\'Noto Sans JP\',sans-serif">表示を減らす</button>' +
+          '</div>';
+      }
+    }
+  }
+
+  el.innerHTML = html;
+}
+
+// 完了済みセクションの開閉と表示件数（dfo）
+let todoMatrixDoneOpen = false;
+let todoMatrixDoneShown = 10;
+function toggleTodoMatrixDone() {
+  todoMatrixDoneOpen = !todoMatrixDoneOpen;
+  if (!todoMatrixDoneOpen) todoMatrixDoneShown = 10;  // 閉じたら件数もリセット
+  renderTodoMatrix();
+}
+function showMoreTodoMatrixDone(n) {
+  todoMatrixDoneShown += n;
+  renderTodoMatrix();
+}
+function collapseTodoMatrixDone() {
+  todoMatrixDoneShown = 10;
+  renderTodoMatrix();
+}
+
+// 依頼カード1枚ぶんのHTML（進行中・完了済みで共用）
+function renderTodoMatrixCard(g, pendingOnly, today) {
+  {
     let rows = g.rows.slice();
     if (pendingOnly) rows = rows.filter(t => !t.is_done);
     rows.sort((a, b) => (a.to?.name || '').localeCompare(b.to?.name || '', 'ja'));
     const pending = g.rows.filter(t => !t.is_done).length;
     const overdue = g.rows.filter(t => !t.is_done && t.due_date && t.due_date < today).length;
     const due = g.due_date ? g.due_date.replace(/-/g, '/') : '';
+    // 完了済みカードは控えめな見た目にして、進行中と視覚的に区別する
+    const allDone = pending === 0;
 
     const chips = rows.map(t => {
       const doneMark = t.is_done;
@@ -16568,7 +16645,7 @@ function renderTodoMatrix() {
         icon + ' ' + escapeHtml(t.to?.name || '—') + '</span>';
     }).join('');
 
-    return '<div style="background:var(--surface);border:1px solid ' + (overdue ? '#F5BABA' : 'var(--border)') + ';border-radius:10px;padding:11px 13px;margin-bottom:8px">' +
+    return '<div style="background:' + (allDone ? 'var(--surface2)' : 'var(--surface)') + ';border:1px solid ' + (overdue ? '#F5BABA' : 'var(--border)') + ';border-radius:10px;padding:11px 13px;margin-bottom:8px' + (allDone ? ';opacity:0.85' : '') + '">' +
       '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:8px">' +
         '<span style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(g.title) + '</span>' +
         '<span style="font-size:10px;color:var(--muted)">依頼：' + escapeHtml(g.from) + '</span>' +
@@ -16578,7 +16655,7 @@ function renderTodoMatrix() {
       '</div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:6px">' + chips + '</div>' +
     '</div>';
-  }).join('');
+  }
 }
 
 // 「📚 授業登録チェック」：講師ごとに、その月のセッションが未登録の授業を出す
