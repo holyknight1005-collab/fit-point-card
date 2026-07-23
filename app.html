@@ -3065,6 +3065,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
           <button type="button" id="rec-target-person" onclick="setRecTargetType('person')" style="padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">👤 個人を選ぶ</button>
           <button type="button" id="rec-target-school" onclick="setRecTargetType('school')" style="padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🏫 学校担当へ</button>
+          <button type="button" id="rec-target-teacher" onclick="setRecTargetType('teacher')" style="padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📚 授業担当の講師へ</button>
         </div>
         <div id="rec-person-block">
           <div id="rec-staff-checks" style="display:flex;flex-wrap:wrap;gap:6px;max-height:180px;overflow-y:auto;padding:2px"></div>
@@ -3072,6 +3073,10 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <div id="rec-school-block" style="display:none">
           <div id="rec-school-checks" style="display:flex;flex-wrap:wrap;gap:6px"></div>
           <div id="rec-school-preview" style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6"></div>
+        </div>
+        <div id="rec-teacher-block" style="display:none">
+          <div style="font-size:10px;color:var(--muted);line-height:1.6">授業マスターで担当になっているスタッフ全員に配ります。担当が変わっても、生成時点の担当者に自動で届きます。<b>高卒生の授業は対象外</b>です。</div>
+          <div id="rec-teacher-preview" style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6"></div>
         </div>
       </div>
       <div>
@@ -3583,6 +3588,15 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         </div>
       </div>
       <div id="sm-all-todos" style="display:none;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px"></div>
+
+      <!-- 授業登録チェック（講師ごとの未登録授業） -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px;gap:8px">
+        <div onclick="toggleTodoSection('classcheck')" class="section-title" style="margin:0;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px">
+          <span id="arrow-classcheck" style="font-size:13px;color:var(--muted);transition:transform 0.2s;display:inline-block">›</span>📚 授業登録チェック
+        </div>
+        <select id="classcheck-ym" onchange="loadClassRegistrationCheck()" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:'Noto Sans JP',sans-serif"></select>
+      </div>
+      <div id="classcheck-body" style="display:none;margin-top:8px"></div>
 
       <!-- 進捗・催促（依頼マトリクス＋締切遵守率） -->
       <div style="display:flex;align-items:center;justify-content:space-between;margin-top:20px">
@@ -4876,7 +4890,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dfi';
+const APP_VERSION = '20260702dfj';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -14961,6 +14975,9 @@ async function runRecurringTodoGeneration() {
       if (tpl.target_type === 'school') {
         recipients = await resolveChargeStaffIds(
           Array.isArray(tpl.target_schools) ? tpl.target_schools : []);
+      } else if (tpl.target_type === 'teacher') {
+        // 授業マスターの担当から自動で集める。人事異動に自動追従する
+        recipients = await resolveTeacherStaffIds();
       } else {
         recipients = (Array.isArray(tpl.target_staff_ids) ? tpl.target_staff_ids : []).slice();
       }
@@ -15041,16 +15058,34 @@ function recChipStyle(active) {
 }
 
 function setRecTargetType(type) {
-  recTargetType = (type === 'school') ? 'school' : 'person';
+  recTargetType = (type === 'school' || type === 'teacher') ? type : 'person';
   const pb = document.getElementById('rec-target-person');
   const sb = document.getElementById('rec-target-school');
+  const tb = document.getElementById('rec-target-teacher');
   if (pb) pb.style.cssText = recChipStyle(recTargetType === 'person');
   if (sb) sb.style.cssText = recChipStyle(recTargetType === 'school');
+  if (tb) tb.style.cssText = recChipStyle(recTargetType === 'teacher');
   const pblk = document.getElementById('rec-person-block');
   const sblk = document.getElementById('rec-school-block');
+  const tblk = document.getElementById('rec-teacher-block');
   if (pblk) pblk.style.display = (recTargetType === 'person') ? '' : 'none';
   if (sblk) sblk.style.display = (recTargetType === 'school') ? '' : 'none';
+  if (tblk) tblk.style.display = (recTargetType === 'teacher') ? '' : 'none';
   previewRecSchoolTargets();
+  previewRecTeacherTargets();
+}
+
+// 講師の配布先を事前に見せる
+async function previewRecTeacherTargets() {
+  const el = document.getElementById('rec-teacher-preview');
+  if (!el) return;
+  if (recTargetType !== 'teacher') { el.textContent = ''; return; }
+  el.textContent = '講師を確認中…';
+  try {
+    const ids = await resolveTeacherStaffIds();
+    if (!ids.length) { el.innerHTML = '<span style="color:var(--red)">⚠️ 授業を担当しているスタッフが見つかりません。</span>'; return; }
+    el.textContent = '配布先（' + ids.length + '名）：' + ids.map(id => staffNameById(id)).join('、');
+  } catch (e) { el.textContent = ''; }
 }
 
 function setRecKind(kind) {
@@ -15211,6 +15246,13 @@ async function saveRecurringTodo() {
   });
   if (recTargetType === 'person' && !staffIds.length) { showToast('依頼先を選んでください', 'error'); return; }
   if (recTargetType === 'school' && !schools.length) { showToast('対象の学校を選んでください', 'error'); return; }
+  if (recTargetType === 'teacher') {
+    // 講師は生成時に自動で集めるので、ここでは存在確認だけする
+    try {
+      const ids = await resolveTeacherStaffIds();
+      if (!ids.length) { showToast('授業を担当しているスタッフが見つかりません', 'error'); return; }
+    } catch (e) {}
+  }
 
   const cmode = recCompletionMode === 'any' ? 'any' : 'each';
   const needsApproval = cmode === 'any' ? false : !!document.getElementById('rec-needs-approval')?.checked;
@@ -15297,7 +15339,9 @@ async function loadRecurringTodos() {
     const active = !!t.is_active;
     const target = t.target_type === 'school'
       ? '🏫 ' + (Array.isArray(t.target_schools) ? t.target_schools.filter(s => s !== 'その他').map(todoSchoolLabel).join('・') : '')
-      : '👤 ' + (Array.isArray(t.target_staff_ids) ? t.target_staff_ids.length : 0) + '名';
+      : (t.target_type === 'teacher'
+          ? '📚 授業担当の講師（自動）'
+          : '👤 ' + (Array.isArray(t.target_staff_ids) ? t.target_staff_ids.length : 0) + '名');
     const gen = String(t.last_generated_ym || '') === ym;
     return '<div style="background:var(--surface);border:1.5px solid ' + (active ? 'var(--border)' : '#E0E0E0') + ';border-radius:8px;padding:10px 12px;' + (active ? '' : 'opacity:.55') + '">'
       + '<div style="display:flex;align-items:flex-start;gap:8px">'
@@ -15322,6 +15366,89 @@ async function loadRecurringTodos() {
       + '<button onclick="deleteRecurringTodo(\'' + t.id + '\',\'' + escapeAttr(t.title || '') + '\')" style="padding:3px 10px;background:var(--surface);border:1px solid #E8B4B4;border-radius:6px;font-size:10px;cursor:pointer;color:var(--red);font-family:\'Noto Sans JP\',sans-serif">🗑 削除</button>'
       + '</div></div></div>';
   }).join('');
+}
+
+// ===== 講師（授業を担当しているスタッフ）関連 =====
+// 講師は class_master.teacher_staff_id（主担当）と class_teachers（複数担当）の
+// 両方から集める。学校担当（charge_schools）とは別のくくり。
+// 高卒生区分は浪人生が未実装のため対象外。fit001（代表）は配布対象にしない。
+const TEACHER_CHECK_EXCLUDE_CODES = ['fit001'];
+
+// 講師 → 担当授業 の対応を作る
+// 戻り値: { byTeacher: { staffUuid: [{id,name,subject}] }, excludedCodes: [...] }
+async function loadTeacherClassMap() {
+  let cm = [], ct = [], staffRows = [];
+  try {
+    cm = await sbGet('class_master', 'is_active=eq.true&select=id,name,subject,category,grade_level,teacher_staff_id') || [];
+    ct = await sbGet('class_teachers', 'select=class_master_id,staff_id') || [];
+    staffRows = await sbGet('staff', 'select=id,staff_id,name') || [];
+  } catch (e) { return { byTeacher: {}, classById: {}, staffById: {} }; }
+
+  const excludeUuids = new Set();
+  const staffById = {};
+  staffRows.forEach(s => {
+    staffById[s.id] = s;
+    if (TEACHER_CHECK_EXCLUDE_CODES.indexOf(String(s.staff_id || '').toLowerCase()) >= 0) excludeUuids.add(s.id);
+  });
+
+  // 高卒生（浪人生）区分は集計しない
+  const classById = {};
+  cm.forEach(c => { if ((c.category || 'normal') !== 'kosotsu') classById[c.id] = c; });
+
+  const byTeacher = {};
+  const add = (sid, cls) => {
+    if (!sid || !cls || excludeUuids.has(sid)) return;
+    if (!byTeacher[sid]) byTeacher[sid] = [];
+    if (!byTeacher[sid].some(x => x.id === cls.id)) byTeacher[sid].push(cls);
+  };
+  Object.values(classById).forEach(c => add(c.teacher_staff_id, c));
+  ct.forEach(r => add(r.staff_id, classById[r.class_master_id]));
+  return { byTeacher, classById, staffById };
+}
+
+// 講師のスタッフID一覧（ToDo配布先）
+async function resolveTeacherStaffIds() {
+  const { byTeacher } = await loadTeacherClassMap();
+  return Object.keys(byTeacher);
+}
+
+// 指定した年月に、その授業のセッションが1件でも登録されているかを調べる。
+// 「登録済み」の判定は "その月に1件でもあればOK" とする（回数までは見ない）。
+async function loadMonthSessionClassIds(ym) {
+  const from = ym + '-01';
+  const m = /^(\d{4})-(\d{2})$/.exec(ym);
+  const last = m ? new Date(Number(m[1]), Number(m[2]), 0).getDate() : 31;
+  const to = ym + '-' + String(last).padStart(2, '0');
+  const have = new Set();
+  try {
+    const rows = await sbGet('class_sessions',
+      'session_date=gte.' + from + '&session_date=lte.' + to + '&select=class_master_id') || [];
+    rows.forEach(r => { if (r.class_master_id) have.add(r.class_master_id); });
+  } catch (e) {}
+  return have;
+}
+
+// 指定した年月の「授業登録チェック」結果を作る
+// 戻り値: [{ staffId, name, total, missing:[{id,name}] }]
+async function buildClassRegistrationCheck(ym) {
+  const { byTeacher, staffById } = await loadTeacherClassMap();
+  const have = await loadMonthSessionClassIds(ym);
+  const out = [];
+  Object.keys(byTeacher).forEach(sid => {
+    const classes = byTeacher[sid];
+    const missing = classes.filter(c => !have.has(c.id));
+    const s = staffById[sid] || {};
+    out.push({
+      staffId: sid,
+      name: s.name || s.staff_id || '(不明)',
+      code: s.staff_id || '',
+      total: classes.length,
+      missing: missing.map(c => ({ id: c.id, name: c.name, subject: c.subject || '' }))
+    });
+  });
+  // 未登録が多い順 → 名前順
+  out.sort((a, b) => (b.missing.length - a.missing.length) || String(a.name).localeCompare(String(b.name), 'ja'));
+  return out;
 }
 
 // 依頼先の指定方法：'person'=個人を選ぶ / 'school'=学校担当へ
@@ -16093,6 +16220,9 @@ function toggleTodoSection(key) {
   } else if (key === 'recurring') {
     target = document.getElementById('recurring-todos');
     if (target && target.style.display === 'none') loadRecurringTodos();
+  } else if (key === 'classcheck') {
+    target = document.getElementById('classcheck-body');
+    if (target && target.style.display === 'none') loadClassRegistrationCheck();
   }
   if (!target) return;
   const isOpen = target.style.display !== 'none';
@@ -16177,6 +16307,56 @@ function renderTodoMatrix() {
       '</div>' +
       '<div style="display:flex;flex-wrap:wrap;gap:6px">' + chips + '</div>' +
     '</div>';
+  }).join('');
+}
+
+// 「📚 授業登録チェック」：講師ごとに、その月のセッションが未登録の授業を出す
+async function loadClassRegistrationCheck() {
+  const el = document.getElementById('classcheck-body');
+  if (!el) return;
+  // 月セレクトを初期化（当月を含む前後3か月）
+  const sel = document.getElementById('classcheck-ym');
+  if (sel && !sel.options.length) {
+    const t = getTodayJST().split('-');
+    const y = Number(t[0]), mo = Number(t[1]);
+    const opts = [];
+    for (let d = -2; d <= 1; d++) {
+      const dt = new Date(y, mo - 1 + d, 1);
+      const ym = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0');
+      opts.push('<option value="' + ym + '"' + (d === 0 ? ' selected' : '') + '>' + dt.getFullYear() + '年' + (dt.getMonth() + 1) + '月</option>');
+    }
+    sel.innerHTML = opts.join('');
+  }
+  const ym = (sel && sel.value) ? sel.value : currentYmJST();
+  el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:6px">確認中…</div>';
+  let rows = [];
+  try { rows = await buildClassRegistrationCheck(ym); }
+  catch (e) { el.innerHTML = '<div style="font-size:12px;color:var(--red);padding:6px">取得に失敗しました</div>'; return; }
+  if (!rows.length) {
+    el.innerHTML = '<div class="card-box" style="font-size:12px;color:var(--muted);text-align:center">講師として登録されているスタッフがいません</div>';
+    return;
+  }
+  const totalMissing = rows.reduce((a, r) => a + r.missing.length, 0);
+  const head = '<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">'
+    + ym.replace('-', '年') + '月に授業回が1件も登録されていない担当授業を出しています。'
+    + '<b>高卒生の授業は対象外</b>です。'
+    + (totalMissing ? '<span style="color:var(--red);font-weight:700"> 未登録 ' + totalMissing + '件</span>' : '<span style="color:var(--green-d);font-weight:700"> すべて登録済みです ✨</span>')
+    + '</div>';
+  el.innerHTML = head + rows.map(r => {
+    const ok = r.missing.length === 0;
+    const chips = r.missing.map(c =>
+      '<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:12px;background:var(--red-l);color:var(--red);font-size:11px;white-space:nowrap">⚠️ '
+      + escapeHtml(c.name) + '</span>').join('');
+    return '<div style="background:var(--surface);border:1px solid ' + (ok ? 'var(--border)' : '#F5BABA') + ';border-radius:10px;padding:10px 12px;margin-bottom:8px">'
+      + '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;' + (ok ? '' : 'margin-bottom:7px') + '">'
+      + '<span style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(r.name) + '</span>'
+      + '<span style="font-size:10px;color:var(--muted)">担当 ' + r.total + '授業</span>'
+      + (ok
+          ? '<span style="font-size:10px;background:var(--green-l);color:var(--green-d);padding:1px 7px;border-radius:10px">✅ 登録済み</span>'
+          : '<span style="font-size:10px;background:var(--orange-l);color:var(--orange-d);padding:1px 7px;border-radius:10px">未登録 ' + r.missing.length + '</span>')
+      + '</div>'
+      + (ok ? '' : '<div style="display:flex;flex-wrap:wrap;gap:6px">' + chips + '</div>')
+      + '</div>';
   }).join('');
 }
 
