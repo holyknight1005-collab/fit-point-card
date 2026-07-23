@@ -988,7 +988,16 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">選択した日付に、同じ授業・同じ時限でセッションをまとめて作成します。通常授業・講習・テスト対策など、曜日に関係なく登録できます。出欠・報告書も使えます。</div>
 
     <div class="form-label">対象の授業</div>
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:4px">区分</div>
+      <div id="course-filter-cat" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px"></div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:4px">教科</div>
+      <div id="course-filter-subj" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px"></div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:4px">学年</div>
+      <div id="course-filter-grade" style="display:flex;flex-wrap:wrap;gap:4px"></div>
+    </div>
     <select class="form-select" id="course-class-select" style="margin-bottom:6px"></select>
+    <div id="course-filter-count" style="font-size:11px;color:var(--muted);margin-bottom:4px"></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:12px">※ 新しい授業・講習は先に「授業マスター管理」で作成してください</div>
 
     <div class="form-label">時間（全日にまとめて適用）</div>
@@ -4843,7 +4852,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dfa';
+const APP_VERSION = '20260702dfc';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -15304,8 +15313,10 @@ async function loadTodoCallLogs(todoIds) {
   if (!ids.length) { todoCallLogCache = {}; return; }
   try {
     const inList = ids.map(i => '"' + i + '"').join(',');
+    // called_at は分単位でしか持たないため、同じ分に複数回記録すると順序が不定になる。
+    // 実際の記録順（created_at）を第2キーにして「最終」がぶれないようにする。
     const rows = await sbGet('todo_call_logs',
-      'todo_id=in.(' + inList + ')&order=called_at.desc&select=*') || [];
+      'todo_id=in.(' + inList + ')&order=called_at.desc,created_at.desc,id.desc&select=*') || [];
     // ローカルに組み立ててから一括で差し替える。
     // 複数の描画関数（ホーム/設定/日付モーダル）が同時に走ると、
     // 「共有キャッシュを空にする → await → push」の間に処理が交錯し、
@@ -15415,7 +15426,7 @@ async function reloadTodoCallModalLogs() {
   if (!todoCallTargetId) { todoCallModalLogs = []; return; }
   try {
     todoCallModalLogs = await sbGet('todo_call_logs',
-      'todo_id=eq.' + todoCallTargetId + '&order=called_at.desc&select=*') || [];
+      'todo_id=eq.' + todoCallTargetId + '&order=called_at.desc,created_at.desc,id.desc&select=*') || [];
   } catch (e) { todoCallModalLogs = []; }
   renderTodoCallHistory();
 }
@@ -20407,26 +20418,115 @@ let courseDateTimes = {};
 // 一括適用UIで選択中の時間: { period, start, end }
 let courseBulkTime = { period: 6, start: PERIODS[6][0], end: PERIODS[6][1] };
 
+// 一括登録の授業しぼり込み（80件から選ぶので絞れるようにする）
+let courseFilter = { cat: 'all', subj: 'all', grade: 'all' };
+let courseClassPool = [];   // 絞り込み対象の全授業
+
+function setCourseFilter(kind, value) {
+  courseFilter[kind] = value;
+  renderCourseFilters();
+  applyCourseFilter();
+}
+
+function courseFilterChip(label, active, kind, value) {
+  const on = 'background:#2D6DB5;border:1.5px solid #184A86;color:white;font-weight:700;';
+  const off = 'background:var(--surface);border:1.5px solid var(--border);color:var(--muted);font-weight:500;';
+  return '<button type="button" onclick="setCourseFilter(\'' + kind + '\',\'' + escapeAttr(value) + '\')" '
+    + 'style="padding:4px 10px;border-radius:14px;font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;'
+    + (active ? on : off) + '">' + escapeHtml(label) + '</button>';
+}
+
+function renderCourseFilters() {
+  // 区分：実際に存在するものだけ出す。null は '通常' 扱い（既存表示ロジックに合わせる）
+  const cats = [];
+  courseClassPool.forEach(c => {
+    const k = c.category || 'normal';
+    if (cats.indexOf(k) < 0) cats.push(k);
+  });
+  const catOrder = CLASS_CATEGORIES.map(c => c.key);
+  cats.sort((a, b) => catOrder.indexOf(a) - catOrder.indexOf(b));
+  const catEl = document.getElementById('course-filter-cat');
+  if (catEl) catEl.innerHTML = courseFilterChip('すべて', courseFilter.cat === 'all', 'cat', 'all')
+    + cats.map(k => {
+      const m = classCategoryMeta(k);
+      return courseFilterChip(m.icon + ' ' + m.label, courseFilter.cat === k, 'cat', k);
+    }).join('');
+
+  // 教科
+  const subjs = [];
+  courseClassPool.forEach(c => { if (c.subject && subjs.indexOf(c.subject) < 0) subjs.push(c.subject); });
+  const sOrder = ['英語','数学','国語','理科','社会'];
+  subjs.sort((a, b) => {
+    const ia = sOrder.indexOf(a), ib = sOrder.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+  const subjEl = document.getElementById('course-filter-subj');
+  if (subjEl) subjEl.innerHTML = courseFilterChip('すべて', courseFilter.subj === 'all', 'subj', 'all')
+    + subjs.map(s => courseFilterChip(s, courseFilter.subj === s, 'subj', s)).join('');
+
+  // 学年：'1,2' のような複数指定があるので、含まれる学年で判定する
+  const gradeEl = document.getElementById('course-filter-grade');
+  if (gradeEl) gradeEl.innerHTML = courseFilterChip('すべて', courseFilter.grade === 'all', 'grade', 'all')
+    + ['1','2','3'].map(g => courseFilterChip(g + '年', courseFilter.grade === g, 'grade', g)).join('');
+}
+
+// grade_level は '3' / '1,2' / '' のような文字列
+function courseMatchesGrade(cm, g) {
+  if (g === 'all') return true;
+  const raw = String(cm.grade_level || '').trim();
+  if (!raw) return false;   // 学年未設定は学年で絞ったときは出さない
+  return raw.split(',').map(x => x.trim()).indexOf(g) >= 0;
+}
+
+function applyCourseFilter() {
+  const sel = document.getElementById('course-class-select');
+  const cnt = document.getElementById('course-filter-count');
+  if (!sel) return;
+  const prev = sel.value;
+  const list = courseClassPool.filter(c =>
+    (courseFilter.cat === 'all' || (c.category || 'normal') === courseFilter.cat) &&
+    (courseFilter.subj === 'all' || c.subject === courseFilter.subj) &&
+    courseMatchesGrade(c, courseFilter.grade)
+  );
+  if (!list.length) {
+    sel.innerHTML = '<option value="">（条件に合う授業がありません）</option>';
+    if (cnt) cnt.textContent = '';
+    return;
+  }
+  sel.innerHTML = list.map(c => {
+    const cat = c.category && c.category !== 'normal' ? classCategoryMeta(c.category).label + ' ' : '';
+    const yr = c.school_year ? c.school_year + ' ' : '';
+    const gl = c.grade_level ? '（' + c.grade_level + '年）' : '';
+    return '<option value="' + c.id + '">' + escapeHtml(yr + cat + c.name + gl) + '</option>';
+  }).join('');
+  // 絞り込み後も同じ授業が残っていれば選択を維持する
+  if (prev && list.some(c => String(c.id) === String(prev))) sel.value = prev;
+  if (cnt) cnt.textContent = list.length + '件 / 全' + courseClassPool.length + '件';
+}
+
 function openCourseSessionModal() {
   if (!courseSelectedDates.size) { showToast('日付を1日以上選んでください', 'error'); return; }
   // 授業マスタをセレクトに詰める
   const sel = document.getElementById('course-class-select');
+  courseFilter = { cat: 'all', subj: 'all', grade: 'all' };
   const fill = (list) => {
     if (!list || !list.length) {
+      courseClassPool = [];
       sel.innerHTML = '<option value="">（授業がありません。先に授業マスター管理で作成）</option>';
-    } else {
-      sel.innerHTML = list.map(c => {
-        const cat = c.category && c.category !== 'normal' ? classCategoryMeta(c.category).label + ' ' : '';
-        const yr = c.school_year ? c.school_year + ' ' : '';
-        return '<option value="' + c.id + '">' + escapeHtml(yr + cat + c.name) + '</option>';
-      }).join('');
+      renderCourseFilters();
+      return;
     }
+    courseClassPool = list;
+    renderCourseFilters();
+    applyCourseFilter();
   };
-  if (typeof classMasterList !== 'undefined' && classMasterList && classMasterList.length) {
-    fill(classMasterList);
+  // 絞り込みに subject / grade_level が要るので、揃っているときだけ再利用する
+  const cached = (typeof classMasterList !== 'undefined' && classMasterList && classMasterList.length) ? classMasterList : null;
+  if (cached && cached[0] && ('subject' in cached[0]) && ('grade_level' in cached[0])) {
+    fill(cached);
   } else {
     sel.innerHTML = '<option value="">読み込み中...</option>';
-    sbGet('class_master', 'select=id,name,category,school_year&order=school_year.desc,name').then(fill).catch(() => fill([]));
+    sbGet('class_master', 'select=id,name,category,school_year,subject,grade_level&order=school_year.desc,name').then(fill).catch(() => fill([]));
   }
   // 各日の時間を初期化（未設定日はデフォルト=一括時間）
   const dates = [...courseSelectedDates].sort();
