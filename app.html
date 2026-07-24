@@ -518,6 +518,28 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 </div>
 
 <!-- 受講マトリクス（dgd） -->
+<!-- 講習 集計・分析（dgi） -->
+<div id="ksh-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:673;align-items:center;justify-content:center;padding:14px">
+  <div style="background:var(--bg);border-radius:16px;padding:18px;max-width:980px;width:100%;max-height:94vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <div style="font-size:16px;font-weight:700;color:#A6741A">📊 講習の集計・分析</div>
+      <button onclick="closeKoushuAnalysis()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:flex-end;margin:10px 0">
+      <div style="flex:0 0 200px"><div class="form-label">対象区分</div>
+        <select class="form-select" id="ksh-category" onchange="reloadKoushuAnalysis()">
+          <option value="summer">☀️ 夏期講習</option>
+          <option value="winter">⛄ 冬期講習</option>
+          <option value="spring">🌸 春期講習</option>
+          <option value="common_test">🎯 共通テスト対策</option>
+          <option value="other">📚 その他講習</option>
+        </select></div>
+    </div>
+    <div id="ksh-tabs" style="display:flex;gap:6px;margin-bottom:12px"></div>
+    <div id="ksh-body"></div>
+  </div>
+</div>
+
 <div id="emx-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:672;align-items:center;justify-content:center;padding:14px">
   <div style="background:var(--bg);border-radius:16px;padding:18px;max-width:1100px;width:100%;max-height:94vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,0.25)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -5011,6 +5033,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <button class="form-btn" onclick="createClassMasterBulk()">⚡ まとめて登録する</button>
         <button onclick="openBulkEnroll()" style="width:100%;margin-top:8px;padding:9px;background:linear-gradient(135deg,#E9A93C,#C6851B);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">☀️ 生徒に講習を一括受講登録</button>
         <button onclick="openEnrollMatrix()" style="width:100%;margin-top:8px;padding:9px;background:linear-gradient(135deg,#2D6DB5,#184A86);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📋 受講マトリクス（名簿一覧でチェック）</button>
+        <button onclick="openKoushuAnalysis()" style="width:100%;margin-top:8px;padding:9px;background:linear-gradient(135deg,#C6851B,#8F5F12);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📊 講習の集計・分析（売上・未登録）</button>
       </div>
       <div class="section-title">登録済み授業</div>
       <div id="cm-filter-bar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
@@ -5331,7 +5354,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dgh';
+const APP_VERSION = '20260702dgi';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -19204,6 +19227,286 @@ async function createClassMaster() {
     showToast('✅ 授業を登録しました', 'success');
     loadClassMasterList();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+// ===== 講習 集計・分析（dgi） =====
+const KSH_FEE = { 4:15000, 6:22500, 8:28000, 10:32000, 12:34000, 14:39000,
+                  16:44000, 18:49000, 20:54000, 22:59000, 24:64000, 26:69000, 28:74000 };
+const KSH_FEE_KEYS = Object.keys(KSH_FEE).map(Number).sort((a,b) => a-b);
+// 回数から料金を引く。表にない回数は直下の段を適用し、上限を超えたら最上段で頭打ち。
+function kshFee(n) {
+  if (!n || n <= 0) return 0;
+  if (KSH_FEE[n] != null) return KSH_FEE[n];
+  if (n < KSH_FEE_KEYS[0]) return KSH_FEE[KSH_FEE_KEYS[0]];
+  if (n > KSH_FEE_KEYS[KSH_FEE_KEYS.length - 1]) return KSH_FEE[KSH_FEE_KEYS[KSH_FEE_KEYS.length - 1]];
+  let lo = KSH_FEE_KEYS[0];
+  KSH_FEE_KEYS.forEach(k => { if (k <= n) lo = k; });
+  return KSH_FEE[lo];
+}
+function kshFeeIsExact(n) { return !!(n > 0 && KSH_FEE[n] != null); }
+
+let kshCategory = 'summer';
+let kshTab = 'school';
+let kshData = null;     // { classes, students, enrolls }
+let kshRosterFilter = 'all';   // all | attend | roster
+
+async function openKoushuAnalysis() {
+  const m = document.getElementById('ksh-modal');
+  if (!m) return;
+  m.style.display = 'flex';
+  kshTab = 'school';
+  await reloadKoushuAnalysis();
+}
+function closeKoushuAnalysis() {
+  const m = document.getElementById('ksh-modal');
+  if (m) m.style.display = 'none';
+}
+function setKshTab(t) { kshTab = t; renderKoushuAnalysis(); }
+function setKshRoster(v) { kshRosterFilter = v; renderKoushuAnalysis(); }
+
+async function reloadKoushuAnalysis() {
+  const el = document.getElementById('ksh-body');
+  if (el) el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:10px">読み込み中...</div>';
+  try {
+    kshCategory = (document.getElementById('ksh-category') || {}).value || 'summer';
+    const classes = await sbGet('class_master',
+      'category=eq.' + encodeURIComponent(kshCategory) +
+      '&select=id,name,subject,grade_level,total_sessions,is_active&order=subject,name').catch(() => []) || [];
+    let enrolls = [];
+    if (classes.length) {
+      const ids = classes.map(c => c.id).join(',');
+      enrolls = await sbGet('class_enrollments',
+        'class_master_id=in.(' + ids + ')&ended_on=is.null&select=student_id,class_master_id').catch(() => []) || [];
+    }
+    const students = await excludeDemoRows(
+      await sbGet('students', 'is_active=eq.true&select=id,name,name_kana,school,grade,roster_only').catch(() => []) || [],
+      'id');
+    kshData = { classes, students, enrolls };
+    renderKoushuAnalysis();
+  } catch (e) {
+    if (el) el.innerHTML = '<div style="font-size:12px;color:#B84A4A;padding:10px">読み込み失敗: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+// 生徒ごとの受講回数と、回数未設定の講座数を集計
+function kshComputePerStudent() {
+  const byClass = {};
+  (kshData.classes || []).forEach(c => { byClass[c.id] = c; });
+  const sess = {}, unknown = {}, taken = {};
+  (kshData.enrolls || []).forEach(e => {
+    const c = byClass[e.class_master_id];
+    if (!c) return;
+    taken[e.student_id] = true;
+    const n = parseInt(c.total_sessions, 10);
+    if (n > 0) sess[e.student_id] = (sess[e.student_id] || 0) + n;
+    else unknown[e.student_id] = (unknown[e.student_id] || 0) + 1;
+  });
+  return { sess, unknown, taken };
+}
+function kshFilteredStudents() {
+  return (kshData.students || []).filter(s => {
+    if (kshRosterFilter === 'attend') return !s.roster_only;
+    if (kshRosterFilter === 'roster') return !!s.roster_only;
+    return true;
+  });
+}
+function kshGradeLabel(g) {
+  const m = String(g == null ? '' : g).match(/([1-3])/);
+  return m ? (m[1] + '年') : '不明';
+}
+
+function renderKoushuAnalysis() {
+  const el = document.getElementById('ksh-body');
+  if (!el || !kshData) return;
+  // タブ
+  const tabBar = document.getElementById('ksh-tabs');
+  if (tabBar) {
+    const mk = (v, l) => '<button onclick="setKshTab(\'' + v + '\')" style="flex:1;padding:8px 4px;font-size:11px;font-weight:700;border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+      (kshTab === v ? 'border:1.5px solid var(--orange);background:var(--orange-l);color:var(--orange-d)'
+                    : 'border:1.5px solid var(--border);background:transparent;color:var(--muted)') + '">' + l + '</button>';
+    tabBar.innerHTML = mk('school', '🏫 学校×学年') + mk('class', '📚 講座ごと') + mk('none', '📝 未登録');
+  }
+  if (kshTab === 'school') renderKshSchool(el);
+  else if (kshTab === 'class') renderKshClass(el);
+  else renderKshNone(el);
+}
+
+// --- タブ1: 学校×学年 ---
+function renderKshSchool(el) {
+  const { sess, unknown, taken } = kshComputePerStudent();
+  const stus = kshFilteredStudents().filter(s => taken[s.id]);
+  const rows = {};
+  stus.forEach(s => {
+    const k = (s.school || '不明') + '|' + kshGradeLabel(s.grade);
+    const r = rows[k] || (rows[k] = { n: 0, sess: 0, fee: 0, unk: 0, unkStu: 0 });
+    const n = sess[s.id] || 0;
+    r.n++; r.sess += n; r.fee += kshFee(n);
+    if (unknown[s.id]) { r.unk += unknown[s.id]; r.unkStu++; }
+  });
+  const keys = Object.keys(rows).sort();
+  if (!keys.length) { el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:10px">受講データがありません。</div>'; return; }
+  let tn = 0, ts = 0, tf = 0, tu = 0, tus = 0;
+  let h = '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:11px">';
+  h += '<tr style="background:var(--surface2)">' +
+       ['学校','学年','人数','延べ回数','料金（概算）','回数未設定'].map((t,i) =>
+         '<th style="border:1px solid var(--border);padding:6px 8px;text-align:' + (i < 2 ? 'left' : 'right') + '">' + t + '</th>').join('') + '</tr>';
+  keys.forEach(k => {
+    const r = rows[k], p = k.split('|');
+    tn += r.n; ts += r.sess; tf += r.fee; tu += r.unk; tus += r.unkStu;
+    h += '<tr>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;font-weight:700">' + escapeHtml(p[0]) + '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px">' + escapeHtml(p[1]) + '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right">' + r.n + '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right">' + r.sess + '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right;font-weight:700">¥' + r.fee.toLocaleString() + '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right;color:' + (r.unk ? '#B84A4A' : 'var(--border)') + '">' +
+        (r.unk ? r.unk + '件 (' + r.unkStu + '名)' : '–') + '</td></tr>';
+  });
+  h += '<tr style="background:var(--surface2);font-weight:800">' +
+    '<td style="border:1px solid var(--border);padding:6px 8px" colspan="2">合計</td>' +
+    '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">' + tn + '</td>' +
+    '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">' + ts + '</td>' +
+    '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">¥' + tf.toLocaleString() + '</td>' +
+    '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right;color:' + (tu ? '#B84A4A' : 'var(--muted)') + '">' +
+      (tu ? tu + '件 (' + tus + '名)' : '–') + '</td></tr>';
+  h += '</table></div>';
+  if (tu) {
+    h += '<div style="margin-top:10px;font-size:11px;color:#B84A4A;background:#FDECEC;border:1px solid #E0A0A0;border-radius:8px;padding:8px 10px;line-height:1.6;font-weight:700">' +
+      '⚠️ 回数が未設定の受講が ' + tu + '件（' + tus + '名）あります。これらは0回として計算されているため、上の料金は<u>実際より少なく出ています</u>。<br>' +
+      '<span style="font-weight:400">「📚 講座ごと」タブで回数を入力すると、この表に反映されます。</span></div>';
+  }
+  h += '<div style="margin-top:8px;font-size:10px;color:var(--muted);line-height:1.5">※ 料金は基本料金表（4回=15,000円〜28回=74,000円）にもとづく概算です。表にない回数は直下の段を適用しています。</div>';
+  el.innerHTML = h;
+}
+
+// --- タブ2: 講座ごと（回数をその場で編集） ---
+function renderKshClass(el) {
+  const cnt = {};
+  (kshData.enrolls || []).forEach(e => { cnt[e.class_master_id] = (cnt[e.class_master_id] || 0) + 1; });
+  const list = (kshData.classes || []).slice().sort((a, b) => {
+    const d = (cnt[b.id] || 0) - (cnt[a.id] || 0);
+    if (d) return d;
+    return (a.name || '').localeCompare(b.name || '', 'ja');
+  });
+  let h = '<div style="font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5">回数を入れると即保存され、集計に反映されます。夏期は 4回 か 6回 が基本です。</div>';
+  h += '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:11px">';
+  h += '<tr style="background:var(--surface2)">' +
+    ['講座名','学年','受講者','回数','1人あたり'].map((t,i) =>
+      '<th style="border:1px solid var(--border);padding:6px 8px;text-align:' + (i < 2 ? 'left' : 'right') + '">' + t + '</th>').join('') + '</tr>';
+  list.forEach(c => {
+    const n = cnt[c.id] || 0;
+    const ts = parseInt(c.total_sessions, 10) || 0;
+    const cc = wkClassColor(c);
+    h += '<tr' + (n === 0 ? ' style="opacity:0.5"' : '') + '>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;font-weight:700;color:' + cc + '">' + escapeHtml(c.name) +
+        (c.is_active === false ? ' <span style="font-size:9px;color:var(--muted);font-weight:400">(停止中)</span>' : '') + '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;color:var(--muted)">' + escapeHtml(String(c.grade_level == null ? '' : c.grade_level)) + '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right;font-weight:700">' + n + '</td>' +
+      '<td style="border:1px solid var(--border);padding:4px 6px;text-align:right;white-space:nowrap">' +
+        '<button onclick="setKshSessions(\'' + escapeAttr(c.id) + '\',4)" style="padding:3px 9px;font-size:10px;font-weight:700;border-radius:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+          (ts === 4 ? 'border:1.5px solid #E9A93C;background:#E9A93C;color:#fff' : 'border:1px solid var(--border);background:#fff;color:var(--muted)') + '">4回</button> ' +
+        '<button onclick="setKshSessions(\'' + escapeAttr(c.id) + '\',6)" style="padding:3px 9px;font-size:10px;font-weight:700;border-radius:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+          (ts === 6 ? 'border:1.5px solid #E9A93C;background:#E9A93C;color:#fff' : 'border:1px solid var(--border);background:#fff;color:var(--muted)') + '">6回</button> ' +
+        '<input type="number" min="0" max="60" value="' + (ts || '') + '" placeholder="—" ' +
+          'onchange="setKshSessions(\'' + escapeAttr(c.id) + '\', this.value)" ' +
+          'style="width:48px;font-size:11px;padding:3px 4px;border:1px solid ' + (ts ? 'var(--border)' : '#E0A0A0') + ';border-radius:6px;text-align:right">' +
+      '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right;color:var(--muted)">' +
+        (ts ? '¥' + kshFee(ts).toLocaleString() + (kshFeeIsExact(ts) ? '' : '<span style="color:#B84A4A">*</span>') : '<span style="color:#B84A4A">未設定</span>') + '</td>' +
+      '</tr>';
+  });
+  h += '</table></div>';
+  const noSet = list.filter(c => (cnt[c.id] || 0) > 0 && !parseInt(c.total_sessions, 10));
+  if (noSet.length) {
+    h += '<div style="margin-top:10px;font-size:11px;color:#B84A4A;background:#FDECEC;border:1px solid #E0A0A0;border-radius:8px;padding:8px 10px;font-weight:700;line-height:1.6">' +
+      '⚠️ 受講者がいるのに回数が未設定の講座が ' + noSet.length + '件あります。<br><span style="font-weight:400">' +
+      escapeHtml(noSet.map(c => c.name).join('、')) + '</span></div>';
+  }
+  h += '<div style="margin-top:8px;font-size:10px;color:var(--muted);line-height:1.5">※「1人あたり」はその講座だけを受講した場合の金額です。実際は生徒ごとの合計回数で決まります。<span style="color:#B84A4A">*</span> は料金表にない回数のため直下の段を適用した金額です。</div>';
+  el.innerHTML = h;
+}
+
+async function setKshSessions(classId, val) {
+  const n = parseInt(val, 10);
+  const body = { total_sessions: (isNaN(n) || n <= 0) ? null : n };
+  try {
+    await sbPatch('class_master', 'id=eq.' + encodeURIComponent(classId), body);
+    const c = (kshData.classes || []).find(x => String(x.id) === String(classId));
+    if (c) c.total_sessions = body.total_sessions;
+    showToast(body.total_sessions ? ('回数を ' + body.total_sessions + '回 にしました') : '回数をクリアしました', 'success');
+    renderKoushuAnalysis();
+  } catch (e) {
+    showToast('保存に失敗しました: ' + (e && e.message ? e.message : e), 'error');
+  }
+}
+
+// --- タブ3: 未登録の生徒 ---
+function renderKshNone(el) {
+  const { taken } = kshComputePerStudent();
+  const stus = kshFilteredStudents().filter(s => !taken[s.id]);
+  const bySchool = {};
+  stus.forEach(s => {
+    const k = s.school || '不明';
+    (bySchool[k] || (bySchool[k] = [])).push(s);
+  });
+  const keys = Object.keys(bySchool).sort();
+  const total = stus.length;
+  let h = '<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">' +
+    '在籍中で、この区分の受講登録が<b>1件もない</b>生徒です。申込書が未提出の生徒、または登録がまだの生徒がここに出ます。</div>';
+  h += '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">';
+  [['all','すべて'],['attend','通塾生のみ'],['roster','名簿のみ']].forEach(p => {
+    h += '<button onclick="setKshRoster(\'' + p[0] + '\')" style="padding:4px 12px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+      (kshRosterFilter === p[0] ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff'
+                                : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + p[1] + '</button>';
+  });
+  h += '</div>';
+  h += '<div style="font-size:12px;font-weight:800;color:#B84A4A;margin-bottom:8px">未登録 ' + total + '名</div>';
+  if (!total) { el.innerHTML = h + '<div style="font-size:12px;color:var(--muted);padding:10px">全員登録済みです。</div>'; return; }
+  keys.forEach(k => {
+    const list = bySchool[k].slice().sort((a, b) => {
+      const ga = kshGradeLabel(a.grade), gb = kshGradeLabel(b.grade);
+      if (ga !== gb) return ga.localeCompare(gb, 'ja');
+      const ka = (a.name_kana || a.name || ''), kb = (b.name_kana || b.name || '');
+      return ka.localeCompare(kb, 'ja');
+    });
+    h += '<div style="margin-bottom:10px;border:1px solid var(--border);border-radius:8px;overflow:hidden">' +
+      '<div style="background:var(--surface2);padding:6px 10px;font-size:11px;font-weight:800;color:var(--text)">' +
+        escapeHtml(k) + ' <span style="color:var(--muted);font-weight:600">' + list.length + '名</span></div>' +
+      '<div style="padding:6px 10px;display:flex;flex-wrap:wrap;gap:4px 10px">';
+    list.forEach(s => {
+      h += '<div style="font-size:11px;color:var(--text);white-space:nowrap">' +
+        escapeHtml(s.name) + ' <span style="font-size:9px;color:var(--muted)">' + escapeHtml(kshGradeLabel(s.grade)) +
+        (s.roster_only ? '・名簿' : '') + '</span></div>';
+    });
+    h += '</div></div>';
+  });
+  h += '<button onclick="exportKshNoneCsv()" style="margin-top:4px;padding:7px 14px;font-size:11px;font-weight:700;border-radius:8px;border:1.5px solid #1A7340;background:#fff;color:#1A7340;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📄 未登録者をCSV出力</button>';
+  el.innerHTML = h;
+}
+
+function exportKshNoneCsv() {
+  const { taken } = kshComputePerStudent();
+  const stus = kshFilteredStudents().filter(s => !taken[s.id]);
+  if (!stus.length) { showToast('出力する内容がありません', 'error'); return; }
+  const esc = (v) => {
+    const s = (v == null) ? '' : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const lines = [['学校','学年','氏名','区分'].map(esc).join(',')];
+  stus.slice().sort((a, b) =>
+    (a.school || '').localeCompare(b.school || '', 'ja') ||
+    kshGradeLabel(a.grade).localeCompare(kshGradeLabel(b.grade), 'ja') ||
+    (a.name_kana || a.name || '').localeCompare(b.name_kana || b.name || '', 'ja')
+  ).forEach(s => {
+    lines.push([s.school || '', kshGradeLabel(s.grade), s.name, s.roster_only ? '名簿のみ' : '通塾生'].map(esc).join(','));
+  });
+  const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = '未登録者_' + kshCategory + '_' + getTodayJST() + '.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast('CSVを出力しました', 'success');
 }
 
 // ===== 受講マトリクス（学年×学校で絞って一覧・タップで即保存）dgd =====
