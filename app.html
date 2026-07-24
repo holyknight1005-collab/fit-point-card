@@ -542,6 +542,19 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     </div>
     <div style="margin-bottom:6px"><div class="form-label">学年</div><div id="emx-grade-filter" class="filter-bar"></div></div>
     <div style="margin-bottom:8px"><div class="form-label">学校</div><div id="emx-school-filter" class="filter-bar"></div></div>
+    <div style="background:#FFF7E6;border:1px solid #E8C193;border-radius:8px;padding:8px 10px;margin-bottom:8px">
+      <div style="font-size:11px;font-weight:800;color:#A6741A;margin-bottom:5px">\U0001F4CC 受講開始回（請求の起点）</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <input class="form-input-sm" type="number" id="emx-cyc-y" placeholder="年" value="2026" oninput="setEmxStartCyc()" style="width:66px">
+        <span style="font-size:11px;color:var(--muted)">年</span>
+        <input class="form-input-sm" type="number" id="emx-cyc-m" placeholder="月" min="1" max="12" oninput="setEmxStartCyc()" style="width:56px">
+        <span style="font-size:11px;color:var(--muted)">月</span>
+        <input class="form-input-sm" type="number" id="emx-cyc-n" placeholder="回" min="1" max="10" oninput="setEmxStartCyc()" style="width:52px">
+        <span style="font-size:11px;color:var(--muted)">回目から</span>
+        <button onclick="document.getElementById('emx-cyc-m').value='';document.getElementById('emx-cyc-n').value='';setEmxStartCyc()" style="font-size:10px;padding:3px 9px;border-radius:12px;border:1px solid var(--border);background:#fff;color:var(--muted);cursor:pointer;font-family:'Noto Sans JP',sans-serif">クリア</button>
+      </div>
+      <div id="emx-cyc-label" style="font-size:10px;margin-top:5px;font-weight:700;color:#B84A4A">開始回を指定していません（本日の日付で登録されます）</div>
+    </div>
     <div id="emx-info" style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:700"></div>
     <div id="emx-grid"></div>
     <div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※ 解除は受講終了（ended_on）として記録されます。履歴は残ります。</div>
@@ -5317,7 +5330,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dgd';
+const APP_VERSION = '20260702dgf';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -5570,7 +5583,7 @@ async function endEnrollment(classMasterId, studentId) {
 
 // 受講を追加する。既に終了済み（ended_on あり）の同一講座があれば
 // それを継続中に戻す（ended_on=NULL）。無ければ started_on=今日 で新規 INSERT。
-async function startEnrollment(classMasterId, studentId) {
+async function startEnrollment(classMasterId, studentId, startCyc) {
   const today = getTodayJST();
   // まず終了済みの行があるか確認（あれば復活させる）
   let ended = [];
@@ -5580,12 +5593,26 @@ async function startEnrollment(classMasterId, studentId) {
       '&ended_on=not.is.null&select=id&order=ended_on.desc&limit=1') || [];
   } catch (e) { ended = []; }
   if (ended.length) {
-    await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(ended[0].id), { ended_on: null });
+    const rev = { ended_on: null };
+    if (startCyc && startCyc.no != null) {
+      rev.start_cycle_year = startCyc.year;
+      rev.start_cycle_month = (startCyc.month == null ? null : startCyc.month);
+      rev.start_cycle_no = startCyc.no;
+      if (startCyc.date) rev.started_on = startCyc.date;
+    }
+    await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(ended[0].id), rev);
     return;
   }
   // 新規。started_on を入れて INSERT（旧環境なら列無視されず 400 → フォールバック）
+  const body = { class_master_id: classMasterId, student_id: studentId,
+                 started_on: (startCyc && startCyc.date) ? startCyc.date : today };
+  if (startCyc && startCyc.no != null) {
+    body.start_cycle_year = startCyc.year;
+    body.start_cycle_month = (startCyc.month == null ? null : startCyc.month);
+    body.start_cycle_no = startCyc.no;
+  }
   try {
-    await sbPost('class_enrollments', { class_master_id: classMasterId, student_id: studentId, started_on: today });
+    await sbPost('class_enrollments', body);
   } catch (e) {
     if (String(e.message || '').toLowerCase().includes('column') ||
         String(e.message || '').includes('started_on')) {
@@ -19179,6 +19206,39 @@ let emxGrade = '';        // '' | '1' | '2' | '3'
 let emxSchool = '';       // '' | 学校名
 let emxSearch = '';
 let emxBusy = {};         // セル単位の処理中フラグ
+let emxStartCyc = null;   // { year, month, no } 指定がなければ本日
+let emxSessCache = {};    // classId -> セッション一覧（回→日付の解決用）
+
+// 指定した「◯年◯月◯回目」に対応する授業日を、その講座のセッションから引く
+async function emxResolveCycDate(classId) {
+  if (!emxStartCyc || emxStartCyc.no == null) return null;
+  if (!emxSessCache[classId]) {
+    emxSessCache[classId] = await sbGet('class_sessions',
+      'class_master_id=eq.' + classId +
+      '&select=session_date,cycle_year,cycle_month,cycle_no&order=session_date').catch(() => []) || [];
+  }
+  const c = emxStartCyc;
+  const hit = (emxSessCache[classId] || []).find(s =>
+    String(s.cycle_year) === String(c.year) &&
+    String(s.cycle_month) === String(c.month) &&
+    String(s.cycle_no) === String(c.no));
+  return hit ? hit.session_date : null;
+}
+function setEmxStartCyc() {
+  const y = (document.getElementById('emx-cyc-y') || {}).value;
+  const m = (document.getElementById('emx-cyc-m') || {}).value;
+  const n = (document.getElementById('emx-cyc-n') || {}).value;
+  if (!n || !m || !y) { emxStartCyc = null; }
+  else { emxStartCyc = { year: parseInt(y,10), month: parseInt(m,10), no: parseInt(n,10) }; }
+  const lb = document.getElementById('emx-cyc-label');
+  if (lb) {
+    lb.textContent = emxStartCyc
+      ? ('新規登録は ' + emxStartCyc.month + '-' + '①②③④⑤⑥⑦⑧⑨⑩'.charAt(emxStartCyc.no - 1) + ' から として記録されます'
+         ).replace('undefined','')
+      : '開始回を指定していません（本日の日付で登録されます）';
+    lb.style.color = emxStartCyc ? '#1A7340' : '#B84A4A';
+  }
+}
 
 const EMX_CATEGORY_LABEL = {
   summer: '☀️ 夏期講習', winter: '⛄ 冬期講習', spring: '🌸 春期講習',
@@ -19191,6 +19251,10 @@ async function openEnrollMatrix() {
   if (!m) return;
   m.style.display = 'flex';
   emxGrade = ''; emxSchool = ''; emxSearch = '';
+  emxStartCyc = null; emxSessCache = {};
+  const cm2 = document.getElementById('emx-cyc-m'); if (cm2) cm2.value = '';
+  const cn2 = document.getElementById('emx-cyc-n'); if (cn2) cn2.value = '';
+  if (typeof setEmxStartCyc === 'function') setEmxStartCyc();
   const se = document.getElementById('emx-search'); if (se) se.value = '';
   const ce = document.getElementById('emx-category'); if (ce) ce.value = emxCategory;
   await reloadEnrollMatrix();
@@ -19261,6 +19325,18 @@ function setEmxGrade(v) { emxGrade = v; emxSchool = ''; renderEnrollMatrixFilter
 function setEmxSchool(v) { emxSchool = v; renderEnrollMatrixFilters(); renderEnrollMatrix(); }
 function setEmxSearch(v) { emxSearch = (v || '').trim(); renderEnrollMatrix(); }
 
+// 講座の並び順：英→国→数→理→社
+const EMX_SUBJ_ORDER = { '英語': 1, '国語': 2, '数学': 3, '理科': 4, '社会': 5 };
+function emxSubjRank(s) {
+  const r = EMX_SUBJ_ORDER[(s || '').trim()];
+  return r ? r : 9;
+}
+// 生徒の並び順：name_kana があれば優先、なければ name
+function emxSortKey(s) {
+  const k = (s.name_kana || '').trim();
+  return (k ? k : (s.name || '')).replace(/[\s\u3000]/g, '');
+}
+
 function emxVisibleStudents() {
   const q = emxSearch.toLowerCase();
   return emxStudents.filter(s => {
@@ -19271,10 +19347,15 @@ function emxVisibleStudents() {
       if (hay.indexOf(q) === -1) return false;
     }
     return true;
-  });
+  }).sort((a, b) => emxSortKey(a).localeCompare(emxSortKey(b), 'ja'));
 }
 function emxVisibleClasses() {
-  return emxClasses.filter(c => emxClassMatchesGrade(c, emxGrade));
+  return emxClasses.filter(c => emxClassMatchesGrade(c, emxGrade))
+    .sort((a, b) => {
+      const d = emxSubjRank(a.subject) - emxSubjRank(b.subject);
+      if (d) return d;
+      return (a.name || '').localeCompare(b.name || '', 'ja');
+    });
 }
 
 function renderEnrollMatrix() {
@@ -19300,19 +19381,21 @@ function renderEnrollMatrix() {
   h += '<table style="border-collapse:separate;border-spacing:0;font-size:11px">';
   // ヘッダ
   h += '<tr>';
-  h += '<th style="position:sticky;top:0;left:0;z-index:3;background:var(--surface2);border-right:2px solid var(--border);border-bottom:2px solid var(--border);padding:6px 8px;min-width:132px;text-align:left">生徒</th>';
-  cls.forEach(c => {
+  h += '<th style="position:sticky;top:0;left:0;z-index:3;background:var(--surface2);border-right:2px solid var(--border);border-bottom:2px solid var(--border);padding:6px 8px;min-width:148px;text-align:left">生徒</th>';
+  cls.forEach((c, ci) => {
     const cc = wkClassColor(c);
-    h += '<th style="position:sticky;top:0;z-index:2;background:var(--surface2);border-bottom:2px solid var(--border);border-left:1px solid var(--border);padding:5px 3px;width:44px;min-width:44px;vertical-align:bottom">' +
-      '<div title="' + escapeAttr(c.name) + '" style="writing-mode:vertical-rl;text-orientation:mixed;white-space:nowrap;max-height:132px;overflow:hidden;font-size:10px;font-weight:700;color:' + cc + ';margin:0 auto">' +
+    h += '<th style="position:sticky;top:0;z-index:2;background:var(--surface2);border-bottom:2px solid var(--border);border-left:1px solid var(--border);padding:5px 3px;width:46px;min-width:46px;vertical-align:bottom">' +
+      '<div style="font-size:11px;font-weight:800;color:' + cc + ';margin-bottom:3px">' + (ci + 1) + '</div>' +
+      '<div title="' + escapeAttr((ci + 1) + '. ' + c.name) + '" style="writing-mode:vertical-rl;text-orientation:mixed;white-space:nowrap;max-height:132px;overflow:hidden;font-size:10px;font-weight:700;color:' + cc + ';margin:0 auto">' +
       escapeHtml(c.name) + '</div></th>';
   });
   h += '</tr>';
-  stus.forEach(s => {
+  stus.forEach((s, si) => {
     h += '<tr>';
     h += '<td style="position:sticky;left:0;z-index:1;background:var(--surface);border-right:2px solid var(--border);border-bottom:1px solid var(--border);padding:5px 8px;white-space:nowrap">' +
-      '<div style="font-weight:700;color:var(--text)">' + escapeHtml(s.name) + '</div>' +
-      '<div style="font-size:9px;color:var(--muted)">' + escapeHtml((s.school || '') + ' ' + (s.grade || '')) + '</div></td>';
+      '<div style="font-weight:700;color:var(--text)"><span style="display:inline-block;min-width:20px;color:var(--muted);font-weight:600;font-size:10px">' + (si + 1) + '.</span> ' +
+      escapeHtml(s.name) + '</div>' +
+      '<div style="font-size:9px;color:var(--muted);padding-left:20px">' + escapeHtml((s.school || '') + ' ' + (s.grade || '')) + '</div></td>';
     cls.forEach(c => {
       const key = s.id + '|' + c.id;
       const on = !!emxEnrolled[key];
@@ -19327,6 +19410,18 @@ function renderEnrollMatrix() {
     h += '</tr>';
   });
   h += '</table></div>';
+
+  // 講座番号の対応表（申込用紙との突き合わせ用）
+  h += '<div style="margin-top:10px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--surface)">';
+  h += '<div style="font-size:11px;font-weight:800;color:var(--text);margin-bottom:6px">講座番号</div>';
+  h += '<div style="display:flex;flex-wrap:wrap;gap:4px 14px">';
+  cls.forEach((c, ci) => {
+    const cc = wkClassColor(c);
+    h += '<div style="font-size:10px;color:var(--text);white-space:nowrap">' +
+      '<span style="font-weight:800;color:' + cc + '">' + (ci + 1) + '.</span> ' +
+      escapeHtml(c.name) + '</div>';
+  });
+  h += '</div></div>';
   grid.innerHTML = h;
 }
 
@@ -19343,7 +19438,12 @@ async function toggleEmxCell(studentId, classId) {
       await endEnrollment(classId, studentId);
       delete emxEnrolled[key];
     } else {
-      await startEnrollment(classId, studentId);
+      let cyc = null;
+      if (emxStartCyc && emxStartCyc.no != null) {
+        const d = await emxResolveCycDate(classId);
+        cyc = { year: emxStartCyc.year, month: emxStartCyc.month, no: emxStartCyc.no, date: d };
+      }
+      await startEnrollment(classId, studentId, cyc);
       emxEnrolled[key] = true;
     }
     // セルだけ更新（全体再描画しない＝スクロール位置を保つ）
@@ -19374,10 +19474,13 @@ function exportEmxCsv() {
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   const lines = [];
-  lines.push(['生徒', '学校', '学年'].concat(cls.map(c => c.name)).concat(['受講数']).map(esc).join(','));
-  stus.forEach(s => {
+  // 1行目: 講座番号 / 2行目: 科目 / 3行目: 講座名
+  lines.push(['No.', '生徒', '学校', '学年'].concat(cls.map((c, i) => i + 1)).concat(['受講数']).map(esc).join(','));
+  lines.push(['', '', '', '科目'].concat(cls.map(c => c.subject || '')).concat(['']).map(esc).join(','));
+  lines.push(['', '', '', '講座名'].concat(cls.map(c => c.name)).concat(['']).map(esc).join(','));
+  stus.forEach((s, si) => {
     let n = 0;
-    const row = [s.name, s.school || '', s.grade || ''];
+    const row = [si + 1, s.name, s.school || '', s.grade || ''];
     cls.forEach(c => {
       const on = !!emxEnrolled[s.id + '|' + c.id];
       if (on) n++;
@@ -19387,7 +19490,7 @@ function exportEmxCsv() {
     lines.push(row.map(esc).join(','));
   });
   // 講座ごとの合計
-  const tail = ['合計', '', ''];
+  const tail = ['', '合計', '', ''];
   cls.forEach(c => {
     let n = 0;
     stus.forEach(s => { if (emxEnrolled[s.id + '|' + c.id]) n++; });
@@ -25697,15 +25800,18 @@ async function loadAttMatrix() {
       'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
       '&select=session_date,period,start_time,end_time,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date,period') || [];
     // 受講名簿（デモ生徒は除外）
-    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,started_on,ended_on');
+    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no');
     // 受講期間（開始前・終了後の授業日は集計対象外にする）
     attEnrollRange = {};
     enrolls.forEach(e => {
+      const cyc = (e.start_cycle_no != null && e.start_cycle_year != null)
+        ? { year: e.start_cycle_year, month: e.start_cycle_month, no: e.start_cycle_no } : null;
       // 同じ生徒に複数行がある場合は、最も早い開始・最も遅い終了を採用する
       const cur = attEnrollRange[e.student_id];
-      if (!cur) { attEnrollRange[e.student_id] = { start: e.started_on || null, end: e.ended_on || null }; return; }
-      if (e.started_on && (!cur.start || e.started_on < cur.start)) cur.start = e.started_on;
+      if (!cur) { attEnrollRange[e.student_id] = { start: e.started_on || null, end: e.ended_on || null, cyc: cyc }; return; }
+      if (e.started_on && (!cur.start || e.started_on < cur.start)) { cur.start = e.started_on; cur.cyc = cyc; }
       if (cur.end && (!e.ended_on || e.ended_on > cur.end)) cur.end = e.ended_on || null;
+      if (!cur.cyc && cyc) cur.cyc = cyc;
     });
     const studentIds = await excludeDemoIds(enrolls.map(e => e.student_id));
     if (!sessions.length || !studentIds.length) {
@@ -26078,7 +26184,19 @@ function attInEnrollRange(sid, sessionDate) {
 // started_on 以降で最初の授業日を探し、その回番号を使う。
 function attStartLabel(sid) {
   const r = attEnrollRange[sid];
-  if (!r || !r.start || !attMatrix) return '';
+  if (!r || !attMatrix) return '';
+  // 明示的に「◯月◯回目から」が登録されていれば、それを最優先で使う
+  if (r.cyc && r.cyc.no != null) {
+    const lbl = attMatrixCycleLabel(r.cyc);
+    if (lbl) {
+      // 表内の最初の授業がその回以降なら、わざわざ出さない
+      const firstKey = attMatrix.sessKeys[0];
+      const firstInfo = firstKey ? attMatrix.sessInfo[firstKey] : null;
+      if (firstInfo && attMatrixCycleLabel(firstInfo) === lbl) return '';
+      return lbl + 'から';
+    }
+  }
+  if (!r.start) return '';
   // 最初の授業日より前から在籍しているなら、わざわざ出さない
   const firstKey = attMatrix.sessKeys[0];
   if (firstKey && firstKey.split('|')[0] >= r.start) return '';
