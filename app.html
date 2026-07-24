@@ -542,7 +542,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     </div>
     <div style="margin-bottom:6px"><div class="form-label">学年</div><div id="emx-grade-filter" class="filter-bar"></div></div>
     <div style="margin-bottom:8px"><div class="form-label">学校</div><div id="emx-school-filter" class="filter-bar"></div></div>
-    <div style="background:#FFF7E6;border:1px solid #E8C193;border-radius:8px;padding:8px 10px;margin-bottom:8px">
+    <div id="emx-cyc-box" style="display:none;background:#FFF7E6;border:1px solid #E8C193;border-radius:8px;padding:8px 10px;margin-bottom:8px">
       <div style="font-size:11px;font-weight:800;color:#A6741A;margin-bottom:5px">\U0001F4CC 受講開始回（請求の起点）</div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         <input class="form-input-sm" type="number" id="emx-cyc-y" placeholder="年" value="2026" oninput="setEmxStartCyc()" style="width:66px">
@@ -555,6 +555,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
       <div id="emx-cyc-label" style="font-size:10px;margin-top:5px;font-weight:700;color:#B84A4A">開始回を指定していません（本日の日付で登録されます）</div>
     </div>
+    <div id="emx-koushu-note" style="display:none;font-size:10px;color:var(--muted);background:var(--surface2);border-radius:8px;padding:6px 10px;margin-bottom:8px;line-height:1.5">※ 講習は開始日の概念がないため、開始日なしで登録されます。</div>
     <div id="emx-info" style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:700"></div>
     <div id="emx-grid"></div>
     <div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※ 解除は受講終了（ended_on）として記録されます。履歴は残ります。</div>
@@ -5330,7 +5331,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dgf';
+const APP_VERSION = '20260702dgg';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -5583,8 +5584,11 @@ async function endEnrollment(classMasterId, studentId) {
 
 // 受講を追加する。既に終了済み（ended_on あり）の同一講座があれば
 // それを継続中に戻す（ended_on=NULL）。無ければ started_on=今日 で新規 INSERT。
-async function startEnrollment(classMasterId, studentId, startCyc) {
+// 通常授業以外（夏期・冬期などの講習）は「開始日」の概念がないので started_on を入れない。
+// opts.noStartDate === true で日付なし登録になる。
+async function startEnrollment(classMasterId, studentId, startCyc, opts) {
   const today = getTodayJST();
+  const noDate = !!(opts && opts.noStartDate);
   // まず終了済みの行があるか確認（あれば復活させる）
   let ended = [];
   try {
@@ -5594,18 +5598,19 @@ async function startEnrollment(classMasterId, studentId, startCyc) {
   } catch (e) { ended = []; }
   if (ended.length) {
     const rev = { ended_on: null };
+    if (noDate) rev.started_on = null;
     if (startCyc && startCyc.no != null) {
       rev.start_cycle_year = startCyc.year;
       rev.start_cycle_month = (startCyc.month == null ? null : startCyc.month);
       rev.start_cycle_no = startCyc.no;
-      if (startCyc.date) rev.started_on = startCyc.date;
+      if (startCyc.date && !noDate) rev.started_on = startCyc.date;
     }
     await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(ended[0].id), rev);
     return;
   }
   // 新規。started_on を入れて INSERT（旧環境なら列無視されず 400 → フォールバック）
-  const body = { class_master_id: classMasterId, student_id: studentId,
-                 started_on: (startCyc && startCyc.date) ? startCyc.date : today };
+  const body = { class_master_id: classMasterId, student_id: studentId };
+  if (!noDate) body.started_on = (startCyc && startCyc.date) ? startCyc.date : today;
   if (startCyc && startCyc.no != null) {
     body.start_cycle_year = startCyc.year;
     body.start_cycle_month = (startCyc.month == null ? null : startCyc.month);
@@ -19225,6 +19230,12 @@ async function emxResolveCycDate(classId) {
   return hit ? hit.session_date : null;
 }
 function setEmxStartCyc() {
+  const isNormal = (emxCategory === 'normal');
+  const box = document.getElementById('emx-cyc-box');
+  if (box) box.style.display = isNormal ? 'block' : 'none';
+  const note = document.getElementById('emx-koushu-note');
+  if (note) note.style.display = isNormal ? 'none' : 'block';
+  if (!isNormal) { emxStartCyc = null; return; }
   const y = (document.getElementById('emx-cyc-y') || {}).value;
   const m = (document.getElementById('emx-cyc-m') || {}).value;
   const n = (document.getElementById('emx-cyc-n') || {}).value;
@@ -19233,8 +19244,7 @@ function setEmxStartCyc() {
   const lb = document.getElementById('emx-cyc-label');
   if (lb) {
     lb.textContent = emxStartCyc
-      ? ('新規登録は ' + emxStartCyc.month + '-' + '①②③④⑤⑥⑦⑧⑨⑩'.charAt(emxStartCyc.no - 1) + ' から として記録されます'
-         ).replace('undefined','')
+      ? ('新規登録は ' + emxStartCyc.month + '-' + '①②③④⑤⑥⑦⑧⑨⑩'.charAt(emxStartCyc.no - 1) + ' から として記録されます')
       : '開始回を指定していません（本日の日付で登録されます）';
     lb.style.color = emxStartCyc ? '#1A7340' : '#B84A4A';
   }
@@ -19285,6 +19295,7 @@ async function reloadEnrollMatrix() {
       enr.forEach(e => { emxEnrolled[e.student_id + '|' + e.class_master_id] = e.id; });
     }
     renderEnrollMatrixFilters();
+    setEmxStartCyc();
     renderEnrollMatrix();
   } catch (e) {
     if (grid) grid.innerHTML = '<div style="font-size:12px;color:#B84A4A;padding:10px">読み込み失敗: ' + escapeHtml(e.message) + '</div>';
@@ -19438,12 +19449,13 @@ async function toggleEmxCell(studentId, classId) {
       await endEnrollment(classId, studentId);
       delete emxEnrolled[key];
     } else {
+      const isNormal = (emxCategory === 'normal');
       let cyc = null;
-      if (emxStartCyc && emxStartCyc.no != null) {
+      if (isNormal && emxStartCyc && emxStartCyc.no != null) {
         const d = await emxResolveCycDate(classId);
         cyc = { year: emxStartCyc.year, month: emxStartCyc.month, no: emxStartCyc.no, date: d };
       }
-      await startEnrollment(classId, studentId, cyc);
+      await startEnrollment(classId, studentId, cyc, { noStartDate: !isNormal });
       emxEnrolled[key] = true;
     }
     // セルだけ更新（全体再描画しない＝スクロール位置を保つ）
