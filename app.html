@@ -5353,7 +5353,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dgl';
+const APP_VERSION = '20260702dgm';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -20416,6 +20416,7 @@ async function deleteClassMaster(id) {
 let ctModalClassId = null;
 let ctModalSelected = new Set();   // 選択中の staff.id
 let ctModalStaff = [];             // 全スタッフ
+let ctModalDepts = {};             // 部名 -> [staff.id]（staff_permissions.departments 由来）
 
 async function setClassTeacher(classId) {
   ctModalClassId = classId;
@@ -20424,6 +20425,19 @@ async function setClassTeacher(classId) {
   try {
     ctModalStaff = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=name') || [];
   } catch (e) { showToast('スタッフ取得に失敗しました', 'error'); return; }
+  // 部（staff_permissions.departments）を読み、「◯◯部をまとめて選ぶ」に使う
+  ctModalDepts = {};
+  try {
+    const sp = await sbGet('staff_permissions', 'select=staff_id,departments') || [];
+    const byCode = {};
+    ctModalStaff.forEach(s => { if (s.staff_id) byCode[s.staff_id] = s.id; });
+    sp.forEach(r => {
+      (r.departments || []).forEach(d => {
+        const uid = byCode[r.staff_id];
+        if (uid) (ctModalDepts[d] || (ctModalDepts[d] = [])).push(uid);
+      });
+    });
+  } catch (e) { ctModalDepts = {}; }
   // 現在の担当（主担当 ∪ class_teachers）
   ctModalSelected = new Set();
   if (cm && cm.teacher_staff_id) ctModalSelected.add(cm.teacher_staff_id);
@@ -20443,11 +20457,44 @@ async function setClassTeacher(classId) {
       '<div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px">担当講師を選ぶ</div>' +
       '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + (cm ? escapeHtml(cm.name) : '') + '</div>' +
       '<div style="font-size:10px;color:var(--muted);margin-bottom:12px;line-height:1.5">複数選べます（例：超感覚英語＝仙波・石丸）。選んだ講師の「今日やること」に、この授業の復習の承認待ちが出ます。先頭が主担当になります。</div>' +
+      '<div id="ct-dept-row" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>' +
       '<div id="ct-staff-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px"></div>' +
       '<button onclick="saveClassTeachers()" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;margin-bottom:8px">保存する</button>' +
       '<button onclick="document.getElementById(\'class-teacher-modal\').remove()" style="width:100%;padding:10px;background:transparent;border:none;color:var(--muted);font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">閉じる</button>' +
     '</div>';
   document.body.appendChild(overlay);
+  renderCtDeptRow();
+  renderCtStaffList();
+}
+
+// 部（英語部など）をまとめて選ぶ／外すボタン
+function renderCtDeptRow() {
+  const el = document.getElementById('ct-dept-row');
+  if (!el) return;
+  const names = Object.keys(ctModalDepts).filter(d => (ctModalDepts[d] || []).length);
+  if (!names.length) { el.innerHTML = ''; return; }
+  // 科目の並びに寄せる（英→国→数→理→社、その他は後ろ）
+  const ord = { '英語':1, '国語':2, '数学':3, '理科':4, '社会':5 };
+  names.sort((a, b) => (ord[a] || 9) - (ord[b] || 9) || a.localeCompare(b, 'ja'));
+  let h = '<div style="font-size:10px;color:var(--muted);width:100%;margin-bottom:2px">部でまとめて選ぶ</div>';
+  h += names.map(d => {
+    const ids = ctModalDepts[d] || [];
+    const allOn = ids.length > 0 && ids.every(id => ctModalSelected.has(id));
+    return '<button type="button" onclick="toggleCtDept(\'' + escapeAttr(d) + '\')" ' +
+      'style="padding:5px 12px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;' +
+      'font-family:\'Noto Sans JP\',sans-serif;border:1.5px solid ' + (allOn ? '#2D6CB6' : 'var(--border)') + ';' +
+      'background:' + (allOn ? '#2D6CB6' : 'var(--surface)') + ';color:' + (allOn ? '#fff' : 'var(--text)') + '">' +
+      escapeHtml(d) + '部 <span style="font-weight:400;font-size:10px">' + ids.length + '名</span></button>';
+  }).join('');
+  el.innerHTML = h;
+}
+// その部の全員が選択済みなら全解除、そうでなければ全選択
+function toggleCtDept(dept) {
+  const ids = ctModalDepts[dept] || [];
+  if (!ids.length) return;
+  const allOn = ids.every(id => ctModalSelected.has(id));
+  ids.forEach(id => { if (allOn) ctModalSelected.delete(id); else ctModalSelected.add(id); });
+  renderCtDeptRow();
   renderCtStaffList();
 }
 
@@ -20467,6 +20514,7 @@ function renderCtStaffList() {
 function toggleCtStaff(staffId) {
   if (ctModalSelected.has(staffId)) ctModalSelected.delete(staffId);
   else ctModalSelected.add(staffId);
+  renderCtDeptRow();
   renderCtStaffList();
 }
 
