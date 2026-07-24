@@ -1694,6 +1694,15 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </button>
     </div>
 
+    <!-- 夏期講習の申込書 未提出のお知らせ -->
+    <div id="stu-koushu-notice" style="display:none;background:linear-gradient(135deg,#FFF3DF,#FFFDF7);border:1.5px solid #E8C193;border-radius:var(--radius);padding:13px 15px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">
+        <span style="font-size:17px">📝</span>
+        <span id="stu-koushu-title" style="font-size:13px;font-weight:800;color:#8F5F12">申込書を出してください</span>
+      </div>
+      <div id="stu-koushu-body" style="font-size:11px;color:#8F5F12;line-height:1.7"></div>
+    </div>
+
     <!-- 今日の授業 -->
     <div id="today-classes-box" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px">
       <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:8px">📚 今日の授業</div>
@@ -3083,6 +3092,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
     <div class="sv-card" id="sv-reconcile-section">
       <div class="sv-card-h">🔗 名簿とアプリの突合（この学校）</div>
+      <div class="sv-placeholder">読み込み中…</div>
+    </div>
+
+    <div class="sv-card" id="sv-koushu-section">
+      <div class="sv-card-h">📋 講習の提出状況（この学校）</div>
       <div class="sv-placeholder">読み込み中…</div>
     </div>
 
@@ -5353,7 +5367,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dgn';
+const APP_VERSION = '20260702dgp';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6847,6 +6861,7 @@ function initStudentScreen() {
   checkSchoolMenu();
   setTimeout(checkInstallGuide, 2000);
   loadTodayClasses();
+  loadKoushuNotice();
   loadQuizNotice();
   loadExamRequestNotice();
   setTimeout(updateHomeCheckBadge, 1200);
@@ -19368,7 +19383,6 @@ let kshData = null;     // { classes, students, enrolls }
 let kshRosterFilter = 'all';   // all | attend | roster
 let kshYear = null;            // 対象年度（class_master.school_year）
 let kshYearOpts = [];          // 選択できる年度
-let kshSubSchool = '';         // 提出状況タブで見る学校
 
 function setKshTab(t) { kshTab = t; renderKoushuAnalysis(); }
 function setKshRoster(v) { kshRosterFilter = v; renderKoushuAnalysis(); }
@@ -19454,12 +19468,13 @@ function renderKoushuAnalysis() {
     const mk = (v, l) => '<button onclick="setKshTab(\'' + v + '\')" style="flex:1;padding:8px 4px;font-size:11px;font-weight:700;border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
       (kshTab === v ? 'border:1.5px solid var(--orange);background:var(--orange-l);color:var(--orange-d)'
                     : 'border:1.5px solid var(--border);background:transparent;color:var(--muted)') + '">' + l + '</button>';
-    tabBar.innerHTML = mk('school', '🏫 学校×学年') + mk('class', '📚 講座ごと') +
-                       mk('submit', '📋 提出状況') + mk('none', '📝 未登録');
+    tabBar.innerHTML = mk('school', '🏫 学校×学年') + mk('subject', '📐 教科別') +
+                       mk('class', '📚 講座ごと') + mk('pending', '⏳ 未提出') + mk('none', '📝 未登録');
   }
   if (kshTab === 'school') renderKshSchool(el);
+  else if (kshTab === 'subject') renderKshSubject(el);
   else if (kshTab === 'class') renderKshClass(el);
-  else if (kshTab === 'submit') renderKshSubmit(el);
+  else if (kshTab === 'pending') renderKshPending(el);
   else renderKshNone(el);
 }
 
@@ -19574,6 +19589,91 @@ function renderKshSchool(el) {
   el.innerHTML = h;
 }
 
+// --- タブ: 教科別 ---
+// 料金は「生徒ごとの合計回数」で決まるため、講座単価は存在しない。
+// そこで各生徒の料金を、その生徒が取った回数の比で教科に按分する。
+function renderKshSubject(el) {
+  const byClass = {};
+  (kshData.classes || []).forEach(c => { byClass[c.id] = c; });
+  const pool = {};
+  kshFilteredStudents().forEach(s => { pool[s.id] = s; });
+
+  // 生徒ごと：教科別の回数と、合計回数
+  const perStu = {};
+  (kshData.enrolls || []).forEach(e => {
+    if (!pool[e.student_id]) return;
+    const c = byClass[e.class_master_id];
+    if (!c) return;
+    const n = parseInt(c.total_sessions, 10) || 0;
+    const subj = (c.subject || 'その他').trim();
+    const r = perStu[e.student_id] || (perStu[e.student_id] = { total: 0, bySubj: {}, seats: {} });
+    r.total += n;
+    r.bySubj[subj] = (r.bySubj[subj] || 0) + n;
+    r.seats[subj] = (r.seats[subj] || 0) + 1;
+  });
+
+  const agg = {};
+  let grandFee = 0, grandSess = 0, grandSeats = 0;
+  Object.keys(perStu).forEach(sid => {
+    const r = perStu[sid];
+    const fee = kshFee(r.total);
+    grandFee += fee; grandSess += r.total;
+    Object.keys(r.seats).forEach(subj => {
+      const a = agg[subj] || (agg[subj] = { seats: 0, sess: 0, fee: 0, stu: {} });
+      a.seats += r.seats[subj];
+      a.sess += (r.bySubj[subj] || 0);
+      a.stu[sid] = true;
+      grandSeats += r.seats[subj];
+      // 回数比で按分。回数が0（未設定のみ）の生徒は座席数比で分ける。
+      if (r.total > 0) a.fee += fee * ((r.bySubj[subj] || 0) / r.total);
+      else {
+        const totSeats = Object.keys(r.seats).reduce((x, k) => x + r.seats[k], 0);
+        if (totSeats > 0) a.fee += fee * (r.seats[subj] / totSeats);
+      }
+    });
+  });
+
+  const names = Object.keys(agg);
+  if (!names.length) { el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:10px">受講データがありません。</div>'; return; }
+  names.sort((a, b) => emxSubjRank(a) - emxSubjRank(b) || a.localeCompare(b, 'ja'));
+
+  const pct = (a, b) => (b > 0 ? Math.round(a / b * 1000) / 10 : 0);
+  const bar = (v, col) => '<div style="display:flex;align-items:center;gap:5px;justify-content:flex-end">' +
+    '<div style="flex:0 0 48px;height:6px;background:var(--surface2);border-radius:3px;overflow:hidden">' +
+    '<div style="width:' + Math.min(100, v) + '%;height:100%;background:' + col + '"></div></div>' +
+    '<span style="min-width:38px;text-align:right">' + v.toFixed(1) + '%</span></div>';
+
+  let h = '<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">' +
+    '教科ごとの受講状況です。料金は生徒ごとの合計回数で決まるため、各生徒の料金を<b>受講回数の比で教科に按分</b>しています。</div>';
+  h += '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:11px">';
+  h += '<tr style="background:var(--surface2)">' +
+    ['教科', '受講のべ', '実人数', '延べ回数', '売上（按分）', '構成比'].map((t, i) =>
+      '<th style="border:1px solid var(--border);padding:6px 8px;text-align:' + (i === 0 ? 'left' : 'right') + '">' + t + '</th>').join('') + '</tr>';
+  names.forEach(n => {
+    const a = agg[n];
+    const col = WK_SUBJ_COLORS[n] || '#5A5A5A';
+    h += '<tr>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;font-weight:700;color:' + col + '">' + escapeHtml(n) + '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right">' + a.seats + '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right">' + Object.keys(a.stu).length + '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right">' + a.sess + '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right;font-weight:700">¥' + Math.round(a.fee).toLocaleString() + '</td>' +
+      '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right">' + bar(pct(a.fee, grandFee), col) + '</td></tr>';
+  });
+  h += '<tr style="background:var(--surface2);font-weight:800">' +
+    '<td style="border:1px solid var(--border);padding:6px 8px">合計</td>' +
+    '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">' + grandSeats + '</td>' +
+    '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">' + Object.keys(perStu).length + '</td>' +
+    '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">' + grandSess + '</td>' +
+    '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">¥' + Math.round(grandFee).toLocaleString() + '</td>' +
+    '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">100.0%</td></tr>';
+  h += '</table></div>';
+  h += '<div style="margin-top:8px;font-size:10px;color:var(--muted);line-height:1.5">' +
+    '※「受講のべ」は講座数の合計（1人が2講座なら2）、「実人数」はその教科を1つ以上取っている生徒数です。' +
+    '按分のため、教科ごとの売上は小数を丸めており、合計と数円ずれることがあります。</div>';
+  el.innerHTML = h;
+}
+
 // --- タブ2: 講座ごと（回数をその場で編集） ---
 function renderKshClass(el) {
   const cnt = {};
@@ -19641,137 +19741,107 @@ function setKshYear(v) {
   kshYear = isNaN(n) ? null : n;
   reloadKoushuAnalysis();
 }
-function setKshSubSchool(v) { kshSubSchool = v; renderKoushuAnalysis(); }
 
-// --- タブ: 提出状況（閲覧専用マトリクス） ---
-function renderKshSubmit(el) {
+// --- タブ: 未提出（出席しているが申込書が出ていない生徒） ---
+function renderKshPending(el) {
   const byClass = {};
   (kshData.classes || []).forEach(c => { byClass[c.id] = c; });
-  // 生徒×講座 の受講状況
-  const cell = {};
-  (kshData.enrolls || []).forEach(e => {
-    cell[e.student_id + '|' + e.class_master_id] = e.is_provisional ? 'prov' : 'fix';
-  });
-  const pool = kshFilteredStudents();
-  const schools = [...new Set(pool.map(s => s.school).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja'));
-  if (!kshSubSchool && schools.length) kshSubSchool = schools[0];
+  const pool = {};
+  kshFilteredStudents().forEach(s => { pool[s.id] = s; });
 
-  let h = '<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">' +
-    '学校ごとの受講状況です。<b>この画面では編集できません</b>（変更は受講マトリクスから）。' +
-    '✅＝申込済み、⏳＝申込未提出だが参加。</div>';
-  h += '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">';
-  schools.forEach(sc => {
-    h += '<button onclick="setKshSubSchool(\'' + escapeAttr(sc) + '\')" style="padding:4px 12px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
-      (kshSubSchool === sc ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff'
-                           : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' +
-      escapeHtml(sc) + '</button>';
+  // 見込み（is_provisional）の受講だけを拾う
+  const rows = {};
+  (kshData.enrolls || []).forEach(e => {
+    if (!e.is_provisional) return;
+    const s = pool[e.student_id];
+    const c = byClass[e.class_master_id];
+    if (!s || !c) return;
+    const r = rows[e.student_id] || (rows[e.student_id] = { stu: s, classes: [], sess: 0 });
+    r.classes.push(c);
+    r.sess += (parseInt(c.total_sessions, 10) || 0);
+  });
+  const list = Object.keys(rows).map(k => rows[k]).sort((a, b) =>
+    (a.stu.school || '').localeCompare(b.stu.school || '', 'ja') ||
+    kshGradeLabel(a.stu.grade).localeCompare(kshGradeLabel(b.stu.grade), 'ja') ||
+    (a.stu.name_kana || a.stu.name || '').localeCompare(b.stu.name_kana || b.stu.name || '', 'ja'));
+
+  let h = '<div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">' +
+    '講師が「申込書は出ていないが授業に来ている」と記録した生徒です。' +
+    '申込書を受け取ったら、受講マトリクスで <b>⏳ 見込み → ✅ 確定</b> に切り替えてください。</div>';
+
+  if (!list.length) {
+    h += '<div style="background:#EAF7EA;border:1px solid #8CC98C;border-radius:8px;padding:14px;text-align:center;font-size:12px;color:#3B6D11;font-weight:700">' +
+      '✅ 未提出の生徒はいません。</div>';
+    el.innerHTML = h;
+    return;
+  }
+
+  const totalFee = list.reduce((a, r) => a + kshFee(r.sess), 0);
+  h += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px">' +
+    '<div style="background:#FFF7E6;border:1px solid #E8C193;border-radius:10px;padding:10px 12px">' +
+      '<div style="font-size:10px;color:#8F5F12;font-weight:700">未提出の生徒</div>' +
+      '<div style="font-size:20px;font-weight:800;color:#8F5F12">' + list.length + '<span style="font-size:12px">名</span></div></div>' +
+    '<div style="background:#FFF7E6;border:1px solid #E8C193;border-radius:10px;padding:10px 12px">' +
+      '<div style="font-size:10px;color:#8F5F12;font-weight:700">未回収の見込み額</div>' +
+      '<div style="font-size:20px;font-weight:800;color:#8F5F12">¥' + totalFee.toLocaleString() + '</div></div>' +
+    '</div>';
+
+  h += '<div style="display:flex;flex-direction:column;gap:8px">';
+  list.forEach(r => {
+    const s = r.stu;
+    h += '<div style="border:1.5px solid #E8C193;background:#FFFDF7;border-radius:10px;padding:10px 12px">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">' +
+        '<div><span style="font-size:13px;font-weight:800;color:var(--text)">' + escapeHtml(s.name) + '</span>' +
+          '<span style="font-size:10px;color:var(--muted);margin-left:6px">' +
+          escapeHtml((s.school || '') + ' ' + kshGradeLabel(s.grade)) + '</span></div>' +
+        '<div style="font-size:12px;font-weight:800;color:#8F5F12">' + r.classes.length + '講座 / ' +
+          r.sess + '回 / ¥' + kshFee(r.sess).toLocaleString() + '</div>' +
+      '</div>' +
+      '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">' +
+        r.classes.map(c => {
+          const cc = wkClassColor(c);
+          return '<span style="font-size:10px;font-weight:700;color:' + cc + ';background:' + cc + '18;border:1px solid ' + cc +
+            ';border-radius:10px;padding:2px 8px">' + escapeHtml(c.name) + '</span>';
+        }).join('') +
+      '</div></div>';
   });
   h += '</div>';
-
-  const stus = pool.filter(s => s.school === kshSubSchool).sort((a, b) => {
-    const ga = kshGradeLabel(a.grade), gb = kshGradeLabel(b.grade);
-    if (ga !== gb) return ga.localeCompare(gb, 'ja');
-    return (a.name_kana || a.name || '').localeCompare(b.name_kana || b.name || '', 'ja');
-  });
-  // 受講者がいる講座だけを列にする（空列を並べない）
-  const used = {};
-  (kshData.enrolls || []).forEach(e => {
-    const s = (kshData.students || []).find(x => x.id === e.student_id);
-    if (s && s.school === kshSubSchool) used[e.class_master_id] = true;
-  });
-  const cls = (kshData.classes || []).filter(c => used[c.id]).sort((a, b) => {
-    const d = emxSubjRank(a.subject) - emxSubjRank(b.subject);
-    if (d) return d;
-    return (a.name || '').localeCompare(b.name || '', 'ja');
-  });
-  if (!stus.length) { el.innerHTML = h + '<div style="font-size:12px;color:var(--muted);padding:10px">該当する生徒がいません。</div>'; return; }
-  if (!cls.length) { el.innerHTML = h + '<div style="font-size:12px;color:var(--muted);padding:10px">この学校の受講登録はまだありません。</div>'; return; }
-
-  h += '<div style="overflow:auto;max-height:58vh;border:1px solid var(--border);border-radius:8px">';
-  h += '<table style="border-collapse:separate;border-spacing:0;font-size:11px">';
-  h += '<tr><th style="position:sticky;top:0;left:0;z-index:3;background:var(--surface2);border-right:2px solid var(--border);border-bottom:2px solid var(--border);padding:6px 8px;min-width:140px;text-align:left">生徒</th>';
-  cls.forEach((c, ci) => {
-    const cc = wkClassColor(c);
-    h += '<th style="position:sticky;top:0;z-index:2;background:var(--surface2);border-bottom:2px solid var(--border);border-left:1px solid var(--border);padding:5px 3px;width:44px;min-width:44px;vertical-align:bottom">' +
-      '<div style="font-size:11px;font-weight:800;color:' + cc + ';margin-bottom:3px">' + (ci + 1) + '</div>' +
-      '<div title="' + escapeAttr(c.name) + '" style="writing-mode:vertical-rl;text-orientation:mixed;white-space:nowrap;max-height:126px;overflow:hidden;font-size:10px;font-weight:700;color:' + cc + ';margin:0 auto">' +
-      escapeHtml(c.name) + '</div></th>';
-  });
-  h += '<th style="position:sticky;top:0;z-index:2;background:var(--surface2);border-bottom:2px solid var(--border);border-left:1px solid var(--border);padding:5px 6px;min-width:38px;font-size:10px">計</th></tr>';
-
-  stus.forEach((s, si) => {
-    let cnt = 0;
-    let row = '';
-    cls.forEach(c => {
-      const v = cell[s.id + '|' + c.id];
-      if (v) cnt++;
-      const cc = wkClassColor(c);
-      const bg = v === 'prov' ? '#FFF3DF' : (v ? cc + '22' : 'transparent');
-      const mark = v === 'prov' ? '⏳' : (v ? '✓' : '');
-      row += '<td style="border-bottom:1px solid var(--border);border-left:1px solid var(--border);padding:0;text-align:center;' +
-        'background:' + bg + (v === 'prov' ? ';box-shadow:inset 0 0 0 2px #E8C193' : '') + '">' +
-        '<div style="width:100%;height:28px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:' +
-        (v === 'prov' ? '#8F5F12' : cc) + '">' + mark + '</div></td>';
-    });
-    h += '<tr>' +
-      '<td style="position:sticky;left:0;z-index:1;background:var(--surface);border-right:2px solid var(--border);border-bottom:1px solid var(--border);padding:5px 8px;white-space:nowrap">' +
-        '<div style="font-weight:700;color:var(--text)"><span style="display:inline-block;min-width:20px;color:var(--muted);font-weight:600;font-size:10px">' + (si + 1) + '.</span> ' +
-        escapeHtml(s.name) + '</div>' +
-        '<div style="font-size:9px;color:var(--muted);padding-left:20px">' + escapeHtml(kshGradeLabel(s.grade)) + '</div></td>' +
-      row +
-      '<td style="border-bottom:1px solid var(--border);border-left:1px solid var(--border);text-align:center;font-weight:700;color:' +
-        (cnt ? 'var(--text)' : 'var(--border)') + '">' + (cnt || '–') + '</td></tr>';
-  });
-  h += '</table></div>';
-
-  // 講座番号の対応表
-  h += '<div style="margin-top:10px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--surface)">';
-  h += '<div style="font-size:11px;font-weight:800;color:var(--text);margin-bottom:6px">講座番号</div>';
-  h += '<div style="display:flex;flex-wrap:wrap;gap:4px 14px">';
-  cls.forEach((c, ci) => {
-    const cc = wkClassColor(c);
-    h += '<div style="font-size:10px;white-space:nowrap"><span style="font-weight:800;color:' + cc + '">' + (ci + 1) + '.</span> ' + escapeHtml(c.name) + '</div>';
-  });
-  h += '</div></div>';
-  h += '<button onclick="exportKshSubmitCsv()" style="margin-top:10px;padding:7px 14px;font-size:11px;font-weight:700;border-radius:8px;border:1.5px solid #1A7340;background:#fff;color:#1A7340;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📄 この学校をCSV出力</button>';
+  h += '<button onclick="exportKshPendingCsv()" style="margin-top:12px;padding:7px 14px;font-size:11px;font-weight:700;border-radius:8px;border:1.5px solid #1A7340;background:#fff;color:#1A7340;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📄 未提出者をCSV出力</button>';
   el.innerHTML = h;
 }
 
-function exportKshSubmitCsv() {
-  const cell = {};
+function exportKshPendingCsv() {
+  const byClass = {};
+  (kshData.classes || []).forEach(c => { byClass[c.id] = c; });
+  const pool = {};
+  kshFilteredStudents().forEach(s => { pool[s.id] = s; });
+  const rows = {};
   (kshData.enrolls || []).forEach(e => {
-    cell[e.student_id + '|' + e.class_master_id] = e.is_provisional ? '△' : '○';
+    if (!e.is_provisional) return;
+    const s = pool[e.student_id], c = byClass[e.class_master_id];
+    if (!s || !c) return;
+    const r = rows[e.student_id] || (rows[e.student_id] = { stu: s, classes: [], sess: 0 });
+    r.classes.push(c.name);
+    r.sess += (parseInt(c.total_sessions, 10) || 0);
   });
-  const pool = kshFilteredStudents().filter(s => s.school === kshSubSchool);
-  const used = {};
-  (kshData.enrolls || []).forEach(e => {
-    const s = (kshData.students || []).find(x => x.id === e.student_id);
-    if (s && s.school === kshSubSchool) used[e.class_master_id] = true;
-  });
-  const cls = (kshData.classes || []).filter(c => used[c.id]).sort((a, b) =>
-    emxSubjRank(a.subject) - emxSubjRank(b.subject) || (a.name || '').localeCompare(b.name || '', 'ja'));
-  if (!pool.length || !cls.length) { showToast('出力する内容がありません', 'error'); return; }
+  const list = Object.keys(rows).map(k => rows[k]);
+  if (!list.length) { showToast('出力する内容がありません', 'error'); return; }
   const esc = (v) => {
     const t = (v == null) ? '' : String(v);
     return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
   };
-  const lines = [];
-  lines.push(['No.', '氏名', '学年'].concat(cls.map((c, i) => i + 1)).concat(['受講数']).map(esc).join(','));
-  lines.push(['', '', '講座名'].concat(cls.map(c => c.name)).concat(['']).map(esc).join(','));
-  pool.sort((a, b) => kshGradeLabel(a.grade).localeCompare(kshGradeLabel(b.grade), 'ja') ||
-      (a.name_kana || a.name || '').localeCompare(b.name_kana || b.name || '', 'ja'))
-    .forEach((s, si) => {
-      let n = 0;
-      const row = [si + 1, s.name, kshGradeLabel(s.grade)];
-      cls.forEach(c => { const v = cell[s.id + '|' + c.id]; if (v) n++; row.push(v || ''); });
-      row.push(n);
-      lines.push(row.map(esc).join(','));
+  const lines = [['学校', '学年', '氏名', '講座数', '回数', '見込み額', '受講講座'].map(esc).join(',')];
+  list.sort((a, b) => (a.stu.school || '').localeCompare(b.stu.school || '', 'ja') ||
+      (a.stu.name_kana || a.stu.name || '').localeCompare(b.stu.name_kana || b.stu.name || '', 'ja'))
+    .forEach(r => {
+      lines.push([r.stu.school || '', kshGradeLabel(r.stu.grade), r.stu.name,
+        r.classes.length, r.sess, kshFee(r.sess), r.classes.join('・')].map(esc).join(','));
     });
   const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = '提出状況_' + kshSubSchool + '_' + (kshYear || '') + '_' + getTodayJST() + '.csv';
+  a.download = '未提出者_' + kshCategory + '_' + (kshYear || '') + '_' + getTodayJST() + '.csv';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   showToast('CSVを出力しました', 'success');
@@ -22637,6 +22707,47 @@ async function removeEnrollment(enrollmentId) {
 }
 
 // ===== 生徒ホーム：今日の授業表示 =====
+// ===== 生徒ホーム：講習の申込書が未提出のお知らせ（dgp） =====
+// 講師が「申込未提出だが参加」として登録した受講（is_provisional）があれば、
+// 生徒本人に申込書の提出をうながす。
+async function loadKoushuNotice() {
+  const box = document.getElementById('stu-koushu-notice');
+  if (!box || !currentStudent || !currentStudent.id) return;
+  box.style.display = 'none';
+  try {
+    const fy = getFiscalYearJST();
+    const enr = await sbGet('class_enrollments',
+      'student_id=eq.' + currentStudent.id +
+      '&ended_on=is.null&is_provisional=is.true&select=class_master_id').catch(() => []) || [];
+    if (!enr.length) return;
+    const ids = [...new Set(enr.map(e => e.class_master_id))];
+    const cls = await sbGet('class_master',
+      'id=in.(' + ids.join(',') + ')&school_year=eq.' + fy +
+      '&select=id,name,category').catch(() => []) || [];
+    // 講習（通常授業以外）のみ対象
+    const target = cls.filter(c => c.category && c.category !== 'normal');
+    if (!target.length) return;
+    const CAT = { summer: '夏期講習', winter: '冬期講習', spring: '春期講習',
+                  common_test: '共通テスト対策', other: '講習' };
+    const catName = CAT[target[0].category] || '講習';
+    const titleEl = document.getElementById('stu-koushu-title');
+    if (titleEl) titleEl.textContent = catName + 'の申込書を出してください';
+    const bodyEl = document.getElementById('stu-koushu-body');
+    if (bodyEl) {
+      bodyEl.innerHTML =
+        '下の講座を受講中ですが、<b>申込書がまだ届いていません</b>。<br>' +
+        'お手数ですが、保護者の方に記入してもらい、次回来塾時に受付へ提出してください。' +
+        '<div style="margin-top:7px;display:flex;flex-wrap:wrap;gap:4px">' +
+        target.map(c => '<span style="font-size:10px;font-weight:700;color:#8F5F12;background:#fff;border:1px solid #E8C193;border-radius:10px;padding:2px 9px">' +
+          escapeHtml(c.name) + '</span>').join('') + '</div>' +
+        '<div style="margin-top:6px;font-size:10px;color:var(--muted)">※ すでに提出済みの場合は、行き違いですのでこの表示は無視してください。</div>';
+    }
+    box.style.display = 'block';
+  } catch (e) {
+    // 取得できないときは黙って出さない（生徒に余計な不安を与えない）
+  }
+}
+
 async function loadTodayClasses() {
   if (!currentStudent) return;
   const today = getTodayJST();
@@ -36280,7 +36391,7 @@ function setSvSchool(s) {
   // 各描画を個別に隔離。1つが同期例外/reject で落ちても後続を必ず走らせる。
   const _svRenderers = [
     renderSvSchoolTabs, renderSvPeriodBar, renderSvEnroll, renderSvGoal,
-    renderSvGradeNotes, renderSvInterviews, renderSvReconcile, renderSvCalendar,
+    renderSvGradeNotes, renderSvInterviews, renderSvReconcile, renderSvKoushu, renderSvCalendar,
     renderSvInout, renderSvWeekly,
     () => renderSvWithdrawAnalysis({ school: svSchool, allMode: false, showToggle: false }),
     () => renderSvEnrollFunnel({ school: svSchool, allMode: false })
@@ -36750,6 +36861,117 @@ let svReconcileOpen = { app: true, roster: false };  // どのグループを開
 // 「名簿のみ（アプリ未登録）」の行を id で引けるように保持しておく。
 // ワンタップ作成／一括作成ボタンから参照する（renderSvReconcile 実行時に毎回作り直す）。
 let svReconcileRosterCache = {};
+
+// ===== 学校別ページ：講習の提出状況（閲覧専用）dgo =====
+let svKoushuCategory = 'summer';
+function setSvKoushuCategory(v) { svKoushuCategory = v; renderSvKoushu(); }
+
+async function renderSvKoushu() {
+  const sec = document.getElementById('sv-koushu-section');
+  if (!sec || !svSchool) return;
+  const head = '<div class="sv-card-h">📋 講習の提出状況（この学校）</div>';
+  sec.innerHTML = head + '<div class="sv-placeholder">読み込み中…</div>';
+  try {
+    const fy = getFiscalYearJST();
+    const classes = await sbGet('class_master',
+      'category=eq.' + encodeURIComponent(svKoushuCategory) + '&school_year=eq.' + fy +
+      '&select=id,name,subject,total_sessions&order=subject,name').catch(() => []) || [];
+    let students = await sbGet('students',
+      'school=eq.' + encodeURIComponent(svSchool) +
+      '&is_active=eq.true&select=id,name,name_kana,grade,inactive_reason').catch(() => []) || [];
+    students = await excludeDemoRows(students.filter(s => s.inactive_reason !== '除外'), 'id');
+    let enrolls = [];
+    if (classes.length) {
+      const ids = classes.map(c => c.id).join(',');
+      enrolls = await sbGet('class_enrollments',
+        'class_master_id=in.(' + ids + ')&ended_on=is.null&select=student_id,class_master_id,is_provisional').catch(() => []) || [];
+    }
+    const stuIds = {};
+    students.forEach(s => { stuIds[s.id] = true; });
+    const cell = {}, used = {};
+    enrolls.forEach(e => {
+      if (!stuIds[e.student_id]) return;
+      cell[e.student_id + '|' + e.class_master_id] = e.is_provisional ? 'prov' : 'fix';
+      used[e.class_master_id] = true;
+    });
+    const cls = classes.filter(c => used[c.id]).sort((a, b) =>
+      emxSubjRank(a.subject) - emxSubjRank(b.subject) || (a.name || '').localeCompare(b.name || '', 'ja'));
+
+    const CATS = [['summer','☀️ 夏期'],['winter','⛄ 冬期'],['spring','🌸 春期'],['common_test','🎯 共テ'],['other','📚 その他']];
+    let h = head;
+    h += '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px">';
+    CATS.forEach(p => {
+      h += '<button onclick="setSvKoushuCategory(\'' + p[0] + '\')" style="padding:4px 11px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+        (svKoushuCategory === p[0] ? 'border:1.5px solid #C6851B;background:#C6851B;color:#fff'
+                                   : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + p[1] + '</button>';
+    });
+    h += '</div>';
+
+    const taken = {};
+    Object.keys(cell).forEach(k => { taken[k.split('|')[0]] = true; });
+    const nTaken = Object.keys(taken).length;
+    h += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">' +
+      '受講登録がある生徒 <b style="color:var(--text)">' + nTaken + '名</b> / 在籍 ' + students.length + '名　' +
+      '<span style="color:#8F5F12">⏳＝申込未提出だが参加</span>　' +
+      '<span style="font-size:10px">（この画面では編集できません）</span></div>';
+
+    if (!cls.length) {
+      sec.innerHTML = h + '<div class="sv-placeholder">この学校の受講登録はまだありません。</div>';
+      return;
+    }
+    const sorted = students.slice().sort((a, b) => {
+      const ga = kshGradeLabel(a.grade), gb = kshGradeLabel(b.grade);
+      if (ga !== gb) return ga.localeCompare(gb, 'ja');
+      return (a.name_kana || a.name || '').localeCompare(b.name_kana || b.name || '', 'ja');
+    });
+    h += '<div style="overflow:auto;max-height:56vh;border:1px solid var(--border);border-radius:8px">';
+    h += '<table style="border-collapse:separate;border-spacing:0;font-size:11px">';
+    h += '<tr><th style="position:sticky;top:0;left:0;z-index:3;background:var(--surface2);border-right:2px solid var(--border);border-bottom:2px solid var(--border);padding:6px 8px;min-width:132px;text-align:left">生徒</th>';
+    cls.forEach((c, ci) => {
+      const cc = wkClassColor(c);
+      h += '<th style="position:sticky;top:0;z-index:2;background:var(--surface2);border-bottom:2px solid var(--border);border-left:1px solid var(--border);padding:5px 3px;width:42px;min-width:42px;vertical-align:bottom">' +
+        '<div style="font-size:11px;font-weight:800;color:' + cc + ';margin-bottom:3px">' + (ci + 1) + '</div>' +
+        '<div title="' + escapeAttr(c.name) + '" style="writing-mode:vertical-rl;text-orientation:mixed;white-space:nowrap;max-height:120px;overflow:hidden;font-size:10px;font-weight:700;color:' + cc + ';margin:0 auto">' +
+        escapeHtml(c.name) + '</div></th>';
+    });
+    h += '<th style="position:sticky;top:0;z-index:2;background:var(--surface2);border-bottom:2px solid var(--border);border-left:1px solid var(--border);padding:5px 6px;min-width:36px;font-size:10px">計</th></tr>';
+    sorted.forEach((s, si) => {
+      let cnt = 0, row = '';
+      cls.forEach(c => {
+        const v = cell[s.id + '|' + c.id];
+        if (v) cnt++;
+        const cc = wkClassColor(c);
+        row += '<td style="border-bottom:1px solid var(--border);border-left:1px solid var(--border);padding:0;text-align:center;background:' +
+          (v === 'prov' ? '#FFF3DF' : (v ? cc + '22' : 'transparent')) +
+          (v === 'prov' ? ';box-shadow:inset 0 0 0 2px #E8C193' : '') + '">' +
+          '<div style="width:100%;height:26px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:' +
+          (v === 'prov' ? '#8F5F12' : cc) + '">' + (v === 'prov' ? '⏳' : (v ? '✓' : '')) + '</div></td>';
+      });
+      h += '<tr>' +
+        '<td style="position:sticky;left:0;z-index:1;background:' + (cnt ? 'var(--surface)' : '#FAFAFA') +
+          ';border-right:2px solid var(--border);border-bottom:1px solid var(--border);padding:5px 8px;white-space:nowrap">' +
+          '<div style="font-weight:700;color:' + (cnt ? 'var(--text)' : 'var(--muted)') + '">' +
+          '<span style="display:inline-block;min-width:20px;color:var(--muted);font-weight:600;font-size:10px">' + (si + 1) + '.</span> ' +
+          escapeHtml(s.name) + '</div>' +
+          '<div style="font-size:9px;color:var(--muted);padding-left:20px">' + escapeHtml(kshGradeLabel(s.grade)) + '</div></td>' +
+        row +
+        '<td style="border-bottom:1px solid var(--border);border-left:1px solid var(--border);text-align:center;font-weight:700;color:' +
+          (cnt ? 'var(--text)' : 'var(--border)') + '">' + (cnt || '–') + '</td></tr>';
+    });
+    h += '</table></div>';
+    h += '<div style="margin-top:8px;border:1px solid var(--border);border-radius:8px;padding:7px 10px;background:var(--surface)">';
+    h += '<div style="font-size:10px;font-weight:800;color:var(--text);margin-bottom:5px">講座番号</div>';
+    h += '<div style="display:flex;flex-wrap:wrap;gap:3px 12px">';
+    cls.forEach((c, ci) => {
+      const cc = wkClassColor(c);
+      h += '<div style="font-size:10px;white-space:nowrap"><span style="font-weight:800;color:' + cc + '">' + (ci + 1) + '.</span> ' + escapeHtml(c.name) + '</div>';
+    });
+    h += '</div></div>';
+    sec.innerHTML = h;
+  } catch (e) {
+    sec.innerHTML = head + '<div class="sv-placeholder" style="color:#B84A4A">読み込み失敗: ' + escapeHtml(e.message) + '</div>';
+  }
+}
 
 async function renderSvReconcile() {
   const sec = document.getElementById('sv-reconcile-section');
