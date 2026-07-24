@@ -1361,11 +1361,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div class="app-name">f i t ポイントアプリ</div>
     <div class="app-sub">自分の頑張りをポイントにしよう！</div>
     <div class="login-card">
-      <div class="login-card-title">生徒ログイン</div>
-      <div class="login-card-sub">メールアドレスと5桁パスワードを入力してください<br>（スマホが次回から自動入力します）</div>
+      <div class="login-card-title">ログイン</div>
+      <div class="login-card-sub">お知らせしたIDと5桁パスワードを入力してください<br>（スマホが次回から自動入力します）</div>
       <div class="field-wrap">
-        <label class="field-label">メールアドレス</label>
-        <input class="field-input" id="login-email" type="email" autocomplete="email" inputmode="email" placeholder="taro@example.com">
+        <label class="field-label">ID（メールアドレス）</label>
+        <input class="field-input" id="login-email" type="text" autocomplete="username" placeholder="taro@example.com">
       </div>
       <div class="field-wrap" style="margin-bottom:4px">
         <label class="field-label">5桁パスワード</label>
@@ -1375,7 +1375,6 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <button class="primary-btn" onclick="doLogin()">ログイン</button>
       <div class="divider"><div class="divider-line"></div><div class="divider-text">スタッフの方</div><div class="divider-line"></div></div>
       <button class="secondary-btn" onclick="showScreen('screen-staff-login')">👨‍🏫 スタッフ入口</button>
-      <button class="secondary-btn" onclick="showScreen('screen-parent-login')" style="margin-top:8px">👪 保護者入口</button>
     </div>
     <div id="app-version-badge" style="text-align:center;margin-top:14px;font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;opacity:0.7"></div>
   </div>
@@ -1402,6 +1401,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
   </div>
 </div>
 
+<!-- 保護者専用ログイン（dfv以降は通常ログインから入れるため、通常は使わない予備画面） -->
 <div class="screen" id="screen-parent-login">
   <div class="login-bg">
     <div class="login-card" style="margin-top:60px">
@@ -1417,7 +1417,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
       <div class="error-msg" id="parent-login-error">IDまたはパスワードが違います</div>
       <button class="primary-btn" onclick="doParentLogin()">ログイン</button>
-      <button class="secondary-btn" onclick="showScreen('screen-login')">← 生徒ログインへ戻る</button>
+      <button class="secondary-btn" onclick="showScreen('screen-login')">← ログイン画面へ戻る</button>
     </div>
   </div>
 </div>
@@ -5148,7 +5148,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dft';
+const APP_VERSION = '20260702dfv';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6009,7 +6009,13 @@ async function doLogin() {
   showLoading('ログイン中...');
   try {
     const data = await sbGet('students', 'email=eq.' + encodeURIComponent(email) + '&pin=eq.' + encodeURIComponent(pin) + '&select=*');
-    if (!data || data.length === 0) { err.textContent = 'メールアドレスまたはパスワードが違います'; err.classList.add('show'); hideLoading(); return; }
+    if (!data || data.length === 0) {
+      // 生徒として一致しなければ保護者アカウントを試す（dfv）。
+      // 入口を分けると生徒に「親も入れる」と伝わってしまうため、入口は1つにする。
+      const okParent = await tryParentLoginFromStudentForm(email, pin);
+      if (okParent) return;
+      err.textContent = 'メールアドレスまたはパスワードが違います'; err.classList.add('show'); hideLoading(); return;
+    }
     // 退塾者はログイン不可（卒業生はログイン可）
     if (data[0].is_active === false && data[0].inactive_reason === '退塾') {
       err.textContent = 'このアカウントは現在ご利用いただけません。塾までお問い合わせください。';
@@ -6235,15 +6241,24 @@ function getBirthdayValue(prefix) {
   return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
 }
 
+// 通信コースの生徒は基本情報をスタッフが入力する運用（dfq）。
+// 文理・部活は通信生には当てはまらないため、プロフィール入力自体を求めない（dfu）。
+function isTsushinCurrentStudent() {
+  return !!(currentStudent && currentStudent.is_tsushin);
+}
+
 // プロフィール4項目（性別・文理・部活・誕生日）がすべて入力済みか
+// 通信生は入力対象外なので常に完了扱いにする（ホームがロックされないようにする）。
 function isProfileComplete() {
   if (!currentStudent) return false;
+  if (isTsushinCurrentStudent()) return true;
   return !!(currentStudent.gender) && !!(currentStudent.course_track) && !!(currentStudent.club) && !!(currentStudent.birthday);
 }
 
 // プロフィール各項目の入力状況を返す [{key,label,filled}]
 function getProfileFieldStatus() {
   if (!currentStudent) return [];
+  if (isTsushinCurrentStudent()) return [];
   return [
     { key: 'gender', label: '性別', filled: !!currentStudent.gender },
     { key: 'course_track', label: '文理', filled: !!currentStudent.course_track },
@@ -6352,6 +6367,13 @@ function ensureProfileGateBanner() {
 function placeProfileButton() {
   const section = document.getElementById('profile-section');
   if (!section) return;
+  // 通信生はプロフィール入力の対象外（基本情報はスタッフが入力する）
+  if (isTsushinCurrentStudent()) {
+    section.style.display = 'none';
+    applyProfileGate();
+    return;
+  }
+  section.style.display = '';
   const complete = isProfileComplete();
   const label = document.getElementById('profile-btn-label');
   if (label) label.textContent = complete ? 'プロフィール編集' : 'プロフィール入力';
@@ -6374,6 +6396,8 @@ function placeProfileButton() {
 }
 
 function openProfileModal() {
+  // 通信生には出さない（文理・部活が当てはまらないため）
+  if (isTsushinCurrentStudent()) return;
   if (!currentStudent) return;
   document.getElementById('my-gender').value = currentStudent.gender || '';
   const ct = document.getElementById('my-course-track');
@@ -31393,6 +31417,33 @@ let parentActiveSid = '';
 let parentCalYM = '';
 let parentCalRows = [];
 let parentStayTimer = null;
+
+// 生徒ログイン欄に入力されたIDが保護者アカウントなら保護者画面へ入れる（dfv）。
+// 成功したら true。失敗（該当なし）なら false を返し、呼び出し側で通常のエラーを出す。
+async function tryParentLoginFromStudentForm(loginId, pin) {
+  try {
+    const rows = await sbGet('parent_accounts',
+      'login_id=eq.' + encodeURIComponent(loginId) + '&pin=eq.' + encodeURIComponent(pin) + '&select=*') || [];
+    if (!rows.length) return false;
+    if (rows[0].is_active === false) {
+      const err = document.getElementById('login-error');
+      if (err) { err.textContent = 'このアカウントは現在ご利用いただけません。塾までお問い合わせください。'; err.classList.add('show'); }
+      hideLoading();
+      return true;   // 該当はしたので通常エラーは出さない
+    }
+    currentParent = rows[0];
+    try { await sbPatch('parent_accounts', 'id=eq.' + currentParent.id, { last_login: new Date().toISOString() }); } catch (e) {}
+    saveParentLoginState(loginId, pin);
+    const errEl = document.getElementById('login-error');
+    if (errEl) errEl.classList.remove('show');
+    hideLoading();
+    showScreen('screen-parent');
+    await initParentScreen();
+    return true;
+  } catch (e) {
+    return false;   // parent_accounts が未作成の環境でも生徒ログインを壊さない
+  }
+}
 
 async function doParentLogin() {
   const id  = (document.getElementById('parent-id-input')?.value || '').trim().toLowerCase();
