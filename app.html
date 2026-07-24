@@ -5353,7 +5353,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dgm';
+const APP_VERSION = '20260702dgn';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -19237,6 +19237,8 @@ async function renderRevKoushu() {
   if (!wrap) return;
   wrap.innerHTML =
     '<div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:12px;flex-wrap:wrap">' +
+      '<div style="flex:0 0 130px"><div class="form-label">年度</div>' +
+        '<select class="form-select" id="ksh-year" onchange="setKshYear(this.value)"></select></div>' +
       '<div style="flex:0 0 190px"><div class="form-label">対象区分</div>' +
         '<select class="form-select" id="ksh-category" onchange="reloadKoushuAnalysis()">' +
           '<option value="summer">☀️ 夏期講習</option>' +
@@ -19364,6 +19366,9 @@ let kshCategory = 'summer';
 let kshTab = 'school';
 let kshData = null;     // { classes, students, enrolls }
 let kshRosterFilter = 'all';   // all | attend | roster
+let kshYear = null;            // 対象年度（class_master.school_year）
+let kshYearOpts = [];          // 選択できる年度
+let kshSubSchool = '';         // 提出状況タブで見る学校
 
 function setKshTab(t) { kshTab = t; renderKoushuAnalysis(); }
 function setKshRoster(v) { kshRosterFilter = v; renderKoushuAnalysis(); }
@@ -19373,9 +19378,26 @@ async function reloadKoushuAnalysis() {
   if (el) el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:10px">読み込み中...</div>';
   try {
     kshCategory = (document.getElementById('ksh-category') || {}).value || 'summer';
+    // 年度の選択肢を作る（初回のみ）
+    if (!kshYearOpts.length) {
+      try {
+        const ys = await sbGet('class_master', 'select=school_year') || [];
+        const set = {};
+        ys.forEach(r => { if (r.school_year != null) set[r.school_year] = true; });
+        kshYearOpts = Object.keys(set).map(Number).sort((a, b) => b - a);
+      } catch (e) { kshYearOpts = []; }
+      if (!kshYearOpts.length) kshYearOpts = [getFiscalYearJST()];
+      if (kshYear == null) kshYear = kshYearOpts[0];
+      const ysel = document.getElementById('ksh-year');
+      if (ysel) {
+        ysel.innerHTML = kshYearOpts.map(y => '<option value="' + y + '">' + y + '年度</option>').join('');
+        ysel.value = String(kshYear);
+      }
+    }
+    const yq = (kshYear != null) ? ('&school_year=eq.' + encodeURIComponent(kshYear)) : '';
     const classes = await sbGet('class_master',
-      'category=eq.' + encodeURIComponent(kshCategory) +
-      '&select=id,name,subject,grade_level,total_sessions,is_active&order=subject,name').catch(() => []) || [];
+      'category=eq.' + encodeURIComponent(kshCategory) + yq +
+      '&select=id,name,subject,grade_level,total_sessions,is_active,school_year&order=subject,name').catch(() => []) || [];
     let enrolls = [];
     if (classes.length) {
       const ids = classes.map(c => c.id).join(',');
@@ -19432,10 +19454,12 @@ function renderKoushuAnalysis() {
     const mk = (v, l) => '<button onclick="setKshTab(\'' + v + '\')" style="flex:1;padding:8px 4px;font-size:11px;font-weight:700;border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
       (kshTab === v ? 'border:1.5px solid var(--orange);background:var(--orange-l);color:var(--orange-d)'
                     : 'border:1.5px solid var(--border);background:transparent;color:var(--muted)') + '">' + l + '</button>';
-    tabBar.innerHTML = mk('school', '🏫 学校×学年') + mk('class', '📚 講座ごと') + mk('none', '📝 未登録');
+    tabBar.innerHTML = mk('school', '🏫 学校×学年') + mk('class', '📚 講座ごと') +
+                       mk('submit', '📋 提出状況') + mk('none', '📝 未登録');
   }
   if (kshTab === 'school') renderKshSchool(el);
   else if (kshTab === 'class') renderKshClass(el);
+  else if (kshTab === 'submit') renderKshSubmit(el);
   else renderKshNone(el);
 }
 
@@ -19609,6 +19633,148 @@ async function setKshSessions(classId, val) {
   } catch (e) {
     showToast('保存に失敗しました: ' + (e && e.message ? e.message : e), 'error');
   }
+}
+
+// 年度切替
+function setKshYear(v) {
+  const n = parseInt(v, 10);
+  kshYear = isNaN(n) ? null : n;
+  reloadKoushuAnalysis();
+}
+function setKshSubSchool(v) { kshSubSchool = v; renderKoushuAnalysis(); }
+
+// --- タブ: 提出状況（閲覧専用マトリクス） ---
+function renderKshSubmit(el) {
+  const byClass = {};
+  (kshData.classes || []).forEach(c => { byClass[c.id] = c; });
+  // 生徒×講座 の受講状況
+  const cell = {};
+  (kshData.enrolls || []).forEach(e => {
+    cell[e.student_id + '|' + e.class_master_id] = e.is_provisional ? 'prov' : 'fix';
+  });
+  const pool = kshFilteredStudents();
+  const schools = [...new Set(pool.map(s => s.school).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja'));
+  if (!kshSubSchool && schools.length) kshSubSchool = schools[0];
+
+  let h = '<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">' +
+    '学校ごとの受講状況です。<b>この画面では編集できません</b>（変更は受講マトリクスから）。' +
+    '✅＝申込済み、⏳＝申込未提出だが参加。</div>';
+  h += '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">';
+  schools.forEach(sc => {
+    h += '<button onclick="setKshSubSchool(\'' + escapeAttr(sc) + '\')" style="padding:4px 12px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+      (kshSubSchool === sc ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff'
+                           : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' +
+      escapeHtml(sc) + '</button>';
+  });
+  h += '</div>';
+
+  const stus = pool.filter(s => s.school === kshSubSchool).sort((a, b) => {
+    const ga = kshGradeLabel(a.grade), gb = kshGradeLabel(b.grade);
+    if (ga !== gb) return ga.localeCompare(gb, 'ja');
+    return (a.name_kana || a.name || '').localeCompare(b.name_kana || b.name || '', 'ja');
+  });
+  // 受講者がいる講座だけを列にする（空列を並べない）
+  const used = {};
+  (kshData.enrolls || []).forEach(e => {
+    const s = (kshData.students || []).find(x => x.id === e.student_id);
+    if (s && s.school === kshSubSchool) used[e.class_master_id] = true;
+  });
+  const cls = (kshData.classes || []).filter(c => used[c.id]).sort((a, b) => {
+    const d = emxSubjRank(a.subject) - emxSubjRank(b.subject);
+    if (d) return d;
+    return (a.name || '').localeCompare(b.name || '', 'ja');
+  });
+  if (!stus.length) { el.innerHTML = h + '<div style="font-size:12px;color:var(--muted);padding:10px">該当する生徒がいません。</div>'; return; }
+  if (!cls.length) { el.innerHTML = h + '<div style="font-size:12px;color:var(--muted);padding:10px">この学校の受講登録はまだありません。</div>'; return; }
+
+  h += '<div style="overflow:auto;max-height:58vh;border:1px solid var(--border);border-radius:8px">';
+  h += '<table style="border-collapse:separate;border-spacing:0;font-size:11px">';
+  h += '<tr><th style="position:sticky;top:0;left:0;z-index:3;background:var(--surface2);border-right:2px solid var(--border);border-bottom:2px solid var(--border);padding:6px 8px;min-width:140px;text-align:left">生徒</th>';
+  cls.forEach((c, ci) => {
+    const cc = wkClassColor(c);
+    h += '<th style="position:sticky;top:0;z-index:2;background:var(--surface2);border-bottom:2px solid var(--border);border-left:1px solid var(--border);padding:5px 3px;width:44px;min-width:44px;vertical-align:bottom">' +
+      '<div style="font-size:11px;font-weight:800;color:' + cc + ';margin-bottom:3px">' + (ci + 1) + '</div>' +
+      '<div title="' + escapeAttr(c.name) + '" style="writing-mode:vertical-rl;text-orientation:mixed;white-space:nowrap;max-height:126px;overflow:hidden;font-size:10px;font-weight:700;color:' + cc + ';margin:0 auto">' +
+      escapeHtml(c.name) + '</div></th>';
+  });
+  h += '<th style="position:sticky;top:0;z-index:2;background:var(--surface2);border-bottom:2px solid var(--border);border-left:1px solid var(--border);padding:5px 6px;min-width:38px;font-size:10px">計</th></tr>';
+
+  stus.forEach((s, si) => {
+    let cnt = 0;
+    let row = '';
+    cls.forEach(c => {
+      const v = cell[s.id + '|' + c.id];
+      if (v) cnt++;
+      const cc = wkClassColor(c);
+      const bg = v === 'prov' ? '#FFF3DF' : (v ? cc + '22' : 'transparent');
+      const mark = v === 'prov' ? '⏳' : (v ? '✓' : '');
+      row += '<td style="border-bottom:1px solid var(--border);border-left:1px solid var(--border);padding:0;text-align:center;' +
+        'background:' + bg + (v === 'prov' ? ';box-shadow:inset 0 0 0 2px #E8C193' : '') + '">' +
+        '<div style="width:100%;height:28px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:' +
+        (v === 'prov' ? '#8F5F12' : cc) + '">' + mark + '</div></td>';
+    });
+    h += '<tr>' +
+      '<td style="position:sticky;left:0;z-index:1;background:var(--surface);border-right:2px solid var(--border);border-bottom:1px solid var(--border);padding:5px 8px;white-space:nowrap">' +
+        '<div style="font-weight:700;color:var(--text)"><span style="display:inline-block;min-width:20px;color:var(--muted);font-weight:600;font-size:10px">' + (si + 1) + '.</span> ' +
+        escapeHtml(s.name) + '</div>' +
+        '<div style="font-size:9px;color:var(--muted);padding-left:20px">' + escapeHtml(kshGradeLabel(s.grade)) + '</div></td>' +
+      row +
+      '<td style="border-bottom:1px solid var(--border);border-left:1px solid var(--border);text-align:center;font-weight:700;color:' +
+        (cnt ? 'var(--text)' : 'var(--border)') + '">' + (cnt || '–') + '</td></tr>';
+  });
+  h += '</table></div>';
+
+  // 講座番号の対応表
+  h += '<div style="margin-top:10px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--surface)">';
+  h += '<div style="font-size:11px;font-weight:800;color:var(--text);margin-bottom:6px">講座番号</div>';
+  h += '<div style="display:flex;flex-wrap:wrap;gap:4px 14px">';
+  cls.forEach((c, ci) => {
+    const cc = wkClassColor(c);
+    h += '<div style="font-size:10px;white-space:nowrap"><span style="font-weight:800;color:' + cc + '">' + (ci + 1) + '.</span> ' + escapeHtml(c.name) + '</div>';
+  });
+  h += '</div></div>';
+  h += '<button onclick="exportKshSubmitCsv()" style="margin-top:10px;padding:7px 14px;font-size:11px;font-weight:700;border-radius:8px;border:1.5px solid #1A7340;background:#fff;color:#1A7340;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📄 この学校をCSV出力</button>';
+  el.innerHTML = h;
+}
+
+function exportKshSubmitCsv() {
+  const cell = {};
+  (kshData.enrolls || []).forEach(e => {
+    cell[e.student_id + '|' + e.class_master_id] = e.is_provisional ? '△' : '○';
+  });
+  const pool = kshFilteredStudents().filter(s => s.school === kshSubSchool);
+  const used = {};
+  (kshData.enrolls || []).forEach(e => {
+    const s = (kshData.students || []).find(x => x.id === e.student_id);
+    if (s && s.school === kshSubSchool) used[e.class_master_id] = true;
+  });
+  const cls = (kshData.classes || []).filter(c => used[c.id]).sort((a, b) =>
+    emxSubjRank(a.subject) - emxSubjRank(b.subject) || (a.name || '').localeCompare(b.name || '', 'ja'));
+  if (!pool.length || !cls.length) { showToast('出力する内容がありません', 'error'); return; }
+  const esc = (v) => {
+    const t = (v == null) ? '' : String(v);
+    return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+  const lines = [];
+  lines.push(['No.', '氏名', '学年'].concat(cls.map((c, i) => i + 1)).concat(['受講数']).map(esc).join(','));
+  lines.push(['', '', '講座名'].concat(cls.map(c => c.name)).concat(['']).map(esc).join(','));
+  pool.sort((a, b) => kshGradeLabel(a.grade).localeCompare(kshGradeLabel(b.grade), 'ja') ||
+      (a.name_kana || a.name || '').localeCompare(b.name_kana || b.name || '', 'ja'))
+    .forEach((s, si) => {
+      let n = 0;
+      const row = [si + 1, s.name, kshGradeLabel(s.grade)];
+      cls.forEach(c => { const v = cell[s.id + '|' + c.id]; if (v) n++; row.push(v || ''); });
+      row.push(n);
+      lines.push(row.map(esc).join(','));
+    });
+  const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '提出状況_' + kshSubSchool + '_' + (kshYear || '') + '_' + getTodayJST() + '.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast('CSVを出力しました', 'success');
 }
 
 // --- タブ3: 未登録の生徒 ---
