@@ -5367,7 +5367,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dgp';
+const APP_VERSION = '20260702dgr';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -36231,15 +36231,20 @@ async function openSchoolView(backTo) {
   if (status) status.textContent = '集計中…';
   try {
     await svEnsureTrendData();
-    renderSvEnroll();
-    renderSvGoal();
-    renderSvGradeNotes();
-    renderSvInterviews();
-    renderSvCalendar();
-    renderSvInout();
-    renderSvWeekly();
-    renderSvWithdrawAnalysis({ school: svSchool, allMode: false, showToggle: false });
-    renderSvEnrollFunnel({ school: svSchool, allMode: false });
+    // 各描画を個別に隔離（1つ落ちても後続を必ず走らせる）
+    [
+      renderSvEnroll, renderSvGoal, renderSvGradeNotes, renderSvInterviews,
+      renderSvReconcile, renderSvKoushu, renderSvCalendar, renderSvInout, renderSvWeekly,
+      () => renderSvWithdrawAnalysis({ school: svSchool, allMode: false, showToggle: false }),
+      () => renderSvEnrollFunnel({ school: svSchool, allMode: false })
+    ].forEach(fn => {
+      try {
+        const r = fn();
+        if (r && typeof r.then === 'function') r.catch(e => console.warn('[openSchoolView]', fn.name, e));
+      } catch (e) {
+        console.warn('[openSchoolView]', fn.name, e);
+      }
+    });
     if (status) status.textContent = '';
   } catch (e) {
     if (sec) sec.innerHTML = '<div class="sv-card-h">📊 請求ベース在籍人数</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">在籍データの取得に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
@@ -36367,15 +36372,20 @@ async function refreshSchoolView() {
     trendAnnualRows = [];
     trendAllMonths = [];
     await svEnsureTrendData();
-    renderSvEnroll();
-    renderSvGoal();
-    renderSvGradeNotes();
-    renderSvInterviews();
-    renderSvCalendar();
-    renderSvInout();
-    renderSvWeekly();
-    renderSvWithdrawAnalysis({ school: svSchool, allMode: svWithdrawScope === 'all', showToggle: false });
-    renderSvEnrollFunnel({ school: svSchool, allMode: svWithdrawScope === 'all' });
+    // 各描画を個別に隔離（1つ落ちても後続を必ず走らせる）
+    [
+      renderSvEnroll, renderSvGoal, renderSvGradeNotes, renderSvInterviews,
+      renderSvReconcile, renderSvKoushu, renderSvCalendar, renderSvInout, renderSvWeekly,
+      () => renderSvWithdrawAnalysis({ school: svSchool, allMode: svWithdrawScope === 'all', showToggle: false }),
+      () => renderSvEnrollFunnel({ school: svSchool, allMode: svWithdrawScope === 'all' })
+    ].forEach(fn => {
+      try {
+        const r = fn();
+        if (r && typeof r.then === 'function') r.catch(e => console.warn('[refreshSchoolView]', fn.name, e));
+      } catch (e) {
+        console.warn('[refreshSchoolView]', fn.name, e);
+      }
+    });
     if (status) status.textContent = '';
     showToast('最新のデータに更新しました', 'success');
   } catch (e) {
@@ -36864,6 +36874,8 @@ let svReconcileRosterCache = {};
 
 // ===== 学校別ページ：講習の提出状況（閲覧専用）dgo =====
 let svKoushuCategory = 'summer';
+let svKoushuGrade = '';        // '' | '1' | '2' | '3'
+function setSvKoushuGrade(v) { svKoushuGrade = v; renderSvKoushu(); }
 function setSvKoushuCategory(v) { svKoushuCategory = v; renderSvKoushu(); }
 
 async function renderSvKoushu() {
@@ -36878,25 +36890,15 @@ async function renderSvKoushu() {
       '&select=id,name,subject,total_sessions&order=subject,name').catch(() => []) || [];
     let students = await sbGet('students',
       'school=eq.' + encodeURIComponent(svSchool) +
-      '&is_active=eq.true&select=id,name,name_kana,grade,inactive_reason').catch(() => []) || [];
-    students = await excludeDemoRows(students.filter(s => s.inactive_reason !== '除外'), 'id');
+      '&is_active=eq.true&select=id,name,name_kana,grade,inactive_reason,withdraw_status,withdraw_effective_date').catch(() => []) || [];
+    // 退塾者は除外（isEnrolledNow: 除外・退塾確定で在籍最終日を過ぎた人を弾く）
+    students = await excludeDemoRows(students.filter(s => isEnrolledNow(s)), 'id');
     let enrolls = [];
     if (classes.length) {
       const ids = classes.map(c => c.id).join(',');
       enrolls = await sbGet('class_enrollments',
         'class_master_id=in.(' + ids + ')&ended_on=is.null&select=student_id,class_master_id,is_provisional').catch(() => []) || [];
     }
-    const stuIds = {};
-    students.forEach(s => { stuIds[s.id] = true; });
-    const cell = {}, used = {};
-    enrolls.forEach(e => {
-      if (!stuIds[e.student_id]) return;
-      cell[e.student_id + '|' + e.class_master_id] = e.is_provisional ? 'prov' : 'fix';
-      used[e.class_master_id] = true;
-    });
-    const cls = classes.filter(c => used[c.id]).sort((a, b) =>
-      emxSubjRank(a.subject) - emxSubjRank(b.subject) || (a.name || '').localeCompare(b.name || '', 'ja'));
-
     const CATS = [['summer','☀️ 夏期'],['winter','⛄ 冬期'],['spring','🌸 春期'],['common_test','🎯 共テ'],['other','📚 その他']];
     let h = head;
     h += '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px">';
@@ -36906,6 +36908,34 @@ async function renderSvKoushu() {
                                    : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + p[1] + '</button>';
     });
     h += '</div>';
+
+    // 学年フィルタ（在籍者のいる学年だけ出す）
+    const gradesAvail = {};
+    students.forEach(st2 => { const d = emxGradeDigit(st2.grade); if (d) gradesAvail[d] = true; });
+    const gkeys = Object.keys(gradesAvail).sort();
+    if (gkeys.length > 1) {
+      h += '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px;align-items:center">';
+      h += '<span style="font-size:10px;color:var(--muted);font-weight:700;margin-right:2px">学年</span>';
+      const gbtn = (v, l) => '<button onclick="setSvKoushuGrade(\'' + v + '\')" style="padding:4px 11px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+        (svKoushuGrade === v ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff'
+                             : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + l + '</button>';
+      h += gbtn('', 'すべて') + gkeys.map(g2 => gbtn(g2, g2 + '年')).join('');
+      h += '</div>';
+    }
+    // 選んだ学年に絞る
+    if (svKoushuGrade) students = students.filter(st2 => emxGradeDigit(st2.grade) === svKoushuGrade);
+
+    // 絞り込み後の生徒で受講状況を組み立てる（列も絞られた結果に追従する）
+    const stuIds = {};
+    students.forEach(st2 => { stuIds[st2.id] = true; });
+    const cell = {}, used = {};
+    enrolls.forEach(e => {
+      if (!stuIds[e.student_id]) return;
+      cell[e.student_id + '|' + e.class_master_id] = e.is_provisional ? 'prov' : 'fix';
+      used[e.class_master_id] = true;
+    });
+    const cls = classes.filter(c => used[c.id]).sort((a, b) =>
+      emxSubjRank(a.subject) - emxSubjRank(b.subject) || (a.name || '').localeCompare(b.name || '', 'ja'));
 
     const taken = {};
     Object.keys(cell).forEach(k => { taken[k.split('|')[0]] = true; });
@@ -36952,7 +36982,9 @@ async function renderSvKoushu() {
           ';border-right:2px solid var(--border);border-bottom:1px solid var(--border);padding:5px 8px;white-space:nowrap">' +
           '<div style="font-weight:700;color:' + (cnt ? 'var(--text)' : 'var(--muted)') + '">' +
           '<span style="display:inline-block;min-width:20px;color:var(--muted);font-weight:600;font-size:10px">' + (si + 1) + '.</span> ' +
-          escapeHtml(s.name) + '</div>' +
+          escapeHtml(s.name) +
+          (s.withdraw_status ? '<span style="font-size:9px;color:#B84A4A;background:#FDECEC;border:1px solid #E0A0A0;border-radius:8px;padding:0 5px;margin-left:4px">退塾' + escapeHtml(s.withdraw_status) + '</span>' : '') +
+          '</div>' +
           '<div style="font-size:9px;color:var(--muted);padding-left:20px">' + escapeHtml(kshGradeLabel(s.grade)) + '</div></td>' +
         row +
         '<td style="border-bottom:1px solid var(--border);border-left:1px solid var(--border);text-align:center;font-weight:700;color:' +
