@@ -4243,6 +4243,21 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
     <!-- 時間割かぶり + 長文読解コマ割り振りタブ -->
     <div id="smcontent-timetable" style="display:none">
+      <!-- セクション0: 週間時間割グリッド -->
+      <div style="background:linear-gradient(135deg,#EAF2FB,#FFFFFF);border:1.5px solid #9CC0E8;border-radius:var(--radius);padding:14px 16px;margin-bottom:16px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+          <span style="font-size:14px;font-weight:700;color:#2D5FA6">🗓 週間時間割</span>
+          <span id="wk-range-label" style="font-size:11px;color:#2D5FA6;background:#EAF2FB;border:1px solid #9CC0E8;padding:1px 8px;border-radius:20px;font-weight:700">–</span>
+          <div style="margin-left:auto;display:flex;gap:5px">
+            <button onclick="wkShift(-1)" style="font-size:11px;font-weight:700;color:#2D5FA6;background:#fff;border:1px solid #9CC0E8;border-radius:20px;padding:4px 10px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">← 前週</button>
+            <button onclick="wkThisWeek()" style="font-size:11px;font-weight:700;color:#2D5FA6;background:#fff;border:1px solid #9CC0E8;border-radius:20px;padding:4px 10px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">今週</button>
+            <button onclick="wkShift(1)" style="font-size:11px;font-weight:700;color:#2D5FA6;background:#fff;border:1px solid #9CC0E8;border-radius:20px;padding:4px 10px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">翌週 →</button>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px">縦=時限・横=曜日。授業名と担当講師を表示します。授業のない時限の行は省略されます。面談は日付のみの登録のため件数だけ表示しています。</div>
+        <div id="wk-grid"></div>
+      </div>
+
       <!-- セクション1: 時間割かぶり検知 -->
       <div style="background:linear-gradient(135deg,#FDECEC,#FFFFFF);border:1.5px solid #E0A0A0;border-radius:var(--radius);padding:14px 16px;margin-bottom:16px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
@@ -5185,7 +5200,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dfw';
+const APP_VERSION = '20260702dfx';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -20197,6 +20212,275 @@ async function saveEnrollEdit() {
 // ===== 時間割かぶり検知 + 長文読解 5限/6限 割り振り =====
 
 // 学年文字列から数字を取り出す（'2年'/'高2'/'2' すべて 2 に）
+// ===== 週間時間割グリッド（dfx） =====
+// 縦=時限(0〜7) / 横=曜日(月〜日)。時限の時刻は period_time_overrides で期間・曜日ごとに上書き。
+let wkAnchor = null;          // その週の月曜(Date)
+let wkOverrides = null;       // period_time_overrides キャッシュ
+const WK_WD = ['月','火','水','木','金','土','日'];
+
+// 既定の時限時刻（通常期）
+const WK_DEFAULT_PERIODS = {
+  1:['10:20','11:50'], 2:['12:30','14:00'], 3:['14:20','15:50'],
+  4:['16:10','17:40'], 5:['18:00','19:30'], 6:['19:50','21:20']
+};
+
+async function wkLoadOverrides() {
+  if (wkOverrides) return wkOverrides;
+  wkOverrides = await sbGet('period_time_overrides',
+    'select=label,start_date,end_date,weekdays,period,start_time,end_time').catch(() => []) || [];
+  return wkOverrides;
+}
+
+// dateStr(YYYY-MM-DD) と period から [開始,終了] を返す。該当なしは既定表、それも無ければ null。
+function periodTimeFor(dateStr, period) {
+  const p = parseInt(period, 10);
+  if (isNaN(p)) return null;
+  if (wkOverrides && wkOverrides.length) {
+    const parts = String(dateStr).split('-');
+    const d = new Date(parseInt(parts[0],10), parseInt(parts[1],10)-1, parseInt(parts[2],10));
+    const isodow = d.getDay() === 0 ? 7 : d.getDay();   // 1=月 .. 7=日
+    for (let i = 0; i < wkOverrides.length; i++) {
+      const o = wkOverrides[i];
+      if (parseInt(o.period,10) !== p) continue;
+      if (dateStr < o.start_date || dateStr > o.end_date) continue;
+      if (o.weekdays && o.weekdays.length && o.weekdays.indexOf(isodow) === -1) continue;
+      return [String(o.start_time).slice(0,5), String(o.end_time).slice(0,5)];
+    }
+  }
+  return WK_DEFAULT_PERIODS[p] ? WK_DEFAULT_PERIODS[p].slice() : null;
+}
+
+function wkMondayOf(d) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const off = (x.getDay() === 0 ? 6 : x.getDay() - 1);
+  x.setDate(x.getDate() - off);
+  return x;
+}
+
+function wkShift(n) {
+  if (!wkAnchor) return;
+  wkAnchor.setDate(wkAnchor.getDate() + n * 7);
+  loadWeekGrid();
+}
+
+function wkThisWeek() {
+  const t = getTodayJST().split('-');
+  wkAnchor = wkMondayOf(new Date(parseInt(t[0],10), parseInt(t[1],10)-1, parseInt(t[2],10)));
+  loadWeekGrid();
+}
+
+async function loadWeekGrid() {
+  const el = document.getElementById('wk-grid');
+  const lbl = document.getElementById('wk-range-label');
+  if (!el) return;
+  if (!wkAnchor) {
+    const t = getTodayJST().split('-');
+    wkAnchor = wkMondayOf(new Date(parseInt(t[0],10), parseInt(t[1],10)-1, parseInt(t[2],10)));
+  }
+  el.innerHTML = '<div style="font-size:12px;color:var(--muted)">読み込み中...</div>';
+  try {
+    await wkLoadOverrides();
+
+    // 週の7日分
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(wkAnchor.getFullYear(), wkAnchor.getMonth(), wkAnchor.getDate() + i);
+      days.push({ date: d, iso: toJSTDateStr(d), wd: WK_WD[i] });
+    }
+    const firstISO = days[0].iso, lastISO = days[6].iso;
+    if (lbl) {
+      lbl.textContent = firstISO.replace(/^\d{4}-/,'').replace('-','/') + ' 〜 ' +
+                        lastISO.replace(/^\d{4}-/,'').replace('-','/');
+    }
+
+    const [sessions, masters, cts, staffList, events, staffBd, stuBd, interviews] = await Promise.all([
+      sbGet('class_sessions', 'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO +
+        '&select=class_master_id,session_date,period,start_time,end_time&order=session_date,period').catch(() => []),
+      sbGet('class_master', 'select=id,name,subject').catch(() => []),
+      sbGet('class_teachers', 'select=class_master_id,staff_id').catch(() => []),
+      sbGet('staff', 'select=id,staff_id,name').catch(() => []),
+      sbGet('events', 'event_date=lte.' + lastISO + '&or=(end_date.gte.' + firstISO +
+        ',and(end_date.is.null,event_date.gte.' + firstISO + '))&select=title,event_date,end_date,color').catch(() => []),
+      sbGet('staff', 'birthday=not.is.null&select=name,birthday').catch(() => []),
+      sbGet('students', 'birthday=not.is.null&select=name,birthday,school,grade').catch(() => []),
+      sbGet('student_interviews', 'interview_date=gte.' + firstISO + '&interview_date=lte.' + lastISO +
+        '&select=student_id,interview_date,interviewer').catch(() => [])
+    ]);
+
+    const mName = {}; (masters || []).forEach(m => { mName[m.id] = m; });
+    const stById = {}, stByStaffId = {};
+    (staffList || []).forEach(s => { stById[s.id] = s; if (s.staff_id) stByStaffId[s.staff_id] = s; });
+    // class_master_id -> 講師名[]
+    const teacherOf = {};
+    (cts || []).forEach(c => {
+      const nm = stById[c.staff_id] ? stById[c.staff_id].name : (stByStaffId[c.staff_id] ? stByStaffId[c.staff_id].name : null);
+      if (!nm) return;
+      (teacherOf[c.class_master_id] || (teacherOf[c.class_master_id] = [])).push(nm);
+    });
+
+    // セル: iso|period -> [授業]
+    const cell = {};
+    const usedPeriods = {};
+    (sessions || []).forEach(s => {
+      if (s.period == null) return;
+      const p = parseInt(s.period, 10);
+      usedPeriods[p] = true;
+      const key = s.session_date + '|' + p;
+      const m = mName[s.class_master_id];
+      const tt = periodTimeFor(s.session_date, p);
+      const st = s.start_time ? String(s.start_time).slice(0,5) : (tt ? tt[0] : '');
+      const et = s.end_time ? String(s.end_time).slice(0,5) : (tt ? tt[1] : '');
+      (cell[key] || (cell[key] = [])).push({
+        name: (m && m.name) || '(不明)',
+        subject: (m && m.subject) || '',
+        teachers: (teacherOf[s.class_master_id] || []),
+        time: (st && et) ? (st + '〜' + et) : ''
+      });
+    });
+
+    // 面談: 日付のみ（時限カラム未実装）→ 日ごとの帯に出す
+    const ivByDay = {};
+    (interviews || []).forEach(v => {
+      (ivByDay[v.interview_date] || (ivByDay[v.interview_date] = [])).push(v);
+    });
+
+    // 表示する時限：データのある時限 ∪ その週に定義のある時限
+    const periodSet = {};
+    Object.keys(usedPeriods).forEach(p => { periodSet[p] = true; });
+    days.forEach(d => {
+      for (let p = 0; p <= 7; p++) {
+        if (!wkOverrides) break;
+        for (let i = 0; i < wkOverrides.length; i++) {
+          const o = wkOverrides[i];
+          if (parseInt(o.period,10) !== p) continue;
+          if (d.iso < o.start_date || d.iso > o.end_date) continue;
+          const isodow = (d.date.getDay() === 0 ? 7 : d.date.getDay());
+          if (o.weekdays && o.weekdays.length && o.weekdays.indexOf(isodow) === -1) continue;
+          periodSet[p] = true;
+        }
+      }
+    });
+    Object.keys(WK_DEFAULT_PERIODS).forEach(p => { periodSet[p] = true; });
+    const periods = Object.keys(periodSet).map(x => parseInt(x,10)).sort((a,b) => a-b);
+
+    const todayISO = getTodayJST();
+    let h = '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:760px;font-size:11px">';
+
+    // ヘッダ
+    h += '<tr><th style="width:64px;border:1px solid var(--border);background:var(--surface2);padding:5px"></th>';
+    days.forEach(d => {
+      const isToday = d.iso === todayISO;
+      const isWeekend = d.wd === '土' || d.wd === '日';
+      const col = d.wd === '土' ? '#2D5FA6' : (d.wd === '日' ? '#B84A4A' : 'var(--text)');
+      h += '<th style="border:1px solid var(--border);padding:5px;background:' +
+        (isToday ? 'var(--orange-l,#FFF1E3)' : (isWeekend ? 'var(--surface2)' : '#fff')) +
+        ';color:' + col + ';font-weight:700">' +
+        d.iso.slice(8) + '<br><span style="font-size:10px">' + d.wd + '</span></th>';
+    });
+    h += '</tr>';
+
+    // 時限行
+    periods.forEach(p => {
+      // その週でこの時限が全日空なら行を畳む
+      let any = false;
+      days.forEach(d => { if ((cell[d.iso + '|' + p] || []).length) any = true; });
+      if (!any) return;
+
+      h += '<tr><td style="border:1px solid var(--border);background:var(--surface2);padding:4px;text-align:center;font-weight:700;vertical-align:top">' +
+           p + '限</td>';
+      days.forEach(d => {
+        const items = cell[d.iso + '|' + p] || [];
+        const tt = periodTimeFor(d.iso, p);
+        const isToday = d.iso === todayISO;
+        h += '<td style="border:1px solid var(--border);padding:3px;vertical-align:top;min-width:92px;background:' +
+             (isToday ? 'var(--orange-l,#FFF1E3)' : '#fff') + '">';
+        if (!items.length) {
+          h += '<span style="color:var(--border)">–</span>';
+        } else {
+          items.forEach(it => {
+            h += '<div style="background:#EAF2FB;border:1px solid #9CC0E8;border-radius:6px;padding:3px 5px;margin-bottom:3px;line-height:1.4">' +
+              '<div style="font-weight:700;color:#2D5FA6">' + escapeHtml(it.name) + '</div>' +
+              (it.teachers.length ? '<div style="color:var(--muted);font-size:10px">' + escapeHtml(it.teachers.join('・')) + '</div>' : '') +
+              (it.time ? '<div style="color:var(--muted);font-size:10px">' + escapeHtml(it.time) + '</div>' :
+                (tt ? '<div style="color:var(--border);font-size:10px">' + tt[0] + '〜' + tt[1] + '</div>' : '')) +
+              '</div>';
+          });
+        }
+        h += '</td>';
+      });
+      h += '</tr>';
+    });
+
+    // 面談行（日付のみ／時限未確定）
+    let anyIv = false;
+    days.forEach(d => { if ((ivByDay[d.iso] || []).length) anyIv = true; });
+    if (anyIv) {
+      h += '<tr><td style="border:1px solid var(--border);background:var(--surface2);padding:4px;text-align:center;font-weight:700;font-size:10px">面談</td>';
+      days.forEach(d => {
+        const n = (ivByDay[d.iso] || []).length;
+        h += '<td style="border:1px solid var(--border);padding:3px;vertical-align:top;background:#fff">' +
+          (n ? '<div style="background:#EDE7F8;border:1px solid #C3B2E6;border-radius:6px;padding:3px 5px;color:#6B4FA0;font-weight:700">🗣 ' + n + '件</div>'
+             : '<span style="color:var(--border)">–</span>') + '</td>';
+      });
+      h += '</tr>';
+    }
+
+    // 誕生日・イベント行
+    const evByDay = {};
+    days.forEach(d => { evByDay[d.iso] = []; });
+    (events || []).forEach(e => {
+      const s = e.event_date, en = e.end_date || e.event_date;
+      days.forEach(d => { if (d.iso >= s && d.iso <= en) evByDay[d.iso].push({ t: e.title, kind: 'ev' }); });
+    });
+    const bdMap = {};
+    (staffBd || []).forEach(s => { if (s.birthday) (bdMap[s.birthday.slice(5)] || (bdMap[s.birthday.slice(5)] = [])).push({ n: s.name, staff: true }); });
+    (stuBd || []).forEach(s => { if (s.birthday) (bdMap[s.birthday.slice(5)] || (bdMap[s.birthday.slice(5)] = [])).push({ n: s.name, staff: false }); });
+    days.forEach(d => {
+      (bdMap[d.iso.slice(5)] || []).forEach(b => {
+        evByDay[d.iso].push({ t: (b.staff ? '🎂 ' : '🎂 ') + b.n, kind: b.staff ? 'bs' : 'bt' });
+      });
+    });
+
+    h += '<tr><td style="border:1px solid var(--border);background:#FFF7E6;padding:4px;text-align:center;font-weight:700;font-size:10px;color:#A6741A">誕生日<br>イベント</td>';
+    days.forEach(d => {
+      const list = evByDay[d.iso] || [];
+      h += '<td style="border:1px solid var(--border);padding:3px;vertical-align:top;background:#FFFDF7">';
+      if (!list.length) h += '<span style="color:var(--border)">–</span>';
+      else list.forEach(x => {
+        const bg = x.kind === 'ev' ? '#FFF1E3' : (x.kind === 'bs' ? '#FDECEC' : '#F0F7EA');
+        const bc = x.kind === 'ev' ? '#E8C193' : (x.kind === 'bs' ? '#E9C4C4' : '#A8D891');
+        const fc = x.kind === 'ev' ? '#A6741A' : (x.kind === 'bs' ? '#B84A4A' : '#3B6D11');
+        h += '<div style="background:' + bg + ';border:1px solid ' + bc + ';border-radius:6px;padding:2px 5px;margin-bottom:2px;color:' + fc + ';font-weight:600;line-height:1.4">' +
+             escapeHtml(x.t) + '</div>';
+      });
+      h += '</td>';
+    });
+    h += '</tr>';
+
+    h += '</table></div>';
+
+    // 期間中の時刻変更の注記
+    const actLabels = {};
+    (wkOverrides || []).forEach(o => {
+      days.forEach(d => {
+        if (d.iso < o.start_date || d.iso > o.end_date) return;
+        const isodow = (d.date.getDay() === 0 ? 7 : d.date.getDay());
+        if (o.weekdays && o.weekdays.length && o.weekdays.indexOf(isodow) === -1) return;
+        actLabels[o.label] = true;
+      });
+    });
+    const labs = Object.keys(actLabels);
+    if (labs.length) {
+      h += '<div style="margin-top:8px;font-size:11px;color:#A6741A;background:#FFF7E6;border:1px solid #E8C193;border-radius:8px;padding:6px 10px">⏰ この週は「' +
+           escapeHtml(labs.join('・')) + '」の時間割が適用されています（平日のみ／土日は通常）。</div>';
+    }
+
+    el.innerHTML = h;
+  } catch (e) {
+    el.innerHTML = '<div style="font-size:12px;color:#B84A4A">読み込み失敗: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
 function ttGradeNum(g) {
   if (!g) return null;
   const m = String(g).match(/([1-3])/);
@@ -25145,7 +25429,7 @@ function switchManageTab(tab, el) {
   if (tab === 'alert') { loadAlertBoard(); loadHomeAbsent(); }
   if (tab === 'announce') { loadAnnouncementsStaff(); initAnnounceForm(); }
   if (tab === 'attendance') initAttendanceTab();
-  if (tab === 'timetable') { loadTimetableConflicts(); loadLongtextPeriods(); }
+  if (tab === 'timetable') { loadWeekGrid(); loadTimetableConflicts(); loadLongtextPeriods(); }
   if (tab === 'quizstatus') loadQuizStatusClasses();
   if (tab === 'appusage') { loadAppUsage(); loadAccessClasses(); loadClassMathUnits(); }
   if (tab === 'classanalysis') initClassAnalysis();
