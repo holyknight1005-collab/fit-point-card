@@ -524,7 +524,22 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div style="font-size:15px;font-weight:800;color:var(--text);margin-bottom:6px">⏳ 申込未提出だが参加している生徒</div>
     <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:12px">申込書がまだ出ていないけれど授業に来ている生徒を「見込み」として登録します。売上集計では確定分と分けて集計されます。</div>
     <div id="prov-error" style="display:none;font-size:11px;color:#B84A4A;background:#FDECEC;border:1px solid #E0A0A0;border-radius:8px;padding:6px 10px;margin-bottom:10px"></div>
-    <div style="font-size:10px;color:var(--muted);margin-bottom:2px">生徒</div>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">学校</div>
+        <select class="form-input-sm" id="prov-school" style="width:100%" onchange="renderProvStudentOptions()"></select>
+      </div>
+      <div style="flex:0 0 96px">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">学年</div>
+        <select class="form-input-sm" id="prov-grade" style="width:100%" onchange="renderProvStudentOptions()">
+          <option value="">すべて</option>
+          <option value="1">1年</option>
+          <option value="2">2年</option>
+          <option value="3">3年</option>
+        </select>
+      </div>
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:2px">生徒 <span id="prov-count" style="color:var(--muted)"></span></div>
     <select class="form-input-sm" id="prov-student" style="width:100%;margin-bottom:14px"></select>
     <div style="display:flex;gap:8px">
       <button onclick="closeProvModal()" style="flex:1;padding:10px;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--muted);font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">キャンセル</button>
@@ -4415,6 +4430,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
 
       <div id="att-roster" style="display:flex;flex-direction:column;gap:6px"></div>
+      <button onclick="attAddProvisional()" style="width:100%;margin-top:10px;padding:9px;background:var(--surface);border:1.5px dashed #C6851B;border-radius:8px;color:#8F5F12;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">⏳ 申込は出ていないが参加している生徒を追加</button>
 
       <button id="att-save-btn" onclick="saveAttendance()" style="display:none;width:100%;margin-top:12px;padding:12px;background:linear-gradient(135deg,#3B6D11,#5A9E3C);border:none;border-radius:8px;color:white;font-size:14px;font-weight:700;cursor:pointer">💾 出欠を保存</button>
       </div>
@@ -5367,7 +5383,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dgr';
+const APP_VERSION = '20260702dgs';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -19288,20 +19304,48 @@ async function attAddProvisional() {
   const sel = document.getElementById('prov-student');
   if (!sel) return;
   sel.innerHTML = '<option value="">読み込み中...</option>';
+  const gsel = document.getElementById('prov-grade'); if (gsel) gsel.value = '';
   try {
     // 既にこの授業に登録済みの生徒は候補から外す
     const enr = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id') || [];
     const already = new Set(enr.map(e => e.student_id));
     const stus = await excludeDemoRows(
-      await sbGet('students', 'is_active=eq.true&select=id,name,name_kana,school,grade&order=school,grade,name') || [], 'id');
-    const cand = stus.filter(s => !already.has(s.id));
-    if (!cand.length) { sel.innerHTML = '<option value="">追加できる生徒がいません</option>'; return; }
-    sel.innerHTML = '<option value="">生徒を選択</option>' + cand.map(s =>
-      '<option value="' + s.id + '">' + escapeHtml(s.name) +
-      (s.school ? '（' + escapeHtml(s.school) + ' ' + escapeHtml(String(s.grade || '')) + '）' : '') + '</option>').join('');
+      await sbGet('students',
+        'is_active=eq.true&select=id,name,name_kana,school,grade,inactive_reason,withdraw_status,withdraw_effective_date&order=school,grade,name') || [], 'id');
+    // 退塾者は候補に出さない
+    provCandidates = stus.filter(s => !already.has(s.id) && isEnrolledNow(s));
+    // 学校の選択肢（候補にいる学校だけ）
+    const ssel = document.getElementById('prov-school');
+    if (ssel) {
+      const schools = [...new Set(provCandidates.map(s => s.school).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, 'ja'));
+      ssel.innerHTML = '<option value="">すべて</option>' +
+        schools.map(x => '<option value="' + escapeAttr(x) + '">' + escapeHtml(x) + '</option>').join('');
+      ssel.value = '';
+    }
+    renderProvStudentOptions();
   } catch (e) {
     sel.innerHTML = '<option value="">読み込み失敗</option>';
   }
+}
+let provCandidates = [];
+// 学校・学年の絞り込みを反映して生徒プルダウンを組み直す
+function renderProvStudentOptions() {
+  const sel = document.getElementById('prov-student');
+  if (!sel) return;
+  const sc = (document.getElementById('prov-school') || {}).value || '';
+  const gd = (document.getElementById('prov-grade') || {}).value || '';
+  const list = provCandidates.filter(s => {
+    if (sc && s.school !== sc) return false;
+    if (gd && emxGradeDigit(s.grade) !== gd) return false;
+    return true;
+  }).sort((a, b) => (a.name_kana || a.name || '').localeCompare(b.name_kana || b.name || '', 'ja'));
+  const cnt = document.getElementById('prov-count');
+  if (cnt) cnt.textContent = list.length ? '（' + list.length + '名）' : '';
+  if (!list.length) { sel.innerHTML = '<option value="">該当する生徒がいません</option>'; return; }
+  sel.innerHTML = '<option value="">生徒を選択</option>' + list.map(s =>
+    '<option value="' + s.id + '">' + escapeHtml(s.name) +
+    (s.school ? '（' + escapeHtml(s.school) + ' ' + escapeHtml(String(s.grade || '')) + '）' : '') + '</option>').join('');
 }
 let provClassId = null;
 function closeProvModal() {
@@ -26141,7 +26185,10 @@ async function loadAttendanceRoster() {
   showLoading('名簿を読み込み中...');
   try {
     // 名簿（デモ生徒は除外）
-    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id');
+    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,is_provisional');
+    // 申込未提出（見込み）の生徒を控えておく
+    attProvisional = {};
+    enrolls.forEach(e => { if (e.is_provisional) attProvisional[e.student_id] = true; });
     const studentIds = await excludeDemoIds(enrolls.map(e => e.student_id));
     if (!studentIds.length) {
       hideLoading();
@@ -26223,6 +26270,7 @@ function renderAttendanceRoster() {
       inLabel = '来塾' + String(jst.getUTCHours()).padStart(2,'0') + ':' + String(jst.getUTCMinutes()).padStart(2,'0');
     }
     const makeupTag = row.isMakeup ? '<span style="font-size:9px;background:#E8E2F5;color:#6B4FA0;padding:1px 6px;border-radius:10px;margin-left:4px">📺 補習承認</span>' : '';
+    const provTag = attProvisional[s.id] ? '<span style="font-size:9px;background:#FFF3DF;color:#8F5F12;border:1px solid #E8C193;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="申込書が未提出です">⏳ 申込未提出</span>' : '';
     const sub = [s.school, s.grade ? s.grade + '年' : '', inLabel].filter(Boolean).join(' ・ ');
     // アバター
     const avatar = s.photo_url
@@ -26243,7 +26291,7 @@ function renderAttendanceRoster() {
       '<div style="display:flex;align-items:center;gap:10px">' +
         avatar +
         '<div style="flex:1;min-width:0">' +
-          '<div style="font-size:14px;font-weight:500;color:var(--text)">' + (s.name||'(不明)') + ' ' + noteBadge + makeupTag + '</div>' +
+          '<div style="font-size:14px;font-weight:500;color:var(--text)">' + (s.name||'(不明)') + ' ' + noteBadge + makeupTag + provTag + '</div>' +
           '<div style="font-size:11px;color:var(--muted)">' + sub + '</div>' +
         '</div>' +
       '</div>' +
