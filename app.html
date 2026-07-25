@@ -5383,7 +5383,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dgs';
+const APP_VERSION = '20260702dgt';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -19425,11 +19425,13 @@ let kshCategory = 'summer';
 let kshTab = 'school';
 let kshData = null;     // { classes, students, enrolls }
 let kshRosterFilter = 'all';   // all | attend | roster
+let kshSchoolGrade = '';       // 学校×学年タブの学年フィルタ '' | '1' | '2' | '3'
 let kshYear = null;            // 対象年度（class_master.school_year）
 let kshYearOpts = [];          // 選択できる年度
 
 function setKshTab(t) { kshTab = t; renderKoushuAnalysis(); }
 function setKshRoster(v) { kshRosterFilter = v; renderKoushuAnalysis(); }
+function setKshSchoolGrade(v) { kshSchoolGrade = v; renderKoushuAnalysis(); }
 
 async function reloadKoushuAnalysis() {
   const el = document.getElementById('ksh-body');
@@ -19525,7 +19527,12 @@ function renderKoushuAnalysis() {
 // --- タブ1: 学校×学年 ---
 function renderKshSchool(el) {
   const { sess, unknown, taken, isProv } = kshComputePerStudent();
-  const pool = kshFilteredStudents();
+  const basePool = kshFilteredStudents();
+  // 学年フィルタ（在籍者のいる学年だけチップを出す）
+  const kshGradesAvail = {};
+  basePool.forEach(s => { const d = emxGradeDigit(s.grade); if (d) kshGradesAvail[d] = true; });
+  const kshGkeys = Object.keys(kshGradesAvail).sort();
+  const pool = kshSchoolGrade ? basePool.filter(s => emxGradeDigit(s.grade) === kshSchoolGrade) : basePool;
   const stus = pool.filter(s => taken[s.id]);
   // 在籍数（分母）は受講の有無によらず数える
   const enrolledCnt = {}, schoolEnrolled = {};
@@ -19560,8 +19567,69 @@ function renderKshSchool(el) {
     '<div style="width:' + Math.min(100, v) + '%;height:100%;background:' + col + '"></div></div>' +
     '<span style="min-width:38px;text-align:right">' + v.toFixed(1) + '%</span></div>';
 
+  let h = '';
+  // 学年フィルタチップ
+  if (kshGkeys.length > 1) {
+    h += '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px;align-items:center">';
+    h += '<span style="font-size:10px;color:var(--muted);font-weight:700;margin-right:2px">学年</span>';
+    const gbtn = (v, l) => '<button onclick="setKshSchoolGrade(\'' + v + '\')" style="padding:4px 11px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+      (kshSchoolGrade === v ? 'border:1.5px solid var(--orange);background:var(--orange);color:#fff'
+                            : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + l + '</button>';
+    h += gbtn('', 'すべて') + kshGkeys.map(g2 => gbtn(g2, g2 + '年')).join('');
+    h += '</div>';
+  }
+
+  // 学年別サマリー（学校フィルタ非依存・学年横断の集計）
+  {
+    const gEnrolled = {}, gRows = {};
+    basePool.forEach(s => { const d = emxGradeDigit(s.grade); if (d) gEnrolled[d] = (gEnrolled[d] || 0) + 1; });
+    basePool.forEach(s => {
+      if (!taken[s.id]) return;
+      const d = emxGradeDigit(s.grade); if (!d) return;
+      const r = gRows[d] || (gRows[d] = { n: 0, sess: 0, fee: 0, pn: 0, pfee: 0 });
+      const n = sess[s.id] || 0, f = kshFee(n);
+      r.n++; r.sess += n; r.fee += f;
+      if (isProv[s.id]) { r.pn++; r.pfee += f; }
+    });
+    const gk = Object.keys(gRows).sort();
+    let gtn = 0, gtf = 0, gtEnr = 0, gtpn = 0, gtpf = 0;
+    gk.forEach(d => { const r = gRows[d]; gtn += r.n; gtf += r.fee; gtpn += r.pn; gtpf += r.pfee; });
+    Object.keys(gEnrolled).forEach(d => { gtEnr += gEnrolled[d]; });
+    const gpct = (a, b) => (b > 0 ? Math.round(a / b * 1000) / 10 : 0);
+    if (gk.length) {
+      h += '<div style="font-size:12px;font-weight:800;color:var(--text);margin-bottom:6px">学年別サマリー</div>';
+      h += '<div style="overflow-x:auto;margin-bottom:16px"><table style="border-collapse:collapse;width:100%;font-size:11px">';
+      h += '<tr style="background:var(--surface2)">' +
+        ['学年','受講／在籍','受講率','確定','見込み','合計','売上構成比'].map((t,i) =>
+          '<th style="border:1px solid var(--border);padding:6px 8px;text-align:' + (i === 0 ? 'left' : 'right') + '">' + t + '</th>').join('') + '</tr>';
+      gk.forEach(d => {
+        const r = gRows[d], denom = gEnrolled[d] || 0, sel = (kshSchoolGrade === d);
+        h += '<tr' + (sel ? ' style="background:var(--orange-l)"' : '') + '>' +
+          '<td style="border:1px solid var(--border);padding:5px 8px;font-weight:700">' + d + '年</td>' +
+          '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right">' + r.n + ' / ' + denom + '</td>' +
+          '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right">' + bar(gpct(r.n, denom), '#2D6CB6') + '</td>' +
+          '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right">¥' + (r.fee - r.pfee).toLocaleString() + '</td>' +
+          '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right;color:' + (r.pfee ? '#8F5F12' : 'var(--border)') + '">' +
+            (r.pfee ? '¥' + r.pfee.toLocaleString() + '<div style="font-size:9px">' + r.pn + '名</div>' : '–') + '</td>' +
+          '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right;font-weight:700">¥' + r.fee.toLocaleString() + '</td>' +
+          '<td style="border:1px solid var(--border);padding:5px 8px;text-align:right">' + bar(gpct(r.fee, gtf), '#C6851B') + '</td></tr>';
+      });
+      h += '<tr style="background:var(--surface2);font-weight:800">' +
+        '<td style="border:1px solid var(--border);padding:6px 8px">合計</td>' +
+        '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">' + gtn + ' / ' + gtEnr + '</td>' +
+        '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">' + gpct(gtn, gtEnr).toFixed(1) + '%</td>' +
+        '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">¥' + (gtf - gtpf).toLocaleString() + '</td>' +
+        '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right;color:' + (gtpf ? '#8F5F12' : 'var(--muted)') + '">' +
+          (gtpf ? '¥' + gtpf.toLocaleString() + '<div style="font-size:9px">' + gtpn + '名</div>' : '–') + '</td>' +
+        '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">¥' + gtf.toLocaleString() + '</td>' +
+        '<td style="border:1px solid var(--border);padding:6px 8px;text-align:right">100.0%</td></tr>';
+      h += '</table></div>';
+    }
+  }
+
   // 学校サマリー
-  let h = '<div style="font-size:12px;font-weight:800;color:var(--text);margin-bottom:6px">学校別サマリー</div>';
+  h += '<div style="font-size:12px;font-weight:800;color:var(--text);margin-bottom:6px">学校別サマリー' +
+    (kshSchoolGrade ? '（' + kshSchoolGrade + '年）' : '') + '</div>';
   h += '<div style="overflow-x:auto;margin-bottom:16px"><table style="border-collapse:collapse;width:100%;font-size:11px">';
   h += '<tr style="background:var(--surface2)">' +
     ['学校','受講／在籍','受講率','確定','見込み','合計','売上構成比'].map((t,i) =>
