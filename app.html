@@ -591,7 +591,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <button id="emx-mode-prov" onclick="setEmxProvMode(true)" style="padding:5px 14px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1.5px solid var(--border);background:var(--surface);color:var(--muted)">⏳ 見込み（申込未提出）</button>
       <span id="emx-mode-note" style="font-size:10px;color:var(--muted)"></span>
     </div>
-    <div id="emx-koushu-note" style="display:none;font-size:10px;color:var(--muted);background:var(--surface2);border-radius:8px;padding:6px 10px;margin-bottom:8px;line-height:1.5">※ 講習は開始日の概念がないため、開始日なしで登録されます。</div>
+    <div id="emx-koushu-note" style="display:none;font-size:10px;color:var(--muted);background:var(--surface2);border-radius:8px;padding:6px 10px;margin-bottom:8px;line-height:1.5">※ 講習は開始回の概念がないため、開始回なしで登録されます。</div>
     <div id="emx-info" style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:700"></div>
     <div id="emx-grid"></div>
     <div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※ 解除は受講終了（ended_on）として記録されます。履歴は残ります。</div>
@@ -3123,7 +3123,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <!-- ===== 下段：週報進捗 ===== -->
     <div class="sv-grid-bottom">
       <div class="sv-card" id="sv-weekly-section">
-        <div class="sv-card-h">📅 週報進捗（1W／2W／3W）</div>
+        <div class="sv-card-h">📅 週報進捗（1W／2W／3W／4W）</div>
         <div class="sv-placeholder">読み込み中…</div>
       </div>
     </div>
@@ -5383,7 +5383,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dgt';
+const APP_VERSION = '20260702dgx';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -5701,6 +5701,18 @@ document.addEventListener('visibilitychange', function() {
 function showScreen(id) { document.querySelectorAll('.screen').forEach(s => s.classList.remove('active')); document.getElementById(id).classList.add('active'); }
 function showToast(msg, type) { const t = document.getElementById('toast'); t.textContent = msg; t.className = 'toast show ' + (type || 'info'); setTimeout(() => t.classList.remove('show'), 2800); }
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+// 受講サイクルの表示ラベル。開始日(started_on)ではなく「◯月◯回目」で統一する。
+// 回番号(no)が無ければ null を返す（呼び出し側で「開始回数未登録」等に振り分け）。
+function cycLabelOf(y, mo, no) {
+  if (no == null || no === '') return null;
+  return (mo != null && mo !== '' ? mo + '月' : '') + no + '回目';
+}
+function enrollStartLabel(r) {
+  return cycLabelOf(r.start_cycle_year, r.start_cycle_month, r.start_cycle_no) || '開始回数未登録';
+}
+function enrollEndLabel(r) {
+  return cycLabelOf(r.end_cycle_year, r.end_cycle_month, r.end_cycle_no) || '';
+}
 function escapeAttr(s) { return String(s == null ? '' : s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/\r?\n/g,' '); }
 
 
@@ -18676,7 +18688,7 @@ async function loadKarteHistory(classId) {
     // 全期間（ended_on の有無を問わず）→ sbGetActiveEnrollments ではなく直接取得
     const rows = await excludeDemoRows(await sbGet('class_enrollments',
       'class_master_id=eq.' + classId +
-      '&select=id,student_id,started_on,ended_on,end_reason,end_reason_note' +
+      '&select=id,student_id,started_on,ended_on,end_reason,end_reason_note,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no' +
       '&order=ended_on.desc,started_on.desc&limit=500') || []);
     if (!rows.length) {
       if (cntEl) cntEl.textContent = '';
@@ -18691,6 +18703,9 @@ async function loadKarteHistory(classId) {
         (stopped.length ? '（ストップ ' + stopped.length + '）' : '');
     }
     const fmtD = (d) => d ? d.replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$1/$2/$3') : '';
+    // 開始日は使わず「◯月◯回目」で統一（グローバルの enrollStartLabel/enrollEndLabel）。
+    const startLabel = (r) => enrollStartLabel(r) + (cycLabelOf(r.start_cycle_year, r.start_cycle_month, r.start_cycle_no) ? '〜' : '');
+    const endLabel = (r) => enrollEndLabel(r);
     const stuLine = (r) => {
       const s = nameById[r.student_id] || {};
       return '<span style="font-size:12px;font-weight:600;color:var(--text)">' + escapeHtml(s.name || '(不明)') + '</span>' +
@@ -18703,7 +18718,7 @@ async function loadKarteHistory(classId) {
       ? '<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px">' + active.map(r =>
           '<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:#F7FBF7;border:1px solid #CFE6CF;border-radius:8px;flex-wrap:wrap">' +
             '<div style="flex:1;min-width:100px">' + stuLine(r) + '</div>' +
-            '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' + (r.started_on ? fmtD(r.started_on) + '〜' : '開始日なし') + '</span>' +
+            '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' + escapeHtml(startLabel(r)) + '</span>' +
           '</div>').join('') + '</div>'
       : '<div style="font-size:11px;color:var(--muted);margin-bottom:12px">継続中の受講生はいません。</div>';
     // 終了
@@ -18720,7 +18735,7 @@ async function loadKarteHistory(classId) {
             : '';
           return '<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;flex-wrap:wrap">' +
             '<div style="flex:1;min-width:100px">' + stuLine(r) + '</div>' +
-            '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' + fmtD(r.started_on) + '〜' + fmtD(r.ended_on) + '</span>' +
+            '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' + escapeHtml(startLabel(r).replace(/〜$/, '') + ' 〜 ' + (endLabel(r) || '終了')) + '</span>' +
             badge +
             '<button onclick="openEndReason(\'' + r.id + '\')" style="padding:3px 8px;background:var(--orange-l);border:1px solid var(--orange);border-radius:6px;color:var(--orange-d);font-size:10px;font-weight:700;cursor:pointer;flex-shrink:0;font-family:\'Noto Sans JP\',sans-serif">📝 理由</button>' +
             note +
@@ -18899,7 +18914,7 @@ function renderKarteStudents(freeTarget) {
   const el = document.getElementById('ck-students');
   if (!el) return;
   const fy = getFiscalYearJST();   // 未設定の行は今年度を初期表示（◀▶で前後に動かせる）
-  el.innerHTML = '<div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.5">' + (ckStuIsNormal ? '受講開始の回（◯年度 ◯月 ◯回目）を入れて保存すると、開始日も自動でセットされます。<br>💡 何月の何回目かは、カレンダーや授業日の各コマに「○月○回目」バッジで表示されます。それを見て開始回を入れてください。' : '講習は開始回・開始日の設定はありません。') +
+  el.innerHTML = '<div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.5">' + (ckStuIsNormal ? '受講開始の回（◯年度 ◯月 ◯回目）を入れて保存します。受講履歴などは「◯月◯回目」で表示され、回が未入力の生徒は「開始回数未登録」と表示されます。<br>💡 何月の何回目かは、カレンダーや授業日の各コマに「○月○回目」バッジで表示されます。それを見て開始回を入れてください。' : '講習は開始回の設定はありません。') +
       (freeTarget ? '<br>この講座は起点から' + LAP_SESSIONS + '回（＝1年分）を超えると2周目＝無料・受講任意になります。' : '') +
     '</div>' +
     '<div class="ck-stu-rows">' +
@@ -21494,7 +21509,7 @@ async function loadDetailEnrollments() {
   let all = [];
   try {
     all = await sbGet('class_enrollments',
-      'student_id=eq.' + detailStudent.id + '&select=id,started_on,ended_on,class_master(id,name,subject)&order=started_on.desc.nullslast') || [];
+      'student_id=eq.' + detailStudent.id + '&select=id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,class_master(id,name,subject)&order=started_on.desc.nullslast') || [];
   } catch (e) {
     try {
       all = await sbGet('class_enrollments',
@@ -21512,7 +21527,8 @@ async function loadDetailEnrollments() {
     } else {
       el.innerHTML = active.map(e => {
         const c = e.class_master || {};
-        const since = e.started_on ? '<span style="font-size:10px;color:var(--muted);margin-left:4px">' + e.started_on + '〜</span>' : '';
+        const scLbl = cycLabelOf(e.start_cycle_year, e.start_cycle_month, e.start_cycle_no);
+        const since = '<span style="font-size:10px;color:var(--muted);margin-left:4px">' + escapeHtml(scLbl ? scLbl + '〜' : '開始回数未登録') + '</span>';
         return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface2);border-radius:8px">' +
           '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:' + (SUBJ_COLORS[c.subject]||'#5A5A5A') + '20;color:' + (SUBJ_COLORS[c.subject]||'#5A5A5A') + ';font-weight:700">' + (c.subject||'') + '</span>' +
           '<span style="font-size:13px;color:var(--text);flex:1">' + (c.name||'不明') + since + '</span>' +
@@ -21536,7 +21552,7 @@ async function loadDetailEnrollments() {
       hist.innerHTML = sorted.map(e => {
         const c = e.class_master || {};
         const ongoing = e.ended_on == null;
-        const range = (e.started_on || '？') + ' 〜 ' + (ongoing ? '継続中' : e.ended_on);
+        const range = enrollStartLabel(e) + ' 〜 ' + (ongoing ? '継続中' : (enrollEndLabel(e) || '終了'));
         const col = SUBJ_COLORS[c.subject] || '#5A5A5A';
         return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:' + (ongoing ? 'var(--surface2)' : 'var(--surface)') + ';border:1px solid ' + (ongoing ? 'transparent' : 'var(--border)') + ';border-radius:8px;opacity:' + (ongoing ? '1' : '0.75') + '">' +
           '<span style="width:8px;height:8px;border-radius:50%;background:' + col + ';flex-shrink:0"></span>' +
@@ -29913,7 +29929,7 @@ async function karteLoadEnrollHist(sid) {
     let rows = [];
     try {
       rows = await sbGet('class_enrollments',
-        'student_id=eq.' + sid + '&select=id,started_on,ended_on,class_master(id,name,subject,category,school_year)&order=started_on.desc.nullslast') || [];
+        'student_id=eq.' + sid + '&select=id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,class_master(id,name,subject,category,school_year)&order=started_on.desc.nullslast') || [];
     } catch (e) {
       // 旧環境フォールバック（started_on/ended_on 列なし）
       rows = await sbGet('class_enrollments',
@@ -29935,11 +29951,10 @@ async function karteLoadEnrollHist(sid) {
       else seasonals.push(r);
     });
 
-    // 期間ラベル（M/D 形式・継続中）
+    // 期間ラベル（◯月◯回目で統一。開始日は使わない）
     const rangeLabel = (r) => {
-      const st = r.started_on ? ivFmtDate(r.started_on) : '？';
       const ongoing = r.ended_on == null;
-      return st + ' 〜 ' + (ongoing ? '継続中' : ivFmtDate(r.ended_on));
+      return enrollStartLabel(r) + ' 〜 ' + (ongoing ? '継続中' : (enrollEndLabel(r) || '終了'));
     };
 
     // 通常授業：継続中を上に、開始日降順でタイムライン表示
@@ -36330,6 +36345,8 @@ let svSchool = null;          // 選択中の学校名
 let svWithdrawScope = 'school'; // 退塾分析の集計範囲：'school'=この学校 / 'all'=全校
 let svFY = null;              // 表示年度（開始年）。null=今年度
 let svMemMode = 'all';        // 'all' | 'regular' | 'seasonal'
+let svGradePlanYM = null;     // 学年別計画カードの対象年月 {y,m}。null=今月
+let svGradePlanCache = {};    // grade -> row
 let svShowPrevYear = false;   // 昨年度ブロックを表示するか（デフォルト非表示）
 let svBackTo = 'manage';     // 戻り先
 
@@ -36349,7 +36366,7 @@ async function openSchoolView(backTo) {
     await svEnsureTrendData();
     // 各描画を個別に隔離（1つ落ちても後続を必ず走らせる）
     [
-      renderSvEnroll, renderSvGoal, renderSvGradeNotes, renderSvInterviews,
+      renderSvEnroll, renderSvGoal, renderSvGradeNotes, renderSvGradePlan, renderSvInterviews,
       renderSvReconcile, renderSvKoushu, renderSvCalendar, renderSvInout, renderSvWeekly,
       () => renderSvWithdrawAnalysis({ school: svSchool, allMode: false, showToggle: false }),
       () => renderSvEnrollFunnel({ school: svSchool, allMode: false })
@@ -36490,7 +36507,7 @@ async function refreshSchoolView() {
     await svEnsureTrendData();
     // 各描画を個別に隔離（1つ落ちても後続を必ず走らせる）
     [
-      renderSvEnroll, renderSvGoal, renderSvGradeNotes, renderSvInterviews,
+      renderSvEnroll, renderSvGoal, renderSvGradeNotes, renderSvGradePlan, renderSvInterviews,
       renderSvReconcile, renderSvKoushu, renderSvCalendar, renderSvInout, renderSvWeekly,
       () => renderSvWithdrawAnalysis({ school: svSchool, allMode: svWithdrawScope === 'all', showToggle: false }),
       () => renderSvEnrollFunnel({ school: svSchool, allMode: svWithdrawScope === 'all' })
@@ -36517,7 +36534,7 @@ function setSvSchool(s) {
   // 各描画を個別に隔離。1つが同期例外/reject で落ちても後続を必ず走らせる。
   const _svRenderers = [
     renderSvSchoolTabs, renderSvPeriodBar, renderSvEnroll, renderSvGoal,
-    renderSvGradeNotes, renderSvInterviews, renderSvReconcile, renderSvKoushu, renderSvCalendar,
+    renderSvGradeNotes, renderSvGradePlan, renderSvInterviews, renderSvReconcile, renderSvKoushu, renderSvCalendar,
     renderSvInout, renderSvWeekly,
     () => renderSvWithdrawAnalysis({ school: svSchool, allMode: false, showToggle: false }),
     () => renderSvEnrollFunnel({ school: svSchool, allMode: false })
@@ -36929,6 +36946,134 @@ async function renderSvGradeNotes() {
   html += '</div>';
   sec.innerHTML = html;
 }
+
+// ============================================================
+// 学校別ページ：学年別 月次メモ（計画・実績と反省／来月の計画）（dgv）
+//   単位：学校 × 年 × 月 × 学年。今後ずっと記録していく。
+//   要 SQL: create_school_monthly_notes.sql
+// ============================================================
+function svGradePlanTargetYM() {
+  if (svGradePlanYM && svGradePlanYM.y) return { y: svGradePlanYM.y, m: svGradePlanYM.m };
+  const t = getTodayJST();
+  return { y: parseInt(t.slice(0, 4), 10), m: parseInt(t.slice(5, 7), 10) };
+}
+function setSvGradePlanYM(y, m) {
+  svGradePlanYM = { y: parseInt(y, 10), m: parseInt(m, 10) };
+  renderSvGradePlan();
+}
+function shiftSvGradePlanYM(delta) {
+  const cur = svGradePlanTargetYM();
+  let y = cur.y, m = cur.m + delta;
+  while (m <= 0) { m += 12; y -= 1; }
+  while (m > 12) { m -= 12; y += 1; }
+  setSvGradePlanYM(y, m);
+}
+
+async function renderSvGradePlan() {
+  const sec = document.getElementById('sv-grade-plan-section');
+  if (!sec || !svSchool) return;
+  const { y, m } = svGradePlanTargetYM();
+  const canEdit = (typeof svCanEditGradeNotes === 'function') ? svCanEditGradeNotes() : true;
+  const cardH = '<div class="sv-card-h">📝 学年別 今月の計画・実績と反省・来月の計画</div>';
+  sec.innerHTML = cardH + '<div class="sv-placeholder">読み込み中…</div>';
+
+  let rows = [];
+  try {
+    rows = await sbGet('school_monthly_notes',
+      'school=eq.' + encodeURIComponent(svSchool) + '&year=eq.' + y + '&month=eq.' + m + '&select=*') || [];
+  } catch (e) {
+    sec.innerHTML = cardH + '<div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">取得に失敗しました（create_school_monthly_notes.sql 未実行の可能性）。</div>';
+    return;
+  }
+  svGradePlanCache = {};
+  rows.forEach(r => { svGradePlanCache[r.grade] = r; });
+
+  // 月セレクタ（前月・今月・翌々月まで手前後に動かせる）
+  const t = getTodayJST();
+  const ty = parseInt(t.slice(0, 4), 10), tm = parseInt(t.slice(5, 7), 10);
+  const isThis = (y === ty && m === tm);
+  let html = cardH;
+  html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">';
+  html += '<button type="button" onclick="shiftSvGradePlanYM(-1)" style="padding:5px 11px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">‹ 前月</button>';
+  html += '<div style="font-size:14px;font-weight:800;color:var(--text)">' + y + '年' + m + '月</div>';
+  html += '<button type="button" onclick="shiftSvGradePlanYM(1)" style="padding:5px 11px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">翌月 ›</button>';
+  if (!isThis) {
+    html += '<button type="button" onclick="setSvGradePlanYM(' + ty + ',' + tm + ')" style="padding:5px 11px;border:1px solid #2D6CB6;border-radius:8px;background:var(--surface);color:#2D6CB6;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">今月へ</button>';
+  }
+  html += '<span style="font-size:11px;color:var(--muted)">' + escapeHtml(svSchool) + (canEdit ? '' : '（閲覧のみ）') + '</span>';
+  html += '</div>';
+
+  const grades = [
+    { k: 'all', label: '学校全体' },
+    { k: '1', label: '1年' },
+    { k: '2', label: '2年' },
+    { k: '3', label: '3年' }
+  ];
+  grades.forEach(g => {
+    const row = svGradePlanCache[g.k] || {};
+    const refV = (row.reflection != null) ? row.reflection : '';
+    const planV = (row.plan != null) ? row.plan : '';
+    html += '<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;background:var(--surface)">';
+    html += '<div style="font-size:14px;font-weight:800;color:#1E4276;margin-bottom:8px">' + g.label + '</div>';
+    html += '<div style="display:flex;gap:12px;flex-wrap:wrap">';
+    // 反省
+    html += '<div style="flex:1 1 260px;min-width:220px">';
+    html += '<div style="font-size:11px;font-weight:700;color:#B8742A;margin-bottom:3px">🔄 今月の実績と反省</div>';
+    if (canEdit) {
+      html += '<textarea id="sv-gp-ref-' + g.k + '" rows="4" placeholder="今月やったこと・振り返りを入力" ' +
+        'style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px;resize:vertical;background:var(--surface)">' + escapeHtml(refV) + '</textarea>';
+    } else {
+      html += '<div style="min-height:44px;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:13px;white-space:pre-wrap;color:' + (refV ? 'var(--text)' : 'var(--muted)') + ';background:var(--surface2)">' + (refV ? escapeHtml(refV) : '（未記入）') + '</div>';
+    }
+    html += '</div>';
+    // 予定
+    html += '<div style="flex:1 1 260px;min-width:220px">';
+    html += '<div style="font-size:11px;font-weight:700;color:#2D6CB6;margin-bottom:3px">📌 来月の計画・予定</div>';
+    if (canEdit) {
+      html += '<textarea id="sv-gp-plan-' + g.k + '" rows="4" placeholder="来月の計画・予定を入力" ' +
+        'style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px;resize:vertical;background:var(--surface)">' + escapeHtml(planV) + '</textarea>';
+    } else {
+      html += '<div style="min-height:44px;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:13px;white-space:pre-wrap;color:' + (planV ? 'var(--text)' : 'var(--muted)') + ';background:var(--surface2)">' + (planV ? escapeHtml(planV) : '（未記入）') + '</div>';
+    }
+    html += '</div>';
+    html += '</div>'; // flex row
+    if (canEdit) {
+      html += '<div style="margin-top:8px;text-align:right">' +
+        '<button type="button" onclick="saveSvGradePlan(\'' + g.k + '\')" style="padding:6px 18px;background:linear-gradient(135deg,#2D6CB6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">💾 ' + g.label + 'を保存</button></div>';
+    }
+    html += '</div>';
+  });
+  sec.innerHTML = html;
+}
+
+async function saveSvGradePlan(grade) {
+  if (!svSchool) return;
+  if (typeof svCanEditGradeNotes === 'function' && !svCanEditGradeNotes()) { showToast('編集権限がありません', 'error'); return; }
+  const { y, m } = svGradePlanTargetYM();
+  const refEl = document.getElementById('sv-gp-ref-' + grade);
+  const planEl = document.getElementById('sv-gp-plan-' + grade);
+  const payload = {
+    reflection: refEl ? refEl.value : '',
+    plan: planEl ? planEl.value : '',
+    updated_by: currentStaff ? (currentStaff.staff_id || '') : ''
+  };
+  const existing = svGradePlanCache[grade] || null;
+  showLoading('保存中...');
+  try {
+    if (existing && existing.id != null) {
+      await sbPatch('school_monthly_notes', 'id=eq.' + encodeURIComponent(existing.id), payload);
+    } else {
+      await sbPost('school_monthly_notes', Object.assign({ school: svSchool, year: y, month: m, grade: grade }, payload));
+    }
+    hideLoading();
+    showToast('📝 保存しました', 'success');
+    renderSvGradePlan();
+  } catch (e) {
+    hideLoading();
+    showToast('保存に失敗: ' + (e.message || ''), 'error');
+  }
+}
+
 
 // 1学年分のメモを保存（upsert：既存があればPATCH、無ければPOST）
 async function saveSvGradeNote(grade) {
@@ -38165,26 +38310,45 @@ async function renderSvWeekly() {
   rows.forEach(r => { svWeeklyCache[r.week] = r; });
 
   const weeks = ['1W', '2W', '3W', '4W'];
-  let html = '<div class="sv-card-h">📅 週報進捗（1W／2W／3W）</div>';
+  let html = '<div class="sv-card-h">📅 週報進捗（1W／2W／3W／4W）</div>';
   html += '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">' + escapeHtml(svSchool) + '／' + y + '年' + m + '月' + (canEdit ? '' : '（閲覧のみ）') + '</div>';
+  // 横並び（各週を列に）。狭い画面は横スクロール。各列は上=予定／下=実際にしたこと。
+  html += '<div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch">';
   weeks.forEach(w => {
     const row = svWeeklyCache[w] || {};
-    const val = row.body || '';
-    html += '<div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:10px;background:var(--surface)">';
-    html += '<div style="font-size:13px;font-weight:800;color:#1E4276;margin-bottom:6px">' + w + '</div>';
+    // 後方互換：plan/actual 列が無い環境では body を「実際」に読む
+    const planV = (row.plan != null) ? row.plan : '';
+    const actualV = (row.actual != null) ? row.actual : (row.body || '');
+    html += '<div style="flex:0 0 240px;min-width:240px;border:1px solid var(--border);border-radius:10px;padding:10px;background:var(--surface);display:flex;flex-direction:column;gap:8px">';
+    html += '<div style="font-size:13px;font-weight:800;color:#1E4276;text-align:center;padding-bottom:4px;border-bottom:1px solid var(--border)">' + w + '</div>';
+    // 予定
+    html += '<div>';
+    html += '<div style="font-size:11px;font-weight:700;color:#2D6CB6;margin-bottom:3px">📌 予定</div>';
     if (canEdit) {
-      html += '<textarea id="sv-wk-' + w + '" rows="3" placeholder="進捗を1行ずつ入力（改行で行追加）" ' +
-        'style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px;resize:vertical;background:var(--surface)">' + escapeHtml(val) + '</textarea>';
-      html += '<div style="display:flex;gap:8px;margin-top:6px">' +
-        '<button type="button" onclick="svWeeklyAddRow(\'' + w + '\')" style="padding:5px 12px;background:var(--surface);border:1px dashed var(--border);border-radius:8px;color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">＋ 行追加</button>' +
-        '<button type="button" onclick="saveSvWeekly(\'' + w + '\')" style="padding:5px 16px;background:linear-gradient(135deg,#2D6CB6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">💾 保存</button>' +
-        '</div>';
+      html += '<textarea id="sv-wk-plan-' + w + '" rows="4" placeholder="この週の予定を入力" ' +
+        'style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:12px;resize:vertical;background:var(--surface)">' + escapeHtml(planV) + '</textarea>';
     } else {
-      html += '<div style="min-height:44px;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:13px;white-space:pre-wrap;color:' + (val ? 'var(--text)' : 'var(--muted)') + ';background:var(--surface2)">' + (val ? escapeHtml(val) : '（未記入）') + '</div>';
+      html += '<div style="min-height:44px;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:12px;white-space:pre-wrap;color:' + (planV ? 'var(--text)' : 'var(--muted)') + ';background:var(--surface2)">' + (planV ? escapeHtml(planV) : '（未記入）') + '</div>';
+    }
+    html += '</div>';
+    // 実際にしたこと
+    html += '<div>';
+    html += '<div style="font-size:11px;font-weight:700;color:#2E8B57;margin-bottom:3px">✅ 実際にしたこと</div>';
+    if (canEdit) {
+      html += '<textarea id="sv-wk-actual-' + w + '" rows="4" placeholder="実際にしたことを入力" ' +
+        'style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:12px;resize:vertical;background:var(--surface)">' + escapeHtml(actualV) + '</textarea>';
+    } else {
+      html += '<div style="min-height:44px;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:12px;white-space:pre-wrap;color:' + (actualV ? 'var(--text)' : 'var(--muted)') + ';background:var(--surface2)">' + (actualV ? escapeHtml(actualV) : '（未記入）') + '</div>';
+    }
+    html += '</div>';
+    if (canEdit) {
+      html += '<button type="button" onclick="saveSvWeekly(\'' + w + '\')" style="margin-top:auto;padding:6px 16px;background:linear-gradient(135deg,#2D6CB6,#1E4276);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">💾 保存</button>';
     }
     html += '</div>';
   });
+  html += '</div>';
   sec.innerHTML = html;
+
 }
 
 // ============================================================
@@ -38744,15 +38908,29 @@ async function saveSvWeekly(w) {
   if (!svSchool) return;
   if (typeof svCanEditGradeNotes === 'function' && !svCanEditGradeNotes()) { showToast('編集権限がありません', 'error'); return; }
   const { y, m } = svTargetYM();
-  const el = document.getElementById('sv-wk-' + w);
-  const body = { body: el ? el.value : '', updated_by: currentStaff ? (currentStaff.staff_id || '') : '' };
+  const planEl = document.getElementById('sv-wk-plan-' + w);
+  const actualEl = document.getElementById('sv-wk-actual-' + w);
+  const planV = planEl ? planEl.value : '';
+  const actualV = actualEl ? actualEl.value : '';
+  // body は後方互換のため実際にしたこと(actual)を入れておく
+  const body = { plan: planV, actual: actualV, body: actualV, updated_by: currentStaff ? (currentStaff.staff_id || '') : '' };
   const existing = svWeeklyCache[w] || null;
   showLoading('保存中...');
-  try {
+  const doSave = async (payload) => {
     if (existing && existing.id != null) {
-      await sbPatch('weekly_reports', 'id=eq.' + encodeURIComponent(existing.id), body);
+      await sbPatch('weekly_reports', 'id=eq.' + encodeURIComponent(existing.id), payload);
     } else {
-      await sbPost('weekly_reports', Object.assign({ school: svSchool, year: y, month: m, week: w }, body));
+      await sbPost('weekly_reports', Object.assign({ school: svSchool, year: y, month: m, week: w }, payload));
+    }
+  };
+  try {
+    try {
+      await doSave(body);
+    } catch (e1) {
+      // plan/actual 列が無い環境（SQL未実行）へのフォールバック：body のみ
+      if (/column|PGRST|400/i.test(e1.message || '')) {
+        await doSave({ body: actualV, updated_by: body.updated_by });
+      } else { throw e1; }
     }
     hideLoading();
     showToast('📅 ' + w + 'を保存しました', 'success');
