@@ -4598,6 +4598,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
     <!-- 名簿照合タブ -->
     <div id="smcontent-rostercheck" style="display:none">
+      <div id="rostercheck-div-banner" style="border-radius:8px;padding:9px 12px;margin-bottom:10px;font-size:12px;font-weight:700;line-height:1.5"></div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">
         名簿（CSV）を読み込むと<b>名簿台帳に保存</b>され、いつでも一覧で見られます。各行にアプリ登録の有無を自動表示します。名簿は集計の母数に使え、アプリ未登録の子もカウントされます（登録した子はアプリの入力が優先）。
       </div>
@@ -5392,7 +5393,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dhf';
+const APP_VERSION = '20260702dhh';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -5747,6 +5748,36 @@ function setFilter(type, value, el) {
   renderStudentList();
 }
 
+// 生徒一覧の学校・学年チップを、現在の部門に在籍する生徒から動的に作る。
+// 中学部に切り替えると、登録済みの中学生の学校・学年だけが並ぶ。
+function renderStudentFilterChips() {
+  const schoolBar = document.getElementById('filter-school');
+  const gradeBar = document.getElementById('filter-grade');
+  if (!schoolBar || !gradeBar || !Array.isArray(staffStudents)) return;
+  // 現在の部門・在籍中（除外を除く）の生徒だけ対象
+  const pool = staffStudents.filter(s =>
+    (s.division || '高校部') === currentDivision &&
+    s.inactive_reason !== '除外' &&
+    (showGraduated ? (s.is_active === false) : (s.is_active !== false))
+  );
+  // 学校：出現順を保ちつつ重複除去
+  const schools = [];
+  pool.forEach(s => { const v = (s.school || '').trim(); if (v && schools.indexOf(v) === -1) schools.push(v); });
+  // 学年：数字順に
+  const grades = [];
+  pool.forEach(s => { const v = (s.grade || '').trim(); if (v && grades.indexOf(v) === -1) grades.push(v); });
+  grades.sort((a, b) => (parseInt(a, 10) || 99) - (parseInt(b, 10) || 99));
+  // 選択中の値が消えていたら「全員/全学年」に戻す
+  if (filterSchool !== '全員' && schools.indexOf(filterSchool) === -1) filterSchool = '全員';
+  if (filterGrade !== '全学年' && grades.indexOf(filterGrade) === -1) filterGrade = '全学年';
+  const chip = (type, value, label) => {
+    const on = (type === 'school') ? (filterSchool === value) : (filterGrade === value);
+    return '<button class="filter-btn' + (on ? ' active' : '') + '" onclick="setFilter(\'' + type + '\',\'' + value + '\',this)">' + escapeHtml(label) + '</button>';
+  };
+  schoolBar.innerHTML = chip('school', '全員', '全員') + schools.map(v => chip('school', v, v)).join('');
+  gradeBar.innerHTML = chip('grade', '全学年', '全学年') + grades.map(v => chip('grade', v, v)).join('');
+}
+
 // 授業セレクトを読み込む（生徒一覧の絞り込み用）
 async function loadStudentListClassFilter() {
   const sel = document.getElementById('filter-class-sel');
@@ -5833,6 +5864,7 @@ function summaryCell(value, label) {
 
 function renderStudentList() {
   const todayISO = getTodayJST();
+  try { renderStudentFilterChips(); } catch (e) {}
   sbGet('checkins', 'checkin_date=eq.' + todayISO + '&select=student_id').then(todayCheckins => {
     const todayIds = new Set((todayCheckins || []).map(c => c.student_id));
     const filtered = staffStudents.filter(s => {
@@ -8052,6 +8084,7 @@ function setDivision(d) {
   try { if (typeof loadHomeMyTodos === 'function') loadHomeMyTodos(); } catch (e) {}
   try { if (typeof loadClassMasterList === 'function' && document.getElementById('cm-list')) loadClassMasterList(); } catch (e) {}
   try { if (typeof renderStudentList === 'function' && document.getElementById('student-list')) renderStudentList(); } catch (e) {}
+  try { if (typeof renderRosterCheckDivBanner === 'function' && document.getElementById('rostercheck-div-banner')) renderRosterCheckDivBanner(); } catch (e) {}
   try { if (typeof loadWeekGrid === 'function' && document.getElementById('wk-grid')) loadWeekGrid(); } catch (e) {}
 }
 
@@ -41464,8 +41497,21 @@ function initRosterCheck() {
   if (inp) inp.value = '';
   const sum = document.getElementById('roster-import-summary');
   if (sum) sum.innerHTML = '';
+  renderRosterCheckDivBanner();
   loadEnrollDateEditor();
   loadRosterList();
+}
+
+// 名簿照合画面の部門バナー：いまどちらの部門で取り込むかを明示する。
+function renderRosterCheckDivBanner() {
+  const el = document.getElementById('rostercheck-div-banner');
+  if (!el) return;
+  const jhs = (currentDivision === '中学部');
+  el.style.background = jhs ? '#EAF5EC' : '#EAF2FB';
+  el.style.border = '1px solid ' + (jhs ? '#9CD4A6' : '#9CC0E8');
+  el.style.color = jhs ? '#1A7340' : '#2D5FA6';
+  el.innerHTML = (jhs ? '📗 ' : '🎓 ') + 'いまは「<b>' + currentDivision + '</b>」の名簿を取り込みます。' +
+    '<span style="font-weight:400">（ヘッダーの部門トグルで切り替えられます。読み込んだ名簿はこの部門で登録されます。）</span>';
 }
 
 // ===== 入塾日 一括設定UI（アプリ登録済み students 向け）=====
