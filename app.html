@@ -5393,7 +5393,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dhl';
+const APP_VERSION = '20260702dhm';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -36385,7 +36385,7 @@ async function renderEnrollmentTrend() {
   // 担当者登録時に students の「名簿生」行を作る運用に統一したため、roster 合算は行わない。
   // → 学校別UIの名簿（students基準）と請求ベース在籍が必ず一致する。
   let rosterPersons = [];
-  const SV_MERGE_ROSTER_INTO_TREND = false; // 合算を復活させたいときだけ true
+  const SV_MERGE_ROSTER_INTO_TREND = true; // roster未登録の在籍生も母数に加え、学校×学年人数表と揃える
   if (SV_MERGE_ROSTER_INTO_TREND) {
     try {
       let rosterRows;
@@ -36401,8 +36401,10 @@ async function renderEnrollmentTrend() {
         if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
         const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
         if (isOut && !r.withdraw_date) return;
+        // 入塾日が空の名簿のみ生も在籍として数える（人数表は入塾日不問）。月末判定 enroll<=asOf を通すため空なら古い日付。
+        const rEnroll = r.enroll_date || '2000-01-01';
         rosterPersons.push({
-          _enroll: r.enroll_date || null,
+          _enroll: rEnroll,
           _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null,
           _school: r.school || '', _grade: r.grade || '', _name: r.name || '(名前なし)',
           _membership: r.membership_status || '通常'
@@ -36783,22 +36785,29 @@ async function svEnsureTrendData() {
    }
   }
   stu = stu.filter(s => s.inactive_reason !== '除外');
-  // roster 合算は行わない（在籍は students を正とする。理由は上の trend 構築を参照）
+  // roster（名簿台帳）合算：students に未登録の在籍生も母数に加え、学校×学年人数表と母集団を揃える。
+  // 判定は loadStudentAnalysis 側の rosterEnrolledNow / 重複除去（rosterKey＋normalizeName）と一致させる。
   let rosterPersons = [];
-  const SV_MERGE_ROSTER_INTO_TREND2 = false;
+  const SV_MERGE_ROSTER_INTO_TREND2 = true;
   if (SV_MERGE_ROSTER_INTO_TREND2) {
     try {
       let rosterRows;
-      try { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status,membership_status') || []; }
-      catch (eR) { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status') || []; }
+      try { rosterRows = await sbGet('roster', 'is_active=eq.true&division=eq.' + encodeURIComponent(currentDivision) + '&select=name,school,grade,enroll_date,withdraw_date,status,membership_status') || []; }
+      catch (eR) { rosterRows = await sbGet('roster', 'is_active=eq.true&division=eq.' + encodeURIComponent(currentDivision) + '&select=name,school,grade,enroll_date,withdraw_date,status') || []; }
       const allStu = stu;
       const stuKeys = new Set(); const stuNames = new Set();
       allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
       rosterRows.forEach(r => {
+        // 氏名＋学校一致 or 氏名一致は students 登録済み＝二重計上防止でスキップ
         if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
         const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+        // 退塾で発効日なし＝在籍外（人数表 rosterEnrolledNow と同じ）
         if (isOut && !r.withdraw_date) return;
-        rosterPersons.push({ _enroll: r.enroll_date || null, _withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null, _school: r.school || '', _grade: r.grade || '', _name: r.name || '(名前なし)', _membership: r.membership_status || '通常' });
+        // 入塾日が空の名簿のみ生も在籍として数える（人数表は入塾日不問）。
+        // 月別表の月末判定 enroll<=asOf を通すため、空なら十分古い日付を在籍開始とみなす。
+        const enroll = r.enroll_date || '2000-01-01';
+        const withdraw = (isOut && r.withdraw_date) ? r.withdraw_date : null;
+        rosterPersons.push({ _enroll: enroll, _withdraw: withdraw, _school: r.school || '', _grade: r.grade || '', _name: r.name || '(名前なし)', _membership: r.membership_status || '通常' });
       });
     } catch (e) { rosterPersons = []; }
   }
@@ -40287,9 +40296,8 @@ async function loadExecDashboard() {
     stu.forEach(s => {
       const enroll = s.enroll_date || null;
       const withdraw = (s.withdraw_status === '確定' && s.withdraw_effective_date) ? s.withdraw_effective_date : null;
-      // 現在在籍判定（人数表と同じ：is_active かつ 退塾発効日を過ぎていない）
-      let enrolledNowFlag = (s.is_active !== false);
-      if (enrolledNowFlag && withdraw && todayStrForCount > withdraw) enrolledNowFlag = false;
+      // 現在在籍判定は isEnrolledNow に統一（退塾確定は発効日ベース。人数表・月別表と同基準）
+      const enrolledNowFlag = isEnrolledNow(s);
       if (enrolledNowFlag) {
         currentEnrolled++;
         if (!enroll) missingEnrollDate++;
@@ -40486,7 +40494,9 @@ async function loadStudentAnalysis() {
   renderEnrollmentTrend();
   const includeInactive = document.getElementById('sa-include-inactive') && document.getElementById('sa-include-inactive').checked;
   let q = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,division';
-  if (!includeInactive) q += '&is_active=eq.true';
+  // is_active=eq.true だけだと、退塾処理で is_active=false にした「発効日前の退塾確定生」を取りこぼす。
+  // 退塾確定生も取得し、後段の isEnrolledNow（発効日ベース）で正しく在籍判定させる。
+  if (!includeInactive) q += '&or=(is_active.eq.true,withdraw_status.eq.' + encodeURIComponent('確定') + ')';
   q += '&division=eq.' + encodeURIComponent(currentDivision);
   let studentsRaw;
   try {
@@ -40494,7 +40504,7 @@ async function loadStudentAnalysis() {
   } catch (eMem) {
     // membership_status 列が無い旧環境フォールバック
     let q2 = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason,withdraw_status,withdraw_effective_date,division';
-    if (!includeInactive) q2 += '&is_active=eq.true';
+    if (!includeInactive) q2 += '&or=(is_active.eq.true,withdraw_status.eq.' + encodeURIComponent('確定') + ')';
     q2 += '&division=eq.' + encodeURIComponent(currentDivision);
     studentsRaw = await sbGet('students', q2) || [];
   }
@@ -40535,10 +40545,22 @@ async function loadStudentAnalysis() {
   }
   const appKeySet = new Set();
   const appNameSet = new Set();
-  studentsRaw.forEach(s => {
-    appKeySet.add(rosterKey(s.name, s.school));
-    appNameSet.add(normalizeName(s.name));
-  });
+  // 重複除去キーは「絞り込み後の studentsRaw」ではなく students 全件（退塾済み・時期別含む・除外含む全員）で作る。
+  // 絞り込み後で作ると、退塾済みや時期別のみで studentsRaw から外れた生徒と同名の roster 生が
+  // 「未登録」と誤判定されて母数に二重計上される（人数表が実数より多く出る原因）。
+  try {
+    const allStuForKeys = await sbGet('students', 'select=name,school&division=eq.' + encodeURIComponent(currentDivision)) || [];
+    allStuForKeys.forEach(s => {
+      appKeySet.add(rosterKey(s.name, s.school));
+      appNameSet.add(normalizeName(s.name));
+    });
+  } catch (e) {
+    // 取得失敗時は少なくとも絞り込み後 studentsRaw で作る（従来動作）
+    studentsRaw.forEach(s => {
+      appKeySet.add(rosterKey(s.name, s.school));
+      appNameSet.add(normalizeName(s.name));
+    });
+  }
 
   // roster の退塾判定：students の isEnrolledNow と揃える。
   //   退塾発効日(withdraw_date)を過ぎていれば在籍外。status='退塾' で発効日が無い場合も在籍外。
