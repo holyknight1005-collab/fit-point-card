@@ -5393,7 +5393,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dhn';
+const APP_VERSION = '20260702dhp';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -38210,21 +38210,64 @@ async function renderSvInterviews() {
   try {
     try {
       students = await sbGet('students',
-        'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason,membership_status,withdraw_effective_date,withdraw_reason,withdraw_reason_note,withdraw_grade_adj') || [];
+        'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason,membership_status,withdraw_status,withdraw_effective_date,withdraw_reason,withdraw_reason_note,withdraw_grade_adj') || [];
     } catch (eNote) {
       // withdraw_reason_note / withdraw_grade_adj 列が未適用の環境向けフォールバック
       students = await sbGet('students',
-        'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason,membership_status,withdraw_effective_date,withdraw_reason') || [];
+        'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason,membership_status,withdraw_status,withdraw_effective_date,withdraw_reason') || [];
     }
     // 除外（デモ・テスト）は落とす。退塾・卒業は含める。
     students = students.filter(s => s.inactive_reason !== '除外');
     // 名簿フィルタ（現在在籍 / 退塾者含む / 退塾者のみ）
     if (svRosterFilter === 'active') {
-      students = students.filter(s => s.is_active !== false);
+      // 在籍判定は isEnrolledNow に統一（退塾確定は発効日ベース。請求ベース・人数表と同基準）。
+      // is_active!==false だけだと、退塾処理で is_active=false にした発効日前の退塾生が漏れる。
+      students = students.filter(s => isEnrolledNow(s));
     } else if (svRosterFilter === 'left') {
       students = students.filter(s => s.is_active === false && s.inactive_reason === '退塾');
     }
     // 'all'（退塾者含む）は在籍・退塾・卒業すべて（除外のみ除外済み）
+
+    // 「現在在籍」でも roster にしか居ない在籍生（students未登録）を合算し、人数表・月別表と母集団を揃える。
+    // 退塾発効日前の退塾生・時期別在籍生も、現在在籍として数える（rosterEnrolledNow 基準）。
+    if (svRosterFilter === 'active') {
+      try {
+        let rosterActive;
+        try {
+          rosterActive = await sbGet('roster',
+            'is_active=eq.true&school=eq.' + encodeURIComponent(svSchool) +
+            '&select=id,name,school,grade,course_track,enroll_date,withdraw_date,membership_status,note,status') || [];
+        } catch (eRA) { rosterActive = []; }
+        const todayJST2 = getTodayJST();
+        const rActiveNow = (r) => {
+          const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
+          if (!isOut) return true;
+          if (r.withdraw_date) return !(todayJST2 > r.withdraw_date); // 発効日を過ぎたら在籍外
+          return false; // 退塾で発効日なし＝在籍外
+        };
+        // 重複除去キーは「絞り込み後の在籍students」ではなく全students（退塾済み・除外含む全件）で作る。
+        // 在籍中だけで作ると、退塾済みで students 配列から外れた生徒と同名の roster 生が
+        // 「未登録」と誤判定されて二重計上される。
+        let allStuNames = new Set(students.map(s => normalizeName(s.name || '')));
+        try {
+          const allForKey = await sbGet('students', 'school=eq.' + encodeURIComponent(svSchool) + '&select=name') || [];
+          allForKey.forEach(s => allStuNames.add(normalizeName(s.name || '')));
+        } catch (eK) { /* 取れなければ在籍中分のみ */ }
+        const existNorm2 = allStuNames;
+        rosterActive.forEach(r => {
+          const nn = normalizeName(r.name || '');
+          if (existNorm2.has(nn)) return;   // students 側と重複
+          if (!rActiveNow(r)) return;       // 現在在籍でないものは除外
+          existNorm2.add(nn);
+          students.push({
+            id: null, name: r.name, school: r.school || svSchool, grade: r.grade, course_track: r.course_track,
+            enroll_date: r.enroll_date, is_active: true, inactive_reason: null,
+            membership_status: r.membership_status, _roster: true, _rosterId: r.id,
+            note: r.note, status: r.status
+          });
+        });
+      } catch (e) { /* roster が取れなくても students 分は出す */ }
+    }
 
     // roster（名簿台帳）側の退塾者を合算。
     // 退塾者の実データは students ではなく roster 台帳に入っている（退塾処理を台帳側で管理）ため、
