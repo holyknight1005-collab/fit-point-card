@@ -2577,6 +2577,28 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
     </div>
 
+    <!-- 受講終了回モーダル -->
+    <div id="end-cyc-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:640;align-items:center;justify-content:center;padding:14px">
+      <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:360px">
+        <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">🏁 受講を終了する</div>
+        <div id="end-cyc-title" style="font-size:12px;color:var(--muted);margin-bottom:12px"></div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px">終了回まで（その回を含む）を受講扱いにします。月の途中で連絡があっても、その月の最終回まで対象になるよう、既定でその月の最終回を入れています。</div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+          <input class="form-input-sm" type="number" id="end-cyc-y" placeholder="年" style="width:66px">
+          <span style="font-size:11px;color:var(--muted)">年</span>
+          <input class="form-input-sm" type="number" id="end-cyc-m" placeholder="月" min="1" max="12" style="width:56px">
+          <span style="font-size:11px;color:var(--muted)">月</span>
+          <input class="form-input-sm" type="number" id="end-cyc-n" placeholder="回" min="1" max="12" style="width:52px">
+          <span style="font-size:11px;color:var(--muted)">回目まで</span>
+        </div>
+        <div id="end-cyc-hint" style="font-size:10px;color:var(--muted);margin-bottom:14px"></div>
+        <div style="display:flex;gap:8px">
+          <button onclick="confirmEndCyc()" style="flex:1;padding:11px;background:linear-gradient(135deg,#C75050,#A83838);border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">この回で終了</button>
+          <button onclick="closeEndCyc()" style="flex:1;padding:11px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--muted);font-size:13px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">キャンセル</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 教科アプリ利用履歴 -->
     <div id="detail-appusage-section">
       <div class="section-title">📊 教科アプリ利用履歴</div>
@@ -5393,7 +5415,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dhr';
+const APP_VERSION = '20260702dhs';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -21686,7 +21708,7 @@ async function loadDetailEnrollments() {
         return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface2);border-radius:8px">' +
           '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:' + (SUBJ_COLORS[c.subject]||'#5A5A5A') + '20;color:' + (SUBJ_COLORS[c.subject]||'#5A5A5A') + ';font-weight:700">' + (c.subject||'') + '</span>' +
           '<span style="font-size:13px;color:var(--text);flex:1">' + (c.name||'不明') + since + '</span>' +
-          '<button onclick="removeEnrollment(\'' + e.id + '\')" style="padding:2px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">終了</button>' +
+          '<button onclick="removeEnrollment(\'' + e.id + '\',\'' + (c.id||'') + '\',\'' + escapeAttr(c.name||'') + '\')" style="padding:2px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">終了</button>' +
         '</div>';
       }).join('');
     }
@@ -22990,23 +23012,126 @@ async function addEnrollment() {
   }
 }
 
-async function removeEnrollment(enrollmentId) {
-  if (!confirm('この受講授業を終了しますか？（受講履歴には残ります）')) return;
-  const today = getTodayJST();
+async function removeEnrollment(enrollmentId, classId, className) {
+  // 終了回選択モーダルを開く。デフォルトは「操作月の最終回」。
+  await openEndCyc(enrollmentId, classId, className || '');
+}
+
+// 受講終了回モーダルの状態
+let endCycEnrollId = null;
+let endCycClassId = null;
+
+// その講座の「対象月の最終回」を class_sessions から求める。
+// 対象月 = 今日の属する月。通常授業（cycle_month あり）のうち、対象年月で最大の cycle_no を返す。
+async function findMonthLastCycle(classId) {
+  const today = getTodayJST();          // 'YYYY-MM-DD'
+  const y = parseInt(today.slice(0, 4));
+  const m = parseInt(today.slice(5, 7));
   try {
-    await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(enrollmentId), { ended_on: today });
-    showToast('受講を終了しました', 'info');
-    loadDetailEnrollments();
-    return;
-  } catch (e) {
-    // 旧環境（ended_on 列が無い）フォールバック：物理削除
+    const sess = await sbGet('class_sessions',
+      'class_master_id=eq.' + encodeURIComponent(classId) +
+      '&cycle_no=not.is.null&is_makeup=not.eq.true' +
+      '&select=cycle_year,cycle_month,cycle_no,session_date&order=cycle_year,cycle_month,cycle_no') || [];
+    // 対象年月に一致する回の最大 no
+    let best = null;
+    sess.forEach(s => {
+      if (s.cycle_year === y && s.cycle_month === m) {
+        if (best == null || (s.cycle_no || 0) > (best.no || 0)) best = { year: s.cycle_year, month: s.cycle_month, no: s.cycle_no, date: s.session_date };
+      }
+    });
+    if (best) return best;
+    // 対象月に授業が無ければ、直近（今日以前で最大キー）の回を返す
+    let latest = null;
+    const key = (c) => (c.year || 0) * 10000 + (fiscalMonthOrder(c.month) * 100) + (c.no || 0);
+    sess.forEach(s => {
+      if (s.session_date && s.session_date <= today) {
+        const c = { year: s.cycle_year, month: s.cycle_month, no: s.cycle_no, date: s.session_date };
+        if (latest == null || key(c) > key(latest)) latest = c;
+      }
+    });
+    return latest;   // null の場合もある
+  } catch (e) { return null; }
+}
+
+async function openEndCyc(enrollmentId, classId, className) {
+  endCycEnrollId = enrollmentId;
+  endCycClassId = classId || null;
+  document.getElementById('end-cyc-title').textContent = className || '';
+  const yEl = document.getElementById('end-cyc-y');
+  const mEl = document.getElementById('end-cyc-m');
+  const nEl = document.getElementById('end-cyc-n');
+  const hint = document.getElementById('end-cyc-hint');
+  // 既定値：操作月の最終回
+  yEl.value = ''; mEl.value = ''; nEl.value = '';
+  if (hint) hint.textContent = '回を計算中…';
+  const box = document.getElementById('end-cyc-box');
+  if (box) box.style.display = 'flex';
+  let def = null;
+  if (classId) def = await findMonthLastCycle(classId);
+  if (def && def.no != null) {
+    yEl.value = def.year; mEl.value = def.month == null ? '' : def.month; nEl.value = def.no;
+    if (hint) hint.textContent = '既定：' + (cycLabelOf(def.year, def.month, def.no) || '') + 'まで（その月の最終回）';
+  } else {
+    // 授業回が引けない場合は今日の年月を入れておく（回は空）
+    const today = getTodayJST();
+    yEl.value = parseInt(today.slice(0, 4));
+    mEl.value = parseInt(today.slice(5, 7));
+    if (hint) hint.textContent = 'この講座の授業回が見つかりませんでした。回を手入力してください。';
   }
-  await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/class_enrollments?id=eq.' + enrollmentId, {
-    method: 'DELETE',
-    headers: { 'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU', 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU' }
-  });
-  showToast('削除しました', 'info');
-  loadDetailEnrollments();
+}
+
+function closeEndCyc() {
+  const box = document.getElementById('end-cyc-box');
+  if (box) box.style.display = 'none';
+  endCycEnrollId = null; endCycClassId = null;
+}
+
+async function confirmEndCyc() {
+  if (!endCycEnrollId) return;
+  const y = parseInt(document.getElementById('end-cyc-y').value);
+  const mRaw = document.getElementById('end-cyc-m').value;
+  const m = mRaw ? parseInt(mRaw) : null;
+  const n = parseInt(document.getElementById('end-cyc-n').value);
+  if (!y || !n) { showToast('終了回（年・回）を入力してください', 'error'); return; }
+  // end_cycle を保存。ended_on はその回の授業日（引ければ）に、無ければ月末に。
+  let endedOn = null;
+  if (endCycClassId) {
+    try {
+      const sess = await sbGet('class_sessions',
+        'class_master_id=eq.' + encodeURIComponent(endCycClassId) +
+        '&cycle_year=eq.' + y + (m == null ? '&cycle_month=is.null' : '&cycle_month=eq.' + m) +
+        '&cycle_no=eq.' + n + '&select=session_date&order=session_date.desc&limit=1') || [];
+      if (sess.length && sess[0].session_date) endedOn = sess[0].session_date;
+    } catch (e) { /* 引けなければ後で月末フォールバック */ }
+  }
+  if (!endedOn) {
+    // フォールバック：対象年月の月末
+    if (m != null) {
+      endedOn = toJSTDateStr(new Date(y, m, 0)); // m月末
+    } else {
+      endedOn = getTodayJST();
+    }
+  }
+  const body = {
+    ended_on: endedOn,
+    end_cycle_year: y,
+    end_cycle_month: (m == null ? null : m),
+    end_cycle_no: n
+  };
+  try {
+    await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(endCycEnrollId), body);
+    showToast('受講を終了しました（' + (cycLabelOf(y, m, n) || '') + 'まで）', 'info');
+    closeEndCyc();
+    loadDetailEnrollments();
+  } catch (e) {
+    // end_cycle 列が無い旧環境：ended_on だけでも入れる
+    try {
+      await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(endCycEnrollId), { ended_on: endedOn });
+      showToast('受講を終了しました（終了日 ' + endedOn + '）', 'info');
+      closeEndCyc();
+      loadDetailEnrollments();
+    } catch (e2) { showToast('エラー: ' + e2.message, 'error'); }
+  }
 }
 
 // ===== 生徒ホーム：今日の授業表示 =====
@@ -26950,7 +27075,7 @@ async function loadAttMatrix() {
       'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
       '&select=session_date,period,start_time,end_time,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date,period') || [];
     // 受講名簿（デモ生徒は除外）
-    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,is_provisional');
+    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,is_provisional');
     // 仮受講（申込未提出だが参加）の生徒を控える
     attProvisional = {};
     enrolls.forEach(e => { if (e.is_provisional) attProvisional[e.student_id] = true; });
@@ -26959,12 +27084,15 @@ async function loadAttMatrix() {
     enrolls.forEach(e => {
       const cyc = (e.start_cycle_no != null && e.start_cycle_year != null)
         ? { year: e.start_cycle_year, month: e.start_cycle_month, no: e.start_cycle_no } : null;
+      const eCyc = (e.end_cycle_no != null && e.end_cycle_year != null)
+        ? { year: e.end_cycle_year, month: e.end_cycle_month, no: e.end_cycle_no } : null;
       // 同じ生徒に複数行がある場合は、最も早い開始・最も遅い終了を採用する
       const cur = attEnrollRange[e.student_id];
-      if (!cur) { attEnrollRange[e.student_id] = { start: e.started_on || null, end: e.ended_on || null, cyc: cyc }; return; }
+      if (!cur) { attEnrollRange[e.student_id] = { start: e.started_on || null, end: e.ended_on || null, cyc: cyc, endCyc: eCyc }; return; }
       if (e.started_on && (!cur.start || e.started_on < cur.start)) { cur.start = e.started_on; cur.cyc = cyc; }
       if (cur.end && (!e.ended_on || e.ended_on > cur.end)) cur.end = e.ended_on || null;
       if (!cur.cyc && cyc) cur.cyc = cyc;
+      if (!cur.endCyc && eCyc) cur.endCyc = eCyc;
     });
     const studentIds = await excludeDemoIds(enrolls.map(e => e.student_id));
     if (!sessions.length || !studentIds.length) {
@@ -27344,9 +27472,10 @@ function attInEnrollRange(sid, sessionDate, sessCyc) {
   if (!r) return true;                       // 期間未設定なら全部対象
   // 終了後は対象外（終了日は日付で判定）
   if (r.end && sessionDate > r.end) return false;
-  // start_cycle があれば「回」で判定（started_on の日付は使わない）
   const startKey = attCycleKey(r.cyc);
-  if (startKey != null) {
+  const endKey = attCycleKey(r.endCyc);
+  // start_cycle か end_cycle があれば「回」で判定（started_on の日付は使わない）
+  if (startKey != null || endKey != null) {
     // その授業日のサイクル情報：引数優先、無ければ attMatrix から date で引く
     let info = sessCyc || null;
     if (!info && attMatrix && attMatrix.sessInfo && attMatrix.sessKeys) {
@@ -27354,11 +27483,15 @@ function attInEnrollRange(sid, sessionDate, sessCyc) {
       info = hitKey ? attMatrix.sessInfo[hitKey] : null;
     }
     const sessKey = info ? attCycleKey({ year: info.cycle_year, month: info.cycle_month, no: info.cycle_no }) : null;
-    if (sessKey != null) return sessKey >= startKey;  // 開始回以降のみ対象
+    if (sessKey != null) {
+      if (startKey != null && sessKey < startKey) return false;   // 開始回より前
+      if (endKey != null && sessKey > endKey) return false;       // 終了回より後（終了回は含む）
+      return true;
+    }
     // サイクル情報が引けない授業日は、安全側で対象に含める（斜線で隠さない）
     return true;
   }
-  // start_cycle が無い → 全期間対象（started_on は無視）
+  // start_cycle も end_cycle も無い → 全期間対象（started_on は無視）
   return true;
 }
 
