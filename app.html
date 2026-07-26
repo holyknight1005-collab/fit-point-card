@@ -5393,7 +5393,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dhh';
+const APP_VERSION = '20260702dhj';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -8085,6 +8085,7 @@ function setDivision(d) {
   try { if (typeof loadClassMasterList === 'function' && document.getElementById('cm-list')) loadClassMasterList(); } catch (e) {}
   try { if (typeof renderStudentList === 'function' && document.getElementById('student-list')) renderStudentList(); } catch (e) {}
   try { if (typeof renderRosterCheckDivBanner === 'function' && document.getElementById('rostercheck-div-banner')) renderRosterCheckDivBanner(); } catch (e) {}
+  try { if (typeof loadStudentAnalysis === 'function' && document.getElementById('sa-body') && document.getElementById('smcontent-studentanalysis') && document.getElementById('smcontent-studentanalysis').style.display !== 'none') loadStudentAnalysis(); } catch (e) {}
   try { if (typeof loadWeekGrid === 'function' && document.getElementById('wk-grid')) loadWeekGrid(); } catch (e) {}
 }
 
@@ -32952,16 +32953,43 @@ function downloadProspectCsvTemplate() {
 }
 
 // CSV読み込み → prospects へ一括INSERT。氏名必須、状態は正規化、日付は検証。
+// ============================================================
+// 見込み客CSVプレビュー取込
+//   ① 文字コードを自動判定（UTF-8 / Shift-JIS）して文字化けを防ぐ
+//   ② 取り込む前にプレビュー表で中身を確認
+//   ③ 文字化け・日付エラーの行を警告表示
+//   ④ 「この内容で取り込む」で初めて本番投入
+// ============================================================
+
+let _prospectImportRows = null; // プレビュー中の解析済みデータを保持
+
+// ファイル選択 → 文字コード判定 → 解析 → プレビュー表示
 async function onProspectCsvSelected(event) {
   const input = event.target;
   const file = input.files && input.files[0];
   if (!file) return;
   try {
-    const text = await file.text();
-    const rows = parseCsv(text);
-    if (!rows.length) { showToast('CSVが空です', 'error'); input.value = ''; return; }
+    // 文字コード自動判定：UTF-8(厳格)で読めなければ Shift-JIS で読む
+    const buf = await file.arrayBuffer();
+    let text, encUsed;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
+      encUsed = 'UTF-8';
+    } catch (e) {
+      try {
+        text = new TextDecoder('shift_jis').decode(buf);
+        encUsed = 'Shift-JIS';
+      } catch (e2) {
+        text = new TextDecoder('utf-8').decode(buf); // 最終手段（非厳格）
+        encUsed = 'UTF-8(推定)';
+      }
+    }
+    input.value = ''; // 同じファイルを選び直せるように
 
-    // ヘッダ判定＋列マッピング（ヘッダが無ければ既定の並びとみなす）
+    const rows = parseCsv(text);
+    if (!rows.length) { showToast('CSVが空です', 'error'); return; }
+
+    // ヘッダ判定＋列マッピング
     let startIdx = 0;
     const head = rows[0].map(c => String(c).trim());
     let col = { name: 0, school: 1, grade: 2, contact: 3, source: 4, status: 5, visit: 6, inquiry: 7, next: 8, line: -1, interview: -1, parent: -1, event: -1, note: 9 };
@@ -32987,53 +33015,60 @@ async function onProspectCsvSelected(event) {
     }
 
     const get = (row, i) => (i >= 0 && i < row.length) ? String(row[i] == null ? '' : row[i]).trim() : '';
+    // 文字化け検出：置換文字(U+FFFD)や制御文字を含む／実質「読めない」文字列
+    const looksGarbled = (s) => {
+      if (!s) return false;
+      if (/\uFFFD/.test(s)) return true;                 // 変換失敗の置換文字
+      if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(s)) return true; // 制御文字
+      return false;
+    };
+
     const nowIso = new Date().toISOString();
     const staffId = currentStaff ? (currentStaff.staff_id || null) : null;
 
-    const toInsert = [];
-    const errors = [];
-    let skippedEmpty = 0;
+    const parsed = []; // {rowNo, ok, warn, errs[], body, garbled}
+    let okCount = 0, warnCount = 0, errCount = 0, skippedEmpty = 0;
 
     for (let r = startIdx; r < rows.length; r++) {
       const row = rows[r];
-      // 完全空行はスキップ（件数に数えない）
-      if (!row.some(c => String(c == null ? '' : c).trim() !== '')) continue;
-
-      const rowNo = r + 1; // 1始まりの表示用行番号
+      if (!row.some(c => String(c == null ? '' : c).trim() !== '')) { continue; } // 完全空行
+      const rowNo = r + 1;
       const name = get(row, col.name);
-      if (!name) { skippedEmpty++; continue; } // 氏名なしは無視（空行扱い）
+      if (!name) { skippedEmpty++; continue; }
+
+      const errs = [];
+      const warns = [];
 
       // 状態の正規化
       let status = get(row, col.status);
       if (status && PROSPECT_STATUS_VALUES.indexOf(status) === -1) {
-        // ゆるく先頭一致で吸収（例:「濃厚」→◎入塾濃厚）できなければ既定に
         const hit = PROSPECT_STATUS_VALUES.find(s => s.indexOf(status) !== -1 || status.indexOf(s.replace(/[☆◎○△×]/g, '')) !== -1);
         status = hit || '問合せ';
       }
       if (!status) status = '問合せ';
 
-      // 日付3種の検証
+      // 日付検証
       const vd = parseCsvDateStrict(get(row, col.visit));
       const iq = parseCsvDateStrict(get(row, col.inquiry));
       const nx = parseCsvDateStrict(get(row, col.next));
       const ln = parseCsvDateStrict(get(row, col.line));
       const iv = parseCsvDateStrict(get(row, col.interview));
       const pr = parseCsvDateStrict(get(row, col.parent));
-      const dateErr = [];
-      if (!vd.ok) dateErr.push('来塾日「' + vd.raw + '」');
-      if (!iq.ok) dateErr.push('問合せ日「' + iq.raw + '」');
-      if (!nx.ok) dateErr.push('次回予定日「' + nx.raw + '」');
-      if (!ln.ok) dateErr.push('LINE登録日「' + ln.raw + '」');
-      if (!iv.ok) dateErr.push('面談日「' + iv.raw + '」');
-      if (!pr.ok) dateErr.push('保護者面談日「' + pr.raw + '」');
-      if (dateErr.length) {
-        errors.push(rowNo + '行目（' + name + '）：日付が不正 ' + dateErr.join('、') + '（YYYY-MM-DD形式で入力）');
-        continue;
-      }
+      if (!vd.ok) errs.push('来塾日「' + vd.raw + '」');
+      if (!iq.ok) errs.push('問合せ日「' + iq.raw + '」');
+      if (!nx.ok) errs.push('次回予定日「' + nx.raw + '」');
+      if (!ln.ok) errs.push('LINE登録日「' + ln.raw + '」');
+      if (!iv.ok) errs.push('面談日「' + iv.raw + '」');
+      if (!pr.ok) errs.push('保護者面談日「' + pr.raw + '」');
+
+      // 文字化け検出（氏名・学校）
+      const school = get(row, col.school);
+      const garbled = looksGarbled(name) || looksGarbled(school);
+      if (garbled) warns.push('文字化けの可能性');
 
       const body = {
         name: name,
-        school: get(row, col.school) || null,
+        school: school || null,
         grade: get(row, col.grade) || null,
         contact: get(row, col.contact) || null,
         source: get(row, col.source) || null,
@@ -33048,102 +33083,190 @@ async function onProspectCsvSelected(event) {
         updated_at: nowIso,
         created_by: staffId
       };
-      // イベント名（FOC等）を紐付け用に保持（prospects 本体には保存しない）
       body._eventName = get(row, col.event) || '';
       body._visitDate = vd.value || null;
-      toInsert.push(body);
+
+      const hasErr = errs.length > 0;
+      if (hasErr) errCount++;
+      else if (warns.length) warnCount++;
+      else okCount++;
+
+      parsed.push({ rowNo, errs, warns, body, garbled, name, school, status });
     }
 
-    if (!toInsert.length) {
-      let msg = '投入できる行がありませんでした。';
-      if (errors.length) msg += '\n\n【エラー】\n' + errors.join('\n');
-      alert(msg);
-      input.value = '';
-      return;
-    }
+    _prospectImportRows = { parsed, okCount, warnCount, errCount, skippedEmpty, encUsed, nowIso };
+    renderProspectImportPreview();
 
-    // 確認
-    let confirmMsg = toInsert.length + '件を入来塾管理に一括登録します。よろしいですか？';
-    if (errors.length) confirmMsg += '\n\n※以下の' + errors.length + '行はエラーのためスキップされます：\n' + errors.join('\n');
-    if (!confirm(confirmMsg)) { input.value = ''; return; }
-
-    showLoading('一括登録中...（' + toInsert.length + '件）');
-    let ok = 0, fail = 0;
-    const failMsgs = [];
-    // イベント名→id 解決キャッシュ（無ければ作成）
-    const eventIdByName = {};
-    async function resolveEventId(nm) {
-      if (!nm) return null;
-      const key = nm.trim();
-      if (!key) return null;
-      if (eventIdByName[key] !== undefined) return eventIdByName[key];
-      let id = null;
-      try {
-        const found = await sbGet('prospect_events', 'name=eq.' + encodeURIComponent(key) + '&is_active=eq.true&select=id&limit=1') || [];
-        if (found.length) id = found[0].id;
-      } catch (e) {}
-      if (!id) {
-        try {
-          const created = await sbPostReturn('prospect_events', { name: key, is_active: true, sort_order: 0 });
-          id = (created && created[0]) ? created[0].id : null;
-        } catch (e) {}
-      }
-      eventIdByName[key] = id;
-      return id;
-    }
-    for (const body of toInsert) {
-      const evName = body._eventName; const visitDate = body._visitDate;
-      const clean = Object.assign({}, body); delete clean._eventName; delete clean._visitDate;
-      try {
-        // 新カラム未作成環境へのフォールバック（saveProspect踏襲）。IDが要るので sbPostReturn を使用。
-        let created;
-        try {
-          created = await sbPostReturn('prospects', clean);
-        } catch (e1) {
-          const m = String(e1 && e1.message || e1);
-          if (/visit_date|inquiry_date|line_registered_date|interview_date|parent_interview_date|column|schema|PGRST|400/i.test(m)) {
-            const b2 = Object.assign({}, clean); delete b2.visit_date; delete b2.inquiry_date;
-            delete b2.line_registered_date; delete b2.interview_date; delete b2.parent_interview_date;
-            created = await sbPostReturn('prospects', b2);
-          } else { throw e1; }
-        }
-        const pid = (created && created[0]) ? created[0].id : null;
-        // イベント紐付け（prospect_visits）
-        if (pid && evName) {
-          try {
-            const eid = await resolveEventId(evName);
-            if (eid) {
-              await sbPost('prospect_visits', {
-                prospect_id: pid, event_id: eid,
-                visit_date: visitDate || null, status: 'visited', updated_at: nowIso
-              });
-            }
-          } catch (e) { /* 紐付け失敗はスキップ（本体は登録済み） */ }
-        }
-        ok++;
-      } catch (e) {
-        fail++;
-        failMsgs.push(body.name + '：' + (e.message || e));
-      }
-    }
-    hideLoading();
-    input.value = '';
-
-    let result = '✅ ' + ok + '件を登録しました';
-    if (fail) result += '（' + fail + '件失敗）';
-    showToast(result, fail ? 'error' : 'success');
-    if (fail || errors.length) {
-      let detail = '【一括投入 結果】\n登録成功：' + ok + '件\n';
-      if (fail) detail += '登録失敗：' + fail + '件\n' + failMsgs.join('\n') + '\n';
-      if (errors.length) detail += '\n【CSVの不備でスキップ】\n' + errors.join('\n');
-      alert(detail);
-    }
-    await initProspects();
   } catch (e) {
-    hideLoading();
     input.value = '';
     showToast('CSV読み込みに失敗しました：' + (e.message || e), 'error');
   }
+}
+
+// プレビューのモーダルを表示
+function renderProspectImportPreview() {
+  const d = _prospectImportRows;
+  if (!d) return;
+  const esc = (typeof escapeHtml === 'function') ? escapeHtml : (x => String(x == null ? '' : x));
+
+  // 文字化けが多いと判定したら、目立つ警告を出す
+  const garbleTotal = d.parsed.filter(p => p.garbled).length;
+  const encWarn = (d.encUsed && d.encUsed.indexOf('Shift') === -1 && garbleTotal > 0)
+    ? '<div style="background:#FDECEA;border:1px solid #E7A9A2;color:#B03A2E;border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:10px">⚠️ 文字化けの疑いがある行が ' + garbleTotal + ' 件あります。CSVを <b>UTF-8</b> で保存し直すと直る場合があります（Excel：保存時に「CSV UTF-8」を選択）。</div>'
+    : '';
+
+  const rowsHtml = d.parsed.map(p => {
+    const bad = p.errs.length > 0;
+    const warn = !bad && p.warns.length > 0;
+    const bg = bad ? '#FDECEA' : (warn ? '#FEF9E7' : '#fff');
+    const badge = bad
+      ? '<span style="color:#B03A2E;font-weight:700">✕ エラー</span>'
+      : (warn ? '<span style="color:#B7791F;font-weight:700">▲ 警告</span>' : '<span style="color:#1E8449">✓</span>');
+    const b = p.body;
+    const dates = [b.inquiry_date && ('問:' + b.inquiry_date), b.visit_date && ('来:' + b.visit_date), b.next_date && ('次:' + b.next_date)].filter(Boolean).join(' ');
+    const note = (p.errs.length ? p.errs.join('、') : (p.warns.length ? p.warns.join('、') : ''));
+    return '<tr style="background:' + bg + '">' +
+      '<td style="padding:5px 6px;border-bottom:1px solid #eee;white-space:nowrap;font-size:11px;color:#888">' + p.rowNo + '</td>' +
+      '<td style="padding:5px 6px;border-bottom:1px solid #eee">' + badge + '</td>' +
+      '<td style="padding:5px 6px;border-bottom:1px solid #eee;font-weight:600">' + esc(p.name) + '</td>' +
+      '<td style="padding:5px 6px;border-bottom:1px solid #eee">' + esc(p.school || '') + '</td>' +
+      '<td style="padding:5px 6px;border-bottom:1px solid #eee">' + esc(b.grade || '') + '</td>' +
+      '<td style="padding:5px 6px;border-bottom:1px solid #eee">' + esc(p.status) + '</td>' +
+      '<td style="padding:5px 6px;border-bottom:1px solid #eee;font-size:11px;color:#666;white-space:nowrap">' + esc(dates) + '</td>' +
+      '<td style="padding:5px 6px;border-bottom:1px solid #eee;font-size:11px;color:#B03A2E">' + esc(note) + '</td>' +
+      '</tr>';
+  }).join('');
+
+  const canImport = d.okCount + d.warnCount; // エラー行は取り込まない
+  const summary = '<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px;font-weight:700;margin-bottom:8px">' +
+    '<span style="color:#1E8449">✓ 取込OK ' + d.okCount + '件</span>' +
+    '<span style="color:#B7791F">▲ 警告 ' + d.warnCount + '件（取込されます）</span>' +
+    '<span style="color:#B03A2E">✕ エラー ' + d.errCount + '件（除外）</span>' +
+    (d.skippedEmpty ? '<span style="color:#999">空行スキップ ' + d.skippedEmpty + '件</span>' : '') +
+    '<span style="color:#555">文字コード：' + esc(d.encUsed || '') + '</span>' +
+    '</div>';
+
+  const html =
+    '<div id="prospect-import-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px">' +
+      '<div style="background:#fff;border-radius:14px;max-width:920px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,0.3)">' +
+        '<div style="padding:14px 18px;border-bottom:1px solid #eee;display:flex;align-items:center;justify-content:space-between">' +
+          '<div style="font-size:16px;font-weight:800;color:#333">📥 取り込みプレビュー</div>' +
+          '<button onclick="closeProspectImportPreview()" style="border:none;background:#f0f0f0;border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;font-family:inherit">✕ 閉じる</button>' +
+        '</div>' +
+        '<div style="padding:14px 18px;overflow:auto">' +
+          encWarn + summary +
+          '<div style="font-size:11px;color:#999;margin-bottom:6px">※ エラー行（日付不正など）は取り込まれません。警告行（文字化けの疑い）は取り込まれますが、内容をご確認ください。</div>' +
+          '<div style="border:1px solid #eee;border-radius:8px;overflow:auto;max-height:48vh">' +
+            '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+              '<thead><tr style="background:#f7f7f7;position:sticky;top:0">' +
+                '<th style="padding:6px;text-align:left;font-size:11px;color:#666">行</th>' +
+                '<th style="padding:6px;text-align:left;font-size:11px;color:#666">判定</th>' +
+                '<th style="padding:6px;text-align:left;font-size:11px;color:#666">氏名</th>' +
+                '<th style="padding:6px;text-align:left;font-size:11px;color:#666">学校</th>' +
+                '<th style="padding:6px;text-align:left;font-size:11px;color:#666">学年</th>' +
+                '<th style="padding:6px;text-align:left;font-size:11px;color:#666">状態</th>' +
+                '<th style="padding:6px;text-align:left;font-size:11px;color:#666">日付</th>' +
+                '<th style="padding:6px;text-align:left;font-size:11px;color:#666">備考</th>' +
+              '</tr></thead>' +
+              '<tbody>' + rowsHtml + '</tbody>' +
+            '</table>' +
+          '</div>' +
+        '</div>' +
+        '<div style="padding:14px 18px;border-top:1px solid #eee;display:flex;gap:10px;justify-content:flex-end;align-items:center">' +
+          '<button onclick="closeProspectImportPreview()" style="border:1px solid #ccc;background:#fff;border-radius:8px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">キャンセル</button>' +
+          '<button onclick="confirmProspectImport()" ' + (canImport ? '' : 'disabled') + ' style="border:none;background:' + (canImport ? 'linear-gradient(135deg,var(--orange),var(--orange-d))' : '#ccc') + ';color:#fff;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:800;cursor:' + (canImport ? 'pointer' : 'not-allowed') + ';font-family:inherit">' + (canImport ? 'この内容で取り込む（' + canImport + '件）' : '取り込める行がありません') + '</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+
+  const old = document.getElementById('prospect-import-modal');
+  if (old) old.remove();
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function closeProspectImportPreview() {
+  const m = document.getElementById('prospect-import-modal');
+  if (m) m.remove();
+  _prospectImportRows = null;
+}
+
+// 実際の投入（エラー行は除外し、OK＋警告のみ登録）
+async function confirmProspectImport() {
+  const d = _prospectImportRows;
+  if (!d) return;
+  const toInsert = d.parsed.filter(p => p.errs.length === 0).map(p => p.body);
+  if (!toInsert.length) { showToast('取り込める行がありません', 'error'); return; }
+
+  const nowIso = d.nowIso || new Date().toISOString();
+  closeProspectImportPreview();
+  showLoading('一括登録中...（' + toInsert.length + '件）');
+  let ok = 0, fail = 0;
+  const failMsgs = [];
+
+  const eventIdByName = {};
+  async function resolveEventId(nm) {
+    if (!nm) return null;
+    const key = nm.trim();
+    if (!key) return null;
+    if (eventIdByName[key] !== undefined) return eventIdByName[key];
+    let id = null;
+    try {
+      const found = await sbGet('prospect_events', 'name=eq.' + encodeURIComponent(key) + '&is_active=eq.true&select=id&limit=1') || [];
+      if (found.length) id = found[0].id;
+    } catch (e) {}
+    if (!id) {
+      try {
+        const created = await sbPostReturn('prospect_events', { name: key, is_active: true, sort_order: 0 });
+        id = (created && created[0]) ? created[0].id : null;
+      } catch (e) {}
+    }
+    eventIdByName[key] = id;
+    return id;
+  }
+
+  for (const body of toInsert) {
+    const evName = body._eventName; const visitDate = body._visitDate;
+    const clean = Object.assign({}, body); delete clean._eventName; delete clean._visitDate;
+    try {
+      let created;
+      try {
+        created = await sbPostReturn('prospects', clean);
+      } catch (e1) {
+        const m = String(e1 && e1.message || e1);
+        if (/visit_date|inquiry_date|line_registered_date|interview_date|parent_interview_date|column|schema|PGRST|400/i.test(m)) {
+          const b2 = Object.assign({}, clean); delete b2.visit_date; delete b2.inquiry_date;
+          delete b2.line_registered_date; delete b2.interview_date; delete b2.parent_interview_date;
+          created = await sbPostReturn('prospects', b2);
+        } else { throw e1; }
+      }
+      const pid = (created && created[0]) ? created[0].id : null;
+      if (pid && evName) {
+        try {
+          const eid = await resolveEventId(evName);
+          if (eid) {
+            await sbPost('prospect_visits', {
+              prospect_id: pid, event_id: eid,
+              visit_date: visitDate || null, status: 'visited', updated_at: nowIso
+            });
+          }
+        } catch (e) { /* 紐付け失敗はスキップ */ }
+      }
+      ok++;
+    } catch (e) {
+      fail++;
+      failMsgs.push(body.name + '：' + (e.message || e));
+    }
+  }
+  hideLoading();
+
+  let result = '✅ ' + ok + '件を登録しました';
+  if (fail) result += '（' + fail + '件失敗）';
+  showToast(result, fail ? 'error' : 'success');
+  if (fail) {
+    alert('【一括投入 結果】\n登録成功：' + ok + '件\n登録失敗：' + fail + '件\n' + failMsgs.join('\n'));
+  }
+  _prospectImportRows = null;
+  await initProspects();
 }
 
 // 重複チェック：氏名（＋学校が両方あれば学校も）で既存の在籍生徒・既存見込みを照合。
@@ -35786,24 +35909,24 @@ async function renderEnrollmentFlow() {
     // 入塾＝students の入塾日（enroll_date）が直近30日（除外は弾く）。アプリ登録日(created_at)は使わない。
     // 全件取得してクライアントで基準日判定（enroll_date 未入力者は入塾としてカウントしない）。
     try {
-      inRows = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,inactive_reason&order=created_at.desc') || [];
+      inRows = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,inactive_reason,division&division=eq.'+encodeURIComponent(currentDivision)+'&order=created_at.desc') || [];
     } catch (e0) {
-      inRows = await sbGet('students', 'select=id,name,school,grade,created_at,inactive_reason&order=created_at.desc') || [];
+      inRows = await sbGet('students', 'select=id,name,school,grade,created_at,inactive_reason,division&division=eq.'+encodeURIComponent(currentDivision)+'&order=created_at.desc') || [];
     }
     inRows = inRows.filter(s => s.inactive_reason !== '除外');
     // 退塾確定（発効日ベース）。確定済みの生徒を全部取り、発効日で期間判定。退塾理由も取得（未作成カラムならフォールバック）。
     let conf;
     try {
-      conf = await sbGet('students', 'select=id,name,school,grade,withdraw_status,withdraw_requested_at,withdraw_effective_date,withdraw_reason,inactive_reason&withdraw_status=eq.確定&order=withdraw_effective_date.desc') || [];
+      conf = await sbGet('students', 'select=id,name,school,grade,withdraw_status,withdraw_requested_at,withdraw_effective_date,withdraw_reason,inactive_reason,division&division=eq.'+encodeURIComponent(currentDivision)+'&withdraw_status=eq.確定&order=withdraw_effective_date.desc') || [];
     } catch (e1) {
-      conf = await sbGet('students', 'select=id,name,school,grade,withdraw_status,withdraw_requested_at,withdraw_effective_date,inactive_reason&withdraw_status=eq.確定&order=withdraw_effective_date.desc') || [];
+      conf = await sbGet('students', 'select=id,name,school,grade,withdraw_status,withdraw_requested_at,withdraw_effective_date,inactive_reason,division&division=eq.'+encodeURIComponent(currentDivision)+'&withdraw_status=eq.確定&order=withdraw_effective_date.desc') || [];
     }
     confRows = conf.filter(s => s.inactive_reason !== '除外');
     // 退塾申し出中（相談中・まだ確定でない）
-    const pend = await sbGet('students', 'select=id,name,school,grade,withdraw_status,withdraw_requested_at,withdraw_effective_date,inactive_reason&withdraw_status=eq.申し出&order=withdraw_requested_at.desc') || [];
+    const pend = await sbGet('students', 'select=id,name,school,grade,withdraw_status,withdraw_requested_at,withdraw_effective_date,inactive_reason,division&division=eq.'+encodeURIComponent(currentDivision)+'&withdraw_status=eq.申し出&order=withdraw_requested_at.desc') || [];
     pendRows = pend.filter(s => s.inactive_reason !== '除外');
     // 在籍総数（集計用の在籍判定で数える）
-    allActive = await sbGet('students', 'select=id,is_active,inactive_reason,withdraw_status,withdraw_effective_date&is_active=eq.true') || [];
+    allActive = await sbGet('students', 'select=id,is_active,inactive_reason,withdraw_status,withdraw_effective_date,division&is_active=eq.true&division=eq.'+encodeURIComponent(currentDivision)+'') || [];
   } catch (e) {
     wrap.innerHTML = '<div style="border:1px solid #E8B4B4;border-radius:10px;padding:14px;margin-bottom:14px;background:#FDF2F2;color:#A04040;font-size:12px">増減レポートの取得に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
     return;
@@ -36176,15 +36299,15 @@ async function renderEnrollmentTrend() {
   let stu = [];
   try {
     try {
-      stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,exam_finished,exam_finished_on') || [];
+      stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,exam_finished,exam_finished_on,division&division=eq.'+encodeURIComponent(currentDivision)+'') || [];
     } catch (eE) {
      try {
-      stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status') || [];
+      stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,division&division=eq.'+encodeURIComponent(currentDivision)+'') || [];
      } catch (e0) {
       try {
-        stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+        stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,division&division=eq.'+encodeURIComponent(currentDivision)+'') || [];
       } catch (e1) {
-        stu = await sbGet('students', 'select=id,name,school,grade,created_at,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+        stu = await sbGet('students', 'select=id,name,school,grade,created_at,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,division&division=eq.'+encodeURIComponent(currentDivision)+'') || [];
       }
      }
     }
@@ -36205,9 +36328,9 @@ async function renderEnrollmentTrend() {
     try {
       let rosterRows;
       try {
-        rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status,membership_status') || [];
+        rosterRows = await sbGet('roster', 'is_active=eq.true&division=eq.'+encodeURIComponent(currentDivision)+'&select=name,school,grade,enroll_date,withdraw_date,status,membership_status') || [];
       } catch (eR) {
-        rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status') || [];
+        rosterRows = await sbGet('roster', 'is_active=eq.true&division=eq.'+encodeURIComponent(currentDivision)+'&select=name,school,grade,enroll_date,withdraw_date,status') || [];
       }
       const allStu = await sbGet('students', 'select=name,school') || [];
       const stuKeys = new Set(); const stuNames = new Set();
@@ -40300,15 +40423,17 @@ async function loadStudentAnalysis() {
   renderEnrollmentFlow();
   renderEnrollmentTrend();
   const includeInactive = document.getElementById('sa-include-inactive') && document.getElementById('sa-include-inactive').checked;
-  let q = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status';
+  let q = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,division';
   if (!includeInactive) q += '&is_active=eq.true';
+  q += '&division=eq.' + encodeURIComponent(currentDivision);
   let studentsRaw;
   try {
     studentsRaw = await sbGet('students', q) || [];
   } catch (eMem) {
     // membership_status 列が無い旧環境フォールバック
-    let q2 = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason,withdraw_status,withdraw_effective_date';
+    let q2 = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason,withdraw_status,withdraw_effective_date,division';
     if (!includeInactive) q2 += '&is_active=eq.true';
+    q2 += '&division=eq.' + encodeURIComponent(currentDivision);
     studentsRaw = await sbGet('students', q2) || [];
   }
   // 除外生徒（デモ等）は卒業含む表示でも常に弾く
@@ -40337,12 +40462,12 @@ async function loadStudentAnalysis() {
   // 登録済みの子は students 側（本人入力）を優先するので roster からは取り込まない
   let rosterRows = [];
   try {
-    rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,gender,course_track,club,withdraw_date,status,membership_status') || [];
+    rosterRows = await sbGet('roster', 'is_active=eq.true&division=eq.' + encodeURIComponent(currentDivision) + '&select=name,school,grade,gender,course_track,club,withdraw_date,status,membership_status') || [];
   } catch (e) {
     // 旧スキーマ（status/membership_status等が無い）フォールバック
-    try { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,gender,course_track,club,withdraw_date,status') || []; }
+    try { rosterRows = await sbGet('roster', 'is_active=eq.true&division=eq.' + encodeURIComponent(currentDivision) + '&select=name,school,grade,gender,course_track,club,withdraw_date,status') || []; }
     catch (e1) {
-      try { rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,gender,course_track,club') || []; }
+      try { rosterRows = await sbGet('roster', 'is_active=eq.true&division=eq.' + encodeURIComponent(currentDivision) + '&select=name,school,grade,gender,course_track,club') || []; }
       catch (e2) { rosterRows = []; }
     }
   }
