@@ -2362,6 +2362,9 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
     </div>
 
+    <!-- 同じ学校の生徒へ移動 -->
+    <div id="detail-schoolnav" style="margin-top:10px;display:none"></div>
+
     <!-- 属性（性別・部活・誕生日） -->
     <div>
       <div class="section-title">🧑‍🎓 属性</div>
@@ -5383,7 +5386,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dgx';
+const APP_VERSION = '20260702dgy';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -9978,6 +9981,7 @@ async function openStudentDetail(idx, from) {
     });
     loadDetailCalendar();
     loadDetailEnrollments();
+    renderDetailSchoolNav();
     loadDetailAppUsage();
     renderGraduateSection();
     document.querySelectorAll('#screen-staff-detail .tab-btn').forEach((b, i) => b.classList.toggle('active', i === 0));
@@ -9986,6 +9990,49 @@ async function openStudentDetail(idx, from) {
     if (typeof closeStaffMenu === 'function') closeStaffMenu();
     showScreen('screen-staff-detail');
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+
+// カルテ間移動：同じ学校（同学年優先）の生徒へワンタップで飛べるナビ。
+// openStudentDetail は staffStudents のインデックスを取るので、値にインデックスを持たせる。
+function renderDetailSchoolNav() {
+  const el = document.getElementById('detail-schoolnav');
+  if (!el || !detailStudent) return;
+  const sch = detailStudent.school || '';
+  if (!sch || !Array.isArray(staffStudents) || !staffStudents.length) { el.style.display = 'none'; return; }
+  // 同じ学校・在籍者のみ（除外/退塾は出さない）。インデックスを保持したまま抽出。
+  const pool = [];
+  staffStudents.forEach((s, idx) => {
+    if ((s.school || '') !== sch) return;
+    if (s.is_active === false) return;
+    if (s.inactive_reason === '除外') return;
+    pool.push({ s: s, idx: idx });
+  });
+  if (pool.length <= 1) { el.style.display = 'none'; return; }
+  // かな順（name_kana 優先）に並べる
+  pool.sort((a, b) => studentSortKey(a.s).localeCompare(studentSortKey(b.s), 'ja'));
+  const curPos = pool.findIndex(p => p.s.id === detailStudent.id);
+  const prev = curPos > 0 ? pool[curPos - 1] : null;
+  const next = (curPos >= 0 && curPos < pool.length - 1) ? pool[curPos + 1] : null;
+  const bt = detailBackTarget || 'staff';
+  const navBtn = (p, prefix, suffix) => p
+    ? '<button onclick="openStudentDetail(' + p.idx + ',\'' + bt + '\')" style="flex:0 0 auto;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis">' + prefix + escapeHtml(p.s.name || '') + suffix + '</button>'
+    : '<span style="flex:0 0 auto;padding:6px 10px;font-size:11px;color:var(--border)">' + (prefix ? '‹ 先頭' : '末尾 ›') + '</span>';
+  let opts = '';
+  pool.forEach(p => {
+    const g = (p.s.grade || '').replace(/[^0-9]/g, '');
+    opts += '<option value="' + p.idx + '"' + (p.s.id === detailStudent.id ? ' selected' : '') + '>' +
+      escapeHtml(p.s.name || '') + (g ? '（' + g + '年）' : '') + '</option>';
+  });
+  let h = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:8px 10px">';
+  h += '<div style="font-size:10px;color:var(--muted);font-weight:700;margin-bottom:6px">🔀 ' + escapeHtml(sch) + ' の生徒へ移動（' + (curPos + 1) + ' / ' + pool.length + '）</div>';
+  h += '<div style="display:flex;align-items:center;gap:8px">';
+  h += navBtn(prev, '‹ ', '');
+  h += '<select onchange="if(this.value!==\'\')openStudentDetail(parseInt(this.value,10),\'' + bt + '\')" style="flex:1;min-width:0;padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:inherit;background:var(--surface);color:var(--text)">' + opts + '</select>';
+  h += navBtn(next, '', ' ›');
+  h += '</div></div>';
+  el.innerHTML = h;
+  el.style.display = 'block';
 }
 
 // 生徒詳細の「戻る」：開いた元の画面に応じて戻り先を切り替える
