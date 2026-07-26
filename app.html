@@ -5393,7 +5393,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dhj';
+const APP_VERSION = '20260702dhk';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -33094,6 +33094,11 @@ async function onProspectCsvSelected(event) {
       parsed.push({ rowNo, errs, warns, body, garbled, name, school, status });
     }
 
+    // 在籍生徒との照合（二重登録の警告用）。取り込みは止めない。
+    try {
+      await annotateProspectMatches(parsed);
+    } catch (eMatch) { /* 照合失敗しても取り込みは続行 */ }
+
     _prospectImportRows = { parsed, okCount, warnCount, errCount, skippedEmpty, encUsed, nowIso };
     renderProspectImportPreview();
 
@@ -33101,6 +33106,45 @@ async function onProspectCsvSelected(event) {
     input.value = '';
     showToast('CSV読み込みに失敗しました：' + (e.message || e), 'error');
   }
+}
+
+// 各行に在籍生徒との一致情報を付ける（match: {level, hits[]}）。
+//   level: 'exact'（同姓名） | 'surname'（姓＋学校一致・要確認） | ''（なし）
+async function annotateProspectMatches(parsed) {
+  let stu = [];
+  try {
+    stu = await sbGet('students', 'is_active=eq.true&select=name,school,grade') || [];
+  } catch (e) { stu = []; }
+  const stripSp = (s) => String(s == null ? '' : s).replace(/[\s\u3000]+/g, '');
+  const nn = (s) => normalizeName(s);
+  const ns = (s) => normalizeSchool(s);
+  const surnameOf = (name) => {
+    const raw = String(name == null ? '' : name).trim();
+    const parts = raw.split(/[\s\u3000]+/);
+    if (parts.length >= 2) return stripSp(parts[0]);
+    return stripSp(raw).slice(0, 2); // 姓の推定（スペース無し時）
+  };
+  // 事前に students を正規化
+  const stuN = stu.map(s => ({ raw: s, n: nn(s.name), s: ns(s.school), sur: stripSp(s.name), name: s.name, school: s.school, grade: s.grade }));
+  parsed.forEach(p => {
+    const pn = nn(p.name), ps = ns(p.school);
+    // 完全一致（同姓名）
+    let ex = stuN.filter(s => s.n === pn);
+    if (ex.length) {
+      p.match = { level: 'exact', hits: ex.map(s => ({ name: s.name, school: s.school, grade: s.grade })) };
+      return;
+    }
+    // 姓＋学校一致（下の名前ゆれの可能性・要確認）
+    const psur = surnameOf(p.name);
+    if (psur) {
+      const cand = stuN.filter(s => s.s === ps && s.sur.indexOf(psur) === 0);
+      if (cand.length) {
+        p.match = { level: 'surname', hits: cand.map(s => ({ name: s.name, school: s.school, grade: s.grade })) };
+        return;
+      }
+    }
+    p.match = { level: '', hits: [] };
+  });
 }
 
 // プレビューのモーダルを表示
@@ -33125,6 +33169,15 @@ function renderProspectImportPreview() {
     const b = p.body;
     const dates = [b.inquiry_date && ('問:' + b.inquiry_date), b.visit_date && ('来:' + b.visit_date), b.next_date && ('次:' + b.next_date)].filter(Boolean).join(' ');
     const note = (p.errs.length ? p.errs.join('、') : (p.warns.length ? p.warns.join('、') : ''));
+    // 在籍生徒との照合表示
+    let matchHtml = '<span style="color:#bbb">—</span>';
+    if (p.match && p.match.level === 'exact') {
+      const hit = p.match.hits[0] || {};
+      matchHtml = '<span style="color:#B03A2E;font-weight:700">● 在籍済み</span><div style="font-size:10px;color:#888">' + esc((hit.name || '') + (hit.school ? '/' + hit.school : '') + (hit.grade ? ' ' + hit.grade : '')) + '</div>';
+    } else if (p.match && p.match.level === 'surname') {
+      const names = p.match.hits.map(h => (h.name || '') + (h.grade ? '(' + h.grade + ')' : '')).join('、');
+      matchHtml = '<span style="color:#B7791F;font-weight:700">▲ 要確認</span><div style="font-size:10px;color:#888">似た在籍：' + esc(names) + '</div>';
+    }
     return '<tr style="background:' + bg + '">' +
       '<td style="padding:5px 6px;border-bottom:1px solid #eee;white-space:nowrap;font-size:11px;color:#888">' + p.rowNo + '</td>' +
       '<td style="padding:5px 6px;border-bottom:1px solid #eee">' + badge + '</td>' +
@@ -33133,18 +33186,22 @@ function renderProspectImportPreview() {
       '<td style="padding:5px 6px;border-bottom:1px solid #eee">' + esc(b.grade || '') + '</td>' +
       '<td style="padding:5px 6px;border-bottom:1px solid #eee">' + esc(p.status) + '</td>' +
       '<td style="padding:5px 6px;border-bottom:1px solid #eee;font-size:11px;color:#666;white-space:nowrap">' + esc(dates) + '</td>' +
+      '<td style="padding:5px 6px;border-bottom:1px solid #eee">' + matchHtml + '</td>' +
       '<td style="padding:5px 6px;border-bottom:1px solid #eee;font-size:11px;color:#B03A2E">' + esc(note) + '</td>' +
       '</tr>';
   }).join('');
 
   const canImport = d.okCount + d.warnCount; // エラー行は取り込まない
+  const exactMatch = d.parsed.filter(p => p.match && p.match.level === 'exact').length;
+  const surnameMatch = d.parsed.filter(p => p.match && p.match.level === 'surname').length;
   const summary = '<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px;font-weight:700;margin-bottom:8px">' +
     '<span style="color:#1E8449">✓ 取込OK ' + d.okCount + '件</span>' +
     '<span style="color:#B7791F">▲ 警告 ' + d.warnCount + '件（取込されます）</span>' +
     '<span style="color:#B03A2E">✕ エラー ' + d.errCount + '件（除外）</span>' +
     (d.skippedEmpty ? '<span style="color:#999">空行スキップ ' + d.skippedEmpty + '件</span>' : '') +
     '<span style="color:#555">文字コード：' + esc(d.encUsed || '') + '</span>' +
-    '</div>';
+    '</div>' +
+    ((exactMatch || surnameMatch) ? '<div style="background:#FDF2E9;border:1px solid #F0C9A0;border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:8px;color:#8A5A00">🔍 在籍生徒との照合：<b style="color:#B03A2E">● 在籍済み ' + exactMatch + '件</b>、<b style="color:#B7791F">▲ 要確認 ' + surnameMatch + '件</b>。取り込みは可能ですが、二重になる場合は取り込み後に「重複生徒の統合」で解消できます。</div>' : '');
 
   const html =
     '<div id="prospect-import-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px">' +
@@ -33166,6 +33223,7 @@ function renderProspectImportPreview() {
                 '<th style="padding:6px;text-align:left;font-size:11px;color:#666">学年</th>' +
                 '<th style="padding:6px;text-align:left;font-size:11px;color:#666">状態</th>' +
                 '<th style="padding:6px;text-align:left;font-size:11px;color:#666">日付</th>' +
+                '<th style="padding:6px;text-align:left;font-size:11px;color:#666">在籍照合</th>' +
                 '<th style="padding:6px;text-align:left;font-size:11px;color:#666">備考</th>' +
               '</tr></thead>' +
               '<tbody>' + rowsHtml + '</tbody>' +
