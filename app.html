@@ -5393,7 +5393,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dhq';
+const APP_VERSION = '20260702dhr';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -27032,7 +27032,7 @@ function buildAttMatrix(sessions, studentIds, atts, checkins) {
     studentIds.forEach(sid => {
       const cellKey = sid + '|' + k;
       if (cells[cellKey]) return; // 保存済みは尊重
-      if (!attInEnrollRange(sid, date)) return; // 受講期間外は推定しない
+      if (!attInEnrollRange(sid, date, info)) return; // 受講期間外は推定しない（サイクル情報を渡す）
       let present = false, estimable = false;
       if (classDur != null) {
         const segs = ciDetail[sid + '|' + date] || [];
@@ -27329,40 +27329,53 @@ let attProvisional = {};   // student_id -> true（申込未提出だが参加�
 
 // その生徒にとって、その授業日が集計対象かどうか
 // 日付は 'YYYY-MM-DD' なので文字列比較でそのまま前後判定できる（JSTのズレも起きない）
-function attInEnrollRange(sid, sessionDate) {
+// その生徒にとって、その授業日が集計対象かどうか。
+// 方針（運用ルール）:
+//  ・start_cycle（授業回数）が登録されていれば、その回以降を対象とする（started_on の日付は見ない）。
+//  ・start_cycle が無ければ全期間を対象とする（started_on は登録作業日で汚染されうるため信用しない。
+//    開始日を指定しない限り、過去の授業も対象＝抜けは欠席として正直に出す）。
+//  ・ended_on（終了日）があれば、それ以降は対象外のまま。
+function attCycleKey(c) {
+  if (!c || c.no == null || c.year == null) return null;
+  return (c.year || 0) * 10000 + (fiscalMonthOrder(c.month) * 100) + (c.no || 0);
+}
+function attInEnrollRange(sid, sessionDate, sessCyc) {
   const r = attEnrollRange[sid];
-  if (!r) return true;                       // 期間未設定なら従来どおり全部対象
-  if (r.start && sessionDate < r.start) return false;
+  if (!r) return true;                       // 期間未設定なら全部対象
+  // 終了後は対象外（終了日は日付で判定）
   if (r.end && sessionDate > r.end) return false;
+  // start_cycle があれば「回」で判定（started_on の日付は使わない）
+  const startKey = attCycleKey(r.cyc);
+  if (startKey != null) {
+    // その授業日のサイクル情報：引数優先、無ければ attMatrix から date で引く
+    let info = sessCyc || null;
+    if (!info && attMatrix && attMatrix.sessInfo && attMatrix.sessKeys) {
+      const hitKey = attMatrix.sessKeys.find(k => k.split('|')[0] === sessionDate);
+      info = hitKey ? attMatrix.sessInfo[hitKey] : null;
+    }
+    const sessKey = info ? attCycleKey({ year: info.cycle_year, month: info.cycle_month, no: info.cycle_no }) : null;
+    if (sessKey != null) return sessKey >= startKey;  // 開始回以降のみ対象
+    // サイクル情報が引けない授業日は、安全側で対象に含める（斜線で隠さない）
+    return true;
+  }
+  // start_cycle が無い → 全期間対象（started_on は無視）
   return true;
 }
 
 // 「9-①から」のような開始回の表示を作る。
-// started_on 以降で最初の授業日を探し、その回番号を使う。
+// 方針: start_cycle（授業回数）が登録されているときだけ、その回を表示する。
+//       started_on の日付からの推定は行わない（登録作業日で汚染されうるため）。
 function attStartLabel(sid) {
   const r = attEnrollRange[sid];
   if (!r || !attMatrix) return '';
-  // 明示的に「◯月◯回目から」が登録されていれば、それを最優先で使う
-  if (r.cyc && r.cyc.no != null) {
-    const lbl = attMatrixCycleLabel(r.cyc);
-    if (lbl) {
-      // 表内の最初の授業がその回以降なら、わざわざ出さない
-      const firstKey = attMatrix.sessKeys[0];
-      const firstInfo = firstKey ? attMatrix.sessInfo[firstKey] : null;
-      if (firstInfo && attMatrixCycleLabel(firstInfo) === lbl) return '';
-      return lbl + 'から';
-    }
-  }
-  if (!r.start) return '';
-  // 最初の授業日より前から在籍しているなら、わざわざ出さない
+  if (!(r.cyc && r.cyc.no != null)) return '';        // start_cycle 未登録なら出さない
+  const lbl = attMatrixCycleLabel(r.cyc);
+  if (!lbl) return '';
+  // 表内の最初の授業がその回以降（＝表の先頭からずっと対象）なら、わざわざ出さない
   const firstKey = attMatrix.sessKeys[0];
-  if (firstKey && firstKey.split('|')[0] >= r.start) return '';
-  const hit = attMatrix.sessKeys.find(k => k.split('|')[0] >= r.start);
-  if (!hit) return '';
-  const info = attMatrix.sessInfo[hit];
-  const cyc = info ? attMatrixCycleLabel(info) : '';
-  const d = hit.split('|')[0].split('-');
-  return cyc ? (cyc + 'から') : (Number(d[1]) + '/' + Number(d[2]) + 'から');
+  const firstInfo = firstKey ? attMatrix.sessInfo[firstKey] : null;
+  if (firstInfo && attMatrixCycleLabel(firstInfo) === lbl) return '';
+  return lbl + 'から';
 }
 
 function renderAttMatrix() {
