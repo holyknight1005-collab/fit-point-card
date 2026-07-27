@@ -1153,6 +1153,20 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     </label>
     <div style="font-size:10px;color:var(--muted);margin:-8px 0 12px 2px;line-height:1.5">通常はチェック不要です。登録済みの続きから自動で回数を振ります。</div>
 
+    <!-- dhu: 学校別回（超感覚英語などで学校ごとに分けて授業する日）。通常は「なし」でOK -->
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:12px;color:#2D6DB5;cursor:pointer;font-weight:700;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:8px;padding:9px 10px">
+      <input type="checkbox" id="course-school-on" onchange="toggleCourseSchool()" style="width:16px;height:16px;cursor:pointer">
+      <span>🏫 学校別の回として登録（超感覚英語など）</span>
+    </label>
+    <div id="course-school-box" style="display:none;margin-bottom:12px">
+      <select class="form-select" id="course-school-select" onchange="onCourseSchoolChange()" style="margin-bottom:6px">
+        <option value="">-- 学校を選ぶ --</option>
+        <option value="松山東">松山東</option><option value="松山南">松山南</option><option value="松山北">松山北</option><option value="松山中央">松山中央</option><option value="松山西">松山西</option><option value="愛大附属">愛大附属</option><option value="済美">済美</option><option value="SSS">SSS</option><option value="その他">その他</option>
+      </select>
+      <input type="text" id="course-school-note" placeholder="高校名を入力（例：鹿島朝日）" style="display:none;width:100%;box-sizing:border-box;padding:9px 10px;font-size:13px;border:1.5px solid #6FA8E0;border-radius:8px;font-family:'Noto Sans JP',sans-serif">
+      <div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.5">選択した全日を、この学校の回として登録します。出席表では回の見出しに🏫バッジが付きます。SSSは高校名を添えられます。</div>
+    </div>
+
     <button onclick="submitCourseSessions()" style="width:100%;padding:13px;background:linear-gradient(135deg,#2D6DB5,#184A86);border:none;border-radius:10px;color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">✅ 選択した日に一括登録</button>
   </div>
 </div>
@@ -5415,7 +5429,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dht';
+const APP_VERSION = '20260702dhu';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -24171,8 +24185,41 @@ function openTimePickerForCourseDate(dateISO) {
   });
 }
 
+// dhu: 学校別回の入力補助
+function toggleCourseSchool() {
+  const on = !!document.getElementById('course-school-on')?.checked;
+  document.getElementById('course-school-box').style.display = on ? 'block' : 'none';
+  if (!on) {
+    const sel = document.getElementById('course-school-select'); if (sel) sel.value = '';
+    const note = document.getElementById('course-school-note'); if (note) { note.value = ''; note.style.display = 'none'; }
+  }
+}
+function onCourseSchoolChange() {
+  const sel = document.getElementById('course-school-select');
+  const note = document.getElementById('course-school-note');
+  if (!sel || !note) return;
+  note.style.display = (sel.value === 'SSS') ? 'block' : 'none';
+}
+// 保存する school 文字列を組み立てる。学校別OFFなら null。SSS＋補足は「SSS：高校名」。
+function courseSchoolValue() {
+  const on = !!document.getElementById('course-school-on')?.checked;
+  if (!on) return null;
+  const sc = (document.getElementById('course-school-select')?.value || '').trim();
+  if (!sc) return null;
+  if (sc === 'SSS') {
+    const note = (document.getElementById('course-school-note')?.value || '').trim();
+    return note ? ('SSS：' + note) : 'SSS';
+  }
+  return sc;
+}
+
 function closeCourseSessionModal() {
   document.getElementById('course-session-modal').style.display = 'none';
+  // dhu: 学校別回の入力をリセット
+  const on = document.getElementById('course-school-on'); if (on) on.checked = false;
+  const box = document.getElementById('course-school-box'); if (box) box.style.display = 'none';
+  const sel = document.getElementById('course-school-select'); if (sel) sel.value = '';
+  const note = document.getElementById('course-school-note'); if (note) { note.value = ''; note.style.display = 'none'; }
 }
 
 async function submitCourseSessions() {
@@ -24181,6 +24228,10 @@ async function submitCourseSessions() {
   if (!courseSelectedDates.size) { showToast('日付が選ばれていません', 'error'); return; }
   const dates = [...courseSelectedDates].sort();
   const isMakeup = !!document.getElementById('course-makeup')?.checked;
+  // dhu: 学校別回。ONなのに学校未選択ならエラー
+  const schoolOn = !!document.getElementById('course-school-on')?.checked;
+  const schoolVal = courseSchoolValue();
+  if (schoolOn && !schoolVal) { showToast('学校を選んでください', 'error'); return; }
   showLoading('登録中...');
   // 補習でなければ、登録済みの続きから自動採番（通常=月4回サイクル / 講習=通し番号）
   let cursor = null, isNormal = true;
@@ -24194,21 +24245,33 @@ async function submitCourseSessions() {
   let success = 0;
   for (const d of dates) {
     const t = courseDateTimes[d] || courseBulkTime;
+    const payload = {
+      class_master_id: classId,
+      session_date: d,
+      period: t.period,           // カスタムは null
+      start_time: t.start,
+      end_time: t.end,
+      cycle_year: cursor ? cursor.year : null,
+      cycle_month: cursor ? cursor.month : null,
+      cycle_no: cursor ? cursor.no : null,
+      is_makeup: isMakeup,
+      school: schoolVal   // dhu: 学校別回（通常回は null）
+    };
     try {
-      await sbPost('class_sessions', {
-        class_master_id: classId,
-        session_date: d,
-        period: t.period,           // カスタムは null
-        start_time: t.start,
-        end_time: t.end,
-        cycle_year: cursor ? cursor.year : null,
-        cycle_month: cursor ? cursor.month : null,
-        cycle_no: cursor ? cursor.no : null,
-        is_makeup: isMakeup
-      });
+      await sbPost('class_sessions', payload);
       success++;
       if (cursor) cursor = cycleNext(cursor, isNormal);
-    } catch(e) { /* 重複はスキップ */ }
+    } catch(e) {
+      // dhu: school列が未追加の環境では school を外して再試行（それ以外＝重複はスキップ）
+      if (/column|PGRST|400/i.test(e.message || '')) {
+        try {
+          const p2 = Object.assign({}, payload); delete p2.school;
+          await sbPost('class_sessions', p2);
+          success++;
+          if (cursor) cursor = cycleNext(cursor, isNormal);
+        } catch(e2) { /* 重複はスキップ */ }
+      }
+    }
   }
   hideLoading();
   showToast('✅ ' + success + '日分の授業を登録しました' + (isMakeup ? '（補習）' : ''), 'success');
@@ -27073,7 +27136,7 @@ async function loadAttMatrix() {
     // 実施済み授業日（古い順＝左から時系列）
     const sessions = await sbGet('class_sessions',
       'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
-      '&select=session_date,period,start_time,end_time,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date,period') || [];
+      '&select=session_date,period,start_time,end_time,cycle_year,cycle_month,cycle_no,is_makeup,school&order=session_date,period') || [];
     // 受講名簿（デモ生徒は除外）
     const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,is_provisional');
     // 仮受講（申込未提出だが参加）の生徒を控える
@@ -27271,9 +27334,13 @@ function attMatrixHeaderHtml() {
     const info = attMatrix.sessInfo[k];
     const per = info.period ? info.period + '限' : '';
     const cyc = attMatrixCycleLabel(info);
+    const schoolBadge = info.school
+      ? '<br><span style="display:inline-block;font-size:8px;color:#1E4276;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:8px;padding:0 4px;font-weight:700;line-height:1.4;white-space:nowrap">🏫' + escapeHtml(info.school) + '</span>'
+      : '';
     h += '<th style="padding:6px 4px;border-bottom:1px solid var(--border);font-size:11px;font-weight:700;color:var(--text);min-width:40px">' +
       lab.md + '<br><span style="font-size:9px;color:var(--muted);font-weight:400">' + lab.wd + (per ? ' ' + per : '') + '</span>' +
-      (cyc ? '<br><span style="font-size:9px;color:var(--orange-d);font-weight:700">' + cyc + '</span>' : '') + '</th>';
+      (cyc ? '<br><span style="font-size:9px;color:var(--orange-d);font-weight:700">' + cyc + '</span>' : '') +
+      schoolBadge + '</th>';
   });
   h += '<th style="padding:6px 4px;border-bottom:1px solid var(--border);font-size:10px;font-weight:700;color:var(--muted);min-width:40px">出席率</th></tr>';
   return h;
@@ -43774,7 +43841,7 @@ async function loadClassAnalysis() {
 
     // 実施済みの授業日（今日まで）
     let sessQ = 'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
-      '&select=session_date,period,start_time,end_time&order=session_date,period';
+      '&select=session_date,period,start_time,end_time,school&order=session_date,period';
     if (since) sessQ += '&session_date=gte.' + since;
     const sessions = await sbGet('class_sessions', sessQ) || [];
 
@@ -44158,8 +44225,12 @@ function caMatrixHeaderHtml() {
     const lab = caMatrix.dateLabels[k];
     const info = caMatrix.sessInfo[k];
     const per = info && info.period ? info.period + '限' : '';
+    const schoolBadge = (info && info.school)
+      ? '<br><span style="display:inline-block;font-size:8px;color:#1E4276;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:8px;padding:0 4px;font-weight:700;line-height:1.4;white-space:nowrap">🏫' + escapeHtml(info.school) + '</span>'
+      : '';
     h += '<th style="padding:6px 4px;border-bottom:1px solid var(--border);font-size:11px;font-weight:700;color:var(--text);min-width:40px">' +
-      lab.md + '<br><span style="font-size:9px;color:var(--muted);font-weight:400">' + lab.wd + (per ? ' ' + per : '') + '</span></th>';
+      lab.md + '<br><span style="font-size:9px;color:var(--muted);font-weight:400">' + lab.wd + (per ? ' ' + per : '') + '</span>' +
+      schoolBadge + '</th>';
   });
   h += '<th style="padding:6px 4px;border-bottom:1px solid var(--border);font-size:10px;font-weight:700;color:var(--muted);min-width:40px">出席率</th></tr>';
   return h;
