@@ -5429,7 +5429,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dhv';
+const APP_VERSION = '20260702dhw';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -19466,95 +19466,155 @@ async function createClassMaster() {
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
-// ===== 売上タブ内の「講師・科目部別」ビュー（dhv） =====
-// 科目部別（英語部・数学部…の延べ担当生徒数・授業数）と、
-// 講師別（英語を除く各講師の延べ担当生徒数・授業数）を出す。
-// 延べ人数＝担当授業ごとに受講生をカウント（同じ生徒が2講座なら2）。
+// ===== 売上タブ内の「講師・科目部別」ビュー（dhv→dhw） =====
+// 通常授業のみ（category が summer/kosotsu 以外＝normal と 旧データの空）に絞る。
+// 科目部別：延べ担当生徒数・授業数・売上（頭割り。合計は月謝総額と一致＝正確）。
+// 講師別（英語除く）：延べ担当生徒数・授業数・売上（参考値。複数担当は担当人数で等分）。
+// 頭割り＝生徒の月謝（受講科目数ベース）÷科目数＝1科目あたり単価を各科目に配分。
 // 担当＝主担当(class_master.teacher_staff_id) ∪ 追加担当(class_teachers)。
-// 英語は担当が複数またぎで曖昧なため個人に分けず「英語部」でまとめる。
+// 英語は担当が複数またぎで曖昧なため講師個人に分けず「英語部」でまとめる。
 async function renderRevTeacher() {
   const wrap = document.getElementById('rev-tea-wrap');
   if (!wrap) return;
 
-  // 現役授業（科目・主担当）
+  // 現役授業（科目・主担当・category）
   let cms = [];
-  try { cms = await sbGet('class_master', 'is_active=eq.true&select=id,name,subject,teacher_staff_id') || []; }
+  try { cms = await sbGet('class_master', 'is_active=eq.true&select=id,name,subject,teacher_staff_id,category') || []; }
   catch (e) { wrap.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:20px;text-align:center">授業データを読めませんでした。</div>'; return; }
+
+  // 通常授業のみ：category が summer / kosotsu 以外を通常扱い（normal と 旧データの空を含む）
+  const isNormalClass = (c) => { const cat = c.category; return cat !== 'summer' && cat !== 'kosotsu'; };
   const cmSubj = {}, cmMain = {};
-  cms.forEach(c => { cmSubj[c.id] = c.subject || 'その他'; cmMain[c.id] = c.teacher_staff_id || null; });
-  const validIds = new Set(cms.map(c => c.id));
+  const normalIds = new Set();
+  cms.forEach(c => {
+    cmSubj[c.id] = c.subject || 'その他';
+    cmMain[c.id] = c.teacher_staff_id || null;
+    if (isNormalClass(c)) normalIds.add(c.id);
+  });
+
+  // 料金表（subject_prices）。無ければフォールバック。
+  let priceMap = {};
+  try {
+    (await sbGet('subject_prices', 'select=subject_count,price') || []).forEach(r => { priceMap[r.subject_count] = r.price; });
+  } catch (e) { priceMap = {}; }
+  if (Object.keys(priceMap).length === 0) priceMap = Object.assign({}, REVENUE_FALLBACK_PRICES);
 
   // スタッフ名
   const staffName = {};
   try { (await sbGet('staff', 'select=id,name') || []).forEach(s => { staffName[s.id] = s.name; }); } catch (e) {}
 
-  // 授業→担当講師集合（主担当∪追加担当）
+  // 授業→担当講師集合（主担当∪追加担当）※通常授業のみ
   const teachersOf = {};
-  validIds.forEach(id => { teachersOf[id] = new Set(); if (cmMain[id]) teachersOf[id].add(cmMain[id]); });
+  normalIds.forEach(id => { teachersOf[id] = new Set(); if (cmMain[id]) teachersOf[id].add(cmMain[id]); });
   try {
     const cts = await sbGet('class_teachers', 'select=class_master_id,staff_id') || [];
     cts.forEach(ct => { if (teachersOf[ct.class_master_id]) teachersOf[ct.class_master_id].add(ct.staff_id); });
   } catch (e) { /* class_teachers 未作成：主担当のみ */ }
 
-  // 現役在籍の受講（ended_on is null）
+  // 在籍生徒（除外を弾く。退塾確定で在籍最終日を過ぎた人も外す＝発効前は残す）
+  let students = [];
+  try { students = await sbGet('students', 'is_active=eq.true&select=id,inactive_reason,withdraw_status,withdraw_effective_date') || []; } catch (e) {}
+  students = students.filter(s => s.inactive_reason !== '除外' && isEnrolledNow(s));
+  const validStu = new Set(students.map(s => s.id));
+
+  // 通常授業の受講のみ
   let enr = [];
   try { enr = await sbGetActiveEnrollments('select=class_master_id,student_id') || []; }
   catch (e) { enr = []; }
-  enr = enr.filter(e => validIds.has(e.class_master_id));
+  enr = enr.filter(e => normalIds.has(e.class_master_id) && validStu.has(e.student_id));
 
-  // 科目部別（延べ担当生徒数 / 授業数）
-  const subjStu = {}, subjCls = {};
+  // 生徒ごと：通常科目セット（月謝の科目数根拠）と、取っている通常授業
+  const stuSubj = {}, stuClasses = {};
+  enr.forEach(e => {
+    const sj = cmSubj[e.class_master_id];
+    (stuSubj[e.student_id] = stuSubj[e.student_id] || new Set()).add(sj);
+    (stuClasses[e.student_id] = stuClasses[e.student_id] || []).push(e.class_master_id);
+  });
+
+  // 延べ人数・授業数
+  const subjStu = {}, subjCls = {}, subjAmt = {};
+  const teaStu = {}, teaCls = {}, teaAmt = {};
   enr.forEach(e => { const sj = cmSubj[e.class_master_id]; subjStu[sj] = (subjStu[sj] || 0) + 1; });
-  validIds.forEach(id => { const sj = cmSubj[id]; subjCls[sj] = (subjCls[sj] || 0) + 1; });
-
-  // 講師別（英語除く・延べ担当生徒数 / 授業数）
-  const teaStu = {}, teaCls = {};
+  normalIds.forEach(id => { const sj = cmSubj[id]; subjCls[sj] = (subjCls[sj] || 0) + 1; });
   enr.forEach(e => {
     const id = e.class_master_id; if (cmSubj[id] === '英語') return;
     teachersOf[id].forEach(t => { teaStu[t] = (teaStu[t] || 0) + 1; });
   });
-  validIds.forEach(id => {
+  normalIds.forEach(id => {
     if (cmSubj[id] === '英語') return;
     teachersOf[id].forEach(t => { teaCls[t] = (teaCls[t] || 0) + 1; });
   });
 
+  // 金額の頭割り
+  let monthTotal = 0;
+  Object.keys(stuSubj).forEach(sid => {
+    const subjs = stuSubj[sid];
+    const cnt = subjs.size;
+    const total = revenuePriceFor(cnt, priceMap);
+    monthTotal += total;
+    const per = cnt ? total / cnt : 0;
+    // 科目部（正確）：各科目に per を配分
+    subjs.forEach(sj => { subjAmt[sj] = (subjAmt[sj] || 0) + per; });
+    // 講師個人（参考・英語除く）：その科目の担当講師に per を等分
+    subjs.forEach(sj => {
+      if (sj === '英語') return;
+      const tset = new Set();
+      (stuClasses[sid] || []).forEach(cid => { if (cmSubj[cid] === sj) teachersOf[cid].forEach(t => tset.add(t)); });
+      if (!tset.size) return;
+      const share = per / tset.size;
+      tset.forEach(t => { teaAmt[t] = (teaAmt[t] || 0) + share; });
+    });
+  });
+
+  const yen = (n) => '¥' + Math.round(n || 0).toLocaleString('ja-JP');
   let html = '';
 
+  html += '<div style="font-size:11px;color:var(--muted);background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:14px;line-height:1.6">'
+    + '📗 <b>通常授業のみ</b>で集計しています（夏期・冬期などの講習と高卒生講座は除外）。講習の売上は「講習」タブをご覧ください。</div>';
+
   // --- 科目部別 ---
-  html += saSectionTitle('🏛 科目部別（延べ担当生徒数・授業数）');
-  const subjOrder = Object.keys(subjStu).sort((a, b) => (subjStu[b] || 0) - (subjStu[a] || 0));
-  html += '<div style="overflow-x:auto;margin-bottom:16px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+  html += saSectionTitle('🏛 科目部別（通常授業・売上／延べ担当生徒数）');
+  const subjOrder = Object.keys(subjStu).sort((a, b) => (subjAmt[b] || 0) - (subjAmt[a] || 0));
+  html += '<div style="overflow-x:auto;margin-bottom:6px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
     + '<thead><tr style="background:var(--orange-l)">'
-    + ['科目部', '延べ担当生徒数', '授業数'].map((t, i) =>
+    + ['科目部', '売上', '延べ人数', '授業数'].map((t, i) =>
         '<th style="padding:8px 10px;text-align:' + (i === 0 ? 'left' : 'right') + ';font-weight:700;border-bottom:1px solid var(--border)">' + t + '</th>').join('')
     + '</tr></thead><tbody>';
   subjOrder.forEach(sj => {
     html += '<tr>'
       + '<td style="padding:8px 10px;border-bottom:1px solid var(--border);font-weight:700">' + escapeHtml(sj) + '部</td>'
+      + '<td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:700;color:var(--orange-d)">' + yen(subjAmt[sj]) + '</td>'
       + '<td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">' + (subjStu[sj] || 0) + '人</td>'
       + '<td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">' + (subjCls[sj] || 0) + '</td>'
       + '</tr>';
   });
+  html += '<tr style="background:var(--orange-l)">'
+    + '<td style="padding:8px 10px;font-weight:800">合計</td>'
+    + '<td style="padding:8px 10px;text-align:right;font-weight:800;color:var(--orange-d)">' + yen(monthTotal) + '</td>'
+    + '<td style="padding:8px 10px;text-align:right"></td><td style="padding:8px 10px;text-align:right"></td>'
+    + '</tr>';
   html += '</tbody></table></div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin:0 2px 16px;line-height:1.6">※ 科目部の売上は正確です（合計＝通常授業の月謝総額）。生徒の月謝を受講科目数で頭割りし、各科目に配分しています。</div>';
 
-  // --- 講師別（英語除く） ---
-  html += saSectionTitle('👨‍🏫 講師別（延べ担当生徒数・授業数）');
-  const teaOrder = Object.keys(teaStu).sort((a, b) => (teaStu[b] || 0) - (teaStu[a] || 0));
-  html += '<div style="overflow-x:auto;margin-bottom:8px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+  // --- 講師別（英語除く・参考金額） ---
+  html += saSectionTitle('👨‍🏫 講師別（通常授業・参考売上／延べ担当生徒数）');
+  const teaOrder = Object.keys(teaStu).sort((a, b) => (teaAmt[b] || 0) - (teaAmt[a] || 0));
+  html += '<div style="overflow-x:auto;margin-bottom:6px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
     + '<thead><tr style="background:var(--orange-l)">'
-    + ['講師', '延べ担当生徒数', '授業数'].map((t, i) =>
+    + ['講師', '参考売上', '延べ人数', '授業数'].map((t, i) =>
         '<th style="padding:8px 10px;text-align:' + (i === 0 ? 'left' : 'right') + ';font-weight:700;border-bottom:1px solid var(--border)">' + t + '</th>').join('')
     + '</tr></thead><tbody>';
   teaOrder.forEach(t => {
     html += '<tr>'
       + '<td style="padding:8px 10px;border-bottom:1px solid var(--border);font-weight:700">' + escapeHtml(staffName[t] || '(不明)') + '</td>'
+      + '<td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:700;color:#3B6D11">' + yen(teaAmt[t]) + '</td>'
       + '<td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">' + (teaStu[t] || 0) + '人</td>'
       + '<td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">' + (teaCls[t] || 0) + '</td>'
       + '</tr>';
   });
-  // 英語部は個人に分けずまとめて1行
   html += '<tr style="background:var(--surface)">'
     + '<td style="padding:8px 10px;border-bottom:1px solid var(--border);font-weight:700">英語部（個人に分けず）</td>'
+    + '<td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:700;color:#3B6D11">' + yen(subjAmt['英語']) + '</td>'
     + '<td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">' + (subjStu['英語'] || 0) + '人</td>'
     + '<td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">' + (subjCls['英語'] || 0) + '</td>'
     + '</tr>';
@@ -19562,7 +19622,7 @@ async function renderRevTeacher() {
 
   html += '<div style="font-size:10px;color:var(--muted);line-height:1.6;margin-bottom:8px">'
     + '※ 延べ人数＝担当授業ごとに受講生を数えます（同じ生徒が同じ講師の2講座を取れば2人分）。<br>'
-    + '※ 担当＝主担当と追加担当の両方を含みます。1授業を複数講師で担当している場合、各講師にそれぞれ計上されます。<br>'
+    + '※ 講師個人の売上は<b>参考値</b>です。1授業を複数講師で担当している場合、その金額を担当人数で等分しています。<br>'
     + '※ 英語は担当が複数にまたがるため、講師個人には分けず「英語部」としてまとめています。</div>';
 
   wrap.innerHTML = html;
