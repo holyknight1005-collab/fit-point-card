@@ -4169,7 +4169,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <span id="arrow-rate-assignee" style="font-size:13px;color:var(--muted);transition:transform 0.2s;display:inline-block">›</span>⏱️ 締切遵守率（担当者ごと）
       </div>
       <div id="rate-assignee-body" style="display:none">
-        <div style="font-size:11px;color:var(--muted);margin:4px 0 8px">期限のある依頼のうち、期限内に完了できた割合です。</div>
+        <div style="font-size:11px;color:var(--muted);margin:4px 0 8px">期限のある依頼のうち、期限内に完了できた割合です。<br><span style="font-size:10px">※ 2026/7/28 以降に作成されたToDoから集計しています（コメント系は期限延長のうえ集計対象）。</span></div>
         <div id="sm-todo-rate-assignee" style="display:grid;grid-template-columns:1fr 1fr;gap:6px"></div>
       </div>
 
@@ -5447,7 +5447,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dic';
+const APP_VERSION = '20260702did';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -17839,12 +17839,24 @@ function renderTodoRates() {
   const assigneeEl = document.getElementById('sm-todo-rate-assignee');
   const requesterEl = document.getElementById('sm-todo-rate-requester');
 
+  // 締切遵守率の集計起点（この日以降に作成されたTODOだけを対象にする）。
+  // 例外：コメント系（コメントの入力／浪人生コメント）は期限を延長して集計に残すため、
+  // 作成日が起点より前でも対象に含める。
+  const RATE_START_DATE = '2026-07-28';
+  const RATE_EXEMPT_TITLES = ['コメントの入力', '浪人生コメント'];
+  const inRateScope = (t) => {
+    if (RATE_EXEMPT_TITLES.indexOf(t.title) !== -1) return true;
+    const created = t.created_at ? toJSTDateStr(new Date(t.created_at)) : '';
+    return created >= RATE_START_DATE;
+  };
+
   // 担当者ごと：期限のある依頼で、期限内に完了できた割合
   // 期限内 = done_at の日付(JST) <= due_date
   const byAssignee = {};
   allTodosData.forEach(t => {
     if (t.from_staff_id === t.to_staff_id) return; // 自己TODOは除外
     if (!t.due_date) return;                       // 期限なしは母数に含めない
+    if (!inRateScope(t)) return;                   // 起点より前の旧TODOは除外
     const id = t.to_staff_id || 'unknown';
     const name = t.to?.name || '不明';
     if (!byAssignee[id]) byAssignee[id] = { name, total: 0, onTime: 0, done: 0 };
@@ -17860,6 +17872,7 @@ function renderTodoRates() {
   const byRequester = {};
   allTodosData.forEach(t => {
     if (t.from_staff_id === t.to_staff_id) return;
+    if (!inRateScope(t)) return;                   // 起点より前の旧TODOは除外
     const id = t.from_staff_id || 'unknown';
     const name = t.from?.name || '不明';
     if (!byRequester[id]) byRequester[id] = { name, total: 0, done: 0 };
