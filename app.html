@@ -2014,6 +2014,14 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <!-- 経営サマリー（admin/dashboard権限のみ・JSで表示制御） -->
     <div id="exec-dashboard-section" style="display:none"></div>
     <div id="home-left-col">
+    <!-- 🔍 承認待ち（自分が承認担当・依頼者のもの・die）。0件なら非表示 -->
+    <div id="home-approval-section" style="display:none;background:linear-gradient(135deg,#E4EEFB,#FFFFFF);border:1.5px solid #4A7FC0;border-radius:var(--radius);padding:14px 16px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:14px;font-weight:700;color:#2C5FA8">🔍 承認待ち <span id="home-approval-count" style="font-size:11px;background:#4A7FC0;color:#fff;border-radius:10px;padding:1px 8px;margin-left:4px"></span></span>
+        <button onclick="openStaffManage('todo')" style="font-size:11px;font-weight:700;color:#2C5FA8;background:#E4EEFB;border:1px solid #4A7FC0;border-radius:20px;padding:4px 12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">すべて見る ›</button>
+      </div>
+      <div id="home-approval-list" style="display:flex;flex-direction:column;gap:6px"></div>
+    </div>
     <!-- ★ 自分へのToDo（ホーム上部・すぐ見える） -->
     <div id="home-mytodo-section" style="background:linear-gradient(135deg,#EAF5E1,#FFFFFF);border:1.5px solid var(--green);border-radius:var(--radius);padding:14px 16px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -3304,16 +3312,19 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="todo-teacher-block" style="display:none">
       <div style="font-size:10px;color:var(--muted);line-height:1.6">授業マスターで担当になっているスタッフ全員に配ります。<b>高卒生の授業は対象外</b>です。</div>
       <div id="todo-teacher-preview" style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6"></div>
+      <button type="button" onclick="applyTeacherToPersonChecks()" style="margin-top:8px;padding:7px 14px;background:var(--orange-l);border:1.5px solid var(--orange);border-radius:20px;font-size:12px;font-weight:700;color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">✏️ この配布先を個別に調整（人を足す・外す）</button>
     </div>
     <div id="todo-subject-block" style="display:none">
       <div class="form-label">対象の教科部門（複数選択可）</div>
       <div id="todo-subject-checks" style="display:flex;flex-wrap:wrap;gap:6px"></div>
       <div id="todo-subject-preview" style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6"></div>
+      <button type="button" onclick="applySubjectToPersonChecks()" style="margin-top:8px;padding:7px 14px;background:var(--orange-l);border:1.5px solid var(--orange);border-radius:20px;font-size:12px;font-weight:700;color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">✏️ この配布先を個別に調整（人を足す・外す）</button>
     </div>
     <div id="todo-school-block" style="display:none">
       <div class="form-label">対象の学校（複数選択可）</div>
       <div id="todo-school-checks" style="display:flex;flex-wrap:wrap;gap:6px"></div>
       <div id="todo-school-preview" style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6"></div>
+      <button type="button" onclick="applySchoolToPersonChecks()" style="margin-top:8px;padding:7px 14px;background:var(--orange-l);border:1.5px solid var(--orange);border-radius:20px;font-size:12px;font-weight:700;color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">✏️ この配布先を個別に調整（人を足す・外す）</button>
     </div>
   </div>
   <div>
@@ -5447,7 +5458,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702did';
+const APP_VERSION = '20260702dif';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -8009,6 +8020,7 @@ async function initStaff() {
     // （サーバー側スケジューラが無いので起動時に検出して作る）
     runRecurringTodoGeneration().then(() => { try { loadHomeMyTodos(); } catch (e) {} });
     loadHomeMyTodos();
+    try { loadHomeApprovals(); } catch (e) {}
     loadHomeSchedule();
     loadStaffHomeCalendar();
     loadExecDashboard();
@@ -8136,6 +8148,7 @@ function setDivision(d) {
   if (typeof showToast === 'function') showToast((d === '中学部' ? '📗 ' : '🎓 ') + d + 'に切り替えました', 'info');
   // 部門で絞る画面を再読み込み（存在すれば）。
   try { if (typeof loadHomeMyTodos === 'function') loadHomeMyTodos(); } catch (e) {}
+  try { if (typeof loadHomeApprovals === 'function') loadHomeApprovals(); } catch (e) {}
   try { if (typeof loadClassMasterList === 'function' && document.getElementById('cm-list')) loadClassMasterList(); } catch (e) {}
   try { if (typeof renderStudentList === 'function' && document.getElementById('student-list')) renderStudentList(); } catch (e) {}
   try { if (typeof renderRosterCheckDivBanner === 'function' && document.getElementById('rostercheck-div-banner')) renderRosterCheckDivBanner(); } catch (e) {}
@@ -8177,6 +8190,50 @@ async function loadHomeMyTodos() {
     el.innerHTML = head + ordered.map(t => homeTodoRowHtml(t, today)).join('');
   } catch (e) {
     el.innerHTML = '<div style="font-size:12px;color:var(--red)">ToDoの読み込みに失敗しました</div>';
+  }
+}
+
+// ホームの「🔍 承認待ち」枠。自分が承認担当（approver_staff_id）または依頼者（from_staff_id）で、
+// 完了報告済み・承認が必要・未承認 のTODOを集めて、その場で承認/差し戻しできるようにする。die
+async function loadHomeApprovals() {
+  const sec = document.getElementById('home-approval-section');
+  const el = document.getElementById('home-approval-list');
+  const cnt = document.getElementById('home-approval-count');
+  if (!sec || !el || !currentStaff) return;
+  try {
+    // 自分が依頼者 or 承認者で、完了報告済み・承認必要・未承認
+    const all = await sbGet('staff_todos',
+      'or=(from_staff_id.eq.' + currentStaff.id + ',approver_staff_id.eq.' + currentStaff.id + ')' +
+      '&is_done=eq.true&needs_approval=eq.true&approved_at=is.null' +
+      '&order=done_at.asc&select=*,to:to_staff_id(name),from:from_staff_id(name)')
+      .catch(async () => await sbGet('staff_todos',
+        'from_staff_id=eq.' + currentStaff.id +
+        '&is_done=eq.true&needs_approval=eq.true&approved_at=is.null' +
+        '&order=done_at.asc&select=*,to:to_staff_id(name),from:from_staff_id(name)'));
+    // 差し戻し後に再度完了報告されていないもの（rejected_at があって is_done=false）は対象外。
+    // 上の条件で is_done=true のみ拾っているので自然に除外される。
+    const list = (all || []).filter(t => isTodoAwaitingApproval(t));
+    if (!list.length) { sec.style.display = 'none'; return; }
+    sec.style.display = 'block';
+    if (cnt) cnt.textContent = list.length + '件';
+    const today = getTodayJST();
+    el.innerHTML = list.map(t => {
+      const toName = (t.to && t.to.name) || '—';
+      const doneStr = t.done_at ? new Date(t.done_at).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' }) : '';
+      const late = (t.due_date && t.done_at && toJSTDateStr(new Date(t.done_at)) > t.due_date);
+      return '<div style="background:#fff;border:1.5px solid #C3D6EF;border-radius:8px;padding:9px 12px;display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:12px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(t.title || '（無題）') + '</div>' +
+          '<div style="font-size:10px;color:var(--muted);margin-top:2px">👤 ' + escapeHtml(toName) +
+            (doneStr ? '　🔍 ' + doneStr + '報告' : '') +
+            (late ? '　<span style="color:var(--red);font-weight:700">遅延</span>' : '') + '</div>' +
+        '</div>' +
+        '<button onclick="approveTodo(\'' + t.id + '\')" style="flex-shrink:0;padding:5px 12px;background:#2C7A46;border:none;border-radius:8px;font-size:11px;font-weight:700;color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">承認</button>' +
+        '<button onclick="openTodoReject(\'' + t.id + '\',\'' + escapeAttr(toName) + '\',\'' + escapeAttr(t.title || '') + '\',\'' + (t.due_date || '') + '\')" style="flex-shrink:0;padding:5px 10px;background:#fff;border:1px solid #E8B4B4;border-radius:8px;font-size:11px;font-weight:700;color:var(--red);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">差し戻し</button>' +
+      '</div>';
+    }).join('');
+  } catch (e) {
+    sec.style.display = 'none';
   }
 }
 
@@ -16443,6 +16500,57 @@ async function buildSubjectRegistrationCheck(ym) {
 }
 
 // 依頼先の指定方法：'person'=個人を選ぶ / 'school'=学校担当へ
+// くくり（授業担当／学校担当／教科部門）で選んだ人を、個人チェックリストに反映する。dif
+// 反映後は「個人を選ぶ」モードに切り替え、任意で足す・外す調整ができるようにする。
+function applyResolvedIdsToPersonChecks(ids) {
+  if (!ids || !ids.length) { showToast('反映できる配布先がありません', 'error'); return; }
+  // 個人モードへ切り替え（チェックリストが表示される）
+  setTodoTargetType('person');
+  // いったん全解除してから、解決した人だけチェックを入れる
+  document.querySelectorAll('.todo-staff-check').forEach(cb => { cb.checked = false; });
+  const idSet = new Set(ids.map(String));
+  let hit = 0;
+  document.querySelectorAll('.todo-staff-check').forEach(cb => {
+    if (idSet.has(String(cb.value))) { cb.checked = true; hit++; }
+  });
+  document.querySelectorAll('.todo-staff-chip').forEach(applyTodoChipStyle);
+  syncTodoCompletionModeRow();
+  showToast('✏️ ' + hit + '名をチェックに反映しました。ここから足す・外す調整ができます', 'success');
+}
+
+async function applyTeacherToPersonChecks() {
+  showLoading('講師を確認中...');
+  try {
+    const ids = await resolveTeacherStaffIds();
+    hideLoading();
+    applyResolvedIdsToPersonChecks(ids);
+  } catch (e) { hideLoading(); showToast('講師の取得に失敗しました', 'error'); }
+}
+
+async function applySubjectToPersonChecks() {
+  const subs = [];
+  document.querySelectorAll('.todo-subject-cb:checked').forEach(cb => subs.push(cb.value));
+  if (!subs.length) { showToast('教科部門を選んでください', 'error'); return; }
+  showLoading('講師を確認中...');
+  try {
+    const ids = await resolveSubjectStaffIds(subs);
+    hideLoading();
+    applyResolvedIdsToPersonChecks(ids);
+  } catch (e) { hideLoading(); showToast('講師の取得に失敗しました', 'error'); }
+}
+
+async function applySchoolToPersonChecks() {
+  const schools = [];
+  document.querySelectorAll('.todo-school-cb:checked').forEach(cb => schools.push(cb.value));
+  if (!schools.length) { showToast('学校を選んでください', 'error'); return; }
+  showLoading('担当者を確認中...');
+  try {
+    const ids = await resolveChargeStaffIds(schools);
+    hideLoading();
+    applyResolvedIdsToPersonChecks(ids);
+  } catch (e) { hideLoading(); showToast('担当者の取得に失敗しました', 'error'); }
+}
+
 let newTodoTargetType = 'person';
 function setTodoTargetType(type) {
   newTodoTargetType = (type === 'school' || type === 'teacher' || type === 'subject') ? type : 'person';
@@ -16781,6 +16889,7 @@ function refreshTodoViews() {
   if (typeof loadSentTodos === 'function') loadSentTodos();
   // ホーム上部「自分へのToDo」「今日やること」「カレンダーのToDo締切」も即時反映
   if (typeof loadHomeMyTodos === 'function') loadHomeMyTodos();
+  if (typeof loadHomeApprovals === 'function') loadHomeApprovals();
   // 「自分が依頼したToDo」は開いているときだけ再読み込み
   try {
     const sent = document.getElementById('home-sent-todos');
