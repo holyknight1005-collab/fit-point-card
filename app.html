@@ -566,6 +566,8 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <option value="normal">📘 通常</option>
           <option value="kosotsu">🎓 高卒生</option>
         </select></div>
+      <div style="flex:0 0 auto"><div class="form-label">部門</div>
+        <div id="emx-division-filter" class="filter-bar"></div></div>
       <div style="flex:1 1 200px"><div class="form-label">名前・学校で検索</div>
         <input class="form-input-sm" type="text" id="emx-search" placeholder="🔍 検索" oninput="setEmxSearch(this.value)" style="width:100%"></div>
       <button onclick="exportEmxCsv()" style="padding:8px 14px;font-size:11px;font-weight:700;border-radius:8px;border:1.5px solid #1A7340;background:#fff;color:#1A7340;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📄 CSV出力</button>
@@ -5429,7 +5431,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dhy';
+const APP_VERSION = '20260702dhz';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -20401,7 +20403,8 @@ let emxClasses = [];      // 対象カテゴリの講座
 let emxStudents = [];     // 全生徒
 let emxEnrolled = {};     // 'studentId|classId' -> enrollment id（継続中のみ）
 let emxCategory = 'summer';
-let emxGrade = '';        // '' | '1' | '2' | '3'
+let emxDivision = '高校部'; // '高校部' | '中学部'
+let emxGrade = '';        // '' | '1' | '2' | '3'（部門により中1/中2/中3の意味）
 let emxSchool = '';       // '' | 学校名
 let emxSearch = '';
 let emxBusy = {};         // セル単位の処理中フラグ
@@ -20456,6 +20459,7 @@ async function openEnrollMatrix() {
   if (!m) return;
   m.style.display = 'flex';
   emxGrade = ''; emxSchool = ''; emxSearch = '';
+  if (!emxDivision) emxDivision = '高校部';
   emxStartCyc = null; emxSessCache = {};
   if (typeof setEmxProvMode === 'function') setEmxProvMode(false);
   const cm2 = document.getElementById('emx-cyc-m'); if (cm2) cm2.value = '';
@@ -20478,7 +20482,7 @@ async function reloadEnrollMatrix() {
     const [cls, stus] = await Promise.all([
       sbGet('class_master', 'is_active=eq.true&category=eq.' + encodeURIComponent(emxCategory) +
         '&select=id,name,subject,grade_level&order=subject,name').catch(() => []),
-      sbGet('students', 'is_active=eq.true&select=id,name,name_kana,school,grade&order=school,grade,name').catch(() => [])
+      sbGet('students', 'is_active=eq.true&select=id,name,name_kana,school,grade,division&order=school,grade,name').catch(() => [])
     ]);
     emxClasses = cls || [];
     emxStudents = await excludeDemoRows(stus || []);
@@ -20512,22 +20516,31 @@ function emxClassMatchesGrade(cls, gd) {
 }
 
 function renderEnrollMatrixFilters() {
+  const dbox = document.getElementById('emx-division-filter');
+  if (dbox) {
+    const mkd = (v) => '<button onclick="setEmxDivision(\'' + v + '\')" style="padding:4px 12px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+      (emxDivision === v ? 'border:1.5px solid #1A7340;background:#1A7340;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + v + '</button>';
+    dbox.innerHTML = mkd('高校部') + mkd('中学部');
+  }
   const gbox = document.getElementById('emx-grade-filter');
   if (gbox) {
+    const isMid = emxDivision === '中学部';
+    const gl = (v) => isMid ? ('中' + v) : (v + '年');
     const mk = (v, l) => '<button onclick="setEmxGrade(\'' + v + '\')" style="padding:4px 12px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
       (emxGrade === v ? 'border:1.5px solid #E9A93C;background:#E9A93C;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + l + '</button>';
-    gbox.innerHTML = mk('', 'すべて') + mk('1', '1年') + mk('2', '2年') + mk('3', '3年');
+    gbox.innerHTML = mk('', 'すべて') + mk('1', gl('1')) + mk('2', gl('2')) + mk('3', gl('3'));
   }
   const sbox = document.getElementById('emx-school-filter');
   if (sbox) {
-    // 学年で絞った後の生徒から学校を出す
-    const pool = emxStudents.filter(s => !emxGrade || emxGradeDigit(s.grade) === emxGrade);
+    // 部門・学年で絞った後の生徒から学校を出す
+    const pool = emxStudents.filter(s => (s.division || '高校部') === emxDivision && (!emxGrade || emxGradeDigit(s.grade) === emxGrade));
     const schools = [...new Set(pool.map(s => s.school).filter(Boolean))];
     const mk = (v, l) => '<button onclick="setEmxSchool(\'' + escapeAttr(v) + '\')" style="padding:4px 10px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
       (emxSchool === v ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + escapeHtml(l) + '</button>';
     sbox.innerHTML = mk('', 'すべて') + schools.map(s => mk(s, s)).join('');
   }
 }
+function setEmxDivision(v) { emxDivision = v; emxGrade = ''; emxSchool = ''; renderEnrollMatrixFilters(); renderEnrollMatrix(); }
 function setEmxGrade(v) { emxGrade = v; emxSchool = ''; renderEnrollMatrixFilters(); renderEnrollMatrix(); }
 function setEmxSchool(v) { emxSchool = v; renderEnrollMatrixFilters(); renderEnrollMatrix(); }
 function setEmxSearch(v) { emxSearch = (v || '').trim(); renderEnrollMatrix(); }
@@ -20547,6 +20560,7 @@ function emxSortKey(s) {
 function emxVisibleStudents() {
   const q = emxSearch.toLowerCase();
   return emxStudents.filter(s => {
+    if ((s.division || '高校部') !== emxDivision) return false;
     if (emxGrade && emxGradeDigit(s.grade) !== emxGrade) return false;
     if (emxSchool && s.school !== emxSchool) return false;
     if (q) {
