@@ -3152,6 +3152,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="karte-sec-profile" class="karte-sec"></div>
       <div id="karte-sec-checkins" class="karte-sec"></div>
       <div id="karte-sec-attendance" class="karte-sec"></div>
+      <div id="karte-sec-review" class="karte-sec"></div>
       <div id="karte-sec-enrollhist" class="karte-sec"></div>
       <div id="karte-sec-exams" class="karte-sec"></div>
       <div id="karte-sec-interviews" class="karte-sec"></div>
@@ -4553,6 +4554,15 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         </div>
       </div>
 
+      <!-- 復習ステータス（dij） -->
+      <div id="att-review-bar" style="display:none;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;background:#FBF7F0;border:1px solid #F0E6D6;border-radius:10px;padding:8px 10px">
+        <div id="att-review-summary" style="font-size:12px;color:var(--text);line-height:1.5"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);cursor:pointer;white-space:nowrap">
+          <input type="checkbox" id="att-review-toggle" checked onchange="toggleAttReview(this.checked)" style="width:16px;height:16px;accent-color:var(--orange)">
+          復習表示
+        </label>
+      </div>
+
       <div id="att-roster" style="display:flex;flex-direction:column;gap:6px"></div>
       <button onclick="attAddProvisional()" style="width:100%;margin-top:10px;padding:9px;background:var(--surface);border:1.5px dashed #C6851B;border-radius:8px;color:#8F5F12;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">⏳ 申込は出ていないが参加している生徒を追加</button>
 
@@ -5508,7 +5518,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dii';
+const APP_VERSION = '20260702dil';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -19177,6 +19187,27 @@ async function loadKarteAttendance(classId) {
         if (stRateSub) stRateSub.textContent = '対面 –';
       }
     }
+    // 各授業回の復習提出（check_logs）を集計（dik）。復習は period を持たないため session_date 単位。
+    let reviewByDate = {};
+    try {
+      const rlogs = await sbGet('check_logs',
+        'class_master_id=eq.' + classId + '&session_date=gte.' + minD +
+        '&select=session_date,status,review_self_rating,student_id') || [];
+      const rmerge = {}; // (date|student) 単位で承認済優先の1件に
+      rlogs.forEach(l => {
+        const k = l.session_date + '|' + l.student_id;
+        const prev = rmerge[k];
+        const rank = (x) => (x.status === 'approved' ? 2 : (x.status === 'pending' ? 1 : 0));
+        if (!prev || rank(l) > rank(prev)) rmerge[k] = l;
+      });
+      Object.values(rmerge).forEach(l => {
+        const o = reviewByDate[l.session_date] || (reviewByDate[l.session_date] = { reported:0, approved:0, rateSum:0, rateN:0 });
+        o.reported++;
+        if (l.status === 'approved') o.approved++;
+        if (l.review_self_rating != null) { o.rateSum += l.review_self_rating; o.rateN++; }
+      });
+    } catch (e) { reviewByDate = {}; }
+
     const wlabels = ['日','月','火','水','木','金','土'];
     el.innerHTML = sessions.map(s => {
       const d = new Date(s.session_date + 'T00:00:00+09:00');
@@ -19187,10 +19218,20 @@ async function loadKarteAttendance(classId) {
       const ipRate = total ? Math.round((o.present / total) * 100) : 0;
       const rateColor = rate >= 80 ? 'var(--green-d)' : (rate >= 50 ? 'var(--orange-d)' : 'var(--red)');
       const detail = '出席 ' + o.present + '　欠席 ' + o.absent + (o.makeup ? '　補習 ' + o.makeup : '') + (unrec ? '　未記録 ' + unrec : '');
+      // 復習まとめ（その回・dik）
+      const rv = reviewByDate[s.session_date];
+      let reviewLine = '';
+      if (rv && rv.reported) {
+        const avg = rv.rateN ? (rv.rateSum / rv.rateN).toFixed(1) : null;
+        reviewLine = '<div style="font-size:10px;color:var(--orange-d);margin-top:3px">📝 復習 ' + rv.reported + '人' +
+          (rv.approved ? '（承認 ' + rv.approved + '）' : '') +
+          (avg != null ? '・定着度 ' + avg + '/5' : '') + '</div>';
+      }
       return '<div class="ck-att-row">' +
         '<div class="ck-att-main">' +
           '<div class="ck-att-date">' + label + '</div>' +
           '<div class="ck-att-detail">' + detail + '</div>' +
+          reviewLine +
           '<div class="ck-att-bar"><div class="ck-att-bar-fill" style="width:' + rate + '%;background:' + rateColor + '"></div></div>' +
         '</div>' +
         '<div style="display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0">' +
@@ -27280,6 +27321,7 @@ async function loadAttendanceRoster() {
     document.getElementById('att-summary').style.display = 'none';
     document.getElementById('att-save-btn').style.display = 'none';
     document.getElementById('att-report-box').style.display = 'none';
+    const rb = document.getElementById('att-review-bar'); if (rb) rb.style.display = 'none';
     return;
   }
   const [sdate, periodStr] = sv.split('|');
@@ -27314,6 +27356,7 @@ async function loadAttendanceRoster() {
       document.getElementById('att-roster').innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">この授業に受講登録された生徒がいません</div>';
       document.getElementById('att-summary').style.display = 'none';
       document.getElementById('att-save-btn').style.display = 'none';
+      const rb2 = document.getElementById('att-review-bar'); if (rb2) rb2.style.display = 'none';
       return;
     }
     // その授業日の来塾（checkin_date一致）
@@ -27344,6 +27387,23 @@ async function loadAttendanceRoster() {
       makeups.forEach(m => makeupSet.add(m.student_id));
     } catch(e) { /* テーブル未作成時は無視 */ }
 
+    // この授業回（class_master_id + session_date）の復習報告（check_logs）を突合（dij）
+    // session_attendance 同様、別クエリで取得して JS で紐付け。
+    let reviewMap = {};
+    try {
+      const rlogs = await sbGet('check_logs',
+        'class_master_id=eq.' + classId + '&session_date=eq.' + sdate +
+        '&student_id=in.(' + studentIds.join(',') + ')&select=*') || [];
+      rlogs.forEach(l => {
+        // 同一生徒に複数あれば、approved を優先、その次に新しいものを採用
+        const prev = reviewMap[l.student_id];
+        if (!prev) { reviewMap[l.student_id] = l; return; }
+        const rank = (x) => (x.status === 'approved' ? 2 : (x.status === 'pending' ? 1 : 0));
+        if (rank(l) > rank(prev)) reviewMap[l.student_id] = l;
+        else if (rank(l) === rank(prev) && (l.id || 0) > (prev.id || 0)) reviewMap[l.student_id] = l;
+      });
+    } catch (e) { reviewMap = {}; }
+
     // staffStudents から生徒情報を引く（写真・学校・学年）。並びは学校→学年→名前
     attRosterRows = studentIds.map(sid => {
       const stu = staffStudents.find(s => s.id === sid) || { id: sid, name: '(不明な生徒)' };
@@ -27360,7 +27420,7 @@ async function loadAttendanceRoster() {
         status = inTime ? 'present' : 'absent';
         note = '';
       }
-      return { student: stu, status: status, note: note, checkinTime: inTime, noteOpen: !!note, isMakeup: makeupSet.has(sid) };
+      return { student: stu, status: status, note: note, checkinTime: inTime, noteOpen: !!note, isMakeup: makeupSet.has(sid), review: reviewMap[sid] || null, reviewOpen: false };
     }).sort((a,b) => {
       const sa = (a.student.school||'') + (a.student.grade||'') + (a.student.name||'');
       const sb = (b.student.school||'') + (b.student.grade||'') + (b.student.name||'');
@@ -27406,6 +27466,7 @@ function renderAttendanceRoster() {
     const noteArea = row.noteOpen
       ? '<input type="text" value="' + (row.note||'').replace(/"/g,'&quot;') + '" oninput="setAttNote(' + i + ',this.value)" placeholder="メモ・欠席理由" style="width:100%;margin-top:8px;font-size:12px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box">'
       : '';
+    const reviewRow = (attReviewShow ? attReviewCardHtml(row, i) : '');
     return '<div style="background:var(--surface);border:1px solid #F0E6D6;border-radius:16px;padding:12px 13px;box-shadow:0 8px 20px -12px rgba(160,120,40,.16),0 2px 6px -4px rgba(0,0,0,.05)">' +
       '<div style="display:flex;align-items:center;gap:10px">' +
         avatar +
@@ -27414,14 +27475,79 @@ function renderAttendanceRoster() {
           '<div style="font-size:11px;color:var(--muted)">' + sub + '</div>' +
         '</div>' +
       '</div>' +
+      reviewRow +
       '<div style="display:flex;gap:6px;margin-top:10px">' + presentBtn + makeupBtn + absentBtn + '</div>' +
       '<div style="margin-top:6px"><span onclick="toggleAttNote(' + i + ')" style="font-size:11px;color:var(--muted);cursor:pointer">📝 メモ' + (row.noteOpen ? ' ▲' : ' ▼') + '</span></div>' +
       noteArea +
     '</div>';
   }).join('');
   updateAttSummary();
+  updateAttReviewBar();
   document.getElementById('att-summary').style.display = 'flex';
   document.getElementById('att-save-btn').style.display = 'block';
+}
+
+// 復習ステータス state（dij）
+let attReviewShow = true;
+function toggleAttReview(on) {
+  attReviewShow = !!on;
+  renderAttendanceRoster();
+}
+// 復習報告の1行（カード内）
+function attReviewCardHtml(row, i) {
+  const r = row.review;
+  if (!r) {
+    return '<div style="margin-top:8px;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)">' +
+      '<span style="background:#F1EDE6;border-radius:9px;padding:2px 8px">📝 復習 未報告</span></div>';
+  }
+  const isAppr = (r.status === 'approved');
+  const badge = isAppr
+    ? '<span style="background:var(--green-l);color:var(--green-d);border:1px solid #A8D891;border-radius:9px;padding:2px 8px;font-weight:700">✅ 復習 承認済</span>'
+    : '<span style="background:#FFF6E5;color:var(--orange-d);border:1px solid var(--orange);border-radius:9px;padding:2px 8px;font-weight:700">📮 復習 報告済</span>';
+  const rt = (r.review_self_rating != null) ? r.review_self_rating : null;
+  const rateLabel = (rt != null)
+    ? '<span style="font-size:11px;color:var(--text)">定着度 <b>' + rt + '</b>/5</span>'
+    : '';
+  const hasDetail = (rt != null || r.review_resume_done != null || (r.review_note != null && r.review_note !== '') || (r.review_followup != null && r.review_followup !== ''));
+  const caret = hasDetail ? '<span style="font-size:10px;color:var(--muted)">' + (row.reviewOpen ? '▲' : '▼') + '</span>' : '';
+  let head = '<div onclick="toggleAttReviewDetail(' + i + ')" style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:11px;cursor:' + (hasDetail?'pointer':'default') + '">' +
+    badge + rateLabel + caret + '</div>';
+  if (row.reviewOpen && hasDetail) {
+    const chk = (v) => v ? '✅' : '☐';
+    const labels = { 1:'わからない', 2:'あまりわからない', 3:'ふつう', 4:'だいたいわかった', 5:'完璧！' };
+    let d = '<div style="margin-top:6px;background:#FAF7F2;border:1px solid var(--border);border-radius:8px;padding:8px 9px;font-size:11px;color:var(--text);line-height:1.7">';
+    if (r.review_resume_done != null || r.review_redo_done != null) {
+      d += '<div>' + chk(r.review_resume_done) + ' レジュメ整理　' + chk(r.review_redo_done) + ' 見直し</div>';
+    }
+    if (rt != null) d += '<div>定着度 ' + rt + '/5 <span style="color:var(--muted)">' + escapeHtml(labels[rt] || '') + '</span></div>';
+    if (r.review_followup != null && r.review_followup !== '') d += '<div style="color:var(--orange-d)">対処：' + escapeHtml(r.review_followup) + '</div>';
+    if (r.review_note != null && r.review_note !== '') d += '<div style="margin-top:3px;padding-top:3px;border-top:1px dashed var(--border)"><span style="color:var(--muted)">メモ：</span>' + escapeHtml(r.review_note) + '</div>';
+    d += '</div>';
+    head += d;
+  }
+  return head;
+}
+function toggleAttReviewDetail(i) {
+  if (!attRosterRows[i]) return;
+  attRosterRows[i].reviewOpen = !attRosterRows[i].reviewOpen;
+  renderAttendanceRoster();
+}
+function updateAttReviewBar() {
+  const bar = document.getElementById('att-review-bar');
+  const sm = document.getElementById('att-review-summary');
+  const tg = document.getElementById('att-review-toggle');
+  if (!bar || !sm) return;
+  bar.style.display = 'flex';
+  if (tg) tg.checked = attReviewShow;
+  const total = attRosterRows.length;
+  const reported = attRosterRows.filter(r => r.review).length;
+  const approved = attRosterRows.filter(r => r.review && r.review.status === 'approved').length;
+  const rates = attRosterRows.map(r => r.review && r.review.review_self_rating).filter(v => v != null);
+  const avg = rates.length ? (rates.reduce((a,b)=>a+b,0) / rates.length) : null;
+  let txt = '📝 復習提出 <b>' + reported + '</b>/' + total + '人';
+  if (approved) txt += '（承認済 ' + approved + '）';
+  if (avg != null) txt += '　平均定着度 <b>' + avg.toFixed(1) + '</b>/5';
+  sm.innerHTML = txt;
 }
 
 function setAttStatus(i, status) {
@@ -30547,6 +30673,7 @@ const KARTE_SECTIONS = [
   { key: 'profile',     label: '👤 プロフィール' },
   { key: 'checkins',    label: '📅 来塾率' },
   { key: 'attendance',  label: '✅ 授業出席' },
+  { key: 'review',      label: '📚 復習の定着度' },
   { key: 'enrollhist',  label: '📖 受講歴' },
   { key: 'exams',       label: '📈 成績' },
   { key: 'interviews',  label: '🗣 面談' },
@@ -30640,6 +30767,7 @@ async function openInterviewKarte(studentId, backTo) {
   karteLoadProfile(s);
   karteLoadCheckins(studentId);
   karteLoadAttendance(studentId);
+  karteLoadReview(studentId);
   karteLoadEnrollHist(studentId);
   karteLoadExams(studentId);
   karteLoadInterviews(studentId);
@@ -30880,6 +31008,93 @@ async function karteLoadAttendance(sid) {
     renderKarteAttendance();
   } catch (e) {
     el.innerHTML = karteSecShell('✅ 授業出席', '<div style="font-size:12px;color:var(--muted)">読み込みに失敗しました。</div>');
+  }
+}
+
+// ---- 復習の定着度推移（dil）：check_logs の review_self_rating を授業日順に表示 ----
+async function karteLoadReview(sid) {
+  const el = document.getElementById('karte-sec-review');
+  if (!el) return;
+  try {
+    let logs = [];
+    try {
+      logs = await sbGet('check_logs',
+        'student_id=eq.' + sid + '&select=session_date,class_master_id,status,review_self_rating,review_note,review_followup&order=session_date.asc') || [];
+    } catch (e) {
+      // 新列が無い環境：セクション非表示
+      el.innerHTML = '';
+      return;
+    }
+    // 復習報告（review_self_rating がある行）のみ対象。(date|class) 単位で承認優先1件に。
+    const merged = {};
+    logs.forEach(l => {
+      if (l.review_self_rating == null) return;
+      const k = l.session_date + '|' + (l.class_master_id || '');
+      const prev = merged[k];
+      const rank = (x) => (x.status === 'approved' ? 2 : (x.status === 'pending' ? 1 : 0));
+      if (!prev || rank(l) > rank(prev)) merged[k] = l;
+    });
+    const items = Object.values(merged).sort((a, b) => a.session_date < b.session_date ? -1 : a.session_date > b.session_date ? 1 : 0);
+    if (!items.length) {
+      el.innerHTML = karteSecShell('📚 復習の定着度', '<div style="font-size:12px;color:var(--muted)">復習の報告がまだありません。</div>');
+      return;
+    }
+    // 授業名マップ
+    const cids = [...new Set(items.map(i => i.class_master_id).filter(Boolean))];
+    const nameMap = {};
+    if (cids.length) {
+      try {
+        const cms = await sbGet('class_master', 'id=in.(' + cids.join(',') + ')&select=id,name') || [];
+        cms.forEach(c => { nameMap[c.id] = c.name; });
+      } catch (e) {}
+    }
+    const rates = items.map(i => i.review_self_rating);
+    const avg = (rates.reduce((a, b) => a + b, 0) / rates.length);
+    const recent = items.slice(-8); // 直近8回を棒グラフ表示
+    const barColor = (r) => r >= 4 ? 'var(--green-d)' : (r >= 3 ? 'var(--orange-d)' : '#C75050');
+    const chart = '<div style="display:flex;align-items:flex-end;gap:6px;height:90px;margin:6px 0 4px">' +
+      recent.map(it => {
+        const r = it.review_self_rating;
+        const h = Math.round((r / 5) * 78) + 6;
+        const d = new Date(it.session_date + 'T00:00:00+09:00');
+        const dl = (d.getMonth() + 1) + '/' + d.getDate();
+        return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:3px">' +
+          '<div style="font-size:10px;font-weight:700;color:' + barColor(r) + '">' + r + '</div>' +
+          '<div style="width:100%;max-width:26px;height:' + h + 'px;background:' + barColor(r) + ';border-radius:4px 4px 0 0"></div>' +
+          '<div style="font-size:9px;color:var(--muted);white-space:nowrap">' + dl + '</div>' +
+        '</div>';
+      }).join('') + '</div>';
+    // 一覧（直近から）
+    const list = items.slice().reverse().slice(0, 12).map(it => {
+      const d = new Date(it.session_date + 'T00:00:00+09:00');
+      const dl = (d.getMonth() + 1) + '/' + d.getDate();
+      const cname = nameMap[it.class_master_id] || '授業';
+      const r = it.review_self_rating;
+      const badge = (it.status === 'approved')
+        ? '<span style="font-size:9px;color:var(--green-d)">✅</span>'
+        : '<span style="font-size:9px;color:var(--orange-d)">📮</span>';
+      const fu = (it.review_followup && it.review_followup !== '') ? '<span style="font-size:9px;color:var(--orange-d);margin-left:4px">' + escapeHtml(it.review_followup) + '</span>' : '';
+      const note = (it.review_note && it.review_note !== '')
+        ? '<div style="font-size:10px;color:var(--muted);margin-top:2px">' + escapeHtml(it.review_note) + '</div>' : '';
+      return '<div style="padding:7px 0;border-bottom:1px solid var(--border)">' +
+        '<div style="display:flex;align-items:center;gap:8px;font-size:11px">' +
+          '<span style="color:var(--muted);white-space:nowrap">' + dl + '</span>' +
+          badge +
+          '<span style="flex:1;min-width:0;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(cname) + '</span>' +
+          '<span style="font-weight:700;color:' + barColor(r) + '">' + r + '/5</span>' + fu +
+        '</div>' + note +
+      '</div>';
+    }).join('');
+    const inner =
+      '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px">' +
+        '<div style="font-size:12px;color:var(--muted)">報告 ' + items.length + '回</div>' +
+        '<div style="font-size:12px;color:var(--muted)">平均定着度 <b style="color:' + barColor(avg) + '">' + avg.toFixed(1) + '</b>/5</div>' +
+      '</div>' +
+      chart +
+      '<div style="margin-top:6px">' + list + '</div>';
+    el.innerHTML = karteSecShell('📚 復習の定着度', inner);
+  } catch (e) {
+    el.innerHTML = karteSecShell('📚 復習の定着度', '<div style="font-size:12px;color:var(--muted)">読み込みに失敗しました。</div>');
   }
 }
 
