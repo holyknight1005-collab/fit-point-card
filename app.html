@@ -2017,10 +2017,10 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <!-- 🔍 承認待ち（自分が承認担当・依頼者のもの・die）。0件なら非表示 -->
     <div id="home-approval-section" style="display:none;background:linear-gradient(135deg,#E4EEFB,#FFFFFF);border:1.5px solid #4A7FC0;border-radius:var(--radius);padding:14px 16px;margin-bottom:12px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <span style="font-size:14px;font-weight:700;color:#2C5FA8">🔍 承認待ち <span id="home-approval-count" style="font-size:11px;background:#4A7FC0;color:#fff;border-radius:10px;padding:1px 8px;margin-left:4px"></span></span>
+        <span onclick="toggleHomeApprovals()" style="font-size:14px;font-weight:700;color:#2C5FA8;cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:6px"><span id="home-approval-caret" style="font-size:12px;transition:transform 0.2s;display:inline-block">›</span>🔍 承認待ち <span id="home-approval-count" style="font-size:11px;background:#4A7FC0;color:#fff;border-radius:10px;padding:1px 8px;margin-left:4px"></span></span>
         <button onclick="openStaffManage('todo')" style="font-size:11px;font-weight:700;color:#2C5FA8;background:#E4EEFB;border:1px solid #4A7FC0;border-radius:20px;padding:4px 12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">すべて見る ›</button>
       </div>
-      <div id="home-approval-list" style="display:flex;flex-direction:column;gap:6px"></div>
+      <div id="home-approval-list" style="display:none;flex-direction:column;gap:6px"></div>
     </div>
     <!-- ★ 自分へのToDo（ホーム上部・すぐ見える） -->
     <div id="home-mytodo-section" style="background:linear-gradient(135deg,#EAF5E1,#FFFFFF);border:1.5px solid var(--green);border-radius:var(--radius);padding:14px 16px">
@@ -5458,7 +5458,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dif';
+const APP_VERSION = '20260702dih';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -8195,6 +8195,16 @@ async function loadHomeMyTodos() {
 
 // ホームの「🔍 承認待ち」枠。自分が承認担当（approver_staff_id）または依頼者（from_staff_id）で、
 // 完了報告済み・承認が必要・未承認 のTODOを集めて、その場で承認/差し戻しできるようにする。die
+// ホーム承認待ちの折りたたみ開閉。件数バッジは常に見えるので、初期は閉じておいてホームを短く保つ。
+function toggleHomeApprovals() {
+  const el = document.getElementById('home-approval-list');
+  const caret = document.getElementById('home-approval-caret');
+  if (!el) return;
+  const open = el.style.display !== 'none';
+  el.style.display = open ? 'none' : 'flex';
+  if (caret) caret.style.transform = open ? 'rotate(0deg)' : 'rotate(90deg)';
+}
+
 async function loadHomeApprovals() {
   const sec = document.getElementById('home-approval-section');
   const el = document.getElementById('home-approval-list');
@@ -8212,7 +8222,13 @@ async function loadHomeApprovals() {
         '&order=done_at.asc&select=*,to:to_staff_id(name),from:from_staff_id(name)'));
     // 差し戻し後に再度完了報告されていないもの（rejected_at があって is_done=false）は対象外。
     // 上の条件で is_done=true のみ拾っているので自然に除外される。
-    const list = (all || []).filter(t => isTodoAwaitingApproval(t));
+    // 承認担当が指定されていれば「その人だけ」、未指定なら「依頼者」が承認する。
+    // （依頼者と承認者の両方で拾っているので、ここで自分が承認すべきものだけに絞る）
+    const list = (all || []).filter(t => {
+      if (!isTodoAwaitingApproval(t)) return false;
+      if (t.approver_staff_id) return t.approver_staff_id === currentStaff.id; // 承認担当指定あり→その人だけ
+      return t.from_staff_id === currentStaff.id;                              // 指定なし→依頼者
+    });
     if (!list.length) { sec.style.display = 'none'; return; }
     sec.style.display = 'block';
     if (cnt) cnt.textContent = list.length + '件';
@@ -17199,8 +17215,9 @@ async function loadSentTodos() {
             ? '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#EDE7F6;color:#6B4FA0;font-weight:700">🔍 承認待ち</span>'
             : '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:' + (t.is_done?'var(--green-l)':'var(--orange-l)') + ';color:' + (t.is_done?'var(--green-d)':'var(--orange-d)') + '">' + (t.is_done?'完了':'未完了') + '</span>') +
           (!t.is_done && t.rejected_at ? '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#FBF0E6;color:#B06A3A">🔙 差し戻し済</span>' : '') +
-          (waiting ? '<button onclick="approveTodo(\'' + t.id + '\')" style="padding:2px 9px;background:var(--green-l);border:1px solid var(--green-d);border-radius:6px;font-size:10px;cursor:pointer;color:var(--green-d);font-weight:700;font-family:\'Noto Sans JP\',sans-serif">✅ 承認</button>' : '') +
-          (waiting ? '<button onclick="openTodoReject(\'' + t.id + '\',\'' + escapeAttr(t.to?.name||'') + '\',\'' + escapeAttr(t.title) + '\',\'' + (t.due_date||'') + '\')" style="padding:2px 9px;background:var(--surface);border:1px solid #D08A5A;border-radius:6px;font-size:10px;cursor:pointer;color:#B06A3A;font-family:\'Noto Sans JP\',sans-serif">🔙 差し戻し</button>' : '') +
+          ((waiting && (t.approver_staff_id ? t.approver_staff_id === currentStaff.id : t.from_staff_id === currentStaff.id)) ? '<button onclick="approveTodo(\'' + t.id + '\')" style="padding:2px 9px;background:var(--green-l);border:1px solid var(--green-d);border-radius:6px;font-size:10px;cursor:pointer;color:var(--green-d);font-weight:700;font-family:\'Noto Sans JP\',sans-serif">✅ 承認</button>' : '') +
+          ((waiting && (t.approver_staff_id ? t.approver_staff_id === currentStaff.id : t.from_staff_id === currentStaff.id)) ? '<button onclick="openTodoReject(\'' + t.id + '\',\'' + escapeAttr(t.to?.name||'') + '\',\'' + escapeAttr(t.title) + '\',\'' + (t.due_date||'') + '\')" style="padding:2px 9px;background:var(--surface);border:1px solid #D08A5A;border-radius:6px;font-size:10px;cursor:pointer;color:#B06A3A;font-family:\'Noto Sans JP\',sans-serif">🔙 差し戻し</button>' : '') +
+          (waiting && t.approver_staff_id && t.approver_staff_id !== currentStaff.id ? '<span style="font-size:10px;color:var(--muted)">承認担当：' + escapeHtml(staffNameById(t.approver_staff_id)) + '</span>' : '') +
           (!t.is_done ? '<button onclick="openTodoDueEdit(\'' + t.id + '\',\'' + (t.due_date||'') + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">期日変更</button>' : '') +
           '<button onclick="removeTodoAssignee(\'' + t.id + '\',\'' + escapeAttr(t.to?.name||'') + '\',\'' + escapeAttr(t.title) + '\')" title="この人を依頼から外す" style="padding:2px 8px;background:var(--surface);border:1px solid #E5A5A5;border-radius:6px;font-size:10px;cursor:pointer;color:#C75050;font-family:\'Noto Sans JP\',sans-serif">✕ 対象外</button>' +
         '</div>' +
