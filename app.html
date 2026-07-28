@@ -347,6 +347,56 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="day-modal-body" style="display:flex;flex-direction:column;gap:14px"></div>
   </div>
 </div>
+<!-- 授業の復習 報告モーダル（生徒用・dii） -->
+<div id="review-report-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:695;align-items:center;justify-content:center;padding:16px">
+  <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:400px;width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-size:15px;font-weight:700;color:var(--text)">📚 授業の復習を報告</div>
+      <button onclick="closeReviewReportModal()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="rrm-classlabel" style="font-size:12px;color:var(--muted);margin-bottom:14px"></div>
+
+    <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+      <label style="display:flex;align-items:center;gap:10px;padding:11px 12px;background:var(--surface);border:1.5px solid var(--border);border-radius:10px;cursor:pointer;font-size:14px;color:var(--text)">
+        <input type="checkbox" id="rrm-resume" style="width:18px;height:18px;accent-color:var(--orange)">
+        レジュメの整理をした
+      </label>
+      <label style="display:flex;align-items:center;gap:10px;padding:11px 12px;background:var(--surface);border:1.5px solid var(--border);border-radius:10px;cursor:pointer;font-size:14px;color:var(--text)">
+        <input type="checkbox" id="rrm-redo" style="width:18px;height:18px;accent-color:var(--orange)">
+        見直しや解き直しをした
+      </label>
+    </div>
+
+    <div style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:8px">定着度の自己評価</div>
+      <div id="rrm-rating-row" style="display:flex;gap:6px"></div>
+      <div id="rrm-rating-label" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:15px"></div>
+    </div>
+
+    <div id="rrm-followup-wrap" style="display:none;margin-bottom:16px;padding:12px;background:#FFF6E5;border:1px solid var(--orange);border-radius:10px">
+      <div style="font-size:12px;font-weight:700;color:var(--orange-d);margin-bottom:8px">わからなかった所、どうする？</div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <label style="display:flex;align-items:center;gap:9px;font-size:13px;color:var(--text);cursor:pointer">
+          <input type="checkbox" id="rrm-fu-ask" style="width:17px;height:17px;accent-color:var(--orange)">
+          スタッフに質問する
+        </label>
+        <label style="display:flex;align-items:center;gap:9px;font-size:13px;color:var(--text);cursor:pointer">
+          <input type="checkbox" id="rrm-fu-video" style="width:17px;height:17px;accent-color:var(--orange)">
+          ビデオでもう一度見る
+        </label>
+      </div>
+    </div>
+
+    <div style="margin-bottom:18px">
+      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:8px">復習してわからなかったところ</div>
+      <textarea id="rrm-note" rows="3" placeholder="復習して分からなかったところを書いてください" style="width:100%;box-sizing:border-box;padding:10px;border:1.5px solid var(--border);border-radius:10px;font-size:13px;font-family:'Noto Sans JP',sans-serif;resize:vertical;background:var(--surface);color:var(--text)"></textarea>
+    </div>
+
+    <button id="rrm-submit" onclick="submitReviewReport()" style="width:100%;padding:13px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:12px;color:#fff;font-size:15px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">送信する</button>
+  </div>
+</div>
+
+
 
 <!-- 日付詳細モーダル（スタッフ用カレンダー） -->
 <div id="staffcal-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:600;align-items:center;justify-content:center;padding:20px">
@@ -5458,7 +5508,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dih';
+const APP_VERSION = '20260702dii';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -13502,6 +13552,32 @@ async function buildClassTeacherMap(classIds) {
   return map;
 }
 
+// 生徒が入力した復習報告の詳細（レジュメ/見直し/定着度/対処/メモ）を承認カードに表示（dii）
+function reviewDetailHtml(r) {
+  const hasNew = (r.review_resume_done != null || r.review_redo_done != null ||
+    r.review_self_rating != null || (r.review_note != null && r.review_note !== '') ||
+    (r.review_followup != null && r.review_followup !== ''));
+  if (!hasNew) {
+    return '<div style="font-size:11px;color:var(--muted);background:#F5F5F5;border-radius:6px;padding:6px 8px;margin-bottom:8px">（旧形式・情報なし）</div>';
+  }
+  const labels = { 1:'わからない', 2:'あまりわからない', 3:'ふつう', 4:'だいたいわかった', 5:'完璧！' };
+  const chk = (v) => v ? '✅' : '☐';
+  let h = '<div style="background:#FAF7F2;border:1px solid var(--border);border-radius:8px;padding:9px 10px;margin-bottom:8px;font-size:12px;color:var(--text);line-height:1.7">';
+  h += '<div>' + chk(r.review_resume_done) + ' レジュメの整理　' + chk(r.review_redo_done) + ' 見直し・解き直し</div>';
+  if (r.review_self_rating != null) {
+    const rt = r.review_self_rating;
+    h += '<div>定着度：<b>' + rt + '</b> / 5　<span style="color:var(--muted)">' + escapeHtml(labels[rt] || '') + '</span></div>';
+  }
+  if (r.review_followup != null && r.review_followup !== '') {
+    h += '<div style="color:var(--orange-d)">対処：' + escapeHtml(r.review_followup) + '</div>';
+  }
+  if (r.review_note != null && r.review_note !== '') {
+    h += '<div style="margin-top:4px;padding-top:4px;border-top:1px dashed var(--border)"><span style="color:var(--muted)">メモ：</span>' + escapeHtml(r.review_note) + '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
 async function loadReviewApprovals() {
   const pendEl = document.getElementById('sm-review-pending');
   const apprEl = document.getElementById('sm-review-approved');
@@ -13553,6 +13629,7 @@ async function loadReviewApprovals() {
             '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(sname) + '　' + mineBadge + '</div>' +
             '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(ssub) + (ssub ? '　' : '') + escapeHtml(cname) + 'の復習　授業日 ' + dateStr + '</div>' +
           '</div>' +
+          reviewDetailHtml(r) +
           '<div style="display:flex;gap:8px">' +
             '<button onclick="approveReview(&quot;' + r.id + '&quot;)" style="flex:1;padding:8px;background:var(--green-d);border:none;border-radius:6px;color:white;font-weight:700;font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">✅ 承認 +1pt</button>' +
             '<button onclick="rejectReview(&quot;' + r.id + '&quot;)" style="padding:8px 14px;background:transparent;border:1.5px solid #C75050;border-radius:6px;color:#C75050;font-weight:700;font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">却下</button>' +
@@ -26034,11 +26111,141 @@ function checkRowHtml(title, key, isDone, pts, kind, refId, sessionDate, isPendi
   '</div>';
 }
 
+// ===== 授業の復習 報告モーダル（dii） =====
+const RRM_RATING_LABELS = { 1:'わからない', 2:'あまりわからない', 3:'ふつう', 4:'だいたいわかった', 5:'完璧！' };
+let rrmCtx = null;      // { periodKey, classMasterId, sessionDate, className, pts }
+let rrmRating = 0;
+
+function openReviewReportModal(periodKey, classMasterId, sessionDate, className, pts) {
+  rrmCtx = { periodKey, classMasterId, sessionDate, className, pts: pts || 1 };
+  rrmRating = 0;
+  const lab = document.getElementById('rrm-classlabel');
+  if (lab) {
+    const dstr = (sessionDate || '').replace(/-/g, '/');
+    lab.textContent = (className || '授業') + '　授業日 ' + dstr;
+  }
+  const rz = document.getElementById('rrm-resume'); if (rz) rz.checked = false;
+  const rd = document.getElementById('rrm-redo'); if (rd) rd.checked = false;
+  const fa = document.getElementById('rrm-fu-ask'); if (fa) fa.checked = false;
+  const fv = document.getElementById('rrm-fu-video'); if (fv) fv.checked = false;
+  const nt = document.getElementById('rrm-note'); if (nt) nt.value = '';
+  const fw = document.getElementById('rrm-followup-wrap'); if (fw) fw.style.display = 'none';
+  renderRrmRating();
+  const m = document.getElementById('review-report-modal');
+  if (m) m.style.display = 'flex';
+}
+
+function closeReviewReportModal() {
+  const m = document.getElementById('review-report-modal');
+  if (m) m.style.display = 'none';
+  rrmCtx = null;
+}
+
+function renderRrmRating() {
+  const row = document.getElementById('rrm-rating-row');
+  if (!row) return;
+  let h = '';
+  for (let i = 1; i <= 5; i++) {
+    const on = (rrmRating === i);
+    h += '<button onclick="setRrmRating(' + i + ')" style="flex:1;padding:10px 0;border:1.5px solid ' +
+      (on ? 'var(--orange)' : 'var(--border)') + ';background:' + (on ? 'var(--orange)' : 'var(--surface)') +
+      ';color:' + (on ? '#fff' : 'var(--text)') + ';border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + i + '</button>';
+  }
+  row.innerHTML = h;
+  const lbl = document.getElementById('rrm-rating-label');
+  if (lbl) lbl.textContent = rrmRating ? (rrmRating + '：' + (RRM_RATING_LABELS[rrmRating] || '')) : '1（わからない）〜 5（完璧）';
+}
+
+function setRrmRating(n) {
+  rrmRating = n;
+  renderRrmRating();
+  const fw = document.getElementById('rrm-followup-wrap');
+  if (fw) fw.style.display = (n >= 1 && n <= 3) ? 'block' : 'none';
+}
+
+async function submitReviewReport() {
+  if (!rrmCtx || !currentStudent) return;
+  const resume = document.getElementById('rrm-resume').checked;
+  const redo = document.getElementById('rrm-redo').checked;
+  const note = (document.getElementById('rrm-note').value || '').trim();
+  // 必須チェック
+  if (!resume || !redo) { showToast('レジュメの整理と見直しの両方にチェックしてね', 'error'); return; }
+  if (!rrmRating) { showToast('定着度を選んでね', 'error'); return; }
+  if (!note) { showToast('わからなかったところを書いてね', 'error'); return; }
+  let followup = '';
+  if (rrmRating <= 3) {
+    const fu = [];
+    if (document.getElementById('rrm-fu-ask').checked) fu.push('質問する');
+    if (document.getElementById('rrm-fu-video').checked) fu.push('ビデオ再視聴');
+    followup = fu.join(',');
+  }
+
+  const ctx = rrmCtx;
+  showLoading('記録中...');
+  try {
+    const today = getTodayJST();
+    const base = {
+      student_id: currentStudent.id,
+      period_key: ctx.periodKey,
+      check_date: today,
+      class_master_id: ctx.classMasterId,
+      session_date: ctx.sessionDate || today
+    };
+    const full = Object.assign({}, base, {
+      status: 'pending',
+      review_resume_done: resume,
+      review_redo_done: redo,
+      review_self_rating: rrmRating,
+      review_note: note,
+      review_followup: followup || null
+    });
+    let ok = true;
+    try {
+      await sbPost('check_logs', full);
+    } catch (e) {
+      const msg = String(e && e.message || e);
+      if (/column|PGRST|400/i.test(msg)) {
+        // 新列が無い環境：status のみで再POST
+        try {
+          await sbPost('check_logs', Object.assign({}, base, { status: 'pending' }));
+        } catch (e2) {
+          const msg2 = String(e2 && e2.message || e2);
+          if (/status|column|schema|PGRST|400/i.test(msg2)) {
+            await sbPost('check_logs', base); // 最旧環境：statusなし
+            ok = false; // 承認制でない＝その場加点は行わないが記録はする
+          } else { throw e2; }
+        }
+      } else { throw e; }
+    }
+    checkState.pendingKeys.add(ctx.periodKey);
+    checkState.doneKeys.add(ctx.periodKey);
+    hideLoading();
+    closeReviewReportModal();
+    showToast('📮 復習を報告したよ！先生の承認を待ってね', 'success');
+    renderCheckScreen();
+    updateHomeCheckBadge();
+  } catch (e) {
+    hideLoading();
+    showToast('エラー: ' + (e.message || e), 'error');
+  }
+}
+
+
 async function doCheck(periodKey, kind, refId, pts, sessionDate) {
   if (!currentStudent) return;
   if (checkState.doneKeys.has(periodKey)) return; // 二重防止
   // 授業の復習は「承認制」：チェックしても即ポイント付与せず、講師承認で確定する。
   const isClassReview = (kind === 'class');
+  // 授業の復習はモーダルで4項目を入力させる（dii）。他 kind は従来どおり即時処理。
+  if (isClassReview) {
+    let cname = '授業';
+    try {
+      const c = (checkState.classes || []).find(x => x.key === periodKey);
+      if (c && c.name) cname = c.name;
+    } catch (e) {}
+    openReviewReportModal(periodKey, refId, sessionDate, cname, pts);
+    return;
+  }
   showLoading('記録中...');
   try {
     const today = getTodayJST();
