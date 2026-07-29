@@ -5172,6 +5172,22 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         </div>
       </div>
 
+      <!-- 除外生徒の完全消去（管理者・ゴースト掃除） -->
+      <div id="sm-admin-cleanup" style="display:none">
+        <div class="section-title" style="margin-top:8px">🗑 除外生徒の完全消去（掃除）</div>
+        <div class="card-box" style="border:1.5px solid #E0A0A0">
+          <div style="font-size:12px;color:var(--text);line-height:1.7;margin-bottom:10px">
+            除外（デモ・テスト・重複ゴースト）に設定された生徒を、関連データごと完全に消去します。<br>
+            <span style="color:#C75050;font-weight:700">在籍生・卒業生・退塾生は消せません</span>（除外に設定された生徒のみ対象）。
+          </div>
+          <div style="font-size:11px;color:#C75050;background:#FBEAEA;border-radius:8px;padding:8px 10px;margin-bottom:10px;line-height:1.6">
+            ⚠️ 完全消去は元に戻せません。受講履歴・出欠・チェックログ・ポイントも一緒に削除されます（LINE受信箱の履歴は残し、紐付けだけ解除します）。
+          </div>
+          <button class="form-btn" style="background:var(--surface);border:1px solid var(--border);color:var(--muted)" onclick="loadCleanupList()">🔄 除外生徒の一覧を読み込む</button>
+          <div id="cleanup-list" style="margin-top:10px"></div>
+        </div>
+      </div>
+
       <div id="sm-admin-perms" style="display:none">
         <div class="section-title" style="margin-top:8px">🔐 スタッフ権限設定（生徒分析・売上）</div>
         <div class="card-box">
@@ -5600,7 +5616,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702div';
+const APP_VERSION = '20260702dix';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -14281,6 +14297,8 @@ function loadSettingsTab() {
     adminSection.style.display = 'block';
     adminMonitor.style.display = 'block';
     if (adminPromote) { adminPromote.style.display = 'block'; loadPromotePreview(); }
+    const cleanupSec = document.getElementById('sm-admin-cleanup');
+    if (cleanupSec) cleanupSec.style.display = 'block';
     const permSec = document.getElementById('sm-admin-perms');
     if (permSec) { permSec.style.display = 'block'; initStaffPermUI(); }
     loadStaffList();
@@ -14289,6 +14307,8 @@ function loadSettingsTab() {
     adminSection.style.display = 'none';
     adminMonitor.style.display = 'none';
     if (adminPromote) adminPromote.style.display = 'none';
+    const cleanupSec = document.getElementById('sm-admin-cleanup');
+    if (cleanupSec) cleanupSec.style.display = 'none';
     const permSec = document.getElementById('sm-admin-perms');
     if (permSec) permSec.style.display = 'none';
   }
@@ -14366,6 +14386,99 @@ async function loadPromotePreview() {
     el.innerHTML = '現在：1年 ' + g1 + '人 / 2年 ' + g2 + '人 / 3年 ' + g3 + '人' +
       '<br>更新後：1年 0人 / 2年 ' + g1 + '人 / 3年 ' + g2 + '人 / 卒業 +' + g3 + '人';
   } catch(e) { el.textContent = ''; }
+}
+
+
+// ============================================================
+// 除外生徒の完全消去（ゴースト掃除・admin限定）（dix）
+// delete_student_cascade RPC を呼ぶ。中確認（関連件数を見せてconfirm）。
+// ============================================================
+var _cleanupStudents = [];
+
+async function loadCleanupList() {
+  const box = document.getElementById('cleanup-list');
+  if (!box) return;
+  if (!currentStaff || currentStaff.role !== 'admin') { box.innerHTML = '<div style="font-size:12px;color:#C0392B">管理者のみ実行できます。</div>'; return; }
+  box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">読み込み中…</div>';
+  try {
+    _cleanupStudents = await sbGet('students',
+      "inactive_reason=eq." + encodeURIComponent('除外') +
+      '&select=id,name,school,grade,liny_id,parent_liny_id,created_at&order=name.asc') || [];
+  } catch (e) { box.innerHTML = '<div style="font-size:12px;color:#C0392B">取得に失敗しました。</div>'; return; }
+
+  if (!_cleanupStudents.length) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px;background:var(--surface2);border-radius:8px">除外に設定された生徒はいません。</div>';
+    return;
+  }
+  box.innerHTML = _cleanupStudents.map(s => {
+    const linked = (s.liny_id || s.parent_liny_id) ? '<span style="font-size:9px;color:#2E7D32;margin-left:4px">LINE紐付けあり</span>' : '';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(s.name || '(名前なし)') + linked + '</div>' +
+        '<div style="font-size:10px;color:var(--muted)">' + escapeHtml(s.school || '') + ' ' + escapeHtml(s.grade || '') + '　登録 ' + escapeHtml((s.created_at || '').slice(0, 10)) + '</div>' +
+      '</div>' +
+      '<button onclick="cleanupDeleteStudent(\'' + escapeAttr(s.id) + '\')" style="flex-shrink:0;padding:6px 12px;font-size:11px;font-weight:700;border-radius:8px;border:1px solid #C0392B;background:#FDECEA;color:#C0392B;cursor:pointer;font-family:inherit">🗑 完全消去</button>' +
+    '</div>';
+  }).join('');
+}
+
+// 関連データ件数を数える（中確認用）
+async function cleanupCountRelated(studentId) {
+  const tables = [
+    ['class_enrollments', '受講登録'],
+    ['session_attendance', '出欠'],
+    ['check_logs', 'チェック記録'],
+    ['checkins', 'チェックイン'],
+    ['point_logs', 'ポイント履歴']
+  ];
+  const counts = {};
+  for (const [t, label] of tables) {
+    try {
+      const rows = await sbGet(t, 'student_id=eq.' + encodeURIComponent(studentId) + '&select=id') || [];
+      counts[label] = rows.length;
+    } catch (e) { counts[label] = '?'; }
+  }
+  return counts;
+}
+
+async function cleanupDeleteStudent(studentId) {
+  if (!currentStaff || currentStaff.role !== 'admin') { alert('管理者のみ実行できます。'); return; }
+  const stu = _cleanupStudents.find(s => s.id === studentId);
+  if (!stu) return;
+
+  // 中確認：関連データ件数を見せる
+  const counts = await cleanupCountRelated(studentId);
+  const lines = Object.keys(counts).map(k => '・' + k + '：' + counts[k] + '件').join('\n');
+  const total = Object.values(counts).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0);
+  const msg = '【完全消去】' + (stu.name || '') + '（' + (stu.school || '') + ' ' + (stu.grade || '') + '）\n\n' +
+    '以下の関連データも一緒に削除されます：\n' + lines + '\n（合計 ' + total + '件）\n\n' +
+    (stu.liny_id || stu.parent_liny_id ? '※LINE受信箱の履歴は残し、紐付けだけ解除します。\n\n' : '') +
+    'この操作は元に戻せません。本当に完全消去しますか？';
+  if (!confirm(msg)) return;
+
+  // RPC 呼び出し
+  try {
+    const res = await fetch(SB_URL + '/rest/v1/rpc/delete_student_cascade', {
+      method: 'POST',
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_id: studentId })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const out = await res.json();
+    if (out && out.ok) {
+      showToast('🗑 ' + (out.name || '') + ' を完全消去しました', 'success');
+      // 一覧から除去して再描画
+      _cleanupStudents = _cleanupStudents.filter(s => s.id !== studentId);
+      await loadCleanupList();
+    } else {
+      const err = out && out.error;
+      if (err === 'not_excluded') alert('この生徒は除外設定ではないため消去できません（' + (out.reason || '') + '）。');
+      else if (err === 'not_found') alert('生徒が見つかりませんでした（既に削除済みの可能性）。');
+      else alert('消去できませんでした。');
+    }
+  } catch (e) {
+    alert('消去に失敗しました。関数(delete_student_cascade)が未適用の可能性があります。');
+  }
 }
 
 async function runGradePromotion() {
@@ -29170,8 +29283,9 @@ async function lineFolderResolveLinyIds(rules) {
     try {
       // school は表記ゆれがあるので or 条件は作らず全件取得→正規化マッチ
       const rows = await sbGet('students',
-        'select=id,name,school,grade,liny_id,parent_liny_id&limit=5000') || [];
+        'select=id,name,school,grade,liny_id,parent_liny_id,inactive_reason&limit=5000') || [];
       baseRows = rows.filter(s => {
+        if (s.inactive_reason === '除外') return false;   // デモ・重複ゴーストを弾く
         const sc = (typeof normSchoolForTodo === 'function') ? normSchoolForTodo(s.school) : s.school;
         if (!normSchools.includes(sc)) return false;
         if (grades.length && !grades.includes(s.grade)) return false;
@@ -29181,8 +29295,8 @@ async function lineFolderResolveLinyIds(rules) {
   } else if (grades.length) {
     // 学校指定なし・学年のみ
     try {
-      const rows = await sbGet('students', 'select=id,name,school,grade,liny_id,parent_liny_id&limit=5000') || [];
-      baseRows = rows.filter(s => grades.includes(s.grade));
+      const rows = await sbGet('students', 'select=id,name,school,grade,liny_id,parent_liny_id,inactive_reason&limit=5000') || [];
+      baseRows = rows.filter(s => s.inactive_reason !== '除外' && grades.includes(s.grade));
     } catch (e) { baseRows = []; }
   }
 
@@ -29237,7 +29351,9 @@ async function openLineFolderModal(fid) {
   // 生徒キャッシュ（個別選択UI用）
   if (!_lineFolderAllStudents) {
     try {
-      _lineFolderAllStudents = await sbGet('students', 'select=id,name,school,grade,liny_id,parent_liny_id&order=name.asc&limit=5000') || [];
+      const _raw = await sbGet('students', 'select=id,name,school,grade,liny_id,parent_liny_id,inactive_reason&order=name.asc&limit=5000') || [];
+      // 除外（デモ・テスト・重複ゴースト）は候補から外す。卒業生は残す。
+      _lineFolderAllStudents = _raw.filter(s => s.inactive_reason !== '除外');
     } catch (e) { _lineFolderAllStudents = []; }
   }
   renderLineFolderModalBody();
