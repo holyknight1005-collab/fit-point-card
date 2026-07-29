@@ -442,6 +442,18 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
   </div>
 </div>
 
+<!-- 購読フォルダ編集モーダル（受信箱のフォルダ「＋」から） -->
+<div id="line-folder-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:699;align-items:center;justify-content:center;padding:14px">
+  <div style="background:var(--bg);border-radius:16px;padding:18px;max-width:520px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div id="line-folder-modal-title" style="font-size:15px;font-weight:700;color:var(--text)">📁 フォルダを作成</div>
+      <button onclick="closeLineFolderModal()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="line-folder-body" style="font-size:12px;color:var(--text)">読み込み中…</div>
+  </div>
+</div>
+
+
 
 <!-- 日付詳細モーダル（スタッフ用カレンダー） -->
 <div id="staffcal-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:600;align-items:center;justify-content:center;padding:20px">
@@ -4516,11 +4528,14 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="liny-sync-msg" style="font-size:11px;color:var(--muted);margin-bottom:10px;min-height:14px"></div>
 
       <!-- フィルタ -->
-      <div style="display:flex;gap:6px;margin-bottom:10px">
+      <div style="display:flex;gap:6px;margin-bottom:8px">
         <button id="line-filter-unreplied" onclick="setLineFilter('unreplied')" class="line-fbtn" style="flex:1;padding:8px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1px solid var(--orange);background:var(--orange-l);color:var(--orange-d)">要対応</button>
         <button id="line-filter-mine" onclick="setLineFilter('mine')" class="line-fbtn" style="flex:1;padding:8px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1px solid var(--border);background:var(--surface);color:var(--muted)">担当</button>
         <button id="line-filter-all" onclick="setLineFilter('all')" class="line-fbtn" style="flex:1;padding:8px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1px solid var(--border);background:var(--surface);color:var(--muted)">すべて</button>
       </div>
+
+      <!-- 購読フォルダバー（自分専用） -->
+      <div id="line-folder-bar" style="display:flex;gap:6px;overflow-x:auto;margin-bottom:10px;padding-bottom:2px"></div>
 
       <div id="line-contact-list" style="display:flex;flex-direction:column;gap:8px"></div>
     </div>
@@ -5585,7 +5600,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702diu';
+const APP_VERSION = '20260702div';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29076,6 +29091,350 @@ function linyRowHtml(kind, i, r, badge, color, checkable, student, done, multiHi
 // students.liny_id / parent_liny_id が入っているのに line_contacts.student_id が
 // 未反映のものを埋める。手動リカバリ用（CSV/個別登録は保存時に自動同期される）。
 // ============================================================
+
+// ============================================================
+// LINE購読フォルダ（スタッフ自分専用）（div）
+// line_folders.rules = { schools:[], grades:[], include_ids:[], exclude_ids:[] }
+// すべて students.id ベース。フォルダ選択時、対象生徒の liny_id/parent_liny_id を
+// 持つ contact のみ表示する。
+// ============================================================
+var LINE_FOLDER_SCHOOLS = ['松山東','松山南','松山北','松山中央','松山西','愛大附属','済美','SSS','その他'];
+var LINE_FOLDER_GRADES = ['1年','2年','3年','中1','中2','中3'];
+var lineFolders = [];          // 自分のフォルダ一覧
+var lineFolderId = null;       // 選択中フォルダid（null=フォルダ絞りなし）
+var lineFolderLinySet = null;  // 選択中フォルダの対象liny_idセット（null=絞りなし）
+var _lineFolderEditing = null; // 編集中フォルダ（新規はテンポラリ）
+var _lineFolderAllStudents = null; // 生徒キャッシュ（編集UI用）
+
+function lineMyStaffId() {
+  return (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : null;
+}
+
+// フォルダ一覧を取得してバー描画
+async function loadLineFolders() {
+  const sid = lineMyStaffId();
+  if (!sid) { lineFolders = []; renderLineFolderBar(); return; }
+  try {
+    lineFolders = await sbGet('line_folders',
+      'staff_id=eq.' + encodeURIComponent(sid) + '&select=*&order=sort_order.asc,created_at.asc') || [];
+  } catch (e) { lineFolders = []; }
+  renderLineFolderBar();
+}
+
+function renderLineFolderBar() {
+  const bar = document.getElementById('line-folder-bar');
+  if (!bar) return;
+  let html = '';
+  // 「全体」チップ
+  const allOn = (lineFolderId == null);
+  html += '<button onclick="selectLineFolder(null)" style="flex-shrink:0;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;' +
+    (allOn ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">📥 全体</button>';
+  lineFolders.forEach(f => {
+    const on = (lineFolderId === f.id);
+    html += '<button onclick="selectLineFolder(\'' + escapeAttr(f.id) + '\')" style="flex-shrink:0;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;' +
+      (on ? 'border:1.5px solid #6B4FA0;background:#6B4FA0;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">📁 ' + escapeHtml(f.name) + '</button>';
+  });
+  // 編集ボタン（選択中フォルダがある時）＋新規
+  if (lineFolderId != null) {
+    html += '<button onclick="openLineFolderModal(\'' + escapeAttr(lineFolderId) + '\')" style="flex-shrink:0;padding:5px 10px;border-radius:14px;font-size:11px;cursor:pointer;font-family:inherit;white-space:nowrap;border:1.5px solid var(--border);background:var(--surface);color:var(--muted)">✏️ 編集</button>';
+  }
+  html += '<button onclick="openLineFolderModal(null)" style="flex-shrink:0;padding:5px 10px;border-radius:14px;font-size:11px;cursor:pointer;font-family:inherit;white-space:nowrap;border:1.5px dashed var(--border);background:var(--surface);color:var(--muted)">＋ フォルダ</button>';
+  bar.innerHTML = html;
+}
+
+// フォルダ選択 → 対象liny_idセットを計算 → 一覧再描画
+async function selectLineFolder(fid) {
+  lineFolderId = fid;
+  if (fid == null) {
+    lineFolderLinySet = null;
+  } else {
+    const f = lineFolders.find(x => x.id === fid);
+    lineFolderLinySet = f ? await lineFolderResolveLinyIds(f.rules || {}) : new Set();
+  }
+  renderLineFolderBar();
+  renderLineContacts();
+}
+
+// rules → 対象生徒のliny_id/parent_liny_idの Set を返す
+async function lineFolderResolveLinyIds(rules) {
+  const schools = Array.isArray(rules.schools) ? rules.schools : [];
+  const grades = Array.isArray(rules.grades) ? rules.grades : [];
+  const includeIds = Array.isArray(rules.include_ids) ? rules.include_ids : [];
+  const excludeIds = new Set(Array.isArray(rules.exclude_ids) ? rules.exclude_ids : []);
+
+  // ベース集合：schools×grades を満たす students（in_active問わず＝卒業生も見たいケース対応）
+  let baseRows = [];
+  const normSchools = schools.map(s => (typeof normSchoolForTodo === 'function') ? normSchoolForTodo(s) : s);
+  if (normSchools.length) {
+    // 学校で一括取得（liny列も）。学年はクライアント側で絞る。
+    try {
+      // school は表記ゆれがあるので or 条件は作らず全件取得→正規化マッチ
+      const rows = await sbGet('students',
+        'select=id,name,school,grade,liny_id,parent_liny_id&limit=5000') || [];
+      baseRows = rows.filter(s => {
+        const sc = (typeof normSchoolForTodo === 'function') ? normSchoolForTodo(s.school) : s.school;
+        if (!normSchools.includes(sc)) return false;
+        if (grades.length && !grades.includes(s.grade)) return false;
+        return true;
+      });
+    } catch (e) { baseRows = []; }
+  } else if (grades.length) {
+    // 学校指定なし・学年のみ
+    try {
+      const rows = await sbGet('students', 'select=id,name,school,grade,liny_id,parent_liny_id&limit=5000') || [];
+      baseRows = rows.filter(s => grades.includes(s.grade));
+    } catch (e) { baseRows = []; }
+  }
+
+  // include_ids を追加取得（ベースに無いものだけ）
+  const baseIdSet = new Set(baseRows.map(r => r.id));
+  const needInclude = includeIds.filter(id => !baseIdSet.has(id));
+  if (needInclude.length) {
+    try {
+      const inList = needInclude.map(v => '"' + String(v).replace(/"/g, '') + '"').join(',');
+      const rows = await sbGet('students', 'id=in.(' + inList + ')&select=id,name,school,grade,liny_id,parent_liny_id') || [];
+      baseRows = baseRows.concat(rows);
+    } catch (e) {}
+  }
+
+  // exclude_ids を除外 → liny_id/parent_liny_id を集める
+  const linySet = new Set();
+  baseRows.forEach(s => {
+    if (excludeIds.has(s.id)) return;
+    if (s.liny_id) linySet.add(String(s.liny_id));
+    if (s.parent_liny_id) linySet.add(String(s.parent_liny_id));
+  });
+  return linySet;
+}
+
+// ---- 編集モーダル ----
+async function openLineFolderModal(fid) {
+  const modal = document.getElementById('line-folder-modal');
+  const body = document.getElementById('line-folder-body');
+  const title = document.getElementById('line-folder-modal-title');
+  if (!modal || !body) return;
+
+  if (fid) {
+    const f = lineFolders.find(x => x.id === fid);
+    _lineFolderEditing = f ? JSON.parse(JSON.stringify(f)) : null;
+    if (title) title.textContent = '📁 フォルダを編集';
+  } else {
+    _lineFolderEditing = { id: null, name: '', rules: { schools: [], grades: [], include_ids: [], exclude_ids: [] } };
+    if (title) title.textContent = '📁 フォルダを作成';
+  }
+  if (!_lineFolderEditing) return;
+  // rules 欠損補完
+  const r = _lineFolderEditing.rules || {};
+  r.schools = Array.isArray(r.schools) ? r.schools : [];
+  r.grades = Array.isArray(r.grades) ? r.grades : [];
+  r.include_ids = Array.isArray(r.include_ids) ? r.include_ids : [];
+  r.exclude_ids = Array.isArray(r.exclude_ids) ? r.exclude_ids : [];
+  _lineFolderEditing.rules = r;
+
+  body.innerHTML = '読み込み中…';
+  modal.style.display = 'flex';
+
+  // 生徒キャッシュ（個別選択UI用）
+  if (!_lineFolderAllStudents) {
+    try {
+      _lineFolderAllStudents = await sbGet('students', 'select=id,name,school,grade,liny_id,parent_liny_id&order=name.asc&limit=5000') || [];
+    } catch (e) { _lineFolderAllStudents = []; }
+  }
+  renderLineFolderModalBody();
+}
+
+function closeLineFolderModal() {
+  const modal = document.getElementById('line-folder-modal');
+  if (modal) modal.style.display = 'none';
+  _lineFolderEditing = null;
+}
+
+function lineFolderToggleArr(kind, val) {
+  const r = _lineFolderEditing.rules;
+  const arr = r[kind];
+  const i = arr.indexOf(val);
+  if (i >= 0) arr.splice(i, 1); else arr.push(val);
+  renderLineFolderModalBody();
+}
+
+// 個別追加/除外の絞り込みフィルタ状態
+var _lfPickSchool = '';
+var _lfPickGrade = '';
+var _lfPickQuery = '';
+function lfSetPickSchool(v) { _lfPickSchool = v; renderLineFolderPickList(); }
+function lfSetPickGrade(v) { _lfPickGrade = v; renderLineFolderPickList(); }
+function lfSetPickQuery(v) { _lfPickQuery = v; renderLineFolderPickList(); }
+
+function lineFolderToggleInclude(id) {
+  const r = _lineFolderEditing.rules;
+  const i = r.include_ids.indexOf(id);
+  if (i >= 0) r.include_ids.splice(i, 1); else r.include_ids.push(id);
+  // include と exclude は排他
+  const e = r.exclude_ids.indexOf(id); if (e >= 0) r.exclude_ids.splice(e, 1);
+  renderLineFolderModalBody();
+}
+function lineFolderToggleExclude(id) {
+  const r = _lineFolderEditing.rules;
+  const i = r.exclude_ids.indexOf(id);
+  if (i >= 0) r.exclude_ids.splice(i, 1); else r.exclude_ids.push(id);
+  const c = r.include_ids.indexOf(id); if (c >= 0) r.include_ids.splice(c, 1);
+  renderLineFolderModalBody();
+}
+
+function renderLineFolderModalBody() {
+  const body = document.getElementById('line-folder-body');
+  if (!body || !_lineFolderEditing) return;
+  const r = _lineFolderEditing.rules;
+  let html = '';
+
+  // 名前
+  html += '<div style="margin-bottom:12px"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">フォルダ名</div>' +
+    '<input id="line-folder-name" type="text" value="' + escapeAttr(_lineFolderEditing.name || '') + '" placeholder="例: 松山東3年・自分の担当" class="form-input-sm" style="width:100%;font-size:13px"></div>';
+
+  // 学校チェック
+  html += '<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:5px">学校（複数可）</div><div style="display:flex;flex-wrap:wrap;gap:5px">';
+  LINE_FOLDER_SCHOOLS.forEach(s => {
+    const on = r.schools.includes(s);
+    html += '<button onclick="lineFolderToggleArr(\'schools\',\'' + escapeAttr(s) + '\')" style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;' +
+      (on ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + escapeHtml(s) + '</button>';
+  });
+  html += '</div></div>';
+
+  // 学年チェック
+  html += '<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:5px">学年（複数可・未選択なら全学年）</div><div style="display:flex;flex-wrap:wrap;gap:5px">';
+  LINE_FOLDER_GRADES.forEach(g => {
+    const on = r.grades.includes(g);
+    html += '<button onclick="lineFolderToggleArr(\'grades\',\'' + escapeAttr(g) + '\')" style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;' +
+      (on ? 'border:1.5px solid #1E8449;background:#1E8449;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + escapeHtml(g) + '</button>';
+  });
+  html += '</div><div style="font-size:10px;color:var(--muted);margin-top:4px">※ 学校を選ぶと、その学校×学年の在籍生が全員このフォルダに入ります。</div></div>';
+
+  // 個別追加/除外
+  html += '<div style="border-top:1px solid var(--border);padding-top:10px;margin-top:6px">';
+  html += '<div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:5px">個別に追加・除外</div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:6px">条件に関係なく「＋追加」した子は必ず含め、「−除外」した子は必ず外します。</div>';
+  // 絞り込み
+  html += '<div style="display:flex;gap:5px;margin-bottom:6px;flex-wrap:wrap">';
+  let scOpts = '<option value="">学校で絞る</option>';
+  LINE_FOLDER_SCHOOLS.forEach(s => { scOpts += '<option value="' + escapeAttr(s) + '"' + (_lfPickSchool === s ? ' selected' : '') + '>' + escapeHtml(s) + '</option>'; });
+  html += '<select onchange="lfSetPickSchool(this.value)" class="form-select" style="font-size:11px;flex:1;min-width:100px">' + scOpts + '</select>';
+  let grOpts = '<option value="">学年で絞る</option>';
+  LINE_FOLDER_GRADES.forEach(g => { grOpts += '<option value="' + escapeAttr(g) + '"' + (_lfPickGrade === g ? ' selected' : '') + '>' + escapeHtml(g) + '</option>'; });
+  html += '<select onchange="lfSetPickGrade(this.value)" class="form-select" style="font-size:11px;flex:1;min-width:90px">' + grOpts + '</select>';
+  html += '</div>';
+  html += '<input type="text" value="' + escapeAttr(_lfPickQuery) + '" oninput="lfSetPickQuery(this.value)" placeholder="名前で検索" class="form-input-sm" style="width:100%;font-size:12px;margin-bottom:6px">';
+  html += '<div id="line-folder-pick-list" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:8px"></div>';
+
+  // 現在の個別指定サマリ
+  const incN = r.include_ids.length, excN = r.exclude_ids.length;
+  if (incN || excN) {
+    html += '<div style="font-size:10px;color:var(--muted);margin-top:6px">個別追加 ' + incN + '人・個別除外 ' + excN + '人</div>';
+  }
+  html += '</div>';
+
+  // ボタン
+  html += '<div id="line-folder-msg" style="font-size:11px;color:var(--muted);min-height:16px;margin:10px 0 6px"></div>';
+  html += '<div style="display:flex;gap:8px">';
+  if (_lineFolderEditing.id) {
+    html += '<button onclick="lineFolderDelete()" style="padding:10px 14px;background:#FDECEA;border:1px solid #E8B4B4;border-radius:8px;color:#C0392B;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">削除</button>';
+  }
+  html += '<button onclick="closeLineFolderModal()" style="flex:1;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">キャンセル</button>';
+  html += '<button onclick="lineFolderSave()" style="flex:2;padding:10px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">保存</button>';
+  html += '</div>';
+
+  body.innerHTML = html;
+  renderLineFolderPickList();
+}
+
+function renderLineFolderPickList() {
+  const el = document.getElementById('line-folder-pick-list');
+  if (!el || !_lineFolderEditing) return;
+  const r = _lineFolderEditing.rules;
+  const q = _lfPickQuery.trim();
+  let list = (_lineFolderAllStudents || []).filter(s => {
+    if (_lfPickSchool) {
+      const sc = (typeof normSchoolForTodo === 'function') ? normSchoolForTodo(s.school) : s.school;
+      if (sc !== ((typeof normSchoolForTodo === 'function') ? normSchoolForTodo(_lfPickSchool) : _lfPickSchool)) return false;
+    }
+    if (_lfPickGrade && s.grade !== _lfPickGrade) return false;
+    if (q && !(s.name || '').includes(q)) return false;
+    return true;
+  });
+  if (!_lfPickSchool && !_lfPickGrade && !q) {
+    el.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:10px;text-align:center">学校・学年・名前で絞り込むと候補が出ます</div>';
+    return;
+  }
+  if (!list.length) {
+    el.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:10px;text-align:center">該当する生徒がいません</div>';
+    return;
+  }
+  list = list.slice(0, 100);
+  el.innerHTML = list.map(s => {
+    const inc = r.include_ids.includes(s.id);
+    const exc = r.exclude_ids.includes(s.id);
+    const linked = s.liny_id || s.parent_liny_id;
+    const sc = (typeof normSchoolForTodo === 'function') ? normSchoolForTodo(s.school) : s.school;
+    return '<div style="display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--border)">' +
+      '<span style="flex:1;font-size:12px;color:var(--text)">' + escapeHtml(s.name || '') +
+        '<span style="font-size:10px;color:var(--muted);margin-left:5px">' + escapeHtml(sc || '') + ' ' + escapeHtml(s.grade || '') + '</span>' +
+        (linked ? '' : '<span style="font-size:9px;color:#B9770E;margin-left:4px">未紐付</span>') + '</span>' +
+      '<button onclick="lineFolderToggleInclude(\'' + escapeAttr(s.id) + '\')" style="padding:3px 8px;font-size:10px;font-weight:700;border-radius:6px;cursor:pointer;font-family:inherit;' +
+        (inc ? 'border:1px solid #1E8449;background:#1E8449;color:#fff' : 'border:1px solid var(--border);background:var(--surface);color:var(--muted)') + '">＋追加</button>' +
+      '<button onclick="lineFolderToggleExclude(\'' + escapeAttr(s.id) + '\')" style="padding:3px 8px;font-size:10px;font-weight:700;border-radius:6px;cursor:pointer;font-family:inherit;' +
+        (exc ? 'border:1px solid #C0392B;background:#C0392B;color:#fff' : 'border:1px solid var(--border);background:var(--surface);color:var(--muted)') + '">−除外</button>' +
+    '</div>';
+  }).join('');
+}
+
+async function lineFolderSave() {
+  const msg = document.getElementById('line-folder-msg');
+  const nameInp = document.getElementById('line-folder-name');
+  const name = (nameInp ? nameInp.value : '').trim();
+  const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c || 'var(--muted)'; } };
+  if (!name) { setMsg('フォルダ名を入力してください', '#C0392B'); return; }
+  const sid = lineMyStaffId();
+  if (!sid) { setMsg('スタッフ情報が取得できません', '#C0392B'); return; }
+  const r = _lineFolderEditing.rules;
+  if (!r.schools.length && !r.grades.length && !r.include_ids.length) {
+    setMsg('学校・学年か、個別追加のいずれかを指定してください', '#C0392B'); return;
+  }
+  setMsg('保存中…');
+  const payload = { staff_id: sid, name: name, rules: r, updated_at: new Date().toISOString() };
+  try {
+    if (_lineFolderEditing.id) {
+      await sbPatch('line_folders', 'id=eq.' + encodeURIComponent(_lineFolderEditing.id), payload);
+    } else {
+      payload.sort_order = lineFolders.length;
+      await sbPost('line_folders', payload);
+    }
+    setMsg('✓ 保存しました', '#1E8449');
+    const keepId = _lineFolderEditing.id;
+    setTimeout(async () => {
+      closeLineFolderModal();
+      await loadLineFolders();
+      // 編集したフォルダを選択し直して反映
+      if (keepId) await selectLineFolder(keepId);
+    }, 400);
+  } catch (e) {
+    setMsg('保存に失敗しました', '#C0392B');
+  }
+}
+
+async function lineFolderDelete() {
+  if (!_lineFolderEditing || !_lineFolderEditing.id) return;
+  if (!confirm('このフォルダを削除しますか？')) return;
+  try {
+    await sbDelete('line_folders', 'id=eq.' + encodeURIComponent(_lineFolderEditing.id));
+    closeLineFolderModal();
+    lineFolderId = null; lineFolderLinySet = null;
+    await loadLineFolders();
+    renderLineContacts();
+  } catch (e) {
+    const msg = document.getElementById('line-folder-msg');
+    if (msg) { msg.textContent = '削除に失敗しました'; msg.style.color = '#C0392B'; }
+  }
+}
+
 async function syncLinyContacts() {
   const msg = document.getElementById('liny-sync-msg');
   const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c || 'var(--muted)'; } };
@@ -29290,6 +29649,15 @@ async function initLineInbox() {
     return at < bt ? 1 : at > bt ? -1 : 0;
   });
 
+  // 購読フォルダのバーを読み込み、選択中なら対象liny_idを再計算
+  try {
+    await loadLineFolders();
+    if (lineFolderId != null) {
+      const f = lineFolders.find(x => x.id === lineFolderId);
+      lineFolderLinySet = f ? await lineFolderResolveLinyIds(f.rules || {}) : new Set();
+    }
+  } catch (e) {}
+
   renderLineContacts();
 }
 
@@ -29310,12 +29678,17 @@ function renderLineContacts() {
   if (!el) return;
   const myId = currentStaff ? currentStaff.staff_id : null;
   let rows = lineContacts;
+  // 購読フォルダで絞り込み（選択中フォルダの対象liny_idのみ）
+  if (lineFolderLinySet) {
+    rows = rows.filter(r => r.contact && r.contact.liny_id && lineFolderLinySet.has(String(r.contact.liny_id)));
+  }
   if (lineFilter === 'unreplied') rows = rows.filter(r => r.unreplied > 0);
   else if (lineFilter === 'mine') rows = rows.filter(r => r.contact.assigned_staff_id && r.contact.assigned_staff_id === myId);
 
   if (!rows.length) {
     el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px;background:#fff;border:1px dashed var(--border);border-radius:8px">' +
-      (lineFilter === 'unreplied' ? '要対応のメッセージはありません' : '該当する相手はいません') + '</div>';
+      (lineFolderId != null ? 'このフォルダに該当する相手はいません'
+        : lineFilter === 'unreplied' ? '要対応のメッセージはありません' : '該当する相手はいません') + '</div>';
     return;
   }
 
