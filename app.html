@@ -409,6 +409,28 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
   </div>
 </div>
 
+<!-- Liny CSV 一括紐付けモーダル -->
+<div id="liny-csv-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:697;align-items:center;justify-content:center;padding:14px">
+  <div style="background:var(--bg);border-radius:16px;padding:18px;max-width:460px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div style="font-size:15px;font-weight:700;color:var(--text)">📇 Liny CSV 一括紐付け</div>
+      <button onclick="closeLinyCsvModal()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">Linyの友だちCSV（学校で絞り込んでDLしたもの）を選び、対象の学校を指定してください。文字コードは自動変換します。</div>
+    <div style="margin-bottom:8px">
+      <div class="form-label" style="font-size:11px">学校（CSVに学校列がないため指定）</div>
+      <select id="liny-csv-school" class="form-select" style="width:100%;font-size:13px"></select>
+    </div>
+    <div style="margin-bottom:8px">
+      <div class="form-label" style="font-size:11px">Liny CSVファイル</div>
+      <input type="file" id="liny-csv-file" accept=".csv" onchange="onLinyCsvFile(this)" style="width:100%;font-size:12px">
+    </div>
+    <button onclick="runLinyCsvMatch()" style="width:100%;padding:10px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔍 名簿と突合する</button>
+    <div id="liny-csv-status" style="font-size:11px;color:var(--muted);margin-top:8px;min-height:16px"></div>
+    <div id="liny-csv-result"></div>
+  </div>
+</div>
+
 <!-- 日付詳細モーダル（スタッフ用カレンダー） -->
 <div id="staffcal-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:600;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:380px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
@@ -4477,6 +4499,8 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="smcontent-line" style="display:none">
       <div id="line-setup-banner" style="display:none;font-size:12px;color:#8F5F12;background:#FFF7EC;border:1px solid #E8C193;border-radius:8px;padding:10px 12px;margin-bottom:12px;line-height:1.6"></div>
 
+      <button onclick="openLinyCsvModal()" style="width:100%;margin-bottom:10px;padding:10px;background:#EEF3FB;border:1px solid #9CC0E8;border-radius:8px;font-size:12px;font-weight:700;color:#2D5FA6;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📇 Liny CSVで生徒・保護者を一括紐付け</button>
+
       <!-- フィルタ -->
       <div style="display:flex;gap:6px;margin-bottom:10px">
         <button id="line-filter-unreplied" onclick="setLineFilter('unreplied')" class="line-fbtn" style="flex:1;padding:8px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1px solid var(--orange);background:var(--orange-l);color:var(--orange-d)">要対応</button>
@@ -5547,7 +5571,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dip';
+const APP_VERSION = '20260702diq';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -28756,6 +28780,316 @@ let lineContacts = [];             // [{contact, last, unreplied}]
 let lineStudentMap = {};           // student_id -> {name, school}
 let lineStaffMap = {};             // staff_id -> name
 let lineNoData = false;
+
+// ===== Liny CSV 一括紐付け =====
+// Liny管理画面の友だちCSV（cp932）を取り込み、生徒本人 liny_id / 保護者 parent_liny_id を
+// students に紐付ける。学校はプルダウンで指定（CSVに学校列がないため）。
+// 本人=名前+学年で自動突合、保護者=手動プルダウンで紐付け先生徒を選択。
+
+const LINY_CSV_SCHOOLS = ['松山東','松山南','松山北','松山中央','松山西','愛大附属','済美','SSS','その他'];
+const LINY_VIEW_BASE = 'https://next.lineml.jp/notification/view?type=member&id=';
+
+let _linyCsvRows = null;      // パース済み全行（実データ部）
+let _linyCsvSchool = '';      // 指定校
+let _linyCsvStudents = [];    // 指定校の現役生 [{id,name,grade}]
+let _linyStudentIndex = {};   // (norm名+grade) -> [student]
+let _linyHoninRows = [];      // 現役本人候補
+let _linyParentRows = [];     // 保護者候補
+
+// 名前正規化（全角/半角スペース除去）
+function linyNorm(s) { return String(s || '').replace(/[\s\u3000]+/g, '').trim(); }
+
+// 保護者表示名から子の名前を推定（当たれば初期選択に使う。外れても手動で選べる）
+function linyParentChildName(disp) {
+  let s = String(disp || '');
+  s = s.replace(/[(（].*?[)）]/g, '');            // カッコ内除去
+  s = s.replace(/[、,]?\s*(保護者|お母さん|お父さん|ママ|パパ|母|父).*$/g, '');
+  return linyNorm(s);
+}
+
+// CSVの学年タグ→学年文字列（[3]1年 [4]2年 [5]3年）
+function linyCsvGrade(r) {
+  if ((r[3] || '').trim() === '1') return '1年';
+  if ((r[4] || '').trim() === '1') return '2年';
+  if ((r[5] || '').trim() === '1') return '3年';
+  return null;
+}
+function linyFlag(r, i) { return (r[i] || '').trim() === '1'; }
+
+// 簡易CSVパーサ（ダブルクォート対応・カンマ区切り・CRLF）
+function linyParseCsv(text) {
+  const rows = [];
+  let row = [], cur = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQ) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { cur += '"'; i++; }
+        else inQ = false;
+      } else cur += ch;
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === ',') { row.push(cur); cur = ''; }
+      else if (ch === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; }
+      else if (ch === '\r') { /* skip */ }
+      else cur += ch;
+    }
+  }
+  if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+  return rows;
+}
+
+function openLinyCsvModal() {
+  document.getElementById('liny-csv-modal').style.display = 'flex';
+  const sel = document.getElementById('liny-csv-school');
+  sel.innerHTML = '<option value="">学校を選択…</option>' +
+    LINY_CSV_SCHOOLS.map(s => '<option value="' + escapeAttr(s) + '">' + escapeHtml(s) + '</option>').join('');
+  document.getElementById('liny-csv-file').value = '';
+  document.getElementById('liny-csv-result').innerHTML = '';
+  document.getElementById('liny-csv-status').textContent = '';
+  _linyCsvRows = null;
+}
+function closeLinyCsvModal() {
+  document.getElementById('liny-csv-modal').style.display = 'none';
+}
+
+// CSV読み込み（cp932→UTF-8デコード）
+function onLinyCsvFile(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  const status = document.getElementById('liny-csv-status');
+  status.textContent = '読み込み中…';
+  const reader = new FileReader();
+  reader.onload = function () {
+    try {
+      const buf = new Uint8Array(reader.result);
+      const dec = new TextDecoder('shift-jis');
+      const text = dec.decode(buf);
+      const rows = linyParseCsv(text);
+      // 1行目=内部見出し / 2行目=ラベル / 3行目以降=実データ
+      _linyCsvRows = rows.slice(2).filter(r => r.length >= 6 && (r[0] || '').trim());
+      status.textContent = '読み込み完了：' + _linyCsvRows.length + '件（3行目以降）';
+    } catch (e) {
+      status.textContent = '読み込みエラー：' + (e.message || e);
+      _linyCsvRows = null;
+    }
+  };
+  reader.onerror = function () { status.textContent = 'ファイル読み込みに失敗しました'; };
+  reader.readAsArrayBuffer(f);
+}
+
+// 突合実行
+async function runLinyCsvMatch() {
+  const school = document.getElementById('liny-csv-school').value;
+  const status = document.getElementById('liny-csv-status');
+  const result = document.getElementById('liny-csv-result');
+  if (!school) { alert('学校を選択してください'); return; }
+  if (!_linyCsvRows || !_linyCsvRows.length) { alert('先にCSVファイルを選択してください'); return; }
+  _linyCsvSchool = school;
+  status.textContent = '生徒名簿を照合中…';
+  result.innerHTML = '';
+
+  // 指定校の現役高校部生徒（デモ除外）
+  try {
+    const studs = await sbGet('students',
+      'school=eq.' + encodeURIComponent(school) +
+      '&is_active=eq.true&division=eq.' + encodeURIComponent('高校部') +
+      '&select=id,name,grade,liny_id,parent_liny_id') || [];
+    const demo = await getDemoStudentIds();
+    _linyCsvStudents = studs.filter(s => !demo.has(s.id));
+  } catch (e) {
+    status.textContent = '生徒名簿の取得に失敗：' + (e.message || e);
+    return;
+  }
+
+  // 突合インデックス
+  _linyStudentIndex = {};
+  _linyCsvStudents.forEach(s => {
+    const k = linyNorm(s.name) + '|' + (s.grade || '');
+    (_linyStudentIndex[k] || (_linyStudentIndex[k] = [])).push(s);
+  });
+
+  // 分類
+  _linyHoninRows = [];
+  _linyParentRows = [];
+  _linyCsvRows.forEach(r => {
+    const g = linyCsvGrade(r);
+    if (linyFlag(r, 7)) {               // 保護者タグ
+      _linyParentRows.push({ linyId: (r[0] || '').trim(), disp: r[1] || '', grade: g });
+    } else if (g && !linyFlag(r, 2)) {  // 現役本人（学年タグあり・卒業生でない）
+      _linyHoninRows.push({ linyId: (r[0] || '').trim(), disp: r[1] || '', grade: g });
+    }
+    // それ以外（卒業生・全タグ0）は今回対象外
+  });
+
+  status.textContent = school + '：本人候補 ' + _linyHoninRows.length + '名 / 保護者候補 ' + _linyParentRows.length + '名';
+  renderLinyCsvResult();
+}
+
+function renderLinyCsvResult() {
+  const el = document.getElementById('liny-csv-result');
+  let html = '';
+
+  // タブ切替
+  html += '<div style="display:flex;gap:6px;margin:10px 0 8px">' +
+    '<button id="liny-tab-honin" onclick="switchLinyTab(\'honin\')" style="flex:1;padding:8px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;border:1px solid var(--orange);background:var(--orange-l);color:var(--orange-d)">👤 生徒本人</button>' +
+    '<button id="liny-tab-parent" onclick="switchLinyTab(\'parent\')" style="flex:1;padding:8px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;border:1px solid var(--border);background:var(--surface);color:var(--muted)">👪 保護者</button>' +
+    '</div>';
+  html += '<div id="liny-pane-honin"></div>';
+  html += '<div id="liny-pane-parent" style="display:none"></div>';
+  el.innerHTML = html;
+  renderLinyHoninPane();
+  renderLinyParentPane();
+}
+
+function switchLinyTab(t) {
+  const bh = document.getElementById('liny-tab-honin');
+  const bp = document.getElementById('liny-tab-parent');
+  const ph = document.getElementById('liny-pane-honin');
+  const pp = document.getElementById('liny-pane-parent');
+  const on = (b) => { b.style.background = 'var(--orange-l)'; b.style.color = 'var(--orange-d)'; b.style.borderColor = 'var(--orange)'; };
+  const off = (b) => { b.style.background = 'var(--surface)'; b.style.color = 'var(--muted)'; b.style.borderColor = 'var(--border)'; };
+  if (t === 'honin') { on(bh); off(bp); ph.style.display = 'block'; pp.style.display = 'none'; }
+  else { on(bp); off(bh); pp.style.display = 'block'; ph.style.display = 'none'; }
+}
+
+// 生徒本人ペイン（自動突合）
+function renderLinyHoninPane() {
+  const pane = document.getElementById('liny-pane-honin');
+  let matched = 0, unmatched = 0, already = 0;
+  let rows = '';
+  _linyHoninRows.forEach((r, i) => {
+    const k = linyNorm(r.disp) + '|' + (r.grade || '');
+    const hits = _linyStudentIndex[k] || [];
+    if (hits.length === 1) {
+      const s = hits[0];
+      if (s.liny_id) {
+        already++;
+        rows += linyRowHtml('honin', i, r, '✅ 紐付け済み', '#7A8', false, s, true);
+      } else {
+        matched++;
+        rows += linyRowHtml('honin', i, r, '🟢 一致：' + escapeHtml(s.name), 'var(--orange-d)', true, s, false);
+      }
+    } else if (hits.length > 1) {
+      // 同名複数（学年も同じ）。プルダウンで選ばせる
+      rows += linyRowHtml('honin', i, r, '⚠️ 同名複数', '#B8860B', true, null, false, hits);
+      matched++;
+    } else {
+      unmatched++;
+      rows += linyRowHtml('honin', i, r, '— アプリ未登録', 'var(--muted)', false, null, false);
+    }
+  });
+  pane.innerHTML =
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">名前＋学年で自動突合しました。緑（一致）にチェックが入っています。アプリ未登録の生徒は対象外です。</div>' +
+    '<div style="display:flex;gap:10px;font-size:11px;margin-bottom:8px"><span style="color:var(--orange-d);font-weight:700">一致 ' + matched + '</span><span style="color:#7A8">済 ' + already + '</span><span style="color:var(--muted)">未登録 ' + unmatched + '</span></div>' +
+    (rows || '<div style="font-size:12px;color:var(--muted);padding:8px">本人候補がありません。</div>') +
+    '<button onclick="commitLinyCsv(\'honin\')" style="width:100%;margin-top:10px;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:10px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 チェックした本人を紐付け</button>';
+}
+
+// 保護者ペイン（手動プルダウン）
+function renderLinyParentPane() {
+  const pane = document.getElementById('liny-pane-parent');
+  // 生徒選択肢（指定校の現役生）
+  const opts = '<option value="">— 紐付け先の生徒を選択 —</option>' +
+    _linyCsvStudents.slice().sort((a, b) => (a.grade || '').localeCompare(b.grade || '') || linyNorm(a.name).localeCompare(linyNorm(b.name)))
+      .map(s => '<option value="' + escapeAttr(s.id) + '">' + escapeHtml((s.grade || '') + ' ' + s.name) + (s.parent_liny_id ? '（保護者済）' : '') + '</option>').join('');
+  let rows = '';
+  _linyParentRows.forEach((r, i) => {
+    // 推定した子名で初期候補を用意
+    const cn = linyParentChildName(r.disp);
+    const guessKey = cn + '|' + (r.grade || '');
+    const guess = (_linyStudentIndex[guessKey] || [])[0];
+    const selId = 'liny-parent-sel-' + i;
+    const chkId = 'liny-parent-chk-' + i;
+    rows +=
+      '<div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:8px;background:var(--surface)">' +
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+          '<input type="checkbox" id="' + chkId + '" style="width:18px;height:18px">' +
+          '<div style="flex:1"><div style="font-size:13px;font-weight:700">' + escapeHtml(r.disp) + '</div>' +
+          '<div style="font-size:10px;color:var(--muted)">Liny ID: ' + escapeHtml(r.linyId) + (r.grade ? ' / 学年タグ:' + r.grade : '') + '</div></div>' +
+        '</div>' +
+        '<select id="' + selId + '" onchange="onLinyParentSel(' + i + ')" style="width:100%;padding:8px;font-size:12px;border:1px solid var(--border);border-radius:8px;font-family:\'Noto Sans JP\',sans-serif">' + opts + '</select>' +
+      '</div>';
+  });
+  pane.innerHTML =
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">保護者は名前が本人と異なるため、紐付け先の生徒を手動で選んでください。表示名から子を推定できたものは候補を初期選択しています。チェックした行だけ保存します。</div>' +
+    (rows || '<div style="font-size:12px;color:var(--muted);padding:8px">保護者候補がありません。</div>') +
+    '<button onclick="commitLinyCsv(\'parent\')" style="width:100%;margin-top:10px;padding:12px;background:linear-gradient(135deg,#6B4FA0,#4E3A7A);border:none;border-radius:10px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 チェックした保護者を紐付け</button>';
+  // 推定初期選択を反映（innerHTML内のscriptは実行されないので手動で）
+  _linyParentRows.forEach((r, i) => {
+    const cn = linyParentChildName(r.disp);
+    const guess = (_linyStudentIndex[cn + '|' + (r.grade || '')] || [])[0];
+    if (guess) {
+      const s = document.getElementById('liny-parent-sel-' + i);
+      if (s) s.value = guess.id;
+    }
+  });
+}
+
+function onLinyParentSel(i) {
+  const sel = document.getElementById('liny-parent-sel-' + i);
+  const chk = document.getElementById('liny-parent-chk-' + i);
+  if (sel && chk && sel.value) chk.checked = true;
+}
+
+// 本人行のHTML
+function linyRowHtml(kind, i, r, badge, color, checkable, student, done, multiHits) {
+  const chkId = 'liny-' + kind + '-chk-' + i;
+  const selId = 'liny-' + kind + '-sel-' + i;
+  let right = '';
+  if (multiHits && multiHits.length) {
+    right = '<select id="' + selId + '" style="width:100%;margin-top:6px;padding:6px;font-size:11px;border:1px solid var(--border);border-radius:6px;font-family:\'Noto Sans JP\',sans-serif">' +
+      '<option value="">— 選択 —</option>' +
+      multiHits.map(s => '<option value="' + escapeAttr(s.id) + '">' + escapeHtml((s.grade || '') + ' ' + s.name) + '</option>').join('') +
+      '</select>';
+  } else if (student) {
+    right = '<input type="hidden" id="' + selId + '" value="' + escapeAttr(student.id) + '">';
+  }
+  return '<div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:10px;padding:9px 10px;margin-bottom:6px;background:var(--surface)">' +
+    '<div style="display:flex;align-items:center;gap:8px">' +
+      (checkable ? '<input type="checkbox" id="' + chkId + '" ' + (done ? '' : 'checked') + ' style="width:18px;height:18px">' : '<span style="width:18px"></span>') +
+      '<div style="flex:1"><div style="font-size:13px;font-weight:700">' + escapeHtml(r.disp) + ' <span style="font-size:10px;color:var(--muted)">' + escapeHtml(r.grade || '') + '</span></div>' +
+      '<div style="font-size:10px;color:var(--muted)">Liny ID: ' + escapeHtml(r.linyId) + '</div></div>' +
+      '<div style="font-size:11px;font-weight:700;color:' + color + ';white-space:nowrap">' + badge + '</div>' +
+    '</div>' + right + '</div>';
+}
+
+// 確定保存
+async function commitLinyCsv(kind) {
+  const status = document.getElementById('liny-csv-status');
+  const rows = (kind === 'honin') ? _linyHoninRows : _linyParentRows;
+  const col = (kind === 'honin') ? 'liny_id' : 'parent_liny_id';
+  const targets = [];
+  rows.forEach((r, i) => {
+    const chk = document.getElementById('liny-' + kind + '-chk-' + i);
+    if (!chk || !chk.checked) return;
+    const sel = document.getElementById('liny-' + kind + '-sel-' + i);
+    const sid = sel ? sel.value : '';
+    if (!sid) return;
+    targets.push({ studentId: sid, linyId: r.linyId, disp: r.disp });
+  });
+  if (!targets.length) { alert('チェックした行がありません（または生徒未選択）'); return; }
+  if (!confirm(targets.length + '件を紐付けます。よろしいですか？')) return;
+
+  status.textContent = '保存中… 0/' + targets.length;
+  let ok = 0, ng = 0; const errs = [];
+  for (let j = 0; j < targets.length; j++) {
+    const t = targets[j];
+    try {
+      const body = {}; body[col] = t.linyId;
+      await sbPatch('students', 'id=eq.' + encodeURIComponent(t.studentId), body);
+      ok++;
+    } catch (e) {
+      ng++; errs.push(t.disp + '：' + (e.message || e));
+    }
+    status.textContent = '保存中… ' + (j + 1) + '/' + targets.length;
+  }
+  status.textContent = '完了：成功 ' + ok + ' / 失敗 ' + ng +
+    (ng ? '（' + errs.slice(0, 3).join(' / ') + (errs.length > 3 ? ' …他' : '') + '）' : '');
+  // 再突合して状態を更新
+  if (ok) await runLinyCsvMatch();
+}
+
 
 function setLineFilter(f) {
   lineFilter = f;
