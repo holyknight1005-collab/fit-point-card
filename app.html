@@ -2121,6 +2121,25 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <!-- 経営サマリー（admin/dashboard権限のみ・JSで表示制御） -->
     <div id="exec-dashboard-section" style="display:none"></div>
     <div id="home-left-col">
+    <!-- 💬 LINE要対応（担当学校 or 選択フォルダ）。0件なら非表示 -->
+    <div id="home-line-section" style="display:none;background:linear-gradient(135deg,#EAF6EC,#FFFFFF);border:1.5px solid #06C755;border-radius:var(--radius);padding:14px 16px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px;flex-wrap:wrap">
+        <span style="font-size:14px;font-weight:700;color:#0A7A3B;display:inline-flex;align-items:center;gap:6px">💬 LINE要対応 <span id="home-line-count" style="font-size:11px;background:#06C755;color:#fff;border-radius:10px;padding:1px 8px"></span></span>
+        <div style="display:flex;align-items:center;gap:6px">
+          <select id="home-line-folder-sel" onchange="onHomeLineFolderChange()" style="font-size:11px;padding:3px 6px;border:1px solid var(--border);border-radius:8px;font-family:inherit;color:var(--text);background:var(--surface)"></select>
+          <button onclick="openStaffLineInbox()" style="font-size:11px;font-weight:700;color:#0A7A3B;background:#EAF6EC;border:1px solid #06C755;border-radius:20px;padding:4px 12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">受信箱 ›</button>
+        </div>
+      </div>
+      <div id="home-line-list" style="display:flex;flex-direction:column;gap:6px"></div>
+    </div>
+    <!-- 👪 保護者の未対応（全スタッフ共通）。0件なら非表示 -->
+    <div id="home-parent-line-section" style="display:none;background:linear-gradient(135deg,#FCE9E7,#FFFFFF);border:1.5px solid #C0392B;border-radius:var(--radius);padding:14px 16px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:14px;font-weight:700;color:#A02020;display:inline-flex;align-items:center;gap:6px">👪 保護者からの未対応 <span id="home-parent-line-count" style="font-size:11px;background:#C0392B;color:#fff;border-radius:10px;padding:1px 8px"></span></span>
+        <button onclick="openStaffLineInbox()" style="font-size:11px;font-weight:700;color:#A02020;background:#FCE9E7;border:1px solid #C0392B;border-radius:20px;padding:4px 12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">受信箱 ›</button>
+      </div>
+      <div id="home-parent-line-list" style="display:flex;flex-direction:column;gap:6px"></div>
+    </div>
     <!-- 🔍 承認待ち（自分が承認担当・依頼者のもの・die）。0件なら非表示 -->
     <div id="home-approval-section" style="display:none;background:linear-gradient(135deg,#E4EEFB,#FFFFFF);border:1.5px solid #4A7FC0;border-radius:var(--radius);padding:14px 16px;margin-bottom:12px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -5616,7 +5635,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dix';
+const APP_VERSION = '20260702diy';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -8179,6 +8198,8 @@ async function initStaff() {
     runRecurringTodoGeneration().then(() => { try { loadHomeMyTodos(); } catch (e) {} });
     loadHomeMyTodos();
     try { loadHomeApprovals(); } catch (e) {}
+    try { loadHomeLine(); } catch (e) {}
+    try { loadHomeParentLine(); } catch (e) {}
     loadHomeSchedule();
     loadStaffHomeCalendar();
     loadExecDashboard();
@@ -8361,6 +8382,184 @@ function toggleHomeApprovals() {
   const open = el.style.display !== 'none';
   el.style.display = open ? 'none' : 'flex';
   if (caret) caret.style.transform = open ? 'rotate(0deg)' : 'rotate(90deg)';
+}
+
+
+// ============================================================
+// ホーム画面のLINEカード（diy）
+// ① 担当学校 or 選択フォルダの要対応LINE
+// ② 保護者からの未対応（全スタッフ共通）
+// 受信箱の initLineInbox とは独立に、ここで軽量に取得する。
+// ============================================================
+var homeLineFolderId = 'charge';   // 'charge'=担当学校 / フォルダid / 'all'
+var _homeLineContacts = null;      // [{contact, unreplied, isParent, studentName, school}]
+
+function openStaffLineInbox() {
+  if (typeof openStaffManage === 'function') openStaffManage('line');
+}
+
+// 受信箱の生データ（contacts＋未返信数＋紐付け生徒）を軽量取得してキャッシュ
+async function homeLineFetchContacts() {
+  let contacts = [];
+  try {
+    contacts = await sbGet('line_contacts', 'select=id,liny_id,student_id,contact_kind,display_name,liny_name&order=last_message_at.desc.nullslast&limit=300') || [];
+  } catch (e) { return []; }
+  if (!contacts.length) return [];
+
+  // 未返信数（in かつ replied=false）を contact ごとに集計
+  const ids = contacts.map(c => c.id);
+  const unrepByContact = {};
+  try {
+    const msgs = await sbGet('line_messages',
+      'contact_id=in.(' + ids.join(',') + ')&direction=eq.in&replied=eq.false&select=contact_id&limit=3000') || [];
+    msgs.forEach(m => { unrepByContact[m.contact_id] = (unrepByContact[m.contact_id] || 0) + 1; });
+  } catch (e) {}
+
+  // 紐付け生徒名・学校
+  const sids = Array.from(new Set(contacts.map(c => c.student_id).filter(Boolean)));
+  const stuById = {};
+  if (sids.length) {
+    try {
+      const inList = sids.map(v => '"' + String(v).replace(/"/g, '') + '"').join(',');
+      const studs = await sbGet('students', 'id=in.(' + inList + ')&select=id,name,school') || [];
+      studs.forEach(s => { stuById[s.id] = s; });
+    } catch (e) {}
+  }
+
+  return contacts.map(c => {
+    const stu = c.student_id ? stuById[c.student_id] : null;
+    return {
+      contact: c,
+      unreplied: unrepByContact[c.id] || 0,
+      isParent: c.contact_kind === 'parent',
+      studentName: stu ? stu.name : (c.display_name || c.liny_name || 'LINEユーザー'),
+      school: stu ? (stu.school || '') : ''
+    };
+  });
+}
+
+// ---- ① 担当学校 or フォルダの要対応 ----
+async function loadHomeLine() {
+  const sec = document.getElementById('home-line-section');
+  const listEl = document.getElementById('home-line-list');
+  const countEl = document.getElementById('home-line-count');
+  if (!sec || !listEl) return;
+
+  if (_homeLineContacts == null) _homeLineContacts = await homeLineFetchContacts();
+  await buildHomeLineFolderSelect();
+
+  // 対象liny_idセットを決める
+  let linySet = null;   // null=全体
+  if (homeLineFolderId === 'charge') {
+    linySet = await homeLineChargeLinySet();
+  } else if (homeLineFolderId === 'all') {
+    linySet = null;
+  } else {
+    // フォルダid
+    try {
+      const f = (typeof lineFolders !== 'undefined' && lineFolders) ? lineFolders.find(x => x.id === homeLineFolderId) : null;
+      if (!f) {
+        const rows = await sbGet('line_folders', 'id=eq.' + encodeURIComponent(homeLineFolderId) + '&select=rules&limit=1') || [];
+        linySet = rows.length ? await lineFolderResolveLinyIds(rows[0].rules || {}) : new Set();
+      } else {
+        linySet = await lineFolderResolveLinyIds(f.rules || {});
+      }
+    } catch (e) { linySet = new Set(); }
+  }
+
+  // 要対応のみ＋対象で絞る
+  let rows = _homeLineContacts.filter(r => r.unreplied > 0);
+  if (linySet) rows = rows.filter(r => r.contact.liny_id && linySet.has(String(r.contact.liny_id)));
+  // 保護者カードと重複しないよう、ここでは本人・保護者どちらも出す（担当の要対応は全部見たい）
+
+  if (!rows.length) { sec.style.display = 'none'; return; }
+  sec.style.display = 'block';
+  if (countEl) countEl.textContent = rows.length;
+
+  listEl.innerHTML = rows.slice(0, 6).map(r => homeLineRowHtml(r)).join('') +
+    (rows.length > 6 ? '<div style="font-size:11px;color:var(--muted);text-align:center;padding:4px">他 ' + (rows.length - 6) + ' 件</div>' : '');
+}
+
+// 担当学校(charge_schools)の在籍生の liny_id セット
+async function homeLineChargeLinySet() {
+  let charge = [];
+  try {
+    if (currentStaff && currentStaff.role === 'admin') return null; // adminは全体
+    if (typeof saMyPerms === 'object' && saMyPerms && Array.isArray(saMyPerms.charge_schools)) {
+      charge = saMyPerms.charge_schools;
+    } else if (currentStaff) {
+      const rows = await sbGet('staff_permissions', 'staff_id=eq.' + encodeURIComponent(currentStaff.staff_id) + '&select=charge_schools&limit=1') || [];
+      charge = (rows.length && Array.isArray(rows[0].charge_schools)) ? rows[0].charge_schools : [];
+    }
+  } catch (e) {}
+  if (!charge.length) return new Set();   // 担当校未設定＝何も出さない
+  // charge_schools を rules.schools として解決（全学年）
+  try {
+    return await lineFolderResolveLinyIds({ schools: charge, grades: [], include_ids: [], exclude_ids: [] });
+  } catch (e) { return new Set(); }
+}
+
+// フォルダ選択ドロップダウンを組み立て
+async function buildHomeLineFolderSelect() {
+  const sel = document.getElementById('home-line-folder-sel');
+  if (!sel) return;
+  // 自分のフォルダ一覧（lineFolders が未取得なら取得）
+  let folders = (typeof lineFolders !== 'undefined' && lineFolders) ? lineFolders : [];
+  if (!folders.length && typeof loadLineFolders === 'function') {
+    try { await loadLineFolders(); folders = (typeof lineFolders !== 'undefined') ? lineFolders : []; } catch (e) {}
+  }
+  let html = '<option value="charge">担当学校</option>';
+  folders.forEach(f => {
+    html += '<option value="' + escapeAttr(f.id) + '">📁 ' + escapeHtml(f.name) + '</option>';
+  });
+  html += '<option value="all">すべて</option>';
+  sel.innerHTML = html;
+  sel.value = homeLineFolderId;
+}
+
+function onHomeLineFolderChange() {
+  const sel = document.getElementById('home-line-folder-sel');
+  if (!sel) return;
+  homeLineFolderId = sel.value;
+  loadHomeLine();
+}
+
+// ---- ② 保護者の未対応（全スタッフ共通・内容は出さない） ----
+async function loadHomeParentLine() {
+  const sec = document.getElementById('home-parent-line-section');
+  const listEl = document.getElementById('home-parent-line-list');
+  const countEl = document.getElementById('home-parent-line-count');
+  if (!sec || !listEl) return;
+
+  if (_homeLineContacts == null) _homeLineContacts = await homeLineFetchContacts();
+
+  const rows = _homeLineContacts.filter(r => r.isParent && r.unreplied > 0);
+  if (!rows.length) { sec.style.display = 'none'; return; }
+  sec.style.display = 'block';
+  if (countEl) countEl.textContent = rows.length;
+
+  // 内容は出さず「誰から」だけ（生徒名＋学校）
+  listEl.innerHTML = rows.slice(0, 8).map(r => {
+    const who = escapeHtml(r.studentName || '保護者') + (r.school ? '<span style="font-size:10px;color:var(--muted);margin-left:5px">' + escapeHtml(r.school) + '</span>' : '');
+    return '<div onclick="openStaffLineInbox()" style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#fff;border:1px solid #E0A0A0;border-radius:8px;cursor:pointer">' +
+      '<span style="font-size:15px">👪</span>' +
+      '<span style="flex:1;font-size:12px;font-weight:700;color:var(--text)">' + who + '</span>' +
+      '<span style="font-size:10px;background:#C0392B;color:#fff;border-radius:9px;padding:1px 7px;font-weight:700;white-space:nowrap">未対応 ' + r.unreplied + '</span>' +
+    '</div>';
+  }).join('') +
+  (rows.length > 8 ? '<div style="font-size:11px;color:var(--muted);text-align:center;padding:4px">他 ' + (rows.length - 8) + ' 件</div>' : '');
+}
+
+// 要対応カードの1行（本人/保護者共通）
+function homeLineRowHtml(r) {
+  const icon = r.isParent ? '👪' : '💬';
+  const parentTag = r.isParent ? '<span style="font-size:9px;background:#FCE9E7;color:#C0392B;border:1px solid #E0A0A0;border-radius:8px;padding:0 5px;margin-left:4px">保護者</span>' : '';
+  const who = escapeHtml(r.studentName || '') + (r.school ? '<span style="font-size:10px;color:var(--muted);margin-left:5px">' + escapeHtml(r.school) + '</span>' : '');
+  return '<div onclick="openStaffLineInbox()" style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#fff;border:1px solid #A8D891;border-radius:8px;cursor:pointer">' +
+    '<span style="font-size:15px">' + icon + '</span>' +
+    '<span style="flex:1;font-size:12px;font-weight:700;color:var(--text)">' + who + parentTag + '</span>' +
+    '<span style="font-size:10px;background:#06C755;color:#fff;border-radius:9px;padding:1px 7px;font-weight:700;white-space:nowrap">要対応 ' + r.unreplied + '</span>' +
+  '</div>';
 }
 
 async function loadHomeApprovals() {
