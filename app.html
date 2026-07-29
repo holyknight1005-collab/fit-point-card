@@ -431,6 +431,18 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
   </div>
 </div>
 
+<!-- LINE個別紐付けモーダル（学年別名簿の「🔗 LINE登録」から） -->
+<div id="liny-link-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:698;align-items:center;justify-content:center;padding:14px">
+  <div style="background:var(--bg);border-radius:16px;padding:18px;max-width:460px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div style="font-size:15px;font-weight:700;color:var(--text)">🔗 LINE ID 紐付け</div>
+      <button onclick="closeLinyLinkModal()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="liny-link-body" style="font-size:12px;color:var(--text)">読み込み中…</div>
+  </div>
+</div>
+
+
 <!-- 日付詳細モーダル（スタッフ用カレンダー） -->
 <div id="staffcal-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:600;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:380px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
@@ -4499,7 +4511,9 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="smcontent-line" style="display:none">
       <div id="line-setup-banner" style="display:none;font-size:12px;color:#8F5F12;background:#FFF7EC;border:1px solid #E8C193;border-radius:8px;padding:10px 12px;margin-bottom:12px;line-height:1.6"></div>
 
-      <button onclick="openLinyCsvModal()" style="width:100%;margin-bottom:10px;padding:10px;background:#EEF3FB;border:1px solid #9CC0E8;border-radius:8px;font-size:12px;font-weight:700;color:#2D5FA6;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📇 Liny CSVで生徒・保護者を一括紐付け</button>
+      <button onclick="openLinyCsvModal()" style="width:100%;margin-bottom:6px;padding:10px;background:#EEF3FB;border:1px solid #9CC0E8;border-radius:8px;font-size:12px;font-weight:700;color:#2D5FA6;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📇 Liny CSVで生徒・保護者を一括紐付け</button>
+      <button onclick="syncLinyContacts()" style="width:100%;margin-bottom:4px;padding:9px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:12px;font-weight:700;color:var(--muted);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔄 紐付け済みを受信箱に同期</button>
+      <div id="liny-sync-msg" style="font-size:11px;color:var(--muted);margin-bottom:10px;min-height:14px"></div>
 
       <!-- フィルタ -->
       <div style="display:flex;gap:6px;margin-bottom:10px">
@@ -5571,7 +5585,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dis';
+const APP_VERSION = '20260702diu';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29056,6 +29070,77 @@ function linyRowHtml(kind, i, r, badge, color, checkable, student, done, multiHi
 }
 
 // 確定保存
+
+// ============================================================
+// 紐付け済み students → line_contacts.student_id 一括同期（diu）
+// students.liny_id / parent_liny_id が入っているのに line_contacts.student_id が
+// 未反映のものを埋める。手動リカバリ用（CSV/個別登録は保存時に自動同期される）。
+// ============================================================
+async function syncLinyContacts() {
+  const msg = document.getElementById('liny-sync-msg');
+  const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c || 'var(--muted)'; } };
+  setMsg('同期中…');
+
+  // 1) liny_id を持つ students を取得（本人・保護者どちらか埋まっているもの）
+  let studs = [];
+  try {
+    const a = await sbGet('students', 'liny_id=not.is.null&select=id,liny_id,parent_liny_id') || [];
+    const b = await sbGet('students', 'parent_liny_id=not.is.null&select=id,liny_id,parent_liny_id') || [];
+    const seen = {};
+    [...a, ...b].forEach(s => { if (!seen[s.id]) { seen[s.id] = 1; studs.push(s); } });
+  } catch (e) { setMsg('生徒の取得に失敗しました', '#C0392B'); return; }
+
+  // 2) liny_id → student_id マップ（本人・保護者とも）
+  const linyToStudent = {};
+  studs.forEach(s => {
+    if (s.liny_id) linyToStudent[String(s.liny_id)] = s.id;
+    if (s.parent_liny_id) linyToStudent[String(s.parent_liny_id)] = s.id;
+  });
+  const allLiny = Object.keys(linyToStudent);
+  if (!allLiny.length) { setMsg('紐付け済みの生徒がいません', 'var(--muted)'); return; }
+
+  // 3) 該当 line_contacts を取得（liny_id 一致・student_id 未一致のものだけ更新対象）
+  let contacts = [];
+  try {
+    // liny_id は多いと URL が長くなるため分割取得
+    const CHUNK = 100;
+    for (let i = 0; i < allLiny.length; i += CHUNK) {
+      const part = allLiny.slice(i, i + CHUNK);
+      const inList = part.map(v => '"' + v.replace(/"/g, '') + '"').join(',');
+      const rows = await sbGet('line_contacts', 'liny_id=in.(' + inList + ')&select=id,liny_id,student_id') || [];
+      contacts = contacts.concat(rows);
+    }
+  } catch (e) { setMsg('受信箱の取得に失敗しました', '#C0392B'); return; }
+
+  // 4) student_id ごとに更新すべき liny_id をまとめる（既に正しいものはスキップ）
+  const bySid = {};   // student_id -> [liny_id,...]
+  contacts.forEach(c => {
+    const sid = linyToStudent[String(c.liny_id)];
+    if (!sid) return;
+    if (c.student_id === sid) return;   // 既に一致
+    (bySid[sid] || (bySid[sid] = [])).push(c.liny_id);
+  });
+
+  const sids = Object.keys(bySid);
+  if (!sids.length) { setMsg('✓ すでに最新です（更新なし）', '#1E8449'); return; }
+
+  // 5) student_id ごとに line_contacts を一括 PATCH
+  let updated = 0, failed = 0;
+  for (const sid of sids) {
+    const inList = bySid[sid].map(v => '"' + String(v).replace(/"/g, '') + '"').join(',');
+    try {
+      await sbPatch('line_contacts', 'liny_id=in.(' + inList + ')', { student_id: sid });
+      updated += bySid[sid].length;
+    } catch (e) { failed += bySid[sid].length; }
+  }
+
+  if (failed) setMsg('✓ ' + updated + '件を同期（' + failed + '件失敗）', updated ? '#1E8449' : '#C0392B');
+  else        setMsg('✓ ' + updated + '件を受信箱に同期しました', '#1E8449');
+
+  // 受信箱一覧を再読込して反映
+  if (typeof initLineInbox === 'function') { try { await initLineInbox(); } catch (e) {} }
+}
+
 async function commitLinyCsv(kind) {
   const status = document.getElementById('liny-csv-status');
   const rows = (kind === 'honin') ? _linyHoninRows : _linyParentRows;
@@ -29079,6 +29164,10 @@ async function commitLinyCsv(kind) {
     try {
       const body = {}; body[col] = t.linyId;
       await sbPatch('students', 'id=eq.' + encodeURIComponent(t.studentId), body);
+      // line_contacts 側にも student_id を反映（受信箱一覧で生徒名表示にする）
+      try {
+        await sbPatch('line_contacts', 'liny_id=eq.' + encodeURIComponent(t.linyId), { student_id: t.studentId });
+      } catch (eLC) { /* 未取込contactは無視 */ }
       ok++;
     } catch (e) {
       ng++; errs.push(t.disp + '：' + (e.message || e));
@@ -40158,6 +40247,148 @@ async function saveSvEdit() {
 let svInoutPeriod = 'month';  // 'month' | 'fy' | 'all'
 let svInoutKind = 'all';      // 'all' | 'join' | 'leave' | 'prospect' | 'visit'
 
+
+// ============================================================
+// LINE ID 個別紐付けモーダル（学年別名簿の「🔗 LINE登録」）（dit）
+// 本人(liny_id)・保護者(parent_liny_id)を、未紐付けline_contacts一覧選択 or 手入力で紐付け
+// ============================================================
+var linyLinkStudentId = null;
+var linyLinkStudent = null;         // 対象生徒レコード
+var linyLinkContacts = [];          // 未紐付けcontacts候補
+
+async function openLinyLinkModal(studentId) {
+  linyLinkStudentId = studentId;
+  linyLinkStudent = null;
+  const modal = document.getElementById('liny-link-modal');
+  const body = document.getElementById('liny-link-body');
+  if (!modal || !body) return;
+  body.innerHTML = '読み込み中…';
+  modal.style.display = 'flex';
+
+  // 対象生徒の現在の紐付け状況を取得
+  try {
+    const rows = await sbGet('students', 'id=eq.' + encodeURIComponent(studentId) + '&select=id,name,liny_id,parent_liny_id&limit=1') || [];
+    linyLinkStudent = rows[0] || null;
+  } catch (e) { linyLinkStudent = null; }
+  if (!linyLinkStudent) { body.innerHTML = '<div style="color:#C0392B">生徒情報の取得に失敗しました。</div>'; return; }
+
+  // 未紐付けの line_contacts（student_id is null）を候補として取得
+  try {
+    linyLinkContacts = await sbGet('line_contacts', 'student_id=is.null&select=id,liny_id,display_name,contact_kind&order=display_name.asc') || [];
+  } catch (e) { linyLinkContacts = []; }
+
+  renderLinyLinkBody();
+}
+
+function closeLinyLinkModal() {
+  const modal = document.getElementById('liny-link-modal');
+  if (modal) modal.style.display = 'none';
+  linyLinkStudentId = null;
+  linyLinkStudent = null;
+  linyLinkContacts = [];
+}
+
+// 本人/保護者それぞれのUI（現在値表示＋一覧選択セレクト＋手入力）
+function linyLinkFieldHtml(kind) {
+  // kind: 'self' or 'parent'
+  const col = kind === 'self' ? '#2E7D32' : '#6B4FA0';
+  const label = kind === 'self' ? '💬 本人（liny_id）' : '💬 保護者（parent_liny_id）';
+  const cur = kind === 'self' ? (linyLinkStudent.liny_id || '') : (linyLinkStudent.parent_liny_id || '');
+  const selId = 'liny-link-sel-' + kind;
+  const inpId = 'liny-link-inp-' + kind;
+
+  // 一覧セレクト（display_name (liny_id)）
+  let opts = '<option value="">― 一覧から選択 ―</option>';
+  linyLinkContacts.forEach(c => {
+    if (!c.liny_id) return;
+    const nm = c.display_name || '(名前なし)';
+    const kd = c.contact_kind ? ('・' + c.contact_kind) : '';
+    opts += '<option value="' + escapeAttr(c.liny_id) + '">' + escapeHtml(nm + ' (' + c.liny_id + ')' + kd) + '</option>';
+  });
+
+  let html = '<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px">';
+  html += '<div style="font-size:12px;font-weight:700;color:' + col + ';margin-bottom:6px">' + label + '</div>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">現在：' + (cur ? '<b style="color:var(--text)">' + escapeHtml(cur) + '</b>' : '<span style="color:var(--muted)">未紐付け</span>') + '</div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:3px">未紐付けの受信箱アカウントから選ぶ</div>';
+  html += '<select id="' + selId + '" onchange="linyLinkOnSel(\'' + kind + '\')" class="form-select" style="width:100%;font-size:12px;margin-bottom:8px">' + opts + '</select>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:3px">または liny_id を直接入力</div>';
+  html += '<input id="' + inpId + '" type="text" value="' + escapeAttr(cur) + '" placeholder="例: 209012958" class="form-input-sm" style="width:100%;font-size:12px">';
+  html += '</div>';
+  return html;
+}
+
+// 一覧セレクトで選んだら手入力欄に反映
+function linyLinkOnSel(kind) {
+  const sel = document.getElementById('liny-link-sel-' + kind);
+  const inp = document.getElementById('liny-link-inp-' + kind);
+  if (sel && inp && sel.value) inp.value = sel.value;
+}
+
+function renderLinyLinkBody() {
+  const body = document.getElementById('liny-link-body');
+  if (!body) return;
+  let html = '';
+  html += '<div style="font-size:12px;color:var(--text);margin-bottom:10px">生徒：<b>' + escapeHtml(linyLinkStudent.name || '') + '</b></div>';
+  if (!linyLinkContacts.length) {
+    html += '<div style="font-size:11px;color:var(--muted);background:var(--surface2);border-radius:8px;padding:8px;margin-bottom:10px">未紐付けの受信箱アカウントはありません。liny_id を直接入力してください。</div>';
+  }
+  html += linyLinkFieldHtml('self');
+  html += linyLinkFieldHtml('parent');
+  html += '<div id="liny-link-msg" style="font-size:11px;color:var(--muted);min-height:16px;margin-bottom:8px"></div>';
+  html += '<div style="display:flex;gap:8px">';
+  html += '<button onclick="closeLinyLinkModal()" style="flex:1;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">キャンセル</button>';
+  html += '<button onclick="linyLinkSave()" style="flex:2;padding:10px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">保存する</button>';
+  html += '</div>';
+  body.innerHTML = html;
+}
+
+// 保存：手入力欄の値を students.liny_id / parent_liny_id に PATCH
+async function linyLinkSave() {
+  const msg = document.getElementById('liny-link-msg');
+  const selfInp = document.getElementById('liny-link-inp-self');
+  const parInp = document.getElementById('liny-link-inp-parent');
+  if (!linyLinkStudentId) return;
+  const selfV = (selfInp ? selfInp.value : '').trim();
+  const parV = (parInp ? parInp.value : '').trim();
+
+  const patch = {
+    liny_id: selfV || null,
+    parent_liny_id: parV || null
+  };
+  if (msg) { msg.textContent = '保存中…'; msg.style.color = 'var(--muted)'; }
+  try {
+    await sbPatch('students', 'id=eq.' + encodeURIComponent(linyLinkStudentId), patch);
+
+    // line_contacts 側にも student_id を反映（受信箱一覧で「学校 生徒名（区分）」表示にするため）
+    // 本人 liny_id / 保護者 parent_liny_id に一致する contact に student_id を書き込む。
+    const linkIds = [];
+    if (selfV) linkIds.push(selfV);
+    if (parV) linkIds.push(parV);
+    if (linkIds.length) {
+      const inList = linkIds.map(v => '"' + String(v).replace(/"/g, '') + '"').join(',');
+      try {
+        await sbPatch('line_contacts', 'liny_id=in.(' + inList + ')',
+          { student_id: linyLinkStudentId });
+      } catch (eLC) { /* contact未取込などは無視（studentsは保存済み） */ }
+    }
+
+    if (msg) { msg.textContent = '✓ 保存しました'; msg.style.color = '#1E8449'; }
+    // 名簿を再描画して反映
+    setTimeout(() => {
+      closeLinyLinkModal();
+      if (typeof renderSvInterviews === 'function') renderSvInterviews();
+    }, 500);
+  } catch (e) {
+    if (msg) {
+      // 部分ユニーク制約違反（既に他生徒が使用中の liny_id）を分かりやすく
+      const txt = String(e && e.message || '');
+      if (/duplicate|unique/i.test(txt)) msg.textContent = 'この liny_id は既に別の生徒に紐付いています。';
+      else msg.textContent = '保存に失敗しました。';
+      msg.style.color = '#C0392B';
+    }
+  }
+}
+
 async function renderSvInterviews() {
   const sec = document.getElementById('sv-interviews-section');
   if (!sec || !svSchool) return;
@@ -40168,11 +40399,11 @@ async function renderSvInterviews() {
   try {
     try {
       students = await sbGet('students',
-        'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason,membership_status,withdraw_status,withdraw_effective_date,withdraw_reason,withdraw_reason_note,withdraw_grade_adj') || [];
+        'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason,membership_status,withdraw_status,withdraw_effective_date,withdraw_reason,withdraw_reason_note,withdraw_grade_adj,liny_id,parent_liny_id') || [];
     } catch (eNote) {
       // withdraw_reason_note / withdraw_grade_adj 列が未適用の環境向けフォールバック
       students = await sbGet('students',
-        'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason,membership_status,withdraw_status,withdraw_effective_date,withdraw_reason') || [];
+        'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,course_track,enroll_date,is_active,inactive_reason,membership_status,withdraw_status,withdraw_effective_date,withdraw_reason,liny_id,parent_liny_id') || [];
     }
     // 除外（デモ・テスト）は落とす。退塾・卒業は含める。
     students = students.filter(s => s.inactive_reason !== '除外');
@@ -40338,6 +40569,15 @@ async function renderSvInterviews() {
 
   const md = (d) => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10)) : '?';
 
+  // LINE連絡状況：対象生徒の liny_id を一括集計＋学校の警告日数
+  let svIvContactSummary = {}, svIvAlertDays = SV_CONTACT_DEFAULT_DAYS;
+  try {
+    svIvAlertDays = await svContactGetAlertDays(svSchool);
+    const linyIds = [];
+    students.forEach(s => { if (s.liny_id) linyIds.push(s.liny_id); if (s.parent_liny_id) linyIds.push(s.parent_liny_id); });
+    svIvContactSummary = await svContactBuildSummary(linyIds);
+  } catch (e) { svIvContactSummary = {}; }
+
   const svCanEdit = (typeof svCanEditGradeNotes === 'function') ? svCanEditGradeNotes() : true;
   let html = '<div class="sv-card-h" style="display:flex;align-items:center;justify-content:space-between">👥 学年別名簿（この学校）' +
     (svCanEdit ? '<button onclick="openSvNew()" style="padding:4px 12px;font-size:11px;font-weight:700;border-radius:8px;border:none;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">＋ 新規生徒</button>' : '<span style="font-size:10px;color:var(--muted)">閲覧のみ</span>') + '</div>';
@@ -40360,6 +40600,7 @@ async function renderSvInterviews() {
       '<th style="padding:4px 6px;white-space:nowrap">氏名</th>' +
       '<th style="padding:4px 6px;white-space:nowrap">文理</th>' +
       '<th style="padding:4px 6px;white-space:nowrap">受講授業</th>' +
+      '<th style="padding:4px 6px;white-space:nowrap">LINE</th>' +
       '<th style="padding:4px 6px">面談履歴</th>' +
       '</tr></thead><tbody>';
     list.forEach(s => {
@@ -40388,6 +40629,20 @@ async function renderSvInterviews() {
       html += '<td style="padding:6px">' + (subs.length
         ? subs.map(x => '<span style="display:inline-block;font-size:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:1px 6px;margin:1px 2px 1px 0;white-space:nowrap">' + escapeHtml(x) + '</span>').join('')
         : '<span style="color:var(--muted)">—</span>') + '</td>';
+      // LINE列：連絡ボタン＋送/受日バッジ＋登録ボタン（退塾生は赤警告なし）
+      html += '<td style="padding:6px;white-space:nowrap">';
+      {
+        const noAlert = (s.is_active === false);
+        const btns = linyContactBtns(s, { small: true });
+        const badge = svContactBadge(s, svIvContactSummary, svIvAlertDays, { noAlert: noAlert });
+        html += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' + (badge || '') + btns;
+        // 登録ボタン：students登録済み（id有り）かつ編集権限がある場合のみ
+        if (!s._roster && s.id && svCanEdit) {
+          html += '<button onclick="openLinyLinkModal(\'' + escapeAttr(String(s.id)) + '\')" style="font-size:10px;padding:4px 8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--muted);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🔗 LINE登録</button>';
+        }
+        html += '</div>';
+      }
+      html += '</td>';
       html += '<td style="padding:6px">';
       if (ivg && ivg.dates.length) {
         html += '<div style="display:flex;gap:4px;flex-wrap:wrap">';
