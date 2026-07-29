@@ -5571,7 +5571,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dir';
+const APP_VERSION = '20260702dis';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -40541,6 +40541,171 @@ async function renderSvCalendar() {
 //   今月の入塾（enroll_date）／今月の退塾（is_active=false & 退塾 & withdraw_effective_date が今月）
 //   ＋ 今日の来塾（checkins）。すべてこの学校の生徒に限定。
 // ============================================================
+
+// ============================================================
+// 学校別ページ：連絡状況（最終送信/受信・件数・長期未連絡アラート）（dis）
+// ============================================================
+var SV_CONTACT_DEFAULT_DAYS = 10;   // 未設定校のデフォルト警告日数
+var svContactAlertDaysCache = {};   // { school: days }
+
+// この学校の警告日数を取得（未設定なら DEFAULT）。キャッシュ。
+async function svContactGetAlertDays(school) {
+  if (svContactAlertDaysCache[school] != null) return svContactAlertDaysCache[school];
+  let days = SV_CONTACT_DEFAULT_DAYS;
+  try {
+    const rows = await sbGet('school_settings',
+      'school=eq.' + encodeURIComponent(school) + '&select=contact_alert_days&limit=1') || [];
+    if (rows.length && rows[0].contact_alert_days != null) days = rows[0].contact_alert_days;
+  } catch (e) {}
+  svContactAlertDaysCache[school] = days;
+  return days;
+}
+
+// 警告日数を保存（UPSERT: on_conflict=school + merge-duplicates）
+async function svContactSaveAlertDays(school, days) {
+  const d = Math.max(1, Math.min(365, parseInt(days, 10) || SV_CONTACT_DEFAULT_DAYS));
+  const staffId = (typeof currentStaff === 'object' && currentStaff) ? (currentStaff.staff_id || '') : '';
+  try {
+    const res = await fetch(SB_URL + '/rest/v1/school_settings?on_conflict=school', {
+      method: 'POST',
+      headers: {
+        'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal,resolution=merge-duplicates'
+      },
+      body: JSON.stringify({
+        school: school,
+        contact_alert_days: d,
+        updated_at: new Date().toISOString(),
+        updated_by: staffId
+      })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    svContactAlertDaysCache[school] = d;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// liny_id 群 → 連絡サマリ { linyId: {lastOut, lastIn, cnt} } を返す
+// lastOut/lastIn は 'YYYY-MM-DD' 文字列（無ければ null）
+async function svContactBuildSummary(linyIds) {
+  const uniq = Array.from(new Set((linyIds || []).filter(Boolean)));
+  const result = {};
+  if (!uniq.length) return result;
+
+  // 1) liny_id → contact を一括取得（in.() クォート）
+  const inList = uniq.map(v => '"' + String(v).replace(/"/g, '') + '"').join(',');
+  let contacts = [];
+  try {
+    contacts = await sbGet('line_contacts',
+      'liny_id=in.(' + inList + ')&select=id,liny_id') || [];
+  } catch (e) { return result; }
+  if (!contacts.length) return result;
+
+  const contactIdToLiny = {};
+  const contactIds = [];
+  contacts.forEach(c => {
+    if (c.id != null) { contactIdToLiny[c.id] = c.liny_id; contactIds.push(c.id); }
+  });
+  if (!contactIds.length) return result;
+
+  // 2) contact_id → messages を一括取得（direction/created_at）
+  let msgs = [];
+  try {
+    msgs = await sbGet('line_messages',
+      'contact_id=in.(' + contactIds.join(',') + ')&select=contact_id,direction,created_at&order=created_at.desc') || [];
+  } catch (e) { return result; }
+
+  // 3) liny_id ごとに direction別 最新日と件数を集計
+  msgs.forEach(mm => {
+    const liny = contactIdToLiny[mm.contact_id];
+    if (!liny) return;
+    if (!result[liny]) result[liny] = { lastOut: null, lastIn: null, cnt: 0 };
+    const r = result[liny];
+    r.cnt++;
+    const d = (mm.created_at || '').slice(0, 10);
+    if (!d) return;
+    if (mm.direction === 'out') { if (!r.lastOut || d > r.lastOut) r.lastOut = d; }
+    else                        { if (!r.lastIn  || d > r.lastIn)  r.lastIn  = d; }
+  });
+  return result;
+}
+
+// 'YYYY-MM-DD' → 経過日数（今日 - d）。null なら null。
+function svContactDaysAgo(dateStr) {
+  if (!dateStr) return null;
+  const p = dateStr.split('-');
+  if (p.length !== 3) return null;
+  const dt = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10));
+  const t = getTodayJST().split('-');
+  const today = new Date(parseInt(t[0], 10), parseInt(t[1], 10) - 1, parseInt(t[2], 10));
+  return Math.floor((today - dt) / 86400000);
+}
+
+// 生徒1人分の連絡状況バッジHTMLを生成
+// stu: {liny_id, parent_liny_id}, summary: svContactBuildSummary結果, alertDays, opt.noAlert(退塾は赤なし)
+function svContactBadge(stu, summary, alertDays, opt) {
+  opt = opt || {};
+  const ids = [];
+  if (stu && stu.liny_id) ids.push(stu.liny_id);
+  if (stu && stu.parent_liny_id) ids.push(stu.parent_liny_id);
+  if (!ids.length) return '';   // 未紐付けはバッジ無し（ボタン側で「未紐付け」表示）
+
+  // 本人・保護者をまとめて最新の送信/受信を採用
+  let lastOut = null, lastIn = null, cnt = 0;
+  ids.forEach(id => {
+    const s = summary[id];
+    if (!s) return;
+    cnt += s.cnt || 0;
+    if (s.lastOut && (!lastOut || s.lastOut > lastOut)) lastOut = s.lastOut;
+    if (s.lastIn  && (!lastIn  || s.lastIn  > lastIn))  lastIn  = s.lastIn;
+  });
+
+  const md = (d) => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10)) : '−';
+
+  // アラート判定：最終送信・最終受信のうち新しい方の経過日数で判定
+  let newest = null;
+  if (lastOut && (!newest || lastOut > newest)) newest = lastOut;
+  if (lastIn  && (!newest || lastIn  > newest)) newest = lastIn;
+  const ago = svContactDaysAgo(newest);
+  let alert = false;
+  if (!opt.noAlert) {
+    // 一度もやり取りが無い（紐付け済だが履歴0）or 閾値超過で赤
+    if (newest == null && cnt === 0) alert = true;
+    else if (ago != null && ago >= alertDays) alert = true;
+  }
+
+  const col = alert ? '#C0392B' : 'var(--muted)';
+  const bg  = alert ? '#FDECEA' : 'transparent';
+  const bd  = alert ? '1px solid #E8B4B4' : 'none';
+  let txt;
+  if (newest == null && cnt === 0) {
+    txt = 'やり取りなし';
+  } else {
+    txt = '送' + md(lastOut) + ' 受' + md(lastIn) + ' ' + cnt + '件';
+  }
+  return '<span style="font-size:10px;font-weight:700;color:' + col + ';background:' + bg + ';border:' + bd + ';border-radius:6px;padding:2px 6px;white-space:nowrap">' +
+    (alert ? '⚠️ ' : '') + escapeHtml(txt) + '</span>';
+}
+
+// 保存ボタン：入力値を school_settings に UPSERT → キャッシュ更新 → 再描画
+async function svContactApplyDays() {
+  const inp = document.getElementById('sv-contact-days');
+  const msg = document.getElementById('sv-contact-days-msg');
+  if (!inp || !svSchool) return;
+  const v = parseInt(inp.value, 10);
+  if (!(v >= 1 && v <= 365)) { if (msg) { msg.textContent = '1〜365で入力'; msg.style.color = '#C0392B'; } return; }
+  if (msg) { msg.textContent = '保存中…'; msg.style.color = 'var(--muted)'; }
+  const ok = await svContactSaveAlertDays(svSchool, v);
+  if (msg) {
+    if (ok) { msg.textContent = '✓ 保存しました'; msg.style.color = '#1E8449'; }
+    else    { msg.textContent = '保存に失敗しました'; msg.style.color = '#C0392B'; }
+  }
+  if (ok && typeof renderSvInout === 'function') renderSvInout();
+}
+
 async function renderSvInout() {
   const sec = document.getElementById('sv-inout-section');
   if (!sec || !svSchool) return;
@@ -40574,7 +40739,7 @@ async function renderSvInout() {
   try {
     students = await sbGet('students',
       'school=eq.' + encodeURIComponent(svSchool) +
-      '&select=id,name,grade,enroll_date,is_active,inactive_reason,withdraw_effective_date') || [];
+      '&select=id,name,grade,enroll_date,is_active,inactive_reason,withdraw_effective_date,liny_id,parent_liny_id') || [];
   } catch (e) {
     sec.innerHTML = '<div class="sv-card-h">🚪 入塾・退塾・未入塾一覧</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">生徒の取得に失敗しました。</div>';
     return;
@@ -40608,14 +40773,34 @@ async function renderSvInout() {
     } catch (e) {}
   }
 
+  // 連絡状況：対象生徒の liny_id を集めて一括集計＋学校の警告日数
+  const contactAlertDays = await svContactGetAlertDays(svSchool);
+  const allLinyIds = [];
+  students.forEach(s => { if (s.liny_id) allLinyIds.push(s.liny_id); if (s.parent_liny_id) allLinyIds.push(s.parent_liny_id); });
+  let contactSummary = {};
+  try { contactSummary = await svContactBuildSummary(allLinyIds); } catch (e) { contactSummary = {}; }
+
   const md = (d) => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10)) : '';
   const gLbl = (g) => g ? ('高' + g) : '';
-  const chip = (nm, gr, sub, color, onclick) =>
-    '<div style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border)' + (onclick ? ';cursor:pointer' : '') + '"' + (onclick ? ' onclick="' + onclick + '"' : '') + '>' +
+  // stu が渡され liny 情報を持つ場合は連絡ボタン＋連絡状況バッジを右側に表示。
+  // opt.noAlert=true（退塾）のときは赤警告を抑止（日付は表示）。
+  const chip = (nm, gr, sub, color, onclick, stu, chipOpt) => {
+    chipOpt = chipOpt || {};
+    let contactHtml = '';
+    if (stu) {
+      const btns = (typeof linyContactBtns === 'function') ? linyContactBtns(stu, { small: true }) : '';
+      const badge = (typeof svContactBadge === 'function') ? svContactBadge(stu, contactSummary, contactAlertDays, { noAlert: !!chipOpt.noAlert }) : '';
+      if (btns || badge) {
+        contactHtml = '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-left:auto">' + (badge || '') + (btns || '') + '</div>';
+      }
+    }
+    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border)">' +
       (sub ? '<span style="font-size:11px;font-weight:700;color:' + color + ';min-width:42px;white-space:nowrap">' + escapeHtml(sub) + '</span>' : '') +
-      '<span style="font-size:13px;color:' + (onclick ? '#2D6CB6' : 'var(--text)') + (onclick ? ';text-decoration:underline' : '') + '">' + escapeHtml(nm) + (gr ? '<span style="font-size:10px;color:var(--muted);margin-left:4px">' + escapeHtml(gr) + '</span>' : '') + '</span>' +
-      (onclick ? '<span style="margin-left:auto;font-size:10px;color:var(--muted)">✏️編集</span>' : '') +
+      '<span style="font-size:13px;color:' + (onclick ? '#2D6CB6' : 'var(--text)') + (onclick ? ';cursor:pointer;text-decoration:underline' : '') + '"' + (onclick ? ' onclick="' + onclick + '"' : '') + '>' + escapeHtml(nm) + (gr ? '<span style="font-size:10px;color:var(--muted);margin-left:4px">' + escapeHtml(gr) + '</span>' : '') + '</span>' +
+      (onclick && !contactHtml ? '<span style="margin-left:auto;font-size:10px;color:var(--muted)">✏️編集</span>' : '') +
+      contactHtml +
     '</div>';
+  };
   const block = (title, count, bodyHtml) =>
     '<div style="margin-bottom:12px">' +
       '<div style="font-size:12px;font-weight:800;color:var(--text);margin-bottom:4px">' + title + '（' + count + '）</div>' +
@@ -40634,21 +40819,29 @@ async function renderSvInout() {
   html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' +
     kindBtn('all', 'すべて') + kindBtn('join', '入塾') + kindBtn('leave', '退塾') + kindBtn('prospect', '未入塾') + '</div>';
   html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + escapeHtml(svSchool) + '／' + rangeLabel + '</div>';
+  // 未連絡アラート日数（学校別・共有設定）
+  html += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:8px">' +
+    '<span style="font-size:11px;color:var(--muted);white-space:nowrap">⚙️ 未連絡で赤く警告する日数</span>' +
+    '<input id="sv-contact-days" type="number" min="1" max="365" value="' + contactAlertDays + '" style="width:56px;padding:3px 6px;font-size:12px;border:1px solid var(--border);border-radius:6px;font-family:inherit;text-align:right"> ' +
+    '<span style="font-size:11px;color:var(--muted)">日以上</span>' +
+    '<button onclick="svContactApplyDays()" style="font-size:11px;font-weight:700;padding:4px 12px;border-radius:8px;border:1px solid #2D6CB6;background:#2D6CB6;color:#fff;cursor:pointer;font-family:inherit">保存</button>' +
+    '<span id="sv-contact-days-msg" style="font-size:11px;color:var(--muted)"></span>' +
+    '</div>';
 
   const showAll = svInoutKind === 'all';
   if (showAll || svInoutKind === 'join') {
     html += block('🆕 入塾', joined.length,
-      joined.map(s => chip(s.name || '', gLbl(s.grade), md(s.enroll_date), '#1E8449')).join(''));
+      joined.map(s => chip(s.name || '', gLbl(s.grade), md(s.enroll_date), '#1E8449', null, s)).join(''));
   }
   if (showAll || svInoutKind === 'leave') {
     html += block('🚪 退塾', left.length,
-      left.map(s => chip(s.name || '', gLbl(s.grade), md(s.withdraw_effective_date), '#C0392B')).join(''));
+      left.map(s => chip(s.name || '', gLbl(s.grade), md(s.withdraw_effective_date), '#C0392B', null, s, { noAlert: true })).join(''));
   }
   if (showAll || svInoutKind === 'prospect') {
     const svInoutCanEdit = (typeof svCanEditGradeNotes === 'function') ? svCanEditGradeNotes() : true;
     html += block('🕐 未入塾（見込み）', prospects.length,
       prospects.map(p => chip(p.name || '', gLbl(p.grade), md((p.created_at || '').slice(0, 10)), '#B9770E',
-        svInoutCanEdit ? 'openProspectModal(&quot;' + p.id + '&quot;)' : null)).join(''));
+        svInoutCanEdit ? 'openProspectModal(&quot;' + p.id + '&quot;)' : null, p)).join(''));
   }
   sec.innerHTML = html;
 }
