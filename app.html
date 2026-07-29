@@ -4477,16 +4477,6 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="smcontent-line" style="display:none">
       <div id="line-setup-banner" style="display:none;font-size:12px;color:#8F5F12;background:#FFF7EC;border:1px solid #E8C193;border-radius:8px;padding:10px 12px;margin-bottom:12px;line-height:1.6"></div>
 
-      <!-- 設定（返信用Edge Function URL・合言葉） -->
-      <details style="margin-bottom:12px">
-        <summary style="font-size:12px;color:var(--muted);cursor:pointer">⚙️ 返信の設定（Function URL・合言葉）</summary>
-        <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px">
-          <input id="line-cfg-url" type="text" placeholder="line-reply の Function URL" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px">
-          <input id="line-cfg-token" type="text" placeholder="APP_SHARED_TOKEN（合言葉）" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px">
-          <button onclick="saveLineConfig()" style="align-self:flex-start;padding:7px 14px;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">保存</button>
-        </div>
-      </details>
-
       <!-- フィルタ -->
       <div style="display:flex;gap:6px;margin-bottom:10px">
         <button id="line-filter-unreplied" onclick="setLineFilter('unreplied')" class="line-fbtn" style="flex:1;padding:8px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1px solid var(--orange);background:var(--orange-l);color:var(--orange-d)">要対応</button>
@@ -5557,7 +5547,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dio';
+const APP_VERSION = '20260702dip';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -28757,29 +28747,15 @@ function toggleManageMenu(forceState) {
 }
 
 // ============================================================
-// LINE受信箱（din）
-// データは line_contacts / line_messages（Supabase）。テーブル未作成でも
-// 落ちず、セットアップ案内＋サンプル表示。返信は line-reply Edge Function。
+// LINE受信箱（Liny メール取り込み版）
+// データは line_contacts / line_messages（Supabase）。取り込みは GAS 経由。
+// 返信は Liny の返信URL(reply_url)を開く。状態は 要対応/対応済（LINE返信済/電話対応済）。
 // ============================================================
 let lineFilter = 'unreplied';      // 'unreplied' | 'mine' | 'all'
-let lineContacts = [];             // [{contact, lastMsg, unrepliedCount, ...}]
-let lineStudentMap = {};           // student_id -> name（紐付け表示用）
+let lineContacts = [];             // [{contact, last, unreplied}]
+let lineStudentMap = {};           // student_id -> {name, school}
 let lineStaffMap = {};             // staff_id -> name
-let lineUsingSample = false;
-
-function lineCfg() {
-  return {
-    url: localStorage.getItem('fit_line_reply_url') || '',
-    token: localStorage.getItem('fit_line_reply_token') || ''
-  };
-}
-function saveLineConfig() {
-  const url = (document.getElementById('line-cfg-url').value || '').trim();
-  const token = (document.getElementById('line-cfg-token').value || '').trim();
-  localStorage.setItem('fit_line_reply_url', url);
-  localStorage.setItem('fit_line_reply_token', token);
-  showToast('返信の設定を保存しました', 'success');
-}
+let lineNoData = false;
 
 function setLineFilter(f) {
   lineFilter = f;
@@ -28795,10 +28771,6 @@ function setLineFilter(f) {
 }
 
 async function initLineInbox() {
-  // 設定欄の初期値
-  const cfg = lineCfg();
-  const u = document.getElementById('line-cfg-url'); if (u) u.value = cfg.url;
-  const t = document.getElementById('line-cfg-token'); if (t) t.value = cfg.token;
   const banner = document.getElementById('line-setup-banner');
   const listEl = document.getElementById('line-contact-list');
   if (listEl) listEl.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:12px">読み込み中...</div>';
@@ -28810,43 +28782,50 @@ async function initLineInbox() {
     staff.forEach(s => { if (s.staff_id) lineStaffMap[s.staff_id] = s.name || s.staff_id; });
   } catch (e) {}
 
-  // contacts 取得（テーブルが無ければサンプル）
-  lineUsingSample = false;
+  // contacts 取得
+  lineNoData = false;
   let contacts = [];
   try {
-    contacts = await sbGet('line_contacts', 'select=*&order=last_message_at.desc.nullslast&limit=200') || [];
+    contacts = await sbGet('line_contacts', 'select=*&order=last_message_at.desc.nullslast&limit=300') || [];
     if (banner) banner.style.display = 'none';
   } catch (e) {
-    lineUsingSample = true;
+    lineNoData = true;
     if (banner) {
       banner.style.display = 'block';
-      banner.innerHTML = '⚠️ LINE連携がまだセットアップされていません（<b>create_line_inbox.sql</b> の実行とEdge Functionのデプロイが必要）。下は表示イメージのサンプルです。';
+      banner.innerHTML = '⚠️ 受信箱テーブルが見つかりません。<b>alter_line_for_liny.sql</b> の実行が必要です。';
     }
-    contacts = lineSampleContacts();
+    if (listEl) listEl.innerHTML = '';
+    return;
   }
 
-  // メッセージをまとめて取得（最新の1件＋未返信数を集計）
+  if (!contacts.length) {
+    if (banner) {
+      banner.style.display = 'block';
+      banner.innerHTML = 'まだメッセージがありません。Linyのメール通知がGAS経由で取り込まれると、ここに表示されます。';
+    }
+    if (listEl) listEl.innerHTML = '';
+    lineContacts = [];
+    return;
+  }
+
+  // 各 contact の最新メッセージ＋未返信数
+  const ids = contacts.map(c => c.id);
   let msgsByContact = {};
-  if (!lineUsingSample && contacts.length) {
-    const ids = contacts.map(c => c.id);
-    try {
-      const msgs = await sbGet('line_messages',
-        'contact_id=in.(' + ids.join(',') + ')&select=contact_id,direction,msg_type,text,replied,created_at&order=created_at.desc&limit=1000') || [];
-      msgs.forEach(m => {
-        const arr = msgsByContact[m.contact_id] || (msgsByContact[m.contact_id] = []);
-        arr.push(m);
-      });
-    } catch (e) {}
-  } else if (lineUsingSample) {
-    msgsByContact = lineSampleMessages();
-  }
+  try {
+    const msgs = await sbGet('line_messages',
+      'contact_id=in.(' + ids.join(',') + ')&select=contact_id,direction,text,replied,created_at&order=created_at.desc&limit=2000') || [];
+    msgs.forEach(m => {
+      const arr = msgsByContact[m.contact_id] || (msgsByContact[m.contact_id] = []);
+      arr.push(m);
+    });
+  } catch (e) {}
 
-  // 紐付け生徒名
+  // 紐付け生徒（名前・学校）
   const sids = contacts.map(c => c.student_id).filter(Boolean);
   if (sids.length) {
     try {
-      const studs = await sbGet('students', 'id=in.(' + sids.join(',') + ')&select=id,name') || [];
-      studs.forEach(s => { lineStudentMap[s.id] = s.name; });
+      const studs = await sbGet('students', 'id=in.(' + sids.join(',') + ')&select=id,name,school') || [];
+      studs.forEach(s => { lineStudentMap[s.id] = { name: s.name, school: s.school || '' }; });
     } catch (e) {}
   }
 
@@ -28856,12 +28835,24 @@ async function initLineInbox() {
     const unreplied = msgs.filter(m => m.direction === 'in' && !m.replied).length;
     return { contact: c, last, unreplied };
   }).sort((a, b) => {
-    const at = (a.last && a.last.created_at) || (a.contact.last_message_at) || '';
-    const bt = (b.last && b.last.created_at) || (b.contact.last_message_at) || '';
+    const at = (a.last && a.last.created_at) || a.contact.last_message_at || '';
+    const bt = (b.last && b.last.created_at) || b.contact.last_message_at || '';
     return at < bt ? 1 : at > bt ? -1 : 0;
   });
 
   renderLineContacts();
+}
+
+function lineContactLabel(c) {
+  // 表示名：紐付けがあれば「学校 生徒名（区分）」、なければ Liny登録名
+  const stu = c.student_id ? lineStudentMap[c.student_id] : null;
+  const kind = c.contact_kind === 'parent' ? '保護者' : (c.contact_kind === 'student' ? '生徒' : '');
+  if (stu) {
+    const school = stu.school ? stu.school + ' ' : '';
+    return { main: school + stu.name + (kind ? '（' + kind + '）' : ''), isParent: c.contact_kind === 'parent' };
+  }
+  const nm = c.liny_name || c.display_name || 'LINEユーザー';
+  return { main: nm + (kind ? '（' + kind + '）' : ''), isParent: c.contact_kind === 'parent' };
 }
 
 function renderLineContacts() {
@@ -28880,10 +28871,7 @@ function renderLineContacts() {
 
   el.innerHTML = rows.map(r => {
     const c = r.contact;
-    const name = c.display_name || 'LINEユーザー';
-    const stu = c.student_id ? (lineStudentMap[c.student_id] || '') : '';
-    const roleLabel = c.role === 'parent' ? '保護者' : (c.role === 'student' ? '生徒' : '');
-    const sub = [roleLabel, stu ? '（' + stu + '）' : ''].filter(Boolean).join('');
+    const lab = lineContactLabel(c);
     const assignee = c.assigned_staff_id ? (lineStaffMap[c.assigned_staff_id] || c.assigned_staff_id) : '';
     const last = r.last;
     const preview = last ? escapeHtml((last.text || '').slice(0, 40)) : '（メッセージなし）';
@@ -28892,15 +28880,17 @@ function renderLineContacts() {
     const badge = r.unreplied > 0
       ? '<span style="font-size:10px;background:var(--orange);color:#fff;border-radius:9px;padding:1px 7px;font-weight:700;white-space:nowrap">要対応 ' + r.unreplied + '</span>'
       : '<span style="font-size:10px;color:var(--green-d);white-space:nowrap">✓ 対応済</span>';
-    const avatar = c.picture_url
-      ? '<div style="width:40px;height:40px;border-radius:50%;background-image:url(' + c.picture_url + ');background-size:cover;flex-shrink:0"></div>'
-      : '<div style="width:40px;height:40px;border-radius:50%;background:#06C755;display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;flex-shrink:0">L</div>';
-    return '<div onclick="openLineThread(' + (lineUsingSample ? "'s" + c.id + "'" : c.id) + ')" style="background:#fff;border:1.5px solid ' + (r.unreplied > 0 ? 'var(--orange)' : 'var(--border)') + ';border-radius:10px;padding:11px 12px;display:flex;gap:10px;align-items:center;cursor:pointer">' +
+    // 保護者は枠を強調（慎重運用）
+    const borderColor = r.unreplied > 0 ? (lab.isParent ? '#C0392B' : 'var(--orange)') : 'var(--border)';
+    const parentTag = lab.isParent ? '<span style="font-size:9px;background:#FCE9E7;color:#C0392B;border:1px solid #E0A0A0;border-radius:8px;padding:1px 6px;margin-left:4px;white-space:nowrap">保護者</span>' : '';
+    const avatar = '<div style="width:40px;height:40px;border-radius:50%;background:' + (lab.isParent ? '#C0392B' : '#06C755') + ';display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px;flex-shrink:0">' + (lab.isParent ? '親' : 'L') + '</div>';
+    const method = c.last_reply_kind === 'phone' ? '📞' : (c.last_reply_kind === 'line' ? '💬' : '');
+    return '<div onclick="openLineThread(' + c.id + ')" style="background:#fff;border:1.5px solid ' + borderColor + ';border-radius:10px;padding:11px 12px;display:flex;gap:10px;align-items:center;cursor:pointer">' +
       avatar +
       '<div style="flex:1;min-width:0">' +
-        '<div style="display:flex;align-items:center;gap:6px"><span style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(name) + '</span>' + (sub ? '<span style="font-size:10px;color:var(--muted)">' + escapeHtml(sub) + '</span>' : '') + '</div>' +
+        '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap"><span style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(lab.main) + '</span>' + parentTag + '</div>' +
         '<div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + dirMark + preview + '</div>' +
-        (assignee ? '<div style="font-size:10px;color:var(--orange-d)">担当: ' + escapeHtml(assignee) + '</div>' : '') +
+        (assignee ? '<div style="font-size:10px;color:var(--orange-d)">担当: ' + escapeHtml(assignee) + (method ? ' ・ 最終' + method : '') + '</div>' : (method ? '<div style="font-size:10px;color:var(--muted)">最終' + method + '</div>' : '')) +
       '</div>' +
       '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">' + badge + '<span style="font-size:10px;color:var(--muted)">' + when + '</span></div>' +
     '</div>';
@@ -28908,66 +28898,74 @@ function renderLineContacts() {
 }
 
 async function openLineThread(contactId) {
-  // サンプルモード（'s'接頭辞）
-  const isSample = (typeof contactId === 'string' && contactId.charAt(0) === 's');
-  const rawId = isSample ? parseInt(contactId.slice(1)) : contactId;
-  const entry = lineContacts.find(r => r.contact.id === rawId);
+  const entry = lineContacts.find(r => r.contact.id === contactId);
   if (!entry) return;
   const c = entry.contact;
 
   let msgs = [];
-  if (isSample || lineUsingSample) {
-    msgs = (lineSampleMessages()[rawId] || []).slice();
-  } else {
-    try {
-      msgs = await sbGet('line_messages', 'contact_id=eq.' + rawId + '&select=*&order=created_at.asc') || [];
-      // 未読を既読に（in で read_at 未設定のもの）
-      const now = new Date().toISOString();
-      const unread = msgs.filter(m => m.direction === 'in' && !m.read_at).map(m => m.id);
-      if (unread.length) {
-        try { await sbPatch('line_messages', 'id=in.(' + unread.join(',') + ')', { read_at: now }); } catch (e) {}
-      }
-    } catch (e) { msgs = []; }
-  }
+  try {
+    msgs = await sbGet('line_messages', 'contact_id=eq.' + contactId + '&select=*&order=created_at.asc') || [];
+    const now = new Date().toISOString();
+    const unread = msgs.filter(m => m.direction === 'in' && !m.read_at).map(m => m.id);
+    if (unread.length) { try { await sbPatch('line_messages', 'id=in.(' + unread.join(',') + ')', { read_at: now }); } catch (e) {} }
+  } catch (e) { msgs = []; }
 
-  const name = c.display_name || 'LINEユーザー';
-  const stu = c.student_id ? (lineStudentMap[c.student_id] || '') : '';
+  const lab = lineContactLabel(c);
   const bubbles = msgs.map(m => {
     const out = (m.direction === 'out');
     const bg = out ? 'var(--green-l)' : '#fff';
     const align = out ? 'flex-end' : 'flex-start';
     const border = out ? '1px solid #A8D891' : '1px solid var(--border)';
     const t = lineFmtTime(m.created_at);
+    const via = out && m.handled_kind ? (m.handled_kind === 'phone' ? ' 📞電話' : ' 💬LINE') : '';
+    const who = out && m.sent_by_staff_id ? escapeHtml(lineStaffMap[m.sent_by_staff_id] || m.sent_by_staff_id) : '';
     return '<div style="display:flex;justify-content:' + align + '">' +
-      '<div style="max-width:78%;background:' + bg + ';border:' + border + ';border-radius:12px;padding:8px 11px">' +
+      '<div style="max-width:80%;background:' + bg + ';border:' + border + ';border-radius:12px;padding:8px 11px">' +
         '<div style="font-size:13px;color:var(--text);white-space:pre-wrap;word-break:break-word">' + escapeHtml(m.text || '') + '</div>' +
-        '<div style="font-size:9px;color:var(--muted);text-align:right;margin-top:2px">' + t + (out && m.sent_by_staff_id ? ' ・ ' + escapeHtml(lineStaffMap[m.sent_by_staff_id] || m.sent_by_staff_id) : '') + '</div>' +
+        '<div style="font-size:9px;color:var(--muted);text-align:right;margin-top:2px">' + t + (who ? ' ・ ' + who : '') + via + '</div>' +
       '</div>' +
     '</div>';
   }).join('');
 
-  // 担当割当セレクト
+  // 生徒紐付けセレクト
+  let studentOpts = '<option value="">（未紐付け）</option>';
+  try {
+    if (!window._lineStudentList) {
+      window._lineStudentList = await sbGet('students', 'select=id,name,school&is_active=eq.true&order=name') || [];
+    }
+    studentOpts += window._lineStudentList.map(s =>
+      '<option value="' + s.id + '"' + (c.student_id === s.id ? ' selected' : '') + '>' + escapeHtml((s.school ? s.school + ' ' : '') + s.name) + '</option>').join('');
+  } catch (e) {}
+
+  // 担当セレクト
   const staffOpts = Object.keys(lineStaffMap).map(sid =>
     '<option value="' + sid + '"' + (c.assigned_staff_id === sid ? ' selected' : '') + '>' + escapeHtml(lineStaffMap[sid]) + '</option>').join('');
 
-  const body = document.getElementById('line-thread-body');
   const titleEl = document.getElementById('line-thread-title');
-  if (titleEl) titleEl.textContent = name + (stu ? '（' + stu + '）' : '');
+  if (titleEl) titleEl.textContent = lab.main;
+  const body = document.getElementById('line-thread-body');
   if (body) {
     body.innerHTML =
-      '<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">' +
-        '<label style="font-size:11px;color:var(--muted)">担当</label>' +
-        '<select id="line-assign-select" onchange="lineAssign(' + (isSample ? "'s"+rawId+"'" : rawId) + ',this.value)" style="font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px">' +
-          '<option value="">（未割当）</option>' + staffOpts +
+      '<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 8px;align-items:center;margin-bottom:10px;font-size:11px">' +
+        '<label style="color:var(--muted)">生徒紐付け</label>' +
+        '<select onchange="lineSetStudent(' + c.id + ',this.value)" style="font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px">' + studentOpts + '</select>' +
+        '<label style="color:var(--muted)">区分</label>' +
+        '<select onchange="lineSetKind(' + c.id + ',this.value)" style="font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px">' +
+          '<option value=""' + (!c.contact_kind ? ' selected' : '') + '>未設定</option>' +
+          '<option value="student"' + (c.contact_kind === 'student' ? ' selected' : '') + '>生徒本人</option>' +
+          '<option value="parent"' + (c.contact_kind === 'parent' ? ' selected' : '') + '>保護者</option>' +
         '</select>' +
-        '<button onclick="lineMarkReplied(' + (isSample ? "'s"+rawId+"'" : rawId) + ')" style="font-size:11px;padding:5px 10px;border:1px solid var(--border);background:var(--surface);border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">対応済にする</button>' +
+        '<label style="color:var(--muted)">担当</label>' +
+        '<select onchange="lineSetAssignee(' + c.id + ',this.value)" style="font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px"><option value="">（未割当）</option>' + staffOpts + '</select>' +
       '</div>' +
-      '<div style="display:flex;flex-direction:column;gap:6px;max-height:44vh;overflow-y:auto;padding:8px;background:#EDE7DE;border-radius:10px">' + (bubbles || '<div style="font-size:12px;color:var(--muted);text-align:center;padding:12px">メッセージはありません</div>') + '</div>' +
-      '<div style="margin-top:10px;display:flex;gap:8px;align-items:flex-end">' +
-        '<textarea id="line-reply-text" rows="2" placeholder="返信を入力..." style="flex:1;box-sizing:border-box;padding:9px;border:1px solid var(--border);border-radius:10px;font-size:13px;font-family:\'Noto Sans JP\',sans-serif;resize:vertical"></textarea>' +
-        '<button onclick="lineSendReply(' + (isSample ? "'s"+rawId+"'" : rawId) + ')" style="padding:10px 14px;background:#06C755;border:none;border-radius:10px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">送信</button>' +
+      '<div style="display:flex;flex-direction:column;gap:6px;max-height:40vh;overflow-y:auto;padding:8px;background:#EDE7DE;border-radius:10px">' + (bubbles || '<div style="font-size:12px;color:var(--muted);text-align:center;padding:12px">メッセージはありません</div>') + '</div>' +
+      // 対応アクション
+      '<div style="margin-top:12px;display:flex;gap:8px">' +
+        (c.reply_url ? '<a href="' + c.reply_url + '" target="_blank" rel="noopener" onclick="lineMarkHandled(' + c.id + ',\'line\')" style="flex:1;text-align:center;padding:11px;background:#06C755;border-radius:10px;color:#fff;font-size:13px;font-weight:700;text-decoration:none">💬 LINEで返信</a>' : '') +
+        '<button onclick="lineMarkHandled(' + c.id + ',\'phone\')" style="flex:1;padding:11px;background:var(--surface);border:1.5px solid var(--border);border-radius:10px;color:var(--text);font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📞 電話で対応した</button>' +
       '</div>' +
-      (isSample || lineUsingSample ? '<div style="font-size:10px;color:#8F5F12;margin-top:8px">※ これはサンプル表示です。実際の送信にはEdge Functionのデプロイが必要です。</div>' : '');
+      '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">「LINEで返信」はLinyの返信画面を開きます。開いた時点で対応済（要対応を解除）になります。返信していない場合は要対応に戻せます。</div>' +
+      (entry.unreplied > 0 ? '' : '<button onclick="lineReopen(' + c.id + ')" style="margin-top:6px;font-size:11px;padding:5px 10px;border:1px solid var(--border);background:var(--surface);border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">要対応に戻す</button>');
   }
   const modal = document.getElementById('line-thread-modal');
   if (modal) modal.style.display = 'flex';
@@ -28978,67 +28976,60 @@ function closeLineThread() {
   if (modal) modal.style.display = 'none';
 }
 
-async function lineAssign(contactId, staffId) {
-  const isSample = (typeof contactId === 'string' && contactId.charAt(0) === 's');
-  const rawId = isSample ? parseInt(contactId.slice(1)) : contactId;
-  const entry = lineContacts.find(r => r.contact.id === rawId);
+async function lineSetStudent(contactId, studentId) {
+  const entry = lineContacts.find(r => r.contact.id === contactId);
+  if (entry) entry.contact.student_id = studentId || null;
+  try { await sbPatch('line_contacts', 'id=eq.' + contactId, { student_id: studentId || null }); showToast('生徒を紐付けました', 'success'); renderLineContacts(); } catch (e) { showToast('失敗しました', 'error'); }
+}
+async function lineSetKind(contactId, kind) {
+  const entry = lineContacts.find(r => r.contact.id === contactId);
+  if (entry) entry.contact.contact_kind = kind || null;
+  try { await sbPatch('line_contacts', 'id=eq.' + contactId, { contact_kind: kind || null, role: kind || null }); showToast('区分を設定しました', 'success'); renderLineContacts(); } catch (e) { showToast('失敗しました', 'error'); }
+}
+async function lineSetAssignee(contactId, staffId) {
+  const entry = lineContacts.find(r => r.contact.id === contactId);
   if (entry) entry.contact.assigned_staff_id = staffId || null;
-  if (isSample || lineUsingSample) { showToast('（サンプル）担当を設定しました', 'info'); return; }
-  try {
-    await sbPatch('line_contacts', 'id=eq.' + rawId, { assigned_staff_id: staffId || null });
-    showToast('担当を設定しました', 'success');
-    renderLineContacts();
-  } catch (e) { showToast('設定に失敗しました', 'error'); }
+  try { await sbPatch('line_contacts', 'id=eq.' + contactId, { assigned_staff_id: staffId || null }); showToast('担当を設定しました', 'success'); renderLineContacts(); } catch (e) { showToast('失敗しました', 'error'); }
 }
 
-async function lineMarkReplied(contactId) {
-  const isSample = (typeof contactId === 'string' && contactId.charAt(0) === 's');
-  const rawId = isSample ? parseInt(contactId.slice(1)) : contactId;
-  const entry = lineContacts.find(r => r.contact.id === rawId);
-  if (entry) entry.unreplied = 0;
-  if (isSample || lineUsingSample) { showToast('（サンプル）対応済にしました', 'info'); closeLineThread(); renderLineContacts(); return; }
+// 対応済にする（LINE返信 or 電話）。未返信inを返信済に、対応記録(out)を残す。
+async function lineMarkHandled(contactId, kind) {
+  const now = new Date().toISOString();
+  const staffId = currentStaff ? currentStaff.staff_id : null;
+  const entry = lineContacts.find(r => r.contact.id === contactId);
   try {
-    await sbPatch('line_messages', 'contact_id=eq.' + rawId + '&direction=eq.in&replied=eq.false', { replied: true });
-    showToast('対応済にしました', 'success');
+    // 対応記録を out として残す
+    await sbPost('line_messages', {
+      contact_id: contactId,
+      direction: 'out',
+      msg_type: 'text',
+      text: kind === 'phone' ? '（電話で対応）' : '（LINEで返信）',
+      handled_kind: kind,
+      sent_by_staff_id: staffId,
+      created_at: now
+    });
+    // 未返信 in を返信済に
+    await sbPatch('line_messages', 'contact_id=eq.' + contactId + '&direction=eq.in&replied=eq.false', { replied: true });
+    // contact に最終対応を記録
+    await sbPatch('line_contacts', 'id=eq.' + contactId, { last_reply_at: now, last_reply_by: staffId, last_reply_kind: kind, last_message_at: now });
+    if (entry) { entry.unreplied = 0; entry.contact.last_reply_kind = kind; }
+    showToast(kind === 'phone' ? '📞 電話対応を記録しました' : '💬 対応済にしました', 'success');
+    renderLineContacts();
+    if (kind === 'phone') closeLineThread(); // 電話はモーダルを閉じる。LINEはリンク遷移するので閉じない
+  } catch (e) { showToast('記録に失敗しました', 'error'); }
+}
+
+async function lineReopen(contactId) {
+  const entry = lineContacts.find(r => r.contact.id === contactId);
+  try {
+    // 直近の in を未返信に戻す（最新1件）
+    const ins = await sbGet('line_messages', 'contact_id=eq.' + contactId + '&direction=eq.in&select=id&order=created_at.desc&limit=1') || [];
+    if (ins.length) await sbPatch('line_messages', 'id=eq.' + ins[0].id, { replied: false });
+    if (entry) entry.unreplied = 1;
+    showToast('要対応に戻しました', 'info');
     closeLineThread();
     renderLineContacts();
   } catch (e) { showToast('失敗しました', 'error'); }
-}
-
-async function lineSendReply(contactId) {
-  const isSample = (typeof contactId === 'string' && contactId.charAt(0) === 's');
-  const rawId = isSample ? parseInt(contactId.slice(1)) : contactId;
-  const ta = document.getElementById('line-reply-text');
-  const text = (ta && ta.value || '').trim();
-  if (!text) { showToast('返信を入力してください', 'error'); return; }
-  if (isSample || lineUsingSample) { showToast('（サンプル）ここで実際に送信されます', 'info'); return; }
-
-  const cfg = lineCfg();
-  if (!cfg.url) { showToast('先に「返信の設定」でFunction URLを入力してください', 'error'); return; }
-
-  showLoading('送信中...');
-  try {
-    const res = await fetch(cfg.url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contact_id: rawId,
-        text: text,
-        staff_id: currentStaff ? currentStaff.staff_id : null,
-        token: cfg.token
-      })
-    });
-    const j = await res.json().catch(() => ({}));
-    hideLoading();
-    if (!res.ok || !j.ok) { showToast('送信に失敗しました: ' + (j.error || res.status), 'error'); return; }
-    showToast('📨 送信しました', 'success');
-    if (ta) ta.value = '';
-    await openLineThread(rawId);   // スレッド再読み込み
-    await initLineInbox();         // 一覧の要対応バッジ更新
-  } catch (e) {
-    hideLoading();
-    showToast('送信エラー: ' + (e.message || e), 'error');
-  }
 }
 
 function lineFmtTime(iso) {
@@ -29052,27 +29043,6 @@ function lineFmtTime(iso) {
     if (sameDay) return hh + ':' + mm;
     return (jst.getUTCMonth() + 1) + '/' + jst.getUTCDate() + ' ' + hh + ':' + mm;
   } catch (e) { return ''; }
-}
-
-// ---- サンプルデータ（テーブル未作成時の表示イメージ） ----
-function lineSampleContacts() {
-  const now = Date.now();
-  return [
-    { id: 1, line_user_id: 'Usample1', display_name: '山田（保護者）', picture_url: '', student_id: null, role: 'parent', assigned_staff_id: null, last_message_at: new Date(now - 15 * 60000).toISOString() },
-    { id: 2, line_user_id: 'Usample2', display_name: '佐藤 花子', picture_url: '', student_id: null, role: 'student', assigned_staff_id: 'fit003', last_message_at: new Date(now - 3 * 3600000).toISOString() }
-  ];
-}
-function lineSampleMessages() {
-  const now = Date.now();
-  return {
-    1: [
-      { id: 101, contact_id: 1, direction: 'in', msg_type: 'text', text: '来週の面談の時間を変更したいのですが、可能でしょうか？', replied: false, created_at: new Date(now - 15 * 60000).toISOString() }
-    ],
-    2: [
-      { id: 201, contact_id: 2, direction: 'in', msg_type: 'text', text: '今日の宿題の範囲を教えてください', replied: true, created_at: new Date(now - 4 * 3600000).toISOString() },
-      { id: 202, contact_id: 2, direction: 'out', msg_type: 'text', text: 'p.42〜48です。頑張ってね！', replied: false, sent_by_staff_id: 'fit003', created_at: new Date(now - 3 * 3600000).toISOString() }
-    ]
-  };
 }
 
 
