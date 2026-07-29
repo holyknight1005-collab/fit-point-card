@@ -5246,6 +5246,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
             <div class="form-label" style="margin-top:4px">担当している学校（ToDoの配布先）</div>
             <div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.6">上の「閲覧範囲」とは別です。全校を閲覧できる人でも、定例ToDoは<b>ここにチェックした学校ぶんだけ</b>届きます。担当が無い人は空のままにしてください。</div>
             <div id="perm-charge-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px"></div>
+            <div class="form-label" style="margin-top:4px">中学部の担当</div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.6">チェックすると、このスタッフは<b>中学部（📗中）の授業をすべて閲覧・編集</b>できます（自分が講師でなくても）。高校部は従来どおり自分の担当授業のみです。</div>
+            <label style="font-size:13px;display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 8px;background:#EAF5E1;border:1px solid var(--green);border-radius:6px;margin-bottom:12px">
+              <input type="checkbox" id="perm-chugaku-cb"> 📗 中学部担当（中学部の授業をすべて扱える）
+            </label>
             <button class="form-btn" onclick="saveStaffPerm()">💾 この内容で保存</button>
           </div>
         </div>
@@ -5635,7 +5640,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702diy';
+const APP_VERSION = '20260702diz';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -19093,14 +19098,34 @@ let csClassOptsHtml = '<option value="">授業を選択</option>'; // 後方互�
 let csMasters = [];   // 授業マスターのキャッシュ（grade_level含む）
 let csSubjects = [];  // マスターに実在する科目一覧
 
+// 中学部担当か？（admin は常に true 扱い＝全部見られる）。1回取得してキャッシュ。
+var _isChugakuStaffCache = null;
+async function isChugakuStaff() {
+  if (!currentStaff) return false;
+  if (currentStaff.role === 'admin') return true;
+  if (_isChugakuStaffCache !== null) return _isChugakuStaffCache;
+  // saMyPerms が読めていればそれを使う
+  if (typeof saMyPerms === 'object' && saMyPerms && typeof saMyPerms.is_chugaku_staff === 'boolean') {
+    _isChugakuStaffCache = saMyPerms.is_chugaku_staff;
+    return _isChugakuStaffCache;
+  }
+  try {
+    const rows = await sbGet('staff_permissions', 'staff_id=eq.' + encodeURIComponent(currentStaff.staff_id) + '&select=is_chugaku_staff&limit=1') || [];
+    _isChugakuStaffCache = !!(rows.length && rows[0].is_chugaku_staff === true);
+  } catch (e) { _isChugakuStaffCache = false; }
+  return _isChugakuStaffCache;
+}
+
 async function loadClassMasterList() {
   // 一括登録の入力行が空なら初期3行を用意
   const bulkBox = document.getElementById('cmbulk-rows');
   if (bulkBox && !bulkBox.children.length) { for (let i = 0; i < 3; i++) await addCmBulkRow(); }
   // 自分の授業のみ（管理者は全部）。主担当(teacher_staff_id) ∪ 追加担当(class_teachers)。
   // 部門（中学部/高校部）で絞る。
+  // ★中学部担当(is_chugaku_staff)は、currentDivision='中学部' のときは全授業を見られる。
   let query = 'is_active=eq.true&division=eq.' + encodeURIComponent(currentDivision) + '&order=subject,name&select=*,staff(name)';
-  if (currentStaff && currentStaff.role !== 'admin') {
+  const chugakuAll = (currentDivision === '中学部') && await isChugakuStaff();
+  if (currentStaff && currentStaff.role !== 'admin' && !chugakuAll) {
     // 追加担当として割り当てられた授業IDを先に取得
     let assignedIds = [];
     try {
@@ -20250,7 +20275,9 @@ async function createClassMaster() {
   showLoading('登録中...');
   try {
     const data = { name, subject, grade_level: grades.join(','), category, school_year: schoolYear, total_sessions: totalSessions, division: currentDivision };
-    if (currentStaff?.role !== 'admin') data.teacher_staff_id = currentStaff.id;
+    // 中学部担当が中学部の授業を作る場合は teacher_staff_id を自分に固定しない（講師未設定運用）
+    const cmChugakuAll = (currentDivision === '中学部') && await isChugakuStaff();
+    if (currentStaff?.role !== 'admin' && !cmChugakuAll) data.teacher_staff_id = currentStaff.id;
     await sbPost('class_master', data);
     hideLoading();
     document.getElementById('cm-name').value = '';
@@ -21776,11 +21803,12 @@ async function createClassMasterBulk() {
   showLoading('登録中...（' + toAdd.length + '件）');
   let ok = 0, fail = 0;
   const failMsgs = [];
+  const bulkChugakuAll = (currentDivision === '中学部') && await isChugakuStaff();
   for (const data of toAdd) {
     try {
       const body = Object.assign({}, data);
-      // 担当講師未指定かつ非管理者は自分を担当に
-      if (!body.teacher_staff_id) { if (currentStaff?.role !== 'admin') body.teacher_staff_id = currentStaff.id; else delete body.teacher_staff_id; }
+      // 担当講師未指定かつ非管理者は自分を担当に（ただし中学部担当が中学部を登録する場合は固定しない）
+      if (!body.teacher_staff_id) { if (currentStaff?.role !== 'admin' && !bulkChugakuAll) body.teacher_staff_id = currentStaff.id; else delete body.teacher_staff_id; }
       try {
         await sbPost('class_master', body);
       } catch (e1) {
@@ -37978,14 +38006,14 @@ async function loadMyPermissions() {
   if (!currentStaff) return;
   if (currentStaff.role === 'admin') { saMyPerms = { admin: true }; return; }
   try {
-    const rows = await sbGet('staff_permissions', 'staff_id=eq.' + encodeURIComponent(currentStaff.staff_id) + '&select=perms,school_scope,charge_schools') || [];
+    const rows = await sbGet('staff_permissions', 'staff_id=eq.' + encodeURIComponent(currentStaff.staff_id) + '&select=perms,school_scope,charge_schools,is_chugaku_staff') || [];
     if (rows.length) {
-      saMyPerms = { perms: rows[0].perms || {}, school_scope: rows[0].school_scope || 'all', charge_schools: Array.isArray(rows[0].charge_schools) ? rows[0].charge_schools : [] };
+      saMyPerms = { perms: rows[0].perms || {}, school_scope: rows[0].school_scope || 'all', charge_schools: Array.isArray(rows[0].charge_schools) ? rows[0].charge_schools : [], is_chugaku_staff: rows[0].is_chugaku_staff === true };
     } else {
-      saMyPerms = { perms: {}, school_scope: 'all', charge_schools: [] }; // 未設定＝全項目OFF
+      saMyPerms = { perms: {}, school_scope: 'all', charge_schools: [], is_chugaku_staff: false }; // 未設定＝全項目OFF
     }
   } catch (e) {
-    saMyPerms = { perms: {}, school_scope: 'all', charge_schools: [] };
+    saMyPerms = { perms: {}, school_scope: 'all', charge_schools: [], is_chugaku_staff: false };
   }
 }
 
@@ -38435,13 +38463,14 @@ async function loadStaffPermEditor() {
   permEditTarget = sid;
 
   // 既存の権限を読む
-  let perms = {}, scope = 'all', charge = [];
+  let perms = {}, scope = 'all', charge = [], isChugaku = false;
   try {
-    const rows = await sbGet('staff_permissions', 'staff_id=eq.' + encodeURIComponent(sid) + '&select=perms,school_scope,charge_schools') || [];
+    const rows = await sbGet('staff_permissions', 'staff_id=eq.' + encodeURIComponent(sid) + '&select=perms,school_scope,charge_schools,is_chugaku_staff') || [];
     if (rows.length) {
       perms = rows[0].perms || {};
       scope = rows[0].school_scope || 'all';
       charge = Array.isArray(rows[0].charge_schools) ? rows[0].charge_schools : [];
+      isChugaku = rows[0].is_chugaku_staff === true;
     }
   } catch (e) {
     // charge_schools 列が未適用の環境 → 従来の列だけで読み直す
@@ -38483,6 +38512,9 @@ async function loadStaffPermEditor() {
     ).join('');
   }
 
+  const chugakuCb = document.getElementById('perm-chugaku-cb');
+  if (chugakuCb) chugakuCb.checked = isChugaku;
+
   editor.style.display = 'block';
 }
 
@@ -38509,11 +38541,13 @@ async function saveStaffPerm() {
     charge_schools.push(cb.value);
     if (cb.value === 'SSS') charge_schools.push('その他');
   });
+  const chugakuCb = document.getElementById('perm-chugaku-cb');
+  const is_chugaku_staff = !!(chugakuCb && chugakuCb.checked);
   showLoading('保存中...');
   try {
     // upsert：既存があればPATCH、なければPOST
     const existing = await sbGet('staff_permissions', 'staff_id=eq.' + encodeURIComponent(permEditTarget) + '&select=staff_id') || [];
-    const payload = { perms: perms, school_scope: school_scope, charge_schools: charge_schools, updated_at: new Date().toISOString() };
+    const payload = { perms: perms, school_scope: school_scope, charge_schools: charge_schools, is_chugaku_staff: is_chugaku_staff, updated_at: new Date().toISOString() };
     const save = async (body) => {
       if (existing.length) {
         await sbPatch('staff_permissions', 'staff_id=eq.' + encodeURIComponent(permEditTarget), body);
@@ -38524,10 +38558,11 @@ async function saveStaffPerm() {
     try {
       await save(payload);
     } catch (err) {
-      // charge_schools 列が未適用の環境 → 従来項目だけで保存する
+      // charge_schools / is_chugaku_staff 列が未適用の環境 → 従来項目だけで保存する
       if (/column|PGRST|400/i.test(String(err && err.message || err))) {
         const fallback = Object.assign({}, payload);
         delete fallback.charge_schools;
+        delete fallback.is_chugaku_staff;
         await save(fallback);
       } else throw err;
     }
