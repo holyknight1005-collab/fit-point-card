@@ -4324,11 +4324,13 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="todo-content-edit-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:500;align-items:center;justify-content:center">
         <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:380px">
           <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">✏️ 依頼内容を編集</div>
-          <div style="font-size:11px;color:var(--muted);margin-bottom:12px">未完了の担当者<span id="todo-content-edit-count"></span>に反映されます（完了済みの人は変わりません）。</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:12px">タイトル・詳細・期限が、未完了の担当者<span id="todo-content-edit-count"></span>に反映されます（完了済みの人は変わりません）。</div>
           <div class="form-label">タイトル</div>
           <input type="text" id="todo-content-edit-title" class="form-input-sm" style="margin-bottom:10px">
           <div class="form-label">詳細（任意）</div>
           <textarea id="todo-content-edit-detail" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;height:70px;resize:none;font-family:'Noto Sans JP',sans-serif;margin-bottom:12px"></textarea>
+          <div class="form-label">期限（空にすると期限なし）</div>
+          <input type="date" id="todo-content-edit-due" class="form-input-sm" style="margin-bottom:12px">
           <div style="display:flex;gap:8px">
             <button onclick="saveTodoContent()" style="flex:1;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">反映する</button>
             <button onclick="closeTodoContentEdit()" style="flex:1;padding:11px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--muted);font-size:13px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">キャンセル</button>
@@ -17737,7 +17739,7 @@ async function loadSentTodos() {
         '<div id="sent-arrow-' + gi + '" style="color:var(--muted);font-size:16px;transition:transform 0.2s">›</div>' +
       '</div>' +
       '<div style="padding:0 14px 11px 14px;display:flex;gap:8px;flex-wrap:wrap"><button onclick="copyTodoToForm(\'' + copyPayload + '\')" style="padding:5px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;color:var(--text)">📋 コピーして再依頼</button>' +
-        '<button onclick="openTodoContentEdit(\'' + encodeURIComponent(JSON.stringify(group.todos.filter(t=>!t.is_done).map(t=>t.id))) + '\',\'' + escapeAttr(group.title) + '\',\'' + escapeAttr(group.detail || '') + '\')" style="padding:5px 12px;background:var(--surface2);border:1px solid #9CC0E8;border-radius:8px;font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;color:#2D6CB6">✏️ 内容を編集</button>' +
+        '<button onclick="openTodoContentEdit(\'' + encodeURIComponent(JSON.stringify(group.todos.filter(t=>!t.is_done).map(t=>t.id))) + '\',\'' + escapeAttr(group.title) + '\',\'' + escapeAttr(group.detail || '') + '\',\'' + (group.due_date || '') + '\')" style="padding:5px 12px;background:var(--surface2);border:1px solid #9CC0E8;border-radius:8px;font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;color:#2D6CB6">✏️ 内容を編集</button>' +
         '<button onclick="deleteTodoGroup(\'' + encodeURIComponent(JSON.stringify(group.todos.map(t=>t.id))) + '\',\'' + escapeAttr(title) + '\',' + group.todos.length + ')" style="padding:5px 12px;background:var(--surface);border:1px solid #E5A5A5;border-radius:8px;font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;color:#C75050">🗑 この依頼を削除</button></div>' +
       '<div id="' + groupId + '" style="display:none">' + innerHtml + '</div>' +
     '</div>';
@@ -17797,12 +17799,14 @@ async function saveTodoDue() {
 
 // 依頼内容（タイトル/詳細）を未完了の担当者へ一括反映
 let editingTodoContentIds = [];
-function openTodoContentEdit(idsPayload, title, detail) {
+function openTodoContentEdit(idsPayload, title, detail, due) {
   let ids = [];
   try { ids = JSON.parse(decodeURIComponent(idsPayload)); } catch(e) { ids = []; }
   editingTodoContentIds = ids;
   document.getElementById('todo-content-edit-title').value = title || '';
   document.getElementById('todo-content-edit-detail').value = detail || '';
+  const dueEl = document.getElementById('todo-content-edit-due');
+  if (dueEl) dueEl.value = due || '';
   const cnt = document.getElementById('todo-content-edit-count');
   if (cnt) cnt.textContent = ids.length ? '（' + ids.length + '名）' : '';
   const box = document.getElementById('todo-content-edit-box');
@@ -17817,12 +17821,22 @@ function closeTodoContentEdit() {
 async function saveTodoContent() {
   const newTitle = (document.getElementById('todo-content-edit-title').value || '').trim();
   const newDetail = (document.getElementById('todo-content-edit-detail').value || '').trim();
+  const newDue = document.getElementById('todo-content-edit-due')?.value || null;
   if (!newTitle) { showToast('タイトルを入力してください', 'error'); return; }
   if (!editingTodoContentIds.length) { showToast('反映できる未完了の担当者がいません', 'error'); closeTodoContentEdit(); return; }
   showLoading('反映中...');
   try {
     const ids = editingTodoContentIds.map(x => '"' + x + '"').join(',');
-    await sbPatch('staff_todos', 'id=in.(' + ids + ')', { title: newTitle, detail: newDetail || null });
+    const filter = 'id=in.(' + ids + ')';
+    const body = { title: newTitle, detail: newDetail || null, due_date: newDue };
+    // 期限を触ったので due_updated_at も更新（列が無い環境ではフォールバック）
+    try {
+      await sbPatch('staff_todos', filter, Object.assign({}, body, { due_updated_at: new Date().toISOString() }));
+    } catch (e2) {
+      if (/due_updated_at|PGRST204|column|400/i.test(String(e2 && e2.message || e2))) {
+        await sbPatch('staff_todos', filter, body);
+      } else throw e2;
+    }
     hideLoading();
     showToast('✏️ 依頼内容を更新しました', 'success');
     closeTodoContentEdit();
@@ -18462,10 +18476,12 @@ function renderTodoRates() {
   const requesterEl = document.getElementById('sm-todo-rate-requester');
 
   // 締切遵守率の集計起点（この日以降に作成されたTODOだけを対象にする）。
-  // 例外：コメント系（コメントの入力／浪人生コメント）は期限を延長して集計に残すため、
-  // 作成日が起点より前でも対象に含める。
+  // コメント系（コメントの入力／浪人生コメント）はかつて免除リストで特別扱いしていたが、
+  // 「次回登録分から通常どおり数える」方針に変更。免除リストは空にし、
+  // 起点日以降に作成されたコメントは他TODOと同じく期限内/超過で判定される。
+  // （起点日より前の既存コメントは通常どおり集計対象外＝今回は数えない）
   const RATE_START_DATE = '2026-07-28';
-  const RATE_EXEMPT_TITLES = ['コメントの入力', '浪人生コメント'];
+  const RATE_EXEMPT_TITLES = [];
   const inRateScope = (t) => {
     if (t.count_in_rate) return true;   // 本人が遵守率対象に指定した自己TODOは起点日を問わず含める
     if (RATE_EXEMPT_TITLES.indexOf(t.title) !== -1) return true;
