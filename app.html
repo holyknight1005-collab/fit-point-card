@@ -22101,12 +22101,13 @@ function renderDupScan() {
       const counts = 'セッション' + r.sessions + '・出欠' + r.attend + '・受講' + r.enroll + (r.check ? '・復習' + r.check : '');
       // 安全に消せる条件：無効 かつ 出欠0・受講0・復習0（セッションは空なら消してOK）
       const safe = (!m.is_active && r.attend === 0 && r.enroll === 0 && r.check === 0);
-      const warn = (!m.is_active && (r.attend > 0 || r.check > 0));
+      const warn = (!m.is_active && (r.attend > 0 || r.check > 0 || r.enroll > 0));
       let action = '';
       if (safe) {
         action = '<button onclick="cleanupOneMaster(' + gi + ',' + ri + ')" style="padding:4px 10px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">掃除</button>';
       } else if (warn) {
-        action = '<span style="font-size:10px;color:#B8860B;font-weight:700;white-space:nowrap">⚠️手動確認<br>(出欠あり)</span>';
+        const wlabel = r.attend > 0 ? '出欠あり' : (r.enroll > 0 ? '受講履歴あり' : '復習あり');
+        action = '<span style="font-size:10px;color:#B8860B;font-weight:700;white-space:nowrap">⚠️手動確認<br>(' + wlabel + ')</span>';
       } else if (m.is_active) {
         action = '<span style="font-size:10px;color:var(--muted)">使用中</span>';
       }
@@ -22125,30 +22126,48 @@ function renderDupScan() {
       rowsHtml + note +
     '</div>';
   }).join('') +
-  '<div style="font-size:10px;color:var(--muted);line-height:1.5;padding:4px 2px">「掃除」は<b>無効かつ出欠・受講・復習が全て0</b>のマスターだけ表示されます。出欠がある重複は記録保護のため自動削除しません（⚠️手動確認）。</div>';
+  '<div style="font-size:10px;color:var(--muted);line-height:1.5;padding:4px 2px">「掃除」は<b>無効かつ出欠・受講・復習・授業回が全て0</b>のマスターだけ表示され、押すとマスター本体ごと削除されます（管理者のみ）。記録が残る重複は保護のため削除しません（⚠️手動確認）。</div>';
 }
 
 async function cleanupOneMaster(gi, ri) {
   const item = dupScanData[gi] && dupScanData[gi].rows[ri];
   if (!item) return;
   const m = item.master;
-  // 二重の安全確認：本当に無効＆出欠0か
+  // admin 限定
+  if (!currentStaff || currentStaff.role !== 'admin') {
+    showToast('管理者のみ操作できます', 'error');
+    return;
+  }
+  // 二重の安全確認：本当に無効＆出欠0か（サーバ関数側でも再チェックする）
   if (m.is_active || item.attend > 0 || item.enroll > 0 || item.check > 0) {
     showToast('このマスターは安全に消せません（使用中または記録あり）', 'error');
     return;
   }
-  if (!confirm('「' + m.name + '」の無効な重複マスターに残った空の授業回を掃除します。\n（時間割に残らないよう、出欠のない授業回を削除します）\nよろしいですか？')) return;
-  showLoading('掃除中...');
+  if (!confirm('「' + m.name + '」の無効な重複マスターを削除します。\n（出欠・受講・授業回がすべて0の空マスターのみ削除されます）\nこの操作は元に戻せません。よろしいですか？')) return;
+  showLoading('削除中...');
   try {
-    // 空セッションを削除（マスター本体はanon権限で消せないため無効のまま残す＝時間割には出ない）
-    await sbDelete('class_sessions', 'class_master_id=eq.' + m.id);
+    const res = await fetch(SB_URL + '/rest/v1/rpc/delete_empty_class_master', {
+      method: 'POST',
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_id: m.id })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const out = await res.json();
     hideLoading();
-    showToast('授業回を掃除しました（マスターは無効のまま保持）', 'success');
+    if (out && out.deleted) {
+      showToast('🗑 「' + m.name + '」を削除しました', 'success');
+    } else {
+      const reason = out && out.reason;
+      if (reason === 'has_records') showToast('記録が残っているため削除しませんでした（受講' + (out.enroll||0) + '・出欠' + (out.attend||0) + '・授業回' + (out.sessions||0) + '・チェック' + (out.checks||0) + '）', 'error');
+      else if (reason === 'active') showToast('有効なマスターのため削除できません', 'error');
+      else if (reason === 'not_found') showToast('既に削除済みの可能性があります', 'success');
+      else showToast('削除できませんでした', 'error');
+    }
     scanDuplicateMasters();   // 再点検
     loadClassMasterList();    // 一覧更新
   } catch (e) {
     hideLoading();
-    showToast('掃除に失敗しました: ' + (e.message || e), 'error');
+    showToast('削除に失敗しました（関数 delete_empty_class_master が未適用の可能性）: ' + (e.message || e), 'error');
   }
 }
 
