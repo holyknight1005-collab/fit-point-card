@@ -1156,7 +1156,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 <div id="student-add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <div style="font-size:16px;font-weight:700;color:#1A4D80">👤 新規生徒を登録</div>
+      <div style="font-size:16px;font-weight:700;color:#1A4D80">👤 新規生徒を登録 <span id="sadd-div-badge" style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;margin-left:4px;vertical-align:middle"></span></div>
       <button onclick="closeStudentAddModal()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">スタッフが直接、新規入塾の生徒を名簿に登録します（アプリのログインは後から別途設定します）。</div>
@@ -1174,7 +1174,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div style="flex:1">
         <div style="font-size:11px;color:var(--muted);margin-bottom:3px">学年</div>
         <select class="form-input-sm" id="sadd-grade" style="width:100%">
-          <option value="">未設定</option><option>1年</option><option>2年</option><option>3年</option>
+          <option value="">未設定</option>
         </select>
       </div>
     </div>
@@ -10861,6 +10861,7 @@ async function upsertRosterFromStudent(stu, enrollDate) {
       name_norm: normalizeName(name),
       school: school || null,
       grade: stu.grade || null,
+      division: stu.division || null,
       course_track: stu.course_track || null,
       membership_status: stu.membership_status || '通常',
       enroll_date: enrollDate || null,
@@ -10872,8 +10873,8 @@ async function upsertRosterFromStudent(stu, enrollDate) {
       if (exId) await sbPatch('roster', 'id=eq.' + exId, payload);
       else await sbPost('roster', payload);
     } catch (perr) {
-      // membership_status など未作成列があれば外して再試行
-      const p2 = Object.assign({}, payload); delete p2.membership_status; delete p2.course_track;
+      // membership_status / division など未作成列があれば外して再試行
+      const p2 = Object.assign({}, payload); delete p2.membership_status; delete p2.course_track; delete p2.division;
       if (exId) await sbPatch('roster', 'id=eq.' + exId, p2);
       else await sbPost('roster', p2);
     }
@@ -36597,10 +36598,23 @@ function openStudentAddModal(prefill) {
   const setVal = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = (v == null ? '' : v); };
   const errEl = document.getElementById('student-add-error');
   if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+  // 学年の選択肢を現在の部門（中学部/高校部）に応じて出し分ける
+  const prefGrade = (prefill && prefill.grade) || '';
+  if (typeof svFillGradeSelect === 'function') {
+    svFillGradeSelect('sadd-grade', currentDivision || '高校部', prefGrade, '<option value="">未設定</option>');
+  }
   setVal('sadd-name', prefill && prefill.name);
   setVal('sadd-school', prefill && prefill.school);
-  setVal('sadd-grade', prefill && prefill.grade);
+  setVal('sadd-grade', prefGrade);
   setVal('sadd-enroll-date', getTodayJST()); // 初期値は今日（JST）
+  // 現在の部門バッジを表示（どちらで登録するかを明示）
+  const badge = document.getElementById('sadd-div-badge');
+  if (badge) {
+    const isJhs = (currentDivision === '中学部');
+    badge.textContent = isJhs ? '📗 中学部' : '🎓 高校部';
+    badge.style.background = isJhs ? '#DDEBD3' : '#E3EEF9';
+    badge.style.color = isJhs ? '#3B6D11' : '#1A4D80';
+  }
   document.getElementById('student-add-modal').style.display = 'flex';
 }
 
@@ -36638,6 +36652,7 @@ async function saveNewStudent() {
   }
 
   const pin = String(Math.floor(10000 + Math.random() * 90000));
+  const divVal = currentDivision || '高校部';
   showLoading('登録中...');
   try {
     const savedDate = await insertStudentWithEnrollDate({
@@ -36646,6 +36661,7 @@ async function saveNewStudent() {
       student_no: pin,
       school: v('sadd-school') || null,
       grade: v('sadd-grade') || null,
+      division: divVal,
       points: 0,
       streak: 0
     }, enrollDate);
@@ -36670,7 +36686,7 @@ async function saveNewStudent() {
 
     // 名簿台帳(roster)にも自動で載せる（来塾→入塾でも突合ズレを作らない）
     await upsertRosterFromStudent({
-      name, school: v('sadd-school') || null, grade: v('sadd-grade') || null
+      name, school: v('sadd-school') || null, grade: v('sadd-grade') || null, division: divVal
     }, enrollDate);
 
     hideLoading();
