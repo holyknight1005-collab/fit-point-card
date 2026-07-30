@@ -207,13 +207,15 @@ body.view-desktop #unified-cal-grid .cal-day.empty{min-height:88px}
 #unified-cal-grid .u-band.u-band-wkstart{left:1px;border-top-left-radius:3px;border-bottom-left-radius:3px}
 #unified-cal-grid .u-band.u-band-wkend{right:1px;border-top-right-radius:3px;border-bottom-right-radius:3px}
 /* 生徒カレンダー：縦長リッチセル（日付を上・ステータス・授業名バーを下に） */
-#unified-cal-grid .cal-day-rich{min-height:58px;display:flex;flex-direction:column;align-items:stretch;padding:3px 2px 4px;border-radius:8px;min-width:0;overflow:hidden;box-sizing:border-box}
+#unified-cal-grid .cal-day-rich{min-height:70px;display:flex;flex-direction:column;align-items:stretch;padding:4px 3px 5px;border-radius:8px;min-width:0;overflow:hidden;box-sizing:border-box}
 #unified-cal-grid .cal-day-rich .u-daynum{font-size:13px;font-weight:700;line-height:1.1;text-align:left;padding-left:2px}
 #unified-cal-grid .cal-day-rich .u-daystatus{font-size:8px;font-weight:700;line-height:1.1;text-align:left;padding-left:2px;opacity:0.95;margin-top:1px}
 #unified-cal-grid .cal-day-rich .u-classbar{margin-top:auto;display:flex;align-items:center;gap:2px;font-size:8px;font-weight:700;line-height:1.2;border-radius:4px;padding:2px 3px;overflow:hidden}
 #unified-cal-grid .cal-day-rich .u-items{margin-top:2px;display:flex;flex-direction:column;gap:1px;width:100%;min-width:0}
 #unified-cal-grid .cal-day-rich .u-sess-name{font-size:8px;line-height:1.25;font-weight:700;color:#fff;background:rgba(0,0,0,0.42);border-radius:3px;padding:0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #unified-cal-grid .cal-day-rich .u-more{font-size:7.5px;line-height:1.2;color:#fff;opacity:0.85;text-align:left;padding-left:3px}
+#unified-cal-grid .cal-day-rich .u-closed{align-self:flex-start;font-size:7.5px;line-height:1.2;font-weight:700;color:#fff;background:#C0392B;border-radius:3px;padding:0 3px;margin-top:1px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+body.view-desktop #unified-cal-grid .cal-day-rich .u-closed{font-size:9px}
 body.view-desktop #unified-cal-grid .cal-day-rich{min-height:88px}
 body.view-desktop #unified-cal-grid .cal-day-rich .u-daynum{font-size:14px}
 body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;line-height:1.35}
@@ -25785,7 +25787,7 @@ async function loadUnifiedCalendar() {
   // --- イベント ---
   unifiedEvents = {};
   try {
-    const events = await sbGet('events', 'select=title,event_date,end_date,detail,color,scope,target_schools,target_grades,target_ids,created_by&order=event_date') || [];
+    const events = await sbGet('events', 'select=title,event_date,end_date,detail,color,scope,target_schools,target_grades,target_ids,created_by,period_from,period_to,all_day,blocks_class&order=event_date') || [];
     const viewer = {
       kind: 'student',
       id: currentStudent ? currentStudent.id : null,
@@ -25798,7 +25800,10 @@ async function loadUnifiedCalendar() {
       unifiedEvents[dateISO] = dayMap[dateISO].map(ev => ({
         title: ev.title, detail: ev.detail || '', color: ev.color || '#F5A623',
         band: !!ev.band, pos: ev.pos,
-        event_date: ev.event_date, end_date: ev.end_date || null
+        event_date: ev.event_date, end_date: ev.end_date || null,
+        blocks: !!ev.blocks_class, all_day: !!ev.all_day,
+        period_from: (ev.period_from != null ? parseInt(ev.period_from, 10) : null),
+        period_to: (ev.period_to != null ? parseInt(ev.period_to, 10) : null)
       }));
     });
   } catch(e) { /* events未作成時は無視 */ }
@@ -26215,6 +26220,22 @@ function renderUnifiedMonth() {
       marks += '<span class="u-band' + posCls + '" style="background:' + (b.color || '#F5A623') + '" title="' + safe + '">' + (showText ? safe : '&nbsp;') + '</span>';
     }
 
+    // 閉館・休講バッジ（blocks_class のイベントがある日）。時限があれば「5限〜閉館」等
+    let closedHtml = '';
+    const closedEv = evs.find(ev => ev.blocks);
+    if (closedEv) {
+      let lbl;
+      if (closedEv.all_day || closedEv.period_from == null) {
+        lbl = '🚫 閉館';
+      } else if (closedEv.period_to != null && closedEv.period_to !== closedEv.period_from) {
+        lbl = '🚫 ' + closedEv.period_from + '〜' + closedEv.period_to + '限 閉館';
+      } else {
+        lbl = '🚫 ' + closedEv.period_from + '限〜 閉館';
+      }
+      const safeLbl = lbl.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      closedHtml = '<span class="u-closed" title="' + safeLbl + '">' + safeLbl + '</span>';
+    }
+
     // 授業名（スタッフの月カレンダーと同じ：授業ごとに色帯で縦に並べる）
     let itemsHtml = '';
     if (sess && sess.classes && sess.classes.length) {
@@ -26247,7 +26268,7 @@ function renderUnifiedMonth() {
       ' style="position:relative;background:' + st.bg + ';color:' + st.color + ';' + cursor + border + '">' +
       '<div class="u-daynum" style="color:' + daynumColor + '">' + d + '</div>' +
       (st.label ? '<div class="u-daystatus" style="color:' + st.color + '">' + st.label + '</div>' : '') +
-      itemsHtml + marks + '</div>';
+      closedHtml + itemsHtml + marks + '</div>';
   }
   document.getElementById('unified-cal-grid').innerHTML = html;
 }
@@ -26285,10 +26306,19 @@ function openDayModal(dateISO) {
       const period = (ev.band && ev.event_date)
         ? '<div style="font-size:10px;color:var(--muted);margin-top:2px">📅 ' + ev.event_date.slice(5).replace('-','/') + (ev.end_date && ev.end_date > ev.event_date ? ' 〜 ' + ev.end_date.slice(5).replace('-','/') : '') + '</div>'
         : '';
+      let closedTag = '';
+      if (ev.blocks) {
+        let cl;
+        if (ev.all_day || ev.period_from == null) cl = '🚫 閉館（休講）';
+        else if (ev.period_to != null && ev.period_to !== ev.period_from) cl = '🚫 ' + ev.period_from + '〜' + ev.period_to + '限は閉館';
+        else cl = '🚫 ' + ev.period_from + '限から閉館';
+        closedTag = '<div style="display:inline-block;font-size:11px;font-weight:700;color:#fff;background:#C0392B;border-radius:6px;padding:2px 8px;margin-top:4px">' + cl + '</div>';
+      }
       return '<div style="padding:8px 10px;background:#fff;border:1px solid var(--border);border-left:4px solid ' + (ev.color||'#F5A623') + ';border-radius:8px;margin-bottom:4px">' +
       '<div style="font-size:13px;font-weight:700;color:var(--text)">' + ev.title + '</div>' +
       period +
       (ev.detail ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + ev.detail + '</div>' : '') +
+      closedTag +
       '</div>';
     }).join('');
     body += '</div>';
