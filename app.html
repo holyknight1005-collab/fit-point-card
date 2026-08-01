@@ -1170,11 +1170,15 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <div style="flex:1">
         <div style="font-size:11px;color:var(--muted);margin-bottom:3px">学校</div>
-        <select class="form-input-sm" id="sadd-school" style="width:100%">
+        <select class="form-input-sm" id="sadd-school" style="width:100%" onchange="onSaddSchoolChange()">
           <option value="">未設定</option>
-          <option>松山東</option><option>松山南</option><option>松山北</option><option>松山中央</option>
-          <option>松山西</option><option>愛大附属</option><option>済美</option><option>SSS</option><option>その他</option>
         </select>
+        <div id="sadd-school-new" style="display:none;margin-top:6px">
+          <div style="display:flex;gap:6px">
+            <input class="form-input-sm" type="text" id="sadd-school-newname" placeholder="新しい学校名" style="flex:1">
+            <button type="button" onclick="addSaddSchool()" style="padding:6px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;white-space:nowrap;font-family:'Noto Sans JP',sans-serif">追加</button>
+          </div>
+        </div>
       </div>
       <div style="flex:1">
         <div style="font-size:11px;color:var(--muted);margin-bottom:3px">学年</div>
@@ -5708,7 +5712,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702djg';
+const APP_VERSION = '20260702djh';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32146,6 +32150,76 @@ async function addProspectSchool() {
   }
 }
 
+// ===== 新規生徒登録モーダル（student-add-modal / sadd-school）用の学校select =====
+async function renderSaddSchoolOptions(keep) {
+  const sel = document.getElementById('sadd-school');
+  if (!sel) return;
+  const prev = (keep != null) ? keep : sel.value;
+  await loadSchools();
+  const div = (typeof currentDivision !== 'undefined' ? currentDivision : '高校部');
+  const names = schoolsForDivision(div);
+  let html = '<option value="">未設定</option>';
+  names.forEach(n => { html += '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>'; });
+  html += '<option value="__add__">＋ 新しい学校を追加…</option>';
+  sel.innerHTML = html;
+  if (prev && prev !== '__add__') {
+    if (!names.includes(prev)) {
+      const opt = document.createElement('option');
+      opt.value = prev; opt.textContent = prev;
+      sel.insertBefore(opt, sel.lastChild);
+    }
+    sel.value = prev;
+  }
+  const box = document.getElementById('sadd-school-new');
+  if (box) box.style.display = 'none';
+}
+
+function onSaddSchoolChange() {
+  const sel = document.getElementById('sadd-school');
+  const box = document.getElementById('sadd-school-new');
+  if (!sel || !box) return;
+  if (sel.value === '__add__') {
+    box.style.display = 'block';
+    sel.value = '';
+    const inp = document.getElementById('sadd-school-newname');
+    if (inp) { inp.value = ''; inp.focus(); }
+  } else {
+    box.style.display = 'none';
+  }
+}
+
+async function addSaddSchool() {
+  const inp = document.getElementById('sadd-school-newname');
+  if (!inp) return;
+  const name = (inp.value || '').trim();
+  if (!name) { showToast('学校名を入力してください', 'error'); return; }
+  const div = (typeof currentDivision !== 'undefined' ? currentDivision : '高校部');
+  const existing = schoolsForDivision(div);
+  if (existing.includes(name)) {
+    await renderSaddSchoolOptions(name);
+    const box = document.getElementById('sadd-school-new'); if (box) box.style.display = 'none';
+    showToast('すでにある学校です。選択しました', 'info');
+    return;
+  }
+  showLoading('学校を追加中...');
+  try {
+    await sbPost('schools', { division: div, name: name, sort_order: 900, is_active: true });
+    await loadSchools(true);
+    await renderSaddSchoolOptions(name);
+    hideLoading();
+    showToast('✅「' + name + '」を追加しました', 'success');
+  } catch (e) {
+    hideLoading();
+    if (String(e.message || '').indexOf('23505') >= 0) {
+      await loadSchools(true);
+      await renderSaddSchoolOptions(name);
+      showToast('すでに登録済みでした。選択しました', 'info');
+    } else {
+      showToast('追加に失敗しました: ' + (e.message || ''), 'error');
+    }
+  }
+}
+
 async function initProspects() {
   prospectsFilter = 'all';
   prospectsSearch = '';
@@ -37077,7 +37151,8 @@ function openStudentAddModal(prefill) {
     svFillGradeSelect('sadd-grade', currentDivision || '高校部', prefGrade, '<option value="">未設定</option>');
   }
   setVal('sadd-name', prefill && prefill.name);
-  setVal('sadd-school', prefill && prefill.school);
+  // 学校selectを現在の部門で構築（prefillの学校があれば選択維持）
+  renderSaddSchoolOptions((prefill && prefill.school) || '');
   setVal('sadd-grade', prefGrade);
   setVal('sadd-enroll-date', getTodayJST()); // 初期値は今日（JST）
   // 現在の部門バッジを表示（どちらで登録するかを明示）
