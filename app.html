@@ -4043,6 +4043,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <button onclick="switchManageTab('birthday',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🎂 誕生日</button>
       <button onclick="switchManageTab('announce',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📢 お知らせ</button>
       <button onclick="switchManageTab('attendance',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📋 授業出欠</button>
+      <button onclick="switchManageTab('attoverview',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📅 出欠一望</button>
       <button onclick="switchManageTab('timetable',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🕐 時間割かぶり</button>
       <button onclick="switchManageTab('quizstatus',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📝 小テスト状況</button>
       <button onclick="switchManageTab('appusage',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📊 教科アプリ</button>
@@ -4710,6 +4711,27 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
       </div>
       </div>
+    </div>
+
+    <!-- 出欠一望タブ（中学夏期など・全授業を教科/学年順に俯瞰） -->
+    <div id="smcontent-attoverview" style="display:none">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">授業を選ばずに、対象の全授業の出欠を教科・学年順にまとめて表示します。<b>来ていない子（欠席・未記録）をぱっと確認</b>する用です。今日までの授業日だけ色が付き、これからの日は空欄です。</div>
+      <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+        <select class="form-select" id="ao-division-select" onchange="loadAttOverview()" style="flex:1;min-width:110px;font-size:13px">
+          <option value="中学部">🎓 中学部</option>
+          <option value="高校部">📗 高校部</option>
+        </select>
+        <select class="form-select" id="ao-category-select" onchange="loadAttOverview()" style="flex:1;min-width:110px;font-size:13px">
+          <option value="summer">☀️ 夏期講習</option>
+          <option value="winter">⛄ 冬期講習</option>
+          <option value="spring">🌸 春期講習</option>
+          <option value="regular">📗 通常授業</option>
+          <option value="">📚 すべて</option>
+        </select>
+        <button onclick="loadAttOverview()" style="padding:8px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔄 更新</button>
+      </div>
+      <div id="ao-summary" style="display:none;margin-bottom:10px"></div>
+      <div id="ao-body"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">「更新」で読み込みます。</div></div>
     </div>
 
     <!-- 時間割かぶり + 長文読解コマ割り振りタブ -->
@@ -5681,7 +5703,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dje';
+const APP_VERSION = '20260702djf';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -12324,7 +12346,7 @@ function openStaffManage(tab) {
     'mission':'ミッション作成', 'quiz':'テスト作成',
     'report':'報告書', 'todo':'ToDo', 'line':'LINE受信箱', 'teamtask':'チーム課題', 'yesterday':'昨日の来塾', 'makeup':'承認待ち',
     'student-view':'生徒画面', 'birthday':'誕生日', 'calendar':'予定表',
-    'alert':'アラート', 'announce':'お知らせ', 'attendance':'授業出欠', 'timetable':'時間割かぶり',
+    'alert':'アラート', 'announce':'お知らせ', 'attendance':'授業出欠', 'attoverview':'出欠一望', 'timetable':'時間割かぶり',
     'quizstatus':'小テスト状況', 'appusage':'教科アプリ', 'classanalysis':'授業分析', 'studentanalysis':'生徒分析', 'rostercheck':'名簿照合', 'prospects':'入来塾管理', 'interview':'面談', 'studentreg':'生徒登録', 'demo':'デモ確認', 'tsushin':'通信コース', 'revenue':'売上', 'settings':'設定'
   };
   document.getElementById('manage-header-title').textContent = titles[tab] || '管理';
@@ -28291,6 +28313,267 @@ async function openClassAttendance(classId, date, period) {
   }
 }
 
+
+// ============================================================
+// 出欠一望（attoverview）：授業を選ばず、対象の全授業の出欠を
+// 教科(英→国→数→理→社)→学年(全学年→1→2→3)順にまとめて表示。
+// 「来ていない子（欠席・未記録）をぱっと見つける」ための読み取り専用ビュー。
+// 今日までの授業日だけ色付け、未来日は空欄。編集は各授業の見出しから既存の授業出欠タブへ。
+// ============================================================
+let _aoLoaded = false;
+
+function initAttOverview() {
+  // 現在の部門トグル（fit_division）を初期選択に反映
+  try {
+    const dv = localStorage.getItem('fit_division');
+    const dsel = document.getElementById('ao-division-select');
+    if (dsel && (dv === '中学部' || dv === '高校部')) dsel.value = dv;
+  } catch (e) {}
+  if (!_aoLoaded) { _aoLoaded = true; loadAttOverview(); }
+}
+
+// 教科の並び順（英→国→数→理→社→その他）
+const AO_SUBJ_ORDER = { '英語':0, '国語':1, '数学':2, '理科':3, '社会':4 };
+function aoSubjRank(s) { return (AO_SUBJ_ORDER[s] != null) ? AO_SUBJ_ORDER[s] : 9; }
+
+// grade_level 文字列を「全学年(=複数) → 1 → 2 → 3」で並べるためのランクとラベル
+function aoGradeInfo(gl) {
+  const raw = (gl == null) ? '' : String(gl).trim();
+  const parts = raw.split(/[,、\s]+/).filter(Boolean);
+  if (parts.length === 0) return { rank: 5, label: '' };          // 未設定は最後
+  if (parts.length >= 2) return { rank: 0, label: '全学年' };      // 複数学年＝全学年扱いで先頭
+  const n = parseInt(parts[0], 10);
+  if (n === 1) return { rank: 1, label: '1年' };
+  if (n === 2) return { rank: 2, label: '2年' };
+  if (n === 3) return { rank: 3, label: '3年' };
+  return { rank: 4, label: raw + '年' };
+}
+
+const AO_SUBJ_COLOR = { '英語':'#2D5FA6','国語':'#8B2020','数学':'#7B2D8B','理科':'#1A7340','社会':'#8B6020' };
+function aoSubjColor(s) { return AO_SUBJ_COLOR[s] || '#5A5A5A'; }
+
+async function loadAttOverview() {
+  const body = document.getElementById('ao-body');
+  const sumEl = document.getElementById('ao-summary');
+  if (!body) return;
+  const division = document.getElementById('ao-division-select').value;
+  const category = document.getElementById('ao-category-select').value;
+  body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
+  if (sumEl) sumEl.style.display = 'none';
+  try {
+    const todayStr = getTodayJST();
+
+    // 対象クラス（アクティブのみ）
+    let q = 'division=eq.' + encodeURIComponent(division) + '&is_active=eq.true&select=id,name,subject,grade_level,color';
+    if (category) q += '&category=eq.' + encodeURIComponent(category);
+    const masters = await sbGet('class_master', q) || [];
+    if (!masters.length) {
+      body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">対象の授業がありません。</div>';
+      return;
+    }
+    const classIds = masters.map(m => m.id);
+
+    // 授業日（過去〜未来すべて。未来は空欄表示に使う）
+    const sessions = await sbGet('class_sessions',
+      'class_master_id=in.(' + classIds.join(',') + ')' +
+      '&select=class_master_id,session_date,period,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date,period') || [];
+
+    // 受講登録（ended_on=null＝継続中）
+    const enrolls = await sbGetActiveEnrollments('class_master_id=in.(' + classIds.join(',') +
+      ')&select=class_master_id,student_id,is_provisional');
+
+    // 出欠記録
+    const atts = await sbGet('session_attendance',
+      'class_master_id=in.(' + classIds.join(',') + ')&session_date=lte.' + todayStr +
+      '&select=class_master_id,session_date,period,student_id,status') || [];
+
+    // 生徒名（受講している生徒のみ・デモ除外）
+    let stuIds = [...new Set(enrolls.map(e => e.student_id))];
+    stuIds = await excludeDemoIds(stuIds);
+    const stuSet = new Set(stuIds);
+    let stuMap = {};
+    if (stuIds.length) {
+      const rows = await sbGet('students',
+        'id=in.(' + stuIds.map(x => '"' + x + '"').join(',') + ')&select=id,name,grade,school,photo_url') || [];
+      rows.forEach(r => { stuMap[r.id] = r; });
+    }
+
+    // インデックス化
+    const sessByClass = {};       // classId -> [session,...]
+    sessions.forEach(s => { (sessByClass[s.class_master_id] || (sessByClass[s.class_master_id] = [])).push(s); });
+    const enrByClass = {};        // classId -> [student_id,...]（デモ除外済）
+    const provByClass = {};       // classId -> Set(student_id) 仮受講
+    enrolls.forEach(e => {
+      if (!stuSet.has(e.student_id)) return;
+      (enrByClass[e.class_master_id] || (enrByClass[e.class_master_id] = [])).push(e.student_id);
+      if (e.is_provisional) (provByClass[e.class_master_id] || (provByClass[e.class_master_id] = new Set())).add(e.student_id);
+    });
+    const attMapG = {};           // classId|date|period|student -> status
+    atts.forEach(a => {
+      attMapG[a.class_master_id + '|' + a.session_date + '|' + (a.period || '') + '|' + a.student_id] = a.status;
+    });
+
+    // 並び替え：教科→学年→名前
+    masters.forEach(m => { const gi = aoGradeInfo(m.grade_level); m._grank = gi.rank; m._glabel = gi.label; m._srank = aoSubjRank(m.subject); });
+    masters.sort((a, b) => {
+      if (a._srank !== b._srank) return a._srank - b._srank;
+      if (a._grank !== b._grank) return a._grank - b._grank;
+      return (a.name || '').localeCompare(b.name || '', 'ja');
+    });
+
+    // 描画
+    const wlabels = ['日','月','火','水','木','金','土'];
+    let html = '';
+    let curSubj = null, curGrade = null;
+    let totalAbsent = 0, totalUnrec = 0, classesWithAbsent = 0;
+
+    masters.forEach(m => {
+      const csess = (sessByClass[m.id] || []);
+      const cstu = (enrByClass[m.id] || []);
+      // 見出し（教科／学年の帯）
+      if (m.subject !== curSubj) {
+        curSubj = m.subject; curGrade = null;
+        const sc = aoSubjColor(m.subject);
+        html += '<div style="margin:14px 0 6px;padding:5px 10px;border-radius:8px;background:' + sc + '18;border-left:4px solid ' + sc + ';font-size:14px;font-weight:800;color:' + sc + '">' + escapeHtml(m.subject || 'その他') + '</div>';
+      }
+      if (m._glabel !== curGrade) {
+        curGrade = m._glabel;
+        if (curGrade) html += '<div style="margin:8px 0 4px;font-size:12px;font-weight:700;color:var(--muted)">' + escapeHtml(curGrade) + '</div>';
+      }
+
+      // 授業カード
+      if (!csess.length || !cstu.length) {
+        html += '<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--surface)">' +
+          '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(m.name) + '</div>' +
+          '<div style="font-size:11px;color:var(--muted);margin-top:3px">' +
+          (!cstu.length ? '受講登録された生徒がいません' : '授業日がありません') + '</div></div>';
+        return;
+      }
+
+      // その授業の生徒を名前順に
+      const sids = [...new Set(cstu)].sort((a, b) => {
+        const A = stuMap[a] || {}, B = stuMap[b] || {};
+        return ((A.grade || '') + (A.name || '')).localeCompare((B.grade || '') + (B.name || ''), 'ja');
+      });
+
+      // 各日について欠席・未記録をカウント（今日まで）
+      let clsAbsent = 0, clsUnrec = 0;
+      const dayStat = {};   // key(date|period) -> {present,absent,makeup,unrec,past}
+      csess.forEach(s => {
+        const key = s.session_date + '|' + (s.period || '');
+        const past = s.session_date <= todayStr;
+        const st = { present: 0, absent: 0, makeup: 0, unrec: 0, past: past };
+        if (past) {
+          sids.forEach(sid => {
+            const status = attMapG[m.id + '|' + s.session_date + '|' + (s.period || '') + '|' + sid];
+            if (status === 'present') st.present++;
+            else if (status === 'absent') { st.absent++; clsAbsent++; }
+            else if (status === 'makeup') st.makeup++;
+            else { st.unrec++; clsUnrec++; }
+          });
+        }
+        dayStat[key] = st;
+      });
+      totalAbsent += clsAbsent; totalUnrec += clsUnrec;
+      if (clsAbsent > 0) classesWithAbsent++;
+
+      // 見出し（授業名＋欠席バッジ＋編集リンク）
+      const absentBadge = clsAbsent > 0
+        ? '<span style="font-size:11px;font-weight:800;color:#fff;background:#D14B4B;border-radius:10px;padding:1px 9px;margin-left:6px">欠席 ' + clsAbsent + '</span>'
+        : '<span style="font-size:11px;font-weight:700;color:var(--green-d);background:var(--green-l);border-radius:10px;padding:1px 9px;margin-left:6px">欠席なし</span>';
+      const unrecBadge = clsUnrec > 0
+        ? '<span style="font-size:10px;font-weight:700;color:#8F5F12;background:#FFF3DF;border:1px solid #E8C193;border-radius:10px;padding:1px 8px;margin-left:5px">未記録 ' + clsUnrec + '</span>'
+        : '';
+
+      html += '<div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:10px;background:var(--surface)' + (clsAbsent > 0 ? ';box-shadow:0 0 0 1.5px #F0C4C4 inset' : '') + '">';
+      html += '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-bottom:8px">' +
+        '<span style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(m.name) + '</span>' +
+        absentBadge + unrecBadge +
+        '<span onclick="openClassAttendance(\'' + escapeAttr(m.id) + '\',\'\',\'\')" style="margin-left:auto;font-size:11px;font-weight:700;color:var(--orange-d);cursor:pointer;border:1px solid var(--orange);border-radius:8px;padding:2px 10px;white-space:nowrap">✏️ 記入</span>' +
+        '</div>';
+
+      // ミニ出欠表（生徒×日付）
+      html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:11px;width:max-content;table-layout:fixed">';
+      // ヘッダ
+      html += '<tr><th style="position:sticky;left:0;background:var(--surface2);z-index:2;text-align:left;padding:5px 8px;border-bottom:1px solid var(--border);border-right:1px solid var(--border);font-size:11px;font-weight:700;width:120px;min-width:120px">生徒</th>';
+      csess.forEach(s => {
+        const d = new Date(s.session_date + 'T00:00:00+09:00');
+        const md = (d.getMonth() + 1) + '/' + d.getDate();
+        const wd = wlabels[d.getDay()];
+        const per = s.period ? s.period + '限' : '';
+        const st = dayStat[s.session_date + '|' + (s.period || '')];
+        const headBg = (st && st.past && st.absent > 0) ? '#FDE7E7' : (st && st.past ? '#fff' : '#FAFAFA');
+        html += '<th style="padding:4px 2px;border-bottom:1px solid var(--border);font-size:10px;font-weight:700;color:var(--text);width:44px;min-width:44px;background:' + headBg + '">' +
+          md + '<br><span style="font-size:9px;color:var(--muted);font-weight:400">' + wd + (per ? ' ' + per : '') + '</span></th>';
+      });
+      html += '<th style="padding:4px 2px;border-bottom:1px solid var(--border);font-size:10px;font-weight:700;color:var(--muted);width:46px;min-width:46px">出席率</th></tr>';
+
+      // 各生徒行
+      sids.forEach(sid => {
+        const stu = stuMap[sid] || {};
+        const isProv = provByClass[m.id] && provByClass[m.id].has(sid);
+        const avatar = stu.photo_url
+          ? '<div style="width:24px;height:24px;border-radius:50%;background-image:url(' + stu.photo_url + ');background-size:cover;background-position:center;flex-shrink:0"></div>'
+          : '<div style="width:24px;height:24px;border-radius:50%;background:var(--orange-l);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--orange-d);flex-shrink:0">' + escapeHtml((stu.name || '?').charAt(0)) + '</div>';
+        const sub = stu.grade ? stu.grade + '年' : '';
+        html += '<tr style="border-top:1px solid var(--border)">';
+        html += '<td style="position:sticky;left:0;background:var(--surface);z-index:1;padding:4px 8px;border-right:1px solid var(--border);width:120px;min-width:120px">' +
+          '<div onclick="openInterviewKarte(\'' + escapeAttr(sid) + '\',\'att\')" style="display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0" title="カルテを開く">' + avatar +
+          '<div style="min-width:0;overflow:hidden"><div style="font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(stu.name || '(不明)') + '</div>' +
+          (sub ? '<div style="font-size:9px;color:var(--muted)">' + escapeHtml(sub) + (isProv ? ' ⏳' : '') + '</div>' : '') +
+          '</div></div></td>';
+        let p = 0, n = 0;
+        csess.forEach(s => {
+          const past = s.session_date <= todayStr;
+          if (!past) {
+            // 未来日は空欄
+            html += '<td style="text-align:center;padding:4px;color:var(--border)"></td>';
+            return;
+          }
+          const status = attMapG[m.id + '|' + s.session_date + '|' + (s.period || '') + '|' + sid];
+          let bg, col, mark;
+          if (status === 'present') { bg = 'var(--green-l)'; col = 'var(--green-d)'; mark = '○'; n++; p++; }
+          else if (status === 'makeup') { bg = '#EDE7F8'; col = '#6B4FA0'; mark = '◐'; n++; p++; }
+          else if (status === 'absent') { bg = 'var(--red-l)'; col = 'var(--red)'; mark = '✕'; n++; }
+          else { bg = 'transparent'; col = 'var(--border)'; mark = '·'; }  // 未記録
+          html += '<td style="text-align:center;padding:3px">' +
+            '<span style="display:inline-block;width:26px;height:26px;line-height:26px;border-radius:6px;background:' + bg + ';color:' + col + ';font-weight:700;font-size:13px">' + mark + '</span></td>';
+        });
+        const rate = n ? Math.round(p / n * 100) : null;
+        const rcol = rate === null ? 'var(--muted)' : (rate >= 80 ? 'var(--green-d)' : (rate >= 60 ? 'var(--orange-d)' : 'var(--red)'));
+        html += '<td style="text-align:center;font-size:12px;font-weight:700;color:' + rcol + ';padding:4px 6px;white-space:nowrap">' + (rate === null ? '—' : rate + '%') + '</td>';
+        html += '</tr>';
+      });
+
+      html += '</table></div></div>';
+    });
+
+    body.innerHTML = html || '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">表示できる授業がありません。</div>';
+
+    // サマリー（上部）
+    if (sumEl) {
+      const sc = totalAbsent > 0 ? '#B33A3A' : 'var(--green-d)';
+      const bg = totalAbsent > 0 ? '#FDE7E7' : 'var(--green-l)';
+      const bd = totalAbsent > 0 ? '#E6A3A3' : '#A8D891';
+      sumEl.innerHTML = '<div style="background:' + bg + ';border:1px solid ' + bd + ';border-radius:10px;padding:9px 12px;font-size:12px;color:' + sc + ';font-weight:700;line-height:1.6">' +
+        '📋 ' + masters.length + '授業 / 生徒 ' + stuIds.length + '名　' +
+        '｜ 欠席 <b>' + totalAbsent + '</b>件（' + classesWithAbsent + '授業）' +
+        (totalUnrec > 0 ? '　｜ 未記録 ' + totalUnrec + '件' : '') +
+        '</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;font-size:10px;color:var(--muted);align-items:center">' +
+        '<span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--green-l);border:1px solid #A8D891;vertical-align:middle"></span> ○出席</span>' +
+        '<span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--red-l);border:1px solid #F5BABA;vertical-align:middle"></span> ✕欠席</span>' +
+        '<span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#EDE7F8;border:1px solid #C3B2E6;vertical-align:middle"></span> ◐補習</span>' +
+        '<span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:transparent;border:1px solid var(--border);vertical-align:middle"></span> ·未記録</span>' +
+        '<span>空欄＝これからの授業日</span>' +
+        '</div>';
+      sumEl.style.display = 'block';
+    }
+  } catch (e) {
+    body.innerHTML = '<div style="font-size:12px;color:var(--red);padding:12px">読み込みエラー: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
 async function initAttendanceTab() {
   document.getElementById('att-session-select').innerHTML = '<option value="">📅 授業日を選択</option>';
   document.getElementById('att-roster').innerHTML = '';
@@ -30742,7 +31025,7 @@ function switchManageTab(tab, el) {
   // manage-* 系（授業管理など）
   const manageTabs = ['class-master','check-item','mission','quiz'];
   // smcontent-* 系（小メニューから統合したタブ）
-  const menuTabs = ['report','todo','line','teamtask','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','timetable','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','prospects','interview','examreq','studentreg','demo','revenue','tsushin'];
+  const menuTabs = ['report','todo','line','teamtask','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','attoverview','timetable','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','prospects','interview','examreq','studentreg','demo','revenue','tsushin'];
   manageTabs.forEach(t => {
     const el2 = document.getElementById('manage-' + t);
     if (el2) el2.style.display = 'none';
@@ -30791,6 +31074,7 @@ function switchManageTab(tab, el) {
   if (tab === 'alert') { loadAlertBoard(); loadHomeAbsent(); }
   if (tab === 'announce') { loadAnnouncementsStaff(); initAnnounceForm(); }
   if (tab === 'attendance') initAttendanceTab();
+  if (tab === 'attoverview') initAttOverview();
   if (tab === 'timetable') { loadTimetableConflicts(); loadLongtextPeriods(); }
   if (tab === 'quizstatus') loadQuizStatusClasses();
   if (tab === 'appusage') { loadAppUsage(); loadAccessClasses(); loadClassMathUnits(); }
