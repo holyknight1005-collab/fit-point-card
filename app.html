@@ -841,12 +841,17 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <input class="form-input-sm" type="text" id="prospect-name" placeholder="氏名（必須）" style="margin-bottom:8px">
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <div style="flex:1">
-        <div style="font-size:11px;color:var(--muted);margin-bottom:3px">学校</div>
-        <select class="form-input-sm" id="prospect-school" style="width:100%">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:3px">学校 <span id="prospect-school-div" style="font-size:10px;color:var(--orange-d)"></span></div>
+        <select class="form-input-sm" id="prospect-school" style="width:100%" onchange="onProspectSchoolChange()">
           <option value="">未設定</option>
-          <option>松山東</option><option>松山南</option><option>松山北</option><option>松山中央</option>
-          <option>松山西</option><option>愛大附属</option><option>済美</option><option>SSS</option><option>その他</option>
         </select>
+        <div id="prospect-school-new" style="display:none;margin-top:6px">
+          <div style="display:flex;gap:6px">
+            <input class="form-input-sm" type="text" id="prospect-school-newname" placeholder="新しい学校名を入力" style="flex:1">
+            <button type="button" onclick="addProspectSchool()" style="padding:6px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;white-space:nowrap;font-family:'Noto Sans JP',sans-serif">追加</button>
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-top:3px">追加すると次回から選択肢に出ます（<span id="prospect-school-newdiv"></span>）。</div>
+        </div>
       </div>
       <div style="flex:1">
         <div style="font-size:11px;color:var(--muted);margin-bottom:3px">学年</div>
@@ -5703,7 +5708,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702djf';
+const APP_VERSION = '20260702djg';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32024,11 +32029,130 @@ let prospectVisitsCache = []; // 来塾ログ [{id,prospect_id,event_id,visit_da
 let prospectTrialsCache = []; // 体験ログ [{id,prospect_id,trial_date,subject,attended}]（一覧表示用に全件キャッシュ）
 let prospectsEventFilter = 'all'; // イベントビューで選択中のイベントid（'all'=未選択の一覧）
 
+
+// ============================================================
+// 学校マスター（schools テーブル）：部門ごとの学校名リスト。
+// 入来塾管理の学校selectを currentDivision に応じて出し、
+// 「＋ 新しい学校を追加」で schools に INSERT（次回から選択肢に残る）。
+// テーブル未作成でも落ちないようフォールバック。
+// ============================================================
+let _schoolsCache = null;   // 全件（{division,name,sort_order,is_active}）
+
+async function loadSchools(force) {
+  if (_schoolsCache && !force) return _schoolsCache;
+  try {
+    _schoolsCache = await sbGet('schools',
+      'is_active=eq.true&order=sort_order,name&select=id,division,name,sort_order') || [];
+  } catch (e) {
+    _schoolsCache = null;   // テーブル未作成など
+  }
+  return _schoolsCache;
+}
+
+// 部門に応じた学校名リスト（フォールバック付き）
+function schoolsForDivision(division) {
+  const div = division || (typeof currentDivision !== 'undefined' ? currentDivision : '高校部');
+  if (_schoolsCache && _schoolsCache.length) {
+    const list = _schoolsCache.filter(s => (s.division || '高校部') === div).map(s => s.name);
+    if (list.length) return list;
+  }
+  // フォールバック（テーブル未作成時）
+  if (div === '中学部') {
+    return ['南','東','勝山','附属','久谷','南第二','県西','津田','久米','平成','興居島','余土','椿','旭','雄新','その他'];
+  }
+  return ['松山東','松山南','松山北','松山中央','松山西','愛大附属','済美','SSS','その他'];
+}
+
+// prospect登録フォームの学校selectを（現在の部門で）埋める。keep で現在値を維持。
+async function renderProspectSchoolOptions(keep) {
+  const sel = document.getElementById('prospect-school');
+  if (!sel) return;
+  const prev = (keep != null) ? keep : sel.value;
+  await loadSchools();
+  const div = (typeof currentDivision !== 'undefined' ? currentDivision : '高校部');
+  const names = schoolsForDivision(div);
+  // 部門ラベル
+  const divLbl = document.getElementById('prospect-school-div');
+  if (divLbl) divLbl.textContent = (div === '中学部') ? '（中学）' : '（高校）';
+  const newDivLbl = document.getElementById('prospect-school-newdiv');
+  if (newDivLbl) newDivLbl.textContent = div;
+  // 選択肢を再構築
+  let html = '<option value="">未設定</option>';
+  names.forEach(n => { html += '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>'; });
+  html += '<option value="__add__">＋ 新しい学校を追加…</option>';
+  sel.innerHTML = html;
+  // 以前の値が今のリストにあれば復元。無ければ（他部門の学校名など）動的に足して選択維持。
+  if (prev && prev !== '__add__') {
+    if (!names.includes(prev)) {
+      const opt = document.createElement('option');
+      opt.value = prev; opt.textContent = prev;
+      sel.insertBefore(opt, sel.lastChild);   // 「＋追加」の前に差し込む
+    }
+    sel.value = prev;
+  }
+  // 追加入力欄は閉じておく
+  const box = document.getElementById('prospect-school-new');
+  if (box) box.style.display = 'none';
+}
+
+// selectで「＋新しい学校を追加」を選んだら入力欄を出す
+function onProspectSchoolChange() {
+  const sel = document.getElementById('prospect-school');
+  const box = document.getElementById('prospect-school-new');
+  if (!sel || !box) return;
+  if (sel.value === '__add__') {
+    box.style.display = 'block';
+    sel.value = '';   // プレースホルダに戻す（追加確定で選択される）
+    const inp = document.getElementById('prospect-school-newname');
+    if (inp) { inp.value = ''; inp.focus(); }
+  } else {
+    box.style.display = 'none';
+  }
+}
+
+// 新しい学校を schools に追加して、その学校を選択状態にする
+async function addProspectSchool() {
+  const inp = document.getElementById('prospect-school-newname');
+  if (!inp) return;
+  const name = (inp.value || '').trim();
+  if (!name) { showToast('学校名を入力してください', 'error'); return; }
+  const div = (typeof currentDivision !== 'undefined' ? currentDivision : '高校部');
+  // 既に同名があれば追加せずそれを選ぶ
+  const existing = schoolsForDivision(div);
+  if (existing.includes(name)) {
+    await renderProspectSchoolOptions(name);
+    const box = document.getElementById('prospect-school-new'); if (box) box.style.display = 'none';
+    showToast('すでにある学校です。選択しました', 'info');
+    return;
+  }
+  showLoading('学校を追加中...');
+  try {
+    // 末尾に来るよう sort_order は大きめ（その他=999 の手前 900 台）
+    await sbPost('schools', { division: div, name: name, sort_order: 900, is_active: true });
+    await loadSchools(true);           // キャッシュ更新
+    await renderProspectSchoolOptions(name);
+    hideLoading();
+    showToast('✅「' + name + '」を追加しました', 'success');
+  } catch (e) {
+    hideLoading();
+    // UNIQUE 重複（23505）などは選択だけして続行
+    if (String(e.message || '').indexOf('23505') >= 0) {
+      await loadSchools(true);
+      await renderProspectSchoolOptions(name);
+      showToast('すでに登録済みでした。選択しました', 'info');
+    } else {
+      showToast('追加に失敗しました: ' + (e.message || ''), 'error');
+    }
+  }
+}
+
 async function initProspects() {
   prospectsFilter = 'all';
   prospectsSearch = '';
   prospectsSort = 'updated_desc';
   prospectsAssignee = 'all';
+  // 学校マスターを先読み（入来塾の学校selectで使う）
+  try { await loadSchools(true); } catch (e) {}
   const si = document.getElementById('prospects-search'); if (si) si.value = '';
   const so = document.getElementById('prospects-sort'); if (so) so.value = 'updated_desc';
   // 担当スタッフ名マップ（カード表示・担当別フィルタ用）。失敗しても続行。
@@ -36285,6 +36409,8 @@ async function openProspectModal(id) {
   const setVal = (elId, v) => { const e = document.getElementById(elId); if (e) e.value = (v == null ? '' : v); };
   const errEl = document.getElementById('prospect-modal-error');
   if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+  // 学校select（現在の部門の学校名）を先に構築しておく
+  await renderProspectSchoolOptions('');
 
   // 担当スタッフ候補を読み込む（メイン=select、サポート=チェックボックス）
   const sel = document.getElementById('prospect-assigned');
@@ -36317,7 +36443,7 @@ async function openProspectModal(id) {
     document.getElementById('prospect-modal-title').textContent = '✏️ 見込みを編集';
     setVal('prospect-id', p.id);
     setVal('prospect-name', p.name);
-    setVal('prospect-school', p.school);
+    await renderProspectSchoolOptions(p.school || '');
     setVal('prospect-grade', p.grade);
     setVal('prospect-contact', p.contact);
     setVal('prospect-source', p.source);
