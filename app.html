@@ -5681,7 +5681,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702djb';
+const APP_VERSION = '20260702djc';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -19767,6 +19767,19 @@ async function loadKarteReports(classId) {
       return;
     }
     const recent = filled.slice(0, 4); // 直近4回
+    // 授業回数（○月○回目／講習は通し番号／補習は🔁）を session_date で突合
+    const cycByDate = {};
+    try {
+      const sess = await sbGet('class_sessions',
+        'class_master_id=eq.' + classId +
+        '&session_date=in.(' + recent.map(r => r.session_date).join(',') + ')' +
+        '&select=session_date,cycle_year,cycle_month,cycle_no,is_makeup') || [];
+      sess.forEach(s => {
+        // 同日複数コマは、回数が振られている方を優先
+        const prev = cycByDate[s.session_date];
+        if (!prev || (prev.cycle_no == null && s.cycle_no != null)) cycByDate[s.session_date] = s;
+      });
+    } catch (e) {}
     const wlabels = ['日','月','火','水','木','金','土'];
     el.innerHTML = recent.map((r, idx) => {
       const d = new Date(r.session_date + 'T00:00:00+09:00');
@@ -19777,7 +19790,18 @@ async function loadKarteReports(classId) {
         ? '<div class="ck-rep-field"><div class="ck-rep-field-lbl">' + label + '</div><div class="ck-rep-field-val">' + escapeHtml(val.trim()) + '</div></div>'
         : '<div class="ck-rep-field"><div class="ck-rep-field-lbl">' + label + '</div><div class="ck-rep-empty-field">（記録なし）</div></div>';
       const isLatest = idx === 0;
+      // 授業回数ラベル（○月○回目／講習は第○回／補習は🔁補習）
+      const cinfo = cycByDate[r.session_date];
+      let cycLabel = '';
+      if (cinfo) {
+        if (cinfo.is_makeup) cycLabel = '🔁 補習';
+        else if (cinfo.cycle_no != null) cycLabel = sessionCycleLabel(cinfo);
+      }
+      const cycBadge = cycLabel
+        ? '<div style="font-size:11px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);border-radius:10px;padding:2px 10px;display:inline-block;margin-bottom:6px">' + escapeHtml(cycLabel) + '</div>'
+        : '';
       return '<div class="ck-rep-card' + (isLatest ? ' is-latest' : '') + '">' +
+        cycBadge +
         '<div class="ck-rep-date">' +
           '<span class="ck-rep-date-main">' + dateLabel + '<span style="font-size:11px;font-weight:600;color:var(--muted)">（' + wl + '）</span></span>' +
           (isLatest ? '<span class="ck-rep-badge">最新</span>' : (staffName ? '<span class="ck-rep-staff">' + escapeHtml(staffName) + '</span>' : '')) +
@@ -23749,9 +23773,37 @@ async function loadWeekGrid() {
         color: wkClassColor(m),
         teachers: (teacherOf[s.class_master_id] || []),
         div: mdiv,
+        cmid: s.class_master_id,
+        date: s.session_date,
         time: (st && et) ? (st + '〜' + et) : ''
       });
     });
+
+    // 授業報告：この週の担当授業について「記入済み」セットを構築（report未記入セルの赤表示用）
+    // 赤にする条件：8/1以降 かつ 授業日<今日（＝翌日以降に赤くなる／当日は赤くしない） かつ report未記入
+    const REPORT_RED_SINCE = '2026-08-01';
+    const todayISO0 = getTodayJST();
+    const weekClassIds = [...new Set((sessions || []).map(s => s.class_master_id).filter(Boolean))];
+    const reportFilledSet = new Set();  // 'classId|date' で記入済み
+    if (weekClassIds.length) {
+      try {
+        const reps = await sbGet('class_reports',
+          'class_master_id=in.(' + weekClassIds.join(',') + ')' +
+          '&session_date=gte.' + firstISO + '&session_date=lte.' + lastISO +
+          '&select=class_master_id,session_date,theme,content,student_notes') || [];
+        reps.forEach(r => {
+          const filled = (r.theme && r.theme.trim()) || (r.content && r.content.trim()) || (r.student_notes && r.student_notes.trim());
+          if (filled) reportFilledSet.add(r.class_master_id + '|' + r.session_date);
+        });
+      } catch (e) {}
+    }
+    // 報告書が未記入で赤にすべきか
+    const isReportMissing = (it) => {
+      if (!it || !it.cmid || !it.date) return false;
+      if (it.date < REPORT_RED_SINCE) return false;   // 8/1より前は対象外
+      if (it.date >= todayISO0) return false;          // 今日・未来は対象外（翌日以降に赤くなる）
+      return !reportFilledSet.has(it.cmid + '|' + it.date);
+    };
 
     // 面談予定：period ありはセル、なしは帯
     const todayForIv = getTodayJST();
@@ -23816,6 +23868,7 @@ async function loadWeekGrid() {
 
     const todayISO = getTodayJST();
     let warnCount = 0;
+    let reportMissCount = 0;
     let h = '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:760px;font-size:11px;table-layout:fixed">';
 
     h += '<tr><th style="width:64px;border:1px solid var(--border);background:var(--surface2);padding:5px"></th>';
@@ -23900,10 +23953,16 @@ async function loadWeekGrid() {
           const divBadge = (wkDivFilter === 'both')
             ? '<span style="display:inline-block;font-size:8px;font-weight:800;padding:0 3px;border-radius:3px;margin-right:3px;vertical-align:middle;background:' + (it.div === '中学部' ? '#1A7340' : '#2D5FA6') + ';color:#fff">' + (it.div === '中学部' ? '中' : '高') + '</span>'
             : '';
-          h += '<div style="background:' + cc + '18;border:1px solid ' + cc + ';border-left:3px solid ' + cc + ';border-radius:6px;padding:3px 5px;margin-bottom:3px;line-height:1.4">' +
-            '<div style="font-weight:700;color:' + cc + '">' + divBadge + escapeHtml(it.name) + '</div>' + tHtml +
+          const repMiss = isReportMissing(it);
+          if (repMiss) reportMissCount++;
+          const boxBg = repMiss ? '#FDE7E7' : (cc + '18');
+          const boxBorder = repMiss ? '#D14B4B' : cc;
+          const nameCol = repMiss ? '#B33A3A' : cc;
+          h += '<div style="background:' + boxBg + ';border:1px solid ' + boxBorder + ';border-left:3px solid ' + boxBorder + ';border-radius:6px;padding:3px 5px;margin-bottom:3px;line-height:1.4">' +
+            '<div style="font-weight:700;color:' + nameCol + '">' + divBadge + escapeHtml(it.name) + '</div>' + tHtml +
             (it.time ? '<div style="color:var(--muted);font-size:10px">' + escapeHtml(it.time) + '</div>' :
               (tt ? '<div style="color:var(--border);font-size:10px">' + tt[0] + '〜' + tt[1] + '</div>' : '')) +
+            (repMiss ? '<div style="margin-top:2px;font-size:9px;font-weight:700;color:#fff;background:#D14B4B;border-radius:4px;padding:1px 4px;display:inline-block">📝 報告書未記入</div>' : '') +
             '</div>';
         });
         ivs.forEach(v => {
@@ -23987,6 +24046,10 @@ async function loadWeekGrid() {
     if (warnCount) {
       h += '<div style="margin-top:8px;font-size:11px;color:#B84A4A;background:#FDECEC;border:1px solid #E0A0A0;border-radius:8px;padding:6px 10px;font-weight:700">' +
            '⚠️ 閉館・休講のコマに授業が ' + warnCount + '件 残っています。授業の削除・振替をご確認ください。</div>';
+    }
+    if (reportMissCount) {
+      h += '<div style="margin-top:8px;font-size:11px;color:#B33A3A;background:#FDE7E7;border:1px solid #E6A3A3;border-radius:8px;padding:6px 10px;font-weight:700">' +
+           '📝 この週で報告書が未記入の授業が ' + reportMissCount + '件 あります（赤いコマ）。※当日分は翌日から赤くなります。</div>';
     }
 
     const actLabels = {};
@@ -29160,18 +29223,18 @@ function attStudentCellHtml(s, drag) {
   const handle = drag
     ? '<span style="font-size:13px;color:var(--muted);cursor:grab;flex-shrink:0;user-select:none" title="ドラッグして並び替え">⋮⋮</span>'
     : '';
-  return '<td style="position:sticky;left:0;background:var(--surface);padding:5px 8px;border-right:1px solid var(--border);z-index:1">' +
+  return '<td style="position:sticky;left:0;background:var(--surface);padding:5px 8px;border-right:1px solid var(--border);z-index:1;width:112px;min-width:112px">' +
     '<div style="display:flex;align-items:center;gap:6px">' + handle +
-    '<div onclick="openInterviewKarte(\'' + escapeAttr(s.id) + '\',\'att\')" style="display:flex;align-items:center;gap:7px;white-space:nowrap;cursor:pointer;min-width:0" title="カルテを開く">' + avatar +
-    '<div style="min-width:0"><div style="font-size:12px;color:var(--text)">' + escapeHtml(s.name||'(不明)') +
+    '<div onclick="openInterviewKarte(\'' + escapeAttr(s.id) + '\',\'att\')" style="display:flex;align-items:center;gap:7px;cursor:pointer;min-width:0" title="カルテを開く">' + avatar +
+    '<div style="min-width:0;overflow:hidden"><div style="font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(s.name||'(不明)') +
       '<span style="font-size:10px;color:var(--muted);margin-left:4px">›</span></div>' +
-    ((sub || startTag || provTag) ? '<div style="font-size:9px;color:var(--muted)">' + escapeHtml(sub) + startTag + provTag + '</div>' : '') +
+    ((sub || startTag || provTag) ? '<div style="font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(sub) + startTag + provTag + '</div>' : '') +
     '</div></div></div></td>';
 }
 
 function attMatrixHeaderHtml() {
   let h = '<tr style="background:var(--surface2)">' +
-    '<th style="position:sticky;left:0;background:var(--surface2);padding:7px 8px;text-align:left;border-right:1px solid var(--border);border-bottom:1px solid var(--border);font-size:11px;font-weight:700;color:var(--text);z-index:2;min-width:96px">生徒</th>';
+    '<th style="position:sticky;left:0;background:var(--surface2);padding:7px 8px;text-align:left;border-right:1px solid var(--border);border-bottom:1px solid var(--border);font-size:11px;font-weight:700;color:var(--text);z-index:2;width:112px;min-width:112px">生徒</th>';
   attMatrix.sessKeys.forEach(k => {
     const lab = attMatrix.dateLabels[k];
     const info = attMatrix.sessInfo[k];
@@ -29180,12 +29243,12 @@ function attMatrixHeaderHtml() {
     const schoolBadge = info.school
       ? '<br><span style="display:inline-block;font-size:8px;color:#1E4276;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:8px;padding:0 4px;font-weight:700;line-height:1.4;white-space:nowrap">🏫' + escapeHtml(info.school) + '</span>'
       : '';
-    h += '<th style="padding:6px 4px;border-bottom:1px solid var(--border);font-size:11px;font-weight:700;color:var(--text);min-width:40px">' +
+    h += '<th style="padding:6px 2px;border-bottom:1px solid var(--border);font-size:11px;font-weight:700;color:var(--text);width:48px;min-width:48px">' +
       lab.md + '<br><span style="font-size:9px;color:var(--muted);font-weight:400">' + lab.wd + (per ? ' ' + per : '') + '</span>' +
       (cyc ? '<br><span style="font-size:9px;color:var(--orange-d);font-weight:700">' + cyc + '</span>' : '') +
       schoolBadge + '</th>';
   });
-  h += '<th style="padding:6px 4px;border-bottom:1px solid var(--border);font-size:10px;font-weight:700;color:var(--muted);min-width:40px">出席率</th></tr>';
+  h += '<th style="padding:6px 2px;border-bottom:1px solid var(--border);font-size:10px;font-weight:700;color:var(--muted);width:46px;min-width:46px">出席率</th></tr>';
   return h;
 }
 
@@ -29468,7 +29531,7 @@ function renderAttMatrix() {
       + '</div>'
     : '';
 
-  wrap.innerHTML = orderBar + '<table style="border-collapse:collapse;font-size:12px;min-width:100%"><thead>' + header + '</thead><tbody>' + bodyRows + attMatrixFooterHtml() + '</tbody></table>';
+  wrap.innerHTML = orderBar + '<table style="border-collapse:collapse;font-size:12px;width:max-content;min-width:100%;table-layout:fixed"><thead>' + header + '</thead><tbody>' + bodyRows + attMatrixFooterHtml() + '</tbody></table>';
   updateAttSortBtn();
   updateAttMatrixSaveBtn();
 }
