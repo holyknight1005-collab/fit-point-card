@@ -5400,8 +5400,6 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
       <div class="section-title">登録済み授業</div>
       <button onclick="scanDuplicateMasters()" style="width:100%;margin-bottom:8px;padding:9px;background:var(--surface);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔍 重複マスターを点検</button>
-      <button onclick="cleanupOrphanSessions()" style="width:100%;margin-bottom:8px;padding:9px;background:var(--surface);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🧹 無効クラスの残骸授業を掃除</button>
-      <div id="cm-orphan-result" style="display:none;margin-bottom:10px"></div>
       <div id="cm-dup-result" style="display:none;margin-bottom:10px"></div>
       <div id="cm-filter-bar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
       <div id="cm-list" style="display:flex;flex-direction:column;gap:8px"></div>
@@ -22292,28 +22290,26 @@ async function saveClassEdit(classId) {
 }
 
 async function deleteClassMaster(id) {
-  if (!confirm('この授業を無効化しますか？\n（出欠も報告も無い授業回は自動で削除し、カレンダー/時間割に残らないようにします）')) return;
+  if (!confirm('この授業を無効化しますか？\n（未来の・出欠が無い授業回は自動で削除し、時間割に残らないようにします）')) return;
   showLoading('処理中...');
   try {
     // 1. マスターを無効化（論理削除）
     await sbPatch('class_master', 'id=eq.' + id, { is_active: false });
 
-    // 2. 出欠も報告も付いていない授業回を物理削除（過去・未来問わず。残骸を防ぐ）
-    //    生徒データ（出欠 or 報告）がある回は残す。
+    // 2. 未来かつ出欠が付いていない授業回を物理削除（時間割の残骸を防ぐ）
+    const today = getTodayJST(); // 'YYYY-MM-DD'
     let removed = 0;
     try {
-      const allSessions = await sbGet('class_sessions',
-        'class_master_id=eq.' + id + '&select=id,session_date') || [];
-      if (allSessions.length) {
-        const [att, reps] = await Promise.all([
-          sbGet('session_attendance', 'class_master_id=eq.' + id + '&select=session_date'),
-          sbGet('class_reports', 'class_master_id=eq.' + id + '&select=session_date')
-        ]);
-        const keepDates = new Set();
-        (att || []).forEach(a => keepDates.add(a.session_date));
-        (reps || []).forEach(r => keepDates.add(r.session_date));
-        // 出欠も報告も無い回だけ削除
-        const delIds = allSessions.filter(s => !keepDates.has(s.session_date)).map(s => s.id);
+      // この授業の未来セッションを取得
+      const futureSessions = await sbGet('class_sessions',
+        'class_master_id=eq.' + id + '&session_date=gte.' + today + '&select=id,session_date') || [];
+      if (futureSessions.length) {
+        // 出欠がある日付を把握（class_master_id + session_date 単位）
+        const att = await sbGet('session_attendance',
+          'class_master_id=eq.' + id + '&session_date=gte.' + today + '&select=session_date') || [];
+        const datesWithAtt = new Set(att.map(a => a.session_date));
+        // 出欠なしの未来セッションだけ削除
+        const delIds = futureSessions.filter(s => !datesWithAtt.has(s.session_date)).map(s => s.id);
         if (delIds.length) {
           await sbDelete('class_sessions', 'id=in.(' + delIds.join(',') + ')');
           removed = delIds.length;
@@ -22322,89 +22318,11 @@ async function deleteClassMaster(id) {
     } catch (e) { /* セッション削除に失敗しても無効化自体は成立させる */ }
 
     hideLoading();
-    showToast('無効化しました' + (removed ? '（授業回 ' + removed + '件を削除）' : ''), 'info');
+    showToast('無効化しました' + (removed ? '（未来の授業回 ' + removed + '件を削除）' : ''), 'info');
     loadClassMasterList();
   } catch (e) {
     hideLoading();
     showToast('処理に失敗しました: ' + (e.message || e), 'error');
-  }
-}
-
-// ===== 無効クラスの残骸セッション掃除 =====
-// is_active=false のクラスに残った授業回のうち、出欠も報告も無いものを検出→削除。
-// クラス削除後にカレンダー/時間割に残り、UIから消せなくなった残骸への対処。
-async function cleanupOrphanSessions() {
-  const box = document.getElementById('cm-orphan-result');
-  if (!box) return;
-  box.style.display = 'block';
-  box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">点検中...</div>';
-  try {
-    // 無効クラス一覧
-    const inactive = await sbGet('class_master', 'is_active=eq.false&select=id,name') || [];
-    if (!inactive.length) {
-      box.innerHTML = '<div style="font-size:12px;color:var(--green-d);background:var(--green-l);border:1px solid #A8D891;border-radius:8px;padding:10px">✅ 無効化されたクラスはありません</div>';
-      return;
-    }
-    const nameById = {};
-    inactive.forEach(m => { nameById[m.id] = m.name; });
-    const ids = inactive.map(m => m.id);
-    // これら無効クラスのセッション
-    const sessions = await sbGet('class_sessions',
-      'class_master_id=in.(' + ids.join(',') + ')&select=id,class_master_id,session_date,period&order=session_date') || [];
-    if (!sessions.length) {
-      box.innerHTML = '<div style="font-size:12px;color:var(--green-d);background:var(--green-l);border:1px solid #A8D891;border-radius:8px;padding:10px">✅ 残骸の授業回はありません</div>';
-      return;
-    }
-    // 出欠・報告のある日付を把握（残す）
-    const [att, reps] = await Promise.all([
-      sbGet('session_attendance', 'class_master_id=in.(' + ids.join(',') + ')&select=class_master_id,session_date'),
-      sbGet('class_reports', 'class_master_id=in.(' + ids.join(',') + ')&select=class_master_id,session_date')
-    ]);
-    const keep = new Set();
-    (att || []).forEach(a => keep.add(a.class_master_id + '|' + a.session_date));
-    (reps || []).forEach(r => keep.add(r.class_master_id + '|' + r.session_date));
-    const orphans = sessions.filter(s => !keep.has(s.class_master_id + '|' + s.session_date));
-    const kept = sessions.length - orphans.length;
-    if (!orphans.length) {
-      box.innerHTML = '<div style="font-size:12px;color:var(--green-d);background:var(--green-l);border:1px solid #A8D891;border-radius:8px;padding:10px">✅ 削除できる残骸はありません（出欠/報告のある回のみ残存）</div>';
-      return;
-    }
-    // 一覧を表示して確認
-    let list = orphans.slice(0, 30).map(s =>
-      '<div style="font-size:11px;color:var(--text);padding:2px 0">・' + escapeHtml(s.session_date) +
-      (s.period ? ' ' + s.period + '限' : '') + '　<span style="color:var(--muted)">' + escapeHtml(nameById[s.class_master_id] || '(不明)') + '</span></div>'
-    ).join('');
-    if (orphans.length > 30) list += '<div style="font-size:11px;color:var(--muted)">…ほか ' + (orphans.length - 30) + '件</div>';
-    box.innerHTML =
-      '<div style="font-size:12px;color:#8F5F12;background:#FFF3DF;border:1px solid #E8C193;border-radius:8px;padding:10px;margin-bottom:8px">' +
-      '無効クラスの残骸授業が <b>' + orphans.length + '件</b> 見つかりました' + (kept ? '（出欠/報告のある ' + kept + '件は残します）' : '') + '。<br>これらをカレンダーから削除します。</div>' +
-      '<div style="max-height:160px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:8px">' + list + '</div>' +
-      '<button onclick="doCleanupOrphanSessions()" style="width:100%;padding:9px;background:linear-gradient(135deg,#D14B4B,#A83232);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">🧹 ' + orphans.length + '件を削除する</button>';
-    // 削除対象idを保持
-    window._orphanSessionIds = orphans.map(s => s.id);
-  } catch (e) {
-    box.innerHTML = '<div style="font-size:12px;color:var(--red);padding:10px">点検エラー: ' + escapeHtml(e.message || '') + '</div>';
-  }
-}
-
-async function doCleanupOrphanSessions() {
-  const ids = window._orphanSessionIds || [];
-  if (!ids.length) return;
-  if (!confirm('残骸の授業回 ' + ids.length + '件を削除します。よろしいですか？\n（出欠・報告のある回は含まれません）')) return;
-  showLoading('削除中...');
-  try {
-    // 大量idはURL長対策で分割
-    for (let i = 0; i < ids.length; i += 50) {
-      const chunk = ids.slice(i, i + 50);
-      await sbDelete('class_sessions', 'id=in.(' + chunk.join(',') + ')');
-    }
-    window._orphanSessionIds = [];
-    hideLoading();
-    showToast('残骸授業を削除しました', 'success');
-    cleanupOrphanSessions(); // 再点検
-  } catch (e) {
-    hideLoading();
-    showToast('削除に失敗しました: ' + (e.message || ''), 'error');
   }
 }
 
@@ -40620,6 +40538,7 @@ let svFY = null;              // 表示年度（開始年）。null=今年度
 let svMemMode = 'all';        // 'all' | 'regular' | 'seasonal'
 let svGradePlanYM = null;     // 学年別計画カードの対象年月 {y,m}。null=今月
 let svGradePlanCache = {};    // grade -> row
+let svGradePlanPrevPlan = {}; // grade -> 前月の plan（当月の動きへの繰り越し用）
 let svShowPrevYear = false;   // 昨年度ブロックを表示するか（デフォルト非表示）
 let svBackTo = 'manage';     // 戻り先
 
@@ -41247,6 +41166,16 @@ async function renderSvGradePlan() {
   svGradePlanCache = {};
   rows.forEach(r => { svGradePlanCache[r.grade] = r; });
 
+  // 前月の「翌月の動き(plan)」を、当月の「当月の動き(plan_current)」に繰り越す。
+  // 当月 plan_current が空の学年だけ、前月 plan をフォールバック初期値として表示する。
+  let pm = m - 1, py = y; if (pm < 1) { pm = 12; py = y - 1; }
+  svGradePlanPrevPlan = {};
+  try {
+    const prevRows = await sbGet('school_monthly_notes',
+      'school=eq.' + encodeURIComponent(svSchool) + '&year=eq.' + py + '&month=eq.' + pm + '&select=grade,plan') || [];
+    prevRows.forEach(r => { if (r.plan != null && String(r.plan).trim() !== '') svGradePlanPrevPlan[r.grade] = r.plan; });
+  } catch (e) { /* 前月なし等は無視 */ }
+
   // 月セレクタ（前月・今月・翌々月まで手前後に動かせる）
   const t = getTodayJST();
   const ty = parseInt(t.slice(0, 4), 10), tm = parseInt(t.slice(5, 7), 10);
@@ -41270,7 +41199,10 @@ async function renderSvGradePlan() {
   ];
   grades.forEach(g => {
     const row = svGradePlanCache[g.k] || {};
-    const curV = (row.plan_current != null) ? row.plan_current : '';
+    let curV = (row.plan_current != null) ? row.plan_current : '';
+    // 当月の動きが空なら、前月の「翌月の動き(plan)」を繰り越して初期入力にする
+    let curCarried = false;
+    if (String(curV).trim() === '' && svGradePlanPrevPlan[g.k]) { curV = svGradePlanPrevPlan[g.k]; curCarried = true; }
     const refV = (row.reflection != null) ? row.reflection : '';
     const planV = (row.plan != null) ? row.plan : '';
     // 翌月（表示中の月の翌月）ラベル
@@ -41280,7 +41212,8 @@ async function renderSvGradePlan() {
     html += '<div style="display:flex;gap:12px;flex-wrap:wrap">';
     // 左：当月の動き
     html += '<div style="flex:1 1 220px;min-width:200px">';
-    html += '<div style="font-size:11px;font-weight:700;color:#2D6CB6;margin-bottom:3px">📌 ' + m + '月の動き</div>';
+    html += '<div style="font-size:11px;font-weight:700;color:#2D6CB6;margin-bottom:3px">📌 ' + m + '月の動き' +
+      (curCarried ? '<span style="margin-left:6px;font-size:10px;font-weight:700;color:#2D6CB6;background:#EAF2FB;border-radius:5px;padding:1px 6px">前月から繰り越し（保存で確定）</span>' : '') + '</div>';
     if (canEdit) {
       html += '<textarea id="sv-gp-cur-' + g.k + '" rows="4" placeholder="' + m + '月にやること・予定/方針" ' +
         'style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px;resize:vertical;background:var(--surface)">' + escapeHtml(curV) + '</textarea>';
