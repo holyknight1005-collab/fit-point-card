@@ -5745,7 +5745,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702djo';
+const APP_VERSION = '20260702djp';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -28699,24 +28699,26 @@ async function loadAttSheet() {
     const mById = {};
     masters.forEach(m => { mById[m.id] = m; });
 
-    // 当月の授業日のみ
+    // 夏期は7月後半から始まるため月で区切らず全授業日を1枚に。通常等は選択月のみ。
+    const isSummer = (category === 'summer');
     const y = parseInt(ym.slice(0, 4), 10), mo = parseInt(ym.slice(5, 7), 10);
     const first = ym + '-01';
     const lastDay = new Date(y, mo, 0).getDate();
     const last = ym + '-' + String(lastDay).padStart(2, '0');
+    const dateFilter = isSummer ? '' : ('&session_date=gte.' + first + '&session_date=lte.' + last);
     const sessions = await sbGet('class_sessions',
       'class_master_id=in.(' + classIds.join(',') + ')' +
-      '&session_date=gte.' + first + '&session_date=lte.' + last +
+      dateFilter +
       '&select=class_master_id,session_date,period&order=session_date,period') || [];
 
     // 受講登録（継続中）
     const enrolls = await sbGetActiveEnrollments('class_master_id=in.(' + classIds.join(',') +
       ')&select=class_master_id,student_id');
 
-    // 出欠記録（当月）
+    // 出欠記録（夏期は全期間・通常等は当月）
     const atts = await sbGet('session_attendance',
       'class_master_id=in.(' + classIds.join(',') + ')' +
-      '&session_date=gte.' + first + '&session_date=lte.' + last +
+      dateFilter +
       '&select=class_master_id,session_date,period,student_id,status') || [];
 
     // 生徒（デモ除外）
@@ -28783,7 +28785,7 @@ async function loadAttSheet() {
       ((a.school || '') + (a.grade || '') + (a.name || '')).localeCompare(
        (b.school || '') + (b.grade || '') + (b.name || ''), 'ja'));
 
-    _asData = { division: division, category: category, ym: ym, y: y, mo: mo, isNormal: isNormal, students: students };
+    _asData = { division: division, category: category, ym: ym, y: y, mo: mo, isNormal: isNormal, isSummer: isSummer, students: students };
 
     if (!students.length) {
       body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">この月・種別に該当する生徒がいません。</div>';
@@ -28795,7 +28797,7 @@ async function loadAttSheet() {
 
     // 一覧描画
     let html = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' +
-      escapeHtml(AS_CAT_LABEL[category] || category) + '・' + y + '年' + mo + '月　対象 ' + students.length + '名' +
+      escapeHtml(AS_CAT_LABEL[category] || category) + '・' + (isSummer ? '全期間' : (y + '年' + mo + '月')) + '　対象 ' + students.length + '名' +
       (isNormal ? '（コメント欄あり）' : '（出欠のみ）') + '</div>';
     html += '<div style="display:flex;flex-direction:column;gap:6px">';
     students.forEach((st, idx) => {
@@ -28833,8 +28835,10 @@ function openAttSheetDoc(idx) {
   if (!_asData || !_asData.students[idx]) return;
   const st = _asData.students[idx];
   const isNormal = _asData.isNormal;
+  const isSummer = _asData.isSummer;
   const y = _asData.y, mo = _asData.mo;
   const catLabel = AS_CAT_LABEL[_asData.category] || _asData.category;
+  const periodLabel = isSummer ? '全期間' : (y + '年' + mo + '月');
 
   // 各科目：日付見出し行＋出欠行（AS_MARK_MAX列でパディング）
   const colHead = [];
@@ -28862,9 +28866,9 @@ function openAttSheetDoc(idx) {
       (comment.trim() ? escapeHtml(comment) : '<span style="color:#aaa">（コメント未記入）</span>') + '</div></div>') : '';
 
   const doc =
-    '<div style="font-family:\'Noto Sans JP\',sans-serif;color:#222;max-width:720px;margin:0 auto;padding:18px 22px">' +
+    '<div style="font-family:\'Noto Sans JP\',sans-serif;color:#222;max-width:1000px;margin:0 auto;padding:16px 24px">' +
       '<div style="text-align:center;margin-bottom:6px"><div style="font-size:18pt;font-weight:800;letter-spacing:6px">出　欠　表</div>' +
-      '<div style="font-size:11pt;color:#555;margin-top:2px">' + y + '年' + mo + '月　（' + escapeHtml(catLabel) + '）</div></div>' +
+      '<div style="font-size:11pt;color:#555;margin-top:2px">' + escapeHtml(periodLabel) + '　（' + escapeHtml(catLabel) + '）</div></div>' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #333;padding-bottom:5px;margin-bottom:12px">' +
         '<div style="font-size:14pt;font-weight:700">' + escapeHtml(st.name) + '　様</div>' +
         '<div style="font-size:10pt;color:#666">' + (st.num !== '' ? 'No. ' + escapeHtml(String(st.num)) : '') + '　' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(String(st.grade)) + '年' : '') + '</div>' +
@@ -28878,7 +28882,7 @@ function openAttSheetDoc(idx) {
   const w = window.open('', '_blank');
   if (!w) { showToast('ポップアップがブロックされました。許可してください。', 'error'); return; }
   w.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>出席表_' + escapeHtml(st.name) + '</title>' +
-    '<style>@page{size:A4;margin:14mm}@media print{.noprint{display:none}}body{margin:0}' +
+    '<style>@page{size:A4 landscape;margin:12mm}@media print{.noprint{display:none}}body{margin:0}' +
     '.noprint{position:fixed;top:8px;right:8px}</style></head><body>' +
     '<div class="noprint"><button onclick="window.print()" style="padding:8px 16px;font-size:13px;font-weight:700;border:none;border-radius:8px;background:#2D6CB6;color:#fff;cursor:pointer">🖨 印刷</button></div>' +
     doc + '</body></html>');
