@@ -5760,7 +5760,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dkb';
+const APP_VERSION = '20260702dkc';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29909,6 +29909,15 @@ async function exportAttendanceCsv() {
 // ============================================================
 let attMatrix = null;   // {sessKeys, sessInfo, students, cells:{ 'sid|key': {status, auto, dirty} }, dateLabels}
 let attGroupBySchool = false;
+let attPrefByStu = {};  // student_id -> preferred_period（担当コマ）。未設定は入れない（＝全時限対象）。長文読解などで5/6限を絞る用。
+
+// 担当コマ判定：preferred_period 未設定なら常に対象（従来通り）。設定済みならその period のときだけ対象。
+// 長文読解のように同一回が5限/6限の2セッションある授業で、担当外コマを母数・自動推定から外すために使う。
+function attStuInPeriod(sid, period) {
+  const pref = attPrefByStu[sid];
+  if (pref == null) return true;          // 未設定＝全コマ対象
+  return String(pref) === String(period || '');
+}
 
 function toggleAttGroupBySchool() {
   attGroupBySchool = !attGroupBySchool;
@@ -29928,10 +29937,13 @@ async function loadAttMatrix() {
       'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
       '&select=session_date,period,start_time,end_time,cycle_year,cycle_month,cycle_no,is_makeup,school&order=session_date,period') || [];
     // 受講名簿（デモ生徒は除外）
-    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,is_provisional');
+    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,is_provisional,preferred_period');
     // 仮受講（申込未提出だが参加）の生徒を控える
     attProvisional = {};
     enrolls.forEach(e => { if (e.is_provisional) attProvisional[e.student_id] = true; });
+    // 担当コマ（長文読解などで5限/6限のどちらか担当）。未設定は入れない＝全コマ対象。
+    attPrefByStu = {};
+    enrolls.forEach(e => { if (e.preferred_period != null) attPrefByStu[e.student_id] = e.preferred_period; });
     // 受講期間（開始前・終了後の授業日は集計対象外にする）
     attEnrollRange = {};
     enrolls.forEach(e => {
@@ -30014,6 +30026,7 @@ function buildAttMatrix(sessions, studentIds, atts, checkins) {
       const cellKey = sid + '|' + k;
       if (cells[cellKey]) return; // 保存済みは尊重
       if (!attInEnrollRange(sid, date, info)) return; // 受講期間外は推定しない（サイクル情報を渡す）
+      if (!attStuInPeriod(sid, info.period)) return;  // 長文読解などで担当コマ(preferred_period)が違うコマは推定しない
       let present = false, estimable = false;
       if (classDur != null) {
         const segs = ciDetail[sid + '|' + date] || [];
@@ -30060,6 +30073,10 @@ function attCellHtml(sid, k) {
   if (!attInEnrollRange(sid, k.split('|')[0])) {
     return '<td style="text-align:center;padding:5px;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(0,0,0,0.035) 3px,rgba(0,0,0,0.035) 6px);color:var(--border)" title="受講期間外">·</td>';
   }
+  // 長文読解などで担当コマ(preferred_period)が違うコマ＝この生徒はここには出ない予定。薄グレーあみかけ・タップ不可・母数外。
+  if (!attStuInPeriod(sid, k.split('|')[1])) {
+    return '<td style="text-align:center;padding:5px;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(0,0,0,0.05) 3px,rgba(0,0,0,0.05) 6px);color:var(--border)" title="担当コマ外">–</td>';
+  }
   const cell = attMatrix.cells[sid + '|' + k];
   if (!cell) {
     return '<td style="text-align:center;padding:5px;color:var(--border)">—</td>';
@@ -30081,6 +30098,7 @@ function attRowRateHtml(sid) {
   let p = 0, n = 0;
   attMatrix.sessKeys.forEach(k => {
     if (!attInEnrollRange(sid, k.split('|')[0])) return;   // 受講期間外は母数に入れない
+    if (!attStuInPeriod(sid, k.split('|')[1])) return;     // 担当コマ外は母数に入れない
     const c = attMatrix.cells[sid + '|' + k];
     if (!c) return;
     n++; if (c.status === 'present' || c.status === 'makeup') p++; // 補習も出席扱い
@@ -30431,6 +30449,7 @@ function attMatrixFooterHtml() {
     let present = 0, makeup = 0, absent = 0;
     attMatrix.students.forEach(s => {
       if (!attInEnrollRange(s.id, k.split('|')[0])) return;   // 受講期間外は母数に入れない
+      if (!attStuInPeriod(s.id, k.split('|')[1])) return;     // 担当コマ外は母数に入れない
       const c = attMatrix.cells[s.id + '|' + k];
       if (!c || !c.status) return;
       if (c.status === 'present') present++;
@@ -30460,6 +30479,7 @@ function toggleAttCell(sid, k) {
   if (!attMatrix) return;
   // 受講期間外は記録対象にしない（誤タップで母数が戻るのを防ぐ）
   if (!attInEnrollRange(sid, k.split('|')[0])) return;
+  if (!attStuInPeriod(sid, k.split('|')[1])) return;   // 担当コマ外はタップ不可
   const cellKey = sid + '|' + k;
   let cell = attMatrix.cells[cellKey];
   // 状態サイクル: present → absent → makeup（補習）→ present
