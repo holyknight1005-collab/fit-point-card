@@ -5427,6 +5427,8 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div class="section-title">登録済み授業</div>
       <button onclick="scanDuplicateMasters()" style="width:100%;margin-bottom:8px;padding:9px;background:var(--surface);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔍 重複マスターを点検</button>
       <div id="cm-dup-result" style="display:none;margin-bottom:10px"></div>
+      <button onclick="cleanupOrphanSessions()" style="width:100%;margin-bottom:8px;padding:9px;background:var(--surface);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🧹 無効クラスの残骸授業を掃除</button>
+      <div id="cm-orphan-result" style="display:none;margin-bottom:10px"></div>
       <div id="cm-filter-bar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
       <div id="cm-list" style="display:flex;flex-direction:column;gap:8px"></div>
     <!-- 授業日登録 -->
@@ -5745,7 +5747,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702djq';
+const APP_VERSION = '20260702djs';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -9493,12 +9495,21 @@ async function exportMyCalendarICS() {
     const toISO = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
     const endISO = toISO(endD);
 
-    // 自分の担当授業を取得（class_master で teacher_staff_id=自分 → その授業の session）
-    const myClasses = await sbGet('class_master', 'teacher_staff_id=eq.' + currentStaff.id + '&select=id,name') || [];
-    const classMap = {}; myClasses.forEach(c => { classMap[c.id] = c.name; });
+    // 自分の担当授業を取得（主担当 teacher_staff_id ∪ 追加担当 class_teachers）
+    const myMain = await sbGet('class_master', 'teacher_staff_id=eq.' + currentStaff.id + '&select=id,name') || [];
+    const classMap = {}; myMain.forEach(c => { classMap[c.id] = c.name; });
+    // 追加担当の授業IDも足す
+    try {
+      const myCt = await sbGet('class_teachers', 'staff_id=eq.' + currentStaff.id + '&select=class_master_id') || [];
+      const extraIds = [...new Set(myCt.map(r => r.class_master_id).filter(id => id && !classMap[id]))];
+      if (extraIds.length) {
+        const extraCms = await sbGet('class_master', 'id=in.(' + extraIds.join(',') + ')&select=id,name') || [];
+        extraCms.forEach(c => { classMap[c.id] = c.name; });
+      }
+    } catch (e) { /* class_teachers 未作成なら主担当のみ */ }
     let sessions = [];
-    if (myClasses.length) {
-      const ids = myClasses.map(c => c.id);
+    const ids = Object.keys(classMap);
+    if (ids.length) {
       sessions = await sbGet('class_sessions',
         'class_master_id=in.(' + ids.join(',') + ')&session_date=gte.' + todayISO + '&session_date=lte.' + endISO +
         '&select=class_master_id,session_date,period,start_time,end_time&order=session_date,period') || [];
@@ -9651,10 +9662,28 @@ async function loadStaffHomeCalendar() {
       } catch(e) { /* 担当が引けなくても授業名は出す */ }
     }
 
+    // 追加担当（class_teachers）: class_master_id -> Set(staff_id)。複数講師の授業を個人時間割に出すため。
+    const coTeachersByClass = {};
+    if (classIds.length) {
+      try {
+        const cts = await sbGet('class_teachers', 'class_master_id=in.(' + classIds.join(',') + ')&select=class_master_id,staff_id') || [];
+        cts.forEach(ct => { (coTeachersByClass[ct.class_master_id] || (coTeachersByClass[ct.class_master_id] = new Set())).add(ct.staff_id); });
+      } catch(e) { /* class_teachers 未作成なら主担当のみ */ }
+    }
+
     // 既存モーダル(openStaffCalModal)が読む staffCal* グローバルにも格納する
     staffCalSessions = (sessions || []).map(s => {
       const cm = teacherByClass[s.class_master_id] || {};
       const teacherId = cm.teacher_staff_id || null;
+      // 担当講師＝主担当 ∪ 追加担当（class_teachers）
+      const coSet = coTeachersByClass[s.class_master_id];
+      const teacherIds = [];
+      if (teacherId) teacherIds.push(teacherId);
+      if (coSet) coSet.forEach(id => { if (id && teacherIds.indexOf(id) === -1) teacherIds.push(id); });
+      const myId = currentStaff ? currentStaff.id : null;
+      const isMine = !!(myId && teacherIds.indexOf(myId) !== -1);
+      // 表示用講師名（主担当を先頭に、複数いれば「A・B」）
+      const names = teacherIds.map(id => staffNameMap[id]).filter(Boolean);
       return {
         date: s.session_date, period: s.period,
         start_time: s.start_time, end_time: s.end_time,
@@ -9663,8 +9692,9 @@ async function loadStaffHomeCalendar() {
         color: classColorOf(cm),
         division: cm.division || '高校部',
         teacher_id: teacherId,
-        teacher_name: teacherId ? (staffNameMap[teacherId] || '') : '',
-        mine: !!(teacherId && currentStaff && teacherId === currentStaff.id)
+        teacher_ids: teacherIds,
+        teacher_name: names.join('・'),
+        mine: isMine
       };
     });
     staffCalEvents = {};
@@ -22317,26 +22347,31 @@ async function saveClassEdit(classId) {
 }
 
 async function deleteClassMaster(id) {
-  if (!confirm('この授業を無効化しますか？\n（未来の・出欠が無い授業回は自動で削除し、時間割に残らないようにします）')) return;
+  if (!confirm('この授業を無効化しますか？\n（出欠も報告も無い授業回は過去分も含めて削除し、時間割・カレンダーに残らないようにします）')) return;
   showLoading('処理中...');
   try {
     // 1. マスターを無効化（論理削除）
     await sbPatch('class_master', 'id=eq.' + id, { is_active: false });
 
-    // 2. 未来かつ出欠が付いていない授業回を物理削除（時間割の残骸を防ぐ）
-    const today = getTodayJST(); // 'YYYY-MM-DD'
+    // 2. 出欠も報告も無い授業回を物理削除（過去含む）。生徒データがある回は残す。
     let removed = 0;
     try {
-      // この授業の未来セッションを取得
-      const futureSessions = await sbGet('class_sessions',
-        'class_master_id=eq.' + id + '&session_date=gte.' + today + '&select=id,session_date') || [];
-      if (futureSessions.length) {
-        // 出欠がある日付を把握（class_master_id + session_date 単位）
+      const allSessions = await sbGet('class_sessions',
+        'class_master_id=eq.' + id + '&select=id,session_date') || [];
+      if (allSessions.length) {
         const att = await sbGet('session_attendance',
-          'class_master_id=eq.' + id + '&session_date=gte.' + today + '&select=session_date') || [];
+          'class_master_id=eq.' + id + '&select=session_date') || [];
         const datesWithAtt = new Set(att.map(a => a.session_date));
-        // 出欠なしの未来セッションだけ削除
-        const delIds = futureSessions.filter(s => !datesWithAtt.has(s.session_date)).map(s => s.id);
+        let repDates = new Set();
+        try {
+          const reps = await sbGet('class_reports',
+            'class_master_id=eq.' + id + '&select=session_date') || [];
+          reps.forEach(r => { if (r.session_date) repDates.add(r.session_date); });
+        } catch (e) { /* class_reports 無くても続行 */ }
+        // 出欠も報告も無いセッションだけ削除
+        const delIds = allSessions
+          .filter(s => !datesWithAtt.has(s.session_date) && !repDates.has(s.session_date))
+          .map(s => s.id);
         if (delIds.length) {
           await sbDelete('class_sessions', 'id=in.(' + delIds.join(',') + ')');
           removed = delIds.length;
@@ -22345,11 +22380,93 @@ async function deleteClassMaster(id) {
     } catch (e) { /* セッション削除に失敗しても無効化自体は成立させる */ }
 
     hideLoading();
-    showToast('無効化しました' + (removed ? '（未来の授業回 ' + removed + '件を削除）' : ''), 'info');
+    showToast('無効化しました' + (removed ? '（空の授業回 ' + removed + '件を削除）' : ''), 'info');
     loadClassMasterList();
   } catch (e) {
     hideLoading();
     showToast('処理に失敗しました: ' + (e.message || e), 'error');
+  }
+}
+
+// ===== 無効クラスの残骸（孤児）セッション掃除 =====
+// is_active=false のクラスに残る「出欠も報告も無い」セッションを一覧→まとめて削除。
+async function cleanupOrphanSessions() {
+  const box = document.getElementById('cm-orphan-result');
+  if (!box) return;
+  box.style.display = 'block';
+  box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">点検中...</div>';
+  try {
+    // 無効クラス
+    const inactive = await sbGet('class_master', 'is_active=eq.false&select=id,name,division') || [];
+    if (!inactive.length) {
+      box.innerHTML = '<div style="font-size:12px;color:var(--green-d);background:var(--green-l);border:1px solid #A8D891;border-radius:8px;padding:10px">✅ 無効クラスがありません</div>';
+      return;
+    }
+    const inMap = {}; inactive.forEach(m => { inMap[m.id] = m; });
+    const ids = inactive.map(m => m.id);
+    // 無効クラスのセッション
+    const sessions = await sbGet('class_sessions',
+      'class_master_id=in.(' + ids.join(',') + ')&select=id,class_master_id,session_date') || [];
+    if (!sessions.length) {
+      box.innerHTML = '<div style="font-size:12px;color:var(--green-d);background:var(--green-l);border:1px solid #A8D891;border-radius:8px;padding:10px">✅ 残骸セッションはありません</div>';
+      return;
+    }
+    // 出欠・報告のある日付を除外
+    const att = await sbGet('session_attendance',
+      'class_master_id=in.(' + ids.join(',') + ')&select=class_master_id,session_date') || [];
+    const attKey = new Set(att.map(a => a.class_master_id + '|' + a.session_date));
+    let repKey = new Set();
+    try {
+      const reps = await sbGet('class_reports',
+        'class_master_id=in.(' + ids.join(',') + ')&select=class_master_id,session_date') || [];
+      reps.forEach(r => { if (r.session_date) repKey.add(r.class_master_id + '|' + r.session_date); });
+    } catch (e) {}
+    const orphans = sessions.filter(s => {
+      const k = s.class_master_id + '|' + s.session_date;
+      return !attKey.has(k) && !repKey.has(k);
+    });
+    if (!orphans.length) {
+      box.innerHTML = '<div style="font-size:12px;color:var(--green-d);background:var(--green-l);border:1px solid #A8D891;border-radius:8px;padding:10px">✅ 削除対象の残骸セッションはありません（データがある回のみ残存）</div>';
+      return;
+    }
+    // クラス別に集計して一覧
+    const byClass = {};
+    orphans.forEach(s => { (byClass[s.class_master_id] || (byClass[s.class_master_id] = [])).push(s.session_date); });
+    _orphanDelIds = orphans.map(s => s.id);
+    let html = '<div style="font-size:12px;color:var(--text);margin-bottom:8px">削除対象の残骸セッション <b>' + orphans.length + '</b> 件（出欠・報告なし）:</div>';
+    html += '<div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:10px">';
+    Object.keys(byClass).forEach(cid => {
+      const m = inMap[cid] || {};
+      const dates = byClass[cid].sort();
+      html += '<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)"><b>' + escapeHtml(m.name || '(不明)') + '</b> <span style="color:var(--muted)">' + escapeHtml(m.division || '') + '</span><br><span style="font-size:11px;color:var(--muted)">' + dates.join('、') + '</span></div>';
+    });
+    html += '</div>';
+    html += '<button onclick="doCleanupOrphanSessions()" style="width:100%;padding:10px;background:var(--red);border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">🧹 これらを削除する</button>';
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = '<div style="font-size:12px;color:#A04040;padding:8px">点検に失敗しました：' + escapeHtml(e.message || String(e)) + '</div>';
+  }
+}
+
+let _orphanDelIds = [];
+async function doCleanupOrphanSessions() {
+  if (!_orphanDelIds.length) { showToast('削除対象がありません', 'info'); return; }
+  if (!confirm(_orphanDelIds.length + ' 件の残骸セッションを削除します。よろしいですか？')) return;
+  showLoading('削除中...');
+  try {
+    // 大量なら分割して削除
+    const ids = _orphanDelIds.slice();
+    while (ids.length) {
+      const chunk = ids.splice(0, 100);
+      await sbDelete('class_sessions', 'id=in.(' + chunk.join(',') + ')');
+    }
+    hideLoading();
+    showToast('残骸セッションを削除しました', 'success');
+    _orphanDelIds = [];
+    cleanupOrphanSessions(); // 再点検して結果更新
+  } catch (e) {
+    hideLoading();
+    showToast('削除に失敗しました：' + (e.message || ''), 'error');
   }
 }
 
@@ -28829,7 +28946,7 @@ function asMarkCell(status, w) {
   return '<td style="border:1px solid #bbb;text-align:center;padding:5px 2px;font-size:11pt;color:#aaa' + wpx + '">―</td>';
 }
 
-const AS_MARK_MAX = 8; // 横に並べる授業日の最大列数
+const AS_MARK_MAX = 12; // 横に並べる授業日の最大列数（回数に応じて自動で減る。上限ガード用）
 
 // 出席表プレビュー（新ウィンドウ・印刷用）
 function openAttSheetDoc(idx) {
@@ -28847,14 +28964,20 @@ function openAttSheetDoc(idx) {
   st.subjects.forEach(sub => { const L = (sub.name || '').length + 3; if (L > maxLen) maxLen = L; });
   const nameColW = Math.min(Math.max(maxLen * 15, 120), 340); // 120〜340pxにクランプ
 
-  // 各科目：日付見出し行＋出欠行（AS_MARK_MAX列でパディング）
+  // 出欠列数は「この帳票の全科目の中で最大の授業日数」に合わせる（空列を出さない）。
+  let colCount = 0;
+  st.subjects.forEach(sub => { const n = (sub.days || []).length; if (n > colCount) colCount = n; });
+  if (colCount < 1) colCount = 1;
+  if (colCount > AS_MARK_MAX) colCount = AS_MARK_MAX; // 念のため上限ガード
+
+  // 各科目：日付見出し行＋出欠行（colCount列でパディング）
   const MARK_W = 52; // 出欠マスの幅（広め）
   const colHead = [];
-  for (let i = 0; i < AS_MARK_MAX; i++) colHead.push('<th style="border:1px solid #bbb;background:#f1ede3;width:' + MARK_W + 'px;font-size:9pt;padding:4px 0">' + (i + 1) + '</th>');
+  for (let i = 0; i < colCount; i++) colHead.push('<th style="border:1px solid #bbb;background:#f1ede3;width:' + MARK_W + 'px;font-size:9pt;padding:4px 0">' + (i + 1) + '</th>');
   const rows = st.subjects.map((sub, si) => {
     const dayHead = [];
     const marks = [];
-    for (let i = 0; i < AS_MARK_MAX; i++) {
+    for (let i = 0; i < colCount; i++) {
       const d = sub.days[i];
       if (!d) { dayHead.push('<td style="border:1px solid #bbb;background:#fafafa;width:' + MARK_W + 'px"></td>'); marks.push('<td style="border:1px solid #bbb;background:#fafafa;width:' + MARK_W + 'px"></td>'); }
       else {
