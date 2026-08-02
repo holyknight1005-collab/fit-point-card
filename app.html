@@ -2752,10 +2752,23 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <!-- 受講の日付修正モーダル -->
     <div id="enroll-edit-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:500;align-items:center;justify-content:center">
       <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:360px">
-        <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">📅 受講期間の修正</div>
+        <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">📅 受講の開始回・期間の修正</div>
         <div id="enroll-edit-title" style="font-size:12px;color:var(--muted);margin-bottom:14px"></div>
+        <div style="margin-bottom:12px;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
+          <label style="font-size:11px;font-weight:700;color:var(--text)">開始回（◯年度 ◯月 ◯回目）</label>
+          <div style="font-size:10px;color:var(--muted);margin:3px 0 7px;line-height:1.5">受講の開始を「回数」で登録します。受講履歴や出席表はこの回を基準に表示されます。日付ではなく回で管理したいときはこちらを入力してください。</div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <input class="form-input-sm" type="number" id="enroll-edit-cyc-y" placeholder="年度" style="width:74px">
+            <span style="font-size:11px;color:var(--muted)">年度</span>
+            <input class="form-input-sm" type="number" id="enroll-edit-cyc-m" placeholder="月" min="1" max="12" style="width:56px">
+            <span style="font-size:11px;color:var(--muted)">月</span>
+            <input class="form-input-sm" type="number" id="enroll-edit-cyc-n" placeholder="回" min="1" max="20" style="width:52px">
+            <span style="font-size:11px;color:var(--muted)">回目</span>
+          </div>
+          <button type="button" onclick="clearEnrollEditCyc()" style="margin-top:7px;padding:3px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:10px;cursor:pointer;color:var(--muted);font-family:'Noto Sans JP',sans-serif">開始回をクリア（未登録に戻す）</button>
+        </div>
         <div style="margin-bottom:10px">
-          <label style="font-size:11px;color:var(--muted)">開始日</label>
+          <label style="font-size:11px;color:var(--muted)">開始日（任意・回数とは別に日付も残せます）</label>
           <input type="date" id="enroll-edit-started" class="form-input-sm" style="width:100%">
         </div>
         <div style="margin-bottom:6px">
@@ -5747,7 +5760,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702djy';
+const APP_VERSION = '20260702dkb';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -14262,7 +14275,7 @@ async function loadReviewApprovals() {
       });
       pendEl.innerHTML = pending.map(r => {
         const sname = r.students?.name || '生徒';
-        const ssub = [r.students?.grade ? r.students.grade + '年' : '', r.students?.school || ''].filter(Boolean).join(' ');
+        const ssub = [fmtGrade(r.students?.grade), r.students?.school || ''].filter(Boolean).join(' ');
         const cname = nameMap[r.class_master_id] || '授業';
         const dateStr = (r.session_date || r.check_date || '').replace(/-/g, '/');
         const mine = teacherMap[r.class_master_id] && myId && teacherMap[r.class_master_id].has(myId);
@@ -14335,7 +14348,7 @@ async function loadGoalApprovals() {
   }
   el.innerHTML = goals.map(g => {
     const sname = g.students?.name || '生徒';
-    const ssub = [g.students?.grade ? g.students.grade + '年' : '', g.students?.school || ''].filter(Boolean).join(' ');
+    const ssub = [fmtGrade(g.students?.grade), g.students?.school || ''].filter(Boolean).join(' ');
     const ptLabel = (g.points > 0) ? '+' + g.points + 'pt' : 'ポイントなし';
     return '<div style="background:#fff;border:1.5px solid var(--orange);border-radius:8px;padding:12px">' +
       '<div style="margin-bottom:8px">' +
@@ -20211,6 +20224,16 @@ function isFreeAfterLapClass(name) {
   return n.indexOf('長文読解') === 0 || n.indexOf('超感覚英語') === 0;
 }
 
+// 学年表示を正規化する。grade は '3年' や '中3' のように単位込みで保存されているため、
+// 数字だけのとき（'3'）にだけ '年' を足す。二重の「3年年」を防ぐ。
+function fmtGrade(g) {
+  const s = (g == null ? '' : String(g)).trim();
+  if (!s) return '';
+  if (/[年中高小卒浪]/.test(s)) return s;           // すでに単位を含む
+  if (/^[0-9０-９]+$/.test(s)) return s + '年';       // 数字だけなら「年」付与
+  return s;
+}
+
 async function loadKarteStudents(classId) {
   const el = document.getElementById('ck-students');
   ckStuClassId = classId;
@@ -20616,7 +20639,7 @@ function renderEnrollList() {
   if (!filtered.length) { list.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">該当なし</div>'; return; }
   list.innerHTML = filtered.map(s => {
     const on = enrollCurrentSet.has(s.id);
-    const sub = [s.grade ? s.grade + '年' : '', s.school || ''].filter(Boolean).join(' ');
+    const sub = [fmtGrade(s.grade), s.school || ''].filter(Boolean).join(' ');
     return '<button type="button" onclick="toggleEnroll(\'' + s.id + '\')" ' +
       'style="display:flex;align-items:center;justify-content:space-between;padding:8px 11px;border:1.5px solid ' + (on ? 'var(--orange)' : 'var(--border)') + ';' +
       'background:' + (on ? 'var(--orange-l)' : 'var(--surface)') + ';border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;text-align:left">' +
@@ -23403,7 +23426,7 @@ async function loadDetailEnrollments() {
             '<div style="font-size:10px;color:var(--muted)">' + range + '</div>' +
           '</div>' +
           '<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">' +
-            '<button onclick="openEnrollEdit(\'' + e.id + '\',\'' + (e.started_on||'') + '\',\'' + (e.ended_on||'') + '\',\'' + escapeAttr(c.name||'') + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📅 日付修正</button>' +
+            '<button onclick="openEnrollEdit(\'' + e.id + '\',\'' + (e.started_on||'') + '\',\'' + (e.ended_on||'') + '\',\'' + escapeAttr(c.name||'') + '\',' + (e.start_cycle_year==null?'null':e.start_cycle_year) + ',' + (e.start_cycle_month==null?'null':e.start_cycle_month) + ',' + (e.start_cycle_no==null?'null':e.start_cycle_no) + ')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📅 開始回・日付</button>' +
             (ongoing ? '' : '<button onclick="reopenEnrollment(\'' + e.id + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">▶ 再開</button>') +
             '<button onclick="deleteEnrollment(\'' + e.id + '\',\'' + escapeAttr(c.name||'') + '\')" style="padding:2px 8px;background:var(--surface);border:1px solid #E5A5A5;border-radius:6px;color:#C75050;font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🗑 削除</button>' +
           '</div>' +
@@ -23437,13 +23460,22 @@ async function deleteEnrollment(enrollmentId, className) {
 
 // 受講の日付修正モーダルを開く
 let editingEnrollId = null;
-function openEnrollEdit(enrollmentId, started, ended, className) {
+function openEnrollEdit(enrollmentId, started, ended, className, cycY, cycM, cycN) {
   editingEnrollId = enrollmentId;
   document.getElementById('enroll-edit-title').textContent = className;
   document.getElementById('enroll-edit-started').value = started || '';
   document.getElementById('enroll-edit-ended').value = ended || '';
+  document.getElementById('enroll-edit-cyc-y').value = (cycY == null ? '' : cycY);
+  document.getElementById('enroll-edit-cyc-m').value = (cycM == null ? '' : cycM);
+  document.getElementById('enroll-edit-cyc-n').value = (cycN == null ? '' : cycN);
   const box = document.getElementById('enroll-edit-box');
   box.style.display = 'flex';
+}
+
+function clearEnrollEditCyc() {
+  document.getElementById('enroll-edit-cyc-y').value = '';
+  document.getElementById('enroll-edit-cyc-m').value = '';
+  document.getElementById('enroll-edit-cyc-n').value = '';
 }
 
 function closeEnrollEdit() {
@@ -23468,14 +23500,29 @@ async function saveEnrollEdit() {
     showToast('終了日は開始日より後にしてください', 'error');
     return;
   }
+  // 開始回（年度・月・回）。回(no)が入っていれば登録、空なら未登録（null）にする。
+  const cyRaw = document.getElementById('enroll-edit-cyc-y').value.trim();
+  const cmRaw = document.getElementById('enroll-edit-cyc-m').value.trim();
+  const cnRaw = document.getElementById('enroll-edit-cyc-n').value.trim();
+  const cycNo = cnRaw === '' ? null : parseInt(cnRaw, 10);
+  const cycY = cyRaw === '' ? null : parseInt(cyRaw, 10);
+  const cycM = cmRaw === '' ? null : parseInt(cmRaw, 10);
+  if (cycNo == null && (cycY != null || cycM != null)) {
+    showToast('開始回は「回目」を入れてください（回が開始の基準です）', 'error');
+    return;
+  }
+  if (cycM != null && (cycM < 1 || cycM > 12)) { showToast('月は1〜12で入れてください', 'error'); return; }
   showLoading('保存中...');
   try {
     await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(editingEnrollId), {
       started_on: started || null,
-      ended_on: ended || null
+      ended_on: ended || null,
+      start_cycle_year: cycNo == null ? null : cycY,
+      start_cycle_month: cycNo == null ? null : cycM,
+      start_cycle_no: cycNo
     });
     hideLoading();
-    showToast('📅 受講期間を更新しました', 'success');
+    showToast('📅 受講の開始回・期間を更新しました', 'success');
     closeEnrollEdit();
     loadDetailEnrollments();
   } catch (e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
@@ -28573,9 +28620,9 @@ async function loadAttOverview() {
       'class_master_id=in.(' + classIds.join(',') + ')' +
       '&select=class_master_id,session_date,period,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date,period') || [];
 
-    // 受講登録（ended_on=null＝継続中）
+    // 受講登録（ended_on=null＝継続中）。preferred_period＝長文読解などで担当コマ(5/6限)が決まっている生徒用。
     const enrolls = await sbGetActiveEnrollments('class_master_id=in.(' + classIds.join(',') +
-      ')&select=class_master_id,student_id,is_provisional');
+      ')&select=class_master_id,student_id,is_provisional,preferred_period');
 
     // 出欠記録
     const atts = await sbGet('session_attendance',
@@ -28598,11 +28645,20 @@ async function loadAttOverview() {
     sessions.forEach(s => { (sessByClass[s.class_master_id] || (sessByClass[s.class_master_id] = [])).push(s); });
     const enrByClass = {};        // classId -> [student_id,...]（デモ除外済）
     const provByClass = {};       // classId -> Set(student_id) 仮受講
+    const prefByClassStu = {};    // classId|student_id -> preferred_period（担当コマ）。未設定は入れない。
     enrolls.forEach(e => {
       if (!stuSet.has(e.student_id)) return;
       (enrByClass[e.class_master_id] || (enrByClass[e.class_master_id] = [])).push(e.student_id);
       if (e.is_provisional) (provByClass[e.class_master_id] || (provByClass[e.class_master_id] = new Set())).add(e.student_id);
+      if (e.preferred_period != null) prefByClassStu[e.class_master_id + '|' + e.student_id] = e.preferred_period;
     });
+    // その生徒がその授業・その時限の「担当コマ」に該当するか。
+    // preferred_period 未設定なら常に対象（従来通り）。設定済みならその period のときだけ対象。
+    const stuInPeriod = (classId, sid, period) => {
+      const pref = prefByClassStu[classId + '|' + sid];
+      if (pref == null) return true;
+      return String(pref) === String(period == null ? '' : period);
+    };
     const attMapG = {};           // classId|date|period|student -> status
     atts.forEach(a => {
       attMapG[a.class_master_id + '|' + a.session_date + '|' + (a.period || '') + '|' + a.student_id] = a.status;
@@ -28660,6 +28716,8 @@ async function loadAttOverview() {
         const st = { present: 0, absent: 0, makeup: 0, unrec: 0, past: past };
         if (past) {
           sids.forEach(sid => {
+            // 長文読解などで担当コマ(preferred_period)が違う生徒は、この時限には出ない予定なので数えない
+            if (!stuInPeriod(m.id, sid, s.period)) return;
             const status = attMapG[m.id + '|' + s.session_date + '|' + (s.period || '') + '|' + sid];
             if (status === 'present') st.present++;
             else if (status === 'absent') { st.absent++; clsAbsent++; }
@@ -28710,7 +28768,7 @@ async function loadAttOverview() {
         const avatar = stu.photo_url
           ? '<div style="width:24px;height:24px;border-radius:50%;background-image:url(' + stu.photo_url + ');background-size:cover;background-position:center;flex-shrink:0"></div>'
           : '<div style="width:24px;height:24px;border-radius:50%;background:var(--orange-l);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--orange-d);flex-shrink:0">' + escapeHtml((stu.name || '?').charAt(0)) + '</div>';
-        const sub = stu.grade ? stu.grade + '年' : '';
+        const sub = [fmtGrade(stu.grade), stu.school || ''].filter(Boolean).join(' ');
         html += '<tr style="border-top:1px solid var(--border)">';
         html += '<td style="position:sticky;left:0;background:var(--surface);z-index:1;padding:4px 8px;border-right:1px solid var(--border);width:120px;min-width:120px">' +
           '<div onclick="openInterviewKarte(\'' + escapeAttr(sid) + '\',\'att\')" style="display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0" title="カルテを開く">' + avatar +
@@ -28723,6 +28781,11 @@ async function loadAttOverview() {
           if (!past) {
             // 未来日は空欄
             html += '<td style="text-align:center;padding:4px;color:var(--border)"></td>';
+            return;
+          }
+          // 長文読解などで担当コマ(preferred_period)が違う生徒は、この時限は「出ない予定」→薄グレーで表示・母数に含めない
+          if (!stuInPeriod(m.id, sid, s.period)) {
+            html += '<td style="text-align:center;padding:3px;background:repeating-linear-gradient(135deg,#f2f2f2,#f2f2f2 3px,#fafafa 3px,#fafafa 6px)"></td>';
             return;
           }
           const status = attMapG[m.id + '|' + s.session_date + '|' + (s.period || '') + '|' + sid];
@@ -29373,7 +29436,7 @@ function renderAttendanceRoster() {
     }
     const makeupTag = row.isMakeup ? '<span style="font-size:9px;background:#E8E2F5;color:#6B4FA0;padding:1px 6px;border-radius:10px;margin-left:4px">📺 補習承認</span>' : '';
     const provTag = attProvisional[s.id] ? '<span style="font-size:9px;background:#FFF3DF;color:#8F5F12;border:1px solid #E8C193;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="申込書が未提出です">⏳ 申込未提出</span>' : '';
-    const sub = [s.school, s.grade ? s.grade + '年' : '', inLabel].filter(Boolean).join(' ・ ');
+    const sub = [s.school, fmtGrade(s.grade), inLabel].filter(Boolean).join(' ・ ');
     // アバター
     const avatar = s.photo_url
       ? '<div style="width:36px;height:36px;border-radius:50%;background-image:url(' + s.photo_url + ');background-size:cover;background-position:center;flex-shrink:0"></div>'
@@ -30032,7 +30095,7 @@ function attStudentCellHtml(s, drag) {
   const avatar = s.photo_url
     ? '<div style="width:28px;height:28px;border-radius:50%;background-image:url(' + s.photo_url + ');background-size:cover;background-position:center;flex-shrink:0"></div>'
     : '<div style="width:28px;height:28px;border-radius:50%;background:var(--orange-l);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--orange-d);flex-shrink:0">' + escapeHtml((s.name||'?').charAt(0)) + '</div>';
-  const sub = [s.grade ? s.grade + '年' : '', s.school || ''].filter(Boolean).join(' ');
+  const sub = [fmtGrade(s.grade), s.school || ''].filter(Boolean).join(' ');
   // 途中受講開始なら「9-①から」を出す（7・8月が対象外である理由を示す）
   const startLbl = attStartLabel(s.id);
   const startTag = startLbl
@@ -34052,7 +34115,7 @@ function karteLoadProfile(s) {
   // --- 基本情報 ---
   let html = '<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:2px">基本情報</div>';
   html += row('学校', s.school);
-  html += row('学年', s.grade ? s.grade + '年' : '');
+  html += row('学年', fmtGrade(s.grade));
   if (s.school_detail) html += row('学校詳細', s.school_detail);
   html += row('会員種別', memLabel);
   html += row('在籍状態', statusLabel);
@@ -48753,7 +48816,7 @@ function caStudentCellHtml(s) {
   const avatar = s.photo_url
     ? '<div style="width:28px;height:28px;border-radius:50%;background-image:url(' + s.photo_url + ');background-size:cover;background-position:center;flex-shrink:0"></div>'
     : '<div style="width:28px;height:28px;border-radius:50%;background:var(--orange-l);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--orange-d);flex-shrink:0">' + escapeHtml((s.name||'?').charAt(0)) + '</div>';
-  const sub = [s.grade ? s.grade + '年' : '', s.school || ''].filter(Boolean).join(' ');
+  const sub = [fmtGrade(s.grade), s.school || ''].filter(Boolean).join(' ');
   return '<td style="position:sticky;left:0;background:var(--surface);padding:5px 8px;border-right:1px solid var(--border);z-index:1">' +
     '<div style="display:flex;align-items:center;gap:7px;white-space:nowrap">' + avatar +
     '<div style="min-width:0"><div style="font-size:12px;color:var(--text)">' + escapeHtml(s.name||'(不明)') + '</div>' +
