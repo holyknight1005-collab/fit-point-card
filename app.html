@@ -5747,7 +5747,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702djw';
+const APP_VERSION = '20260702djy';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -10674,6 +10674,7 @@ async function openStudentDetail(idx, from) {
     document.getElementById('detail-login-pin').style.letterSpacing = '3px';
     document.getElementById('detail-login-pin-toggle').textContent = '表示';
     document.getElementById('detail-newpin').value = '';
+    await renderDetailSchoolOptions(s.school || '', s.division);
     document.getElementById('detail-school').value = s.school || '';
     document.getElementById('detail-grade').value = s.grade || '';
     document.getElementById('detail-school-detail').value = s.school_detail || '';
@@ -23925,7 +23926,7 @@ async function loadWeekGrid() {
     const [sessions, masters, cts, staffList, events, staffBd, stuBd, appts] = await Promise.all([
       sbGet('class_sessions', 'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO +
         '&select=class_master_id,session_date,period,start_time,end_time&order=session_date,period').catch(() => []),
-      sbGet('class_master', 'select=id,name,subject,color,division').catch(() => []),
+      sbGet('class_master', 'select=id,name,subject,color,division,teacher_staff_id').catch(() => []),
       sbGet('class_teachers', 'select=class_master_id,staff_id').catch(() => []),
       sbGet('staff', 'select=id,staff_id,name').catch(() => []),
       sbGet('events', 'event_date=lte.' + lastISO + '&or=(end_date.gte.' + firstISO +
@@ -23941,10 +23942,21 @@ async function loadWeekGrid() {
     const stById = {}, stByStaffId = {};
     (staffList || []).forEach(s => { stById[s.id] = s; if (s.staff_id) stByStaffId[s.staff_id] = s; });
     const teacherOf = {};
+    const nameOfStaffId = (sid) => {
+      if (!sid) return null;
+      return stById[sid] ? stById[sid].name : (stByStaffId[sid] ? stByStaffId[sid].name : null);
+    };
+    // 主担当（class_master.teacher_staff_id）を先頭に登録
+    (masters || []).forEach(m => {
+      const nm = nameOfStaffId(m.teacher_staff_id);
+      if (nm) (teacherOf[m.id] || (teacherOf[m.id] = [])).push(nm);
+    });
+    // 追加担当（class_teachers）を後ろに追加（主担当と重複しないもののみ）
     (cts || []).forEach(c => {
-      const nm = stById[c.staff_id] ? stById[c.staff_id].name : (stByStaffId[c.staff_id] ? stByStaffId[c.staff_id].name : null);
+      const nm = nameOfStaffId(c.staff_id);
       if (!nm) return;
-      (teacherOf[c.class_master_id] || (teacherOf[c.class_master_id] = [])).push(nm);
+      const arr = (teacherOf[c.class_master_id] || (teacherOf[c.class_master_id] = []));
+      if (!arr.includes(nm)) arr.push(nm);
     });
 
     // 面談予定の生徒名
@@ -32739,6 +32751,41 @@ async function addSaddSchool() {
       showToast('追加に失敗しました: ' + (e.message || ''), 'error');
     }
   }
+}
+
+// ===== 生徒詳細・編集モーダル（detail-school）用の学校select =====
+// 生徒編集を開くたびに、その生徒の部門に合わせて schools から選択肢を再生成する。
+// 学校の新規追加はここでは行わない（追加は入来塾管理に集約。追加後はここにも反映される）。
+async function renderDetailSchoolOptions(keep, division) {
+  const sel = document.getElementById('detail-school');
+  if (!sel) return;
+  const prev = (keep != null) ? keep : sel.value;
+  await loadSchools();
+  const div = division || (typeof currentDivision !== 'undefined' ? currentDivision : '高校部');
+  const names = schoolsForDivision(div);
+  let html = '<option value="">未設定</option>';
+  names.forEach(n => { html += '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>'; });
+  sel.innerHTML = html;
+  // 以前の値が今のリストに無ければ動的に足して選択を維持（他部門の学校名・旧データなど）
+  if (prev) {
+    if (!names.includes(prev)) {
+      const opt = document.createElement('option');
+      opt.value = prev; opt.textContent = prev;
+      sel.appendChild(opt);
+    }
+    sel.value = prev;
+  }
+}
+
+// datalist（自由入力＋候補）型の学校候補を schools で埋める。
+// 同期。キャッシュがあればそれを使い、無ければ schoolsForDivision のフォールバックを使う。
+// 非同期に温めたい場合は呼び出し側で事前に loadSchools() しておく。
+function fillSchoolDatalist(datalistId, division) {
+  const dl = document.getElementById(datalistId);
+  if (!dl) return;
+  const div = division || (typeof currentDivision !== 'undefined' ? currentDivision : '高校部');
+  const names = schoolsForDivision(div);
+  dl.innerHTML = names.map(n => '<option value="' + escapeAttr(n) + '"></option>').join('');
 }
 
 async function initProspects() {
@@ -47514,6 +47561,7 @@ function openRosterEdit(rid) {
   if (!r) { showToast('対象の名簿が見つかりません', 'error'); return; }
   document.getElementById('re-id').value = r.id;
   document.getElementById('re-name').value = r.name || '';
+  fillSchoolDatalist('re-school-list', r.division);
   document.getElementById('re-school').value = r.school || '';
   document.getElementById('re-grade').value = r.grade || '';
   document.getElementById('re-gender').value = r.gender || '';
