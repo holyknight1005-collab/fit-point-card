@@ -355,6 +355,19 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="day-modal-body" style="display:flex;flex-direction:column;gap:14px"></div>
   </div>
 </div>
+<!-- 授業報告書 一覧モーダル（週間カレンダー授業タップ・dkd） -->
+<div id="classrep-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:690;align-items:center;justify-content:center;padding:16px">
+  <div style="background:var(--bg);border-radius:16px;padding:18px;max-width:440px;width:100%;max-height:86vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px">
+      <div>
+        <div id="classrep-modal-title" style="font-size:15px;font-weight:800;color:var(--text);line-height:1.3"></div>
+        <div id="classrep-modal-sub" style="font-size:11px;color:var(--muted);margin-top:3px"></div>
+      </div>
+      <button onclick="closeClassRepModal()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1;flex-shrink:0">×</button>
+    </div>
+    <div id="classrep-modal-body" style="display:flex;flex-direction:column;gap:8px"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中…</div></div>
+  </div>
+</div>
 <!-- 授業の復習 報告モーダル（生徒用・dii） -->
 <div id="review-report-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:695;align-items:center;justify-content:center;padding:16px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:400px;width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
@@ -24332,7 +24345,7 @@ async function loadWeekGrid() {
           if (it.teachers.length >= WK_DEPT_MIN) {
             const did = 'wkdept' + (++wkDeptSeq);
             const dept = (it.subject || 'その他') + '部';
-            tHtml = '<div onclick="wkToggleDept(\'' + did + '\')" style="color:' + cc + ';font-size:10px;font-weight:700;cursor:pointer;text-decoration:underline dotted">' +
+            tHtml = '<div onclick="event.stopPropagation();wkToggleDept(\'' + did + '\')" style="color:' + cc + ';font-size:10px;font-weight:700;cursor:pointer;text-decoration:underline dotted">' +
                     escapeHtml(dept) + ' ' + it.teachers.length + '名 ▾</div>' +
                     '<div id="' + did + '" style="display:none;color:var(--muted);font-size:10px;line-height:1.5;margin-top:2px">' +
                     escapeHtml(it.teachers.join('・')) + '</div>';
@@ -24347,8 +24360,8 @@ async function loadWeekGrid() {
           const boxBg = repMiss ? '#FDE7E7' : (cc + '18');
           const boxBorder = repMiss ? '#D14B4B' : cc;
           const nameCol = repMiss ? '#B33A3A' : cc;
-          h += '<div style="background:' + boxBg + ';border:1px solid ' + boxBorder + ';border-left:3px solid ' + boxBorder + ';border-radius:6px;padding:3px 5px;margin-bottom:3px;line-height:1.4">' +
-            '<div style="font-weight:700;color:' + nameCol + '">' + divBadge + escapeHtml(it.name) + '</div>' + tHtml +
+          h += '<div style="background:' + boxBg + ';border:1px solid ' + boxBorder + ';border-left:3px solid ' + boxBorder + ';border-radius:6px;padding:3px 5px;margin-bottom:3px;line-height:1.4;cursor:pointer" onclick="openClassRepModal(\'' + escapeAttr(it.cmid) + '\',\'' + escapeAttr(it.name) + '\')">' +
+            '<div style="font-weight:700;color:' + nameCol + '">' + divBadge + escapeHtml(it.name) + ' <span style="font-size:9px;font-weight:600;color:var(--muted)">📝</span></div>' + tHtml +
             (it.time ? '<div style="color:var(--muted);font-size:10px">' + escapeHtml(it.time) + '</div>' :
               (tt ? '<div style="color:var(--border);font-size:10px">' + tt[0] + '〜' + tt[1] + '</div>' : '')) +
             (repMiss ? '<div style="margin-top:2px;font-size:9px;font-weight:700;color:#fff;background:#D14B4B;border-radius:4px;padding:1px 4px;display:inline-block">📝 報告書未記入</div>' : '') +
@@ -27147,6 +27160,111 @@ function closeDayModal() {
   document.getElementById('day-modal').style.display = 'none';
   dayModalDate = null;
 }
+
+// ============================================================
+// 授業報告書 一覧モーダル（週間カレンダー授業タップ・dkd）
+// 目的①講師：前回どこまでやったか（最新が一番上）
+//     ②チェック側：ちゃんと書いてるか（授業日はあるのに報告書なし＝赤）
+// class_sessions（実施済み授業日）× class_reports（記入内容）を突合。
+// 授業日があって報告書が未記入の日も行として出す（赤バッジ）。
+// ============================================================
+function closeClassRepModal() {
+  const m = document.getElementById('classrep-modal');
+  if (m) m.style.display = 'none';
+}
+
+async function openClassRepModal(classId, className) {
+  const modal = document.getElementById('classrep-modal');
+  const titleEl = document.getElementById('classrep-modal-title');
+  const subEl = document.getElementById('classrep-modal-sub');
+  const body = document.getElementById('classrep-modal-body');
+  if (!modal || !body) return;
+  if (titleEl) titleEl.textContent = className || '授業報告書';
+  if (subEl) subEl.textContent = '';
+  body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中…</div>';
+  modal.style.display = 'flex';
+
+  const todayStr = getTodayJST();
+  try {
+    // 実施済みの授業日（今日まで）。同日複数コマは date で1つに寄せる（回数表示用に代表1件）。
+    const sessions = await sbGet('class_sessions',
+      'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
+      '&select=session_date,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date.desc') || [];
+    const sessByDate = {};
+    sessions.forEach(s => {
+      const prev = sessByDate[s.session_date];
+      if (!prev || (prev.cycle_no == null && s.cycle_no != null)) sessByDate[s.session_date] = s;
+    });
+
+    // 報告書（今日まで）
+    const reports = await sbGet('class_reports',
+      'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
+      '&select=session_date,theme,content,student_notes,homework,staff_id&order=session_date.desc') || [];
+    const repByDate = {};
+    reports.forEach(r => { if (!repByDate[r.session_date]) repByDate[r.session_date] = r; });
+
+    // 表示対象の日付＝授業日 ∪ 報告書のある日（授業日が無くても報告書だけある変則ケースも拾う）
+    const dateSet = {};
+    Object.keys(sessByDate).forEach(d => { dateSet[d] = true; });
+    Object.keys(repByDate).forEach(d => { dateSet[d] = true; });
+    const dates = Object.keys(dateSet).sort((a, b) => a < b ? 1 : a > b ? -1 : 0); // 降順（最新が上）
+
+    if (!dates.length) {
+      body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:24px">まだ授業実施・報告がありません。</div>';
+      return;
+    }
+
+    const isFilled = r => r && ((r.theme && r.theme.trim()) || (r.content && r.content.trim()) || (r.student_notes && r.student_notes.trim()) || (r.homework && r.homework.trim()));
+    const filledCount = dates.filter(d => isFilled(repByDate[d])).length;
+    const missCount = dates.length - filledCount;
+    if (subEl) subEl.textContent = '実施 ' + dates.length + '回中　記入 ' + filledCount + '／未記入 ' + missCount +
+      (missCount > 0 ? '　⚠️未記入あり' : '');
+
+    // スタッフ名マップ（記録者表示用）。既存 staffNameById があれば使う。
+    const wlabels = ['日', '月', '火', '水', '木', '金', '土'];
+    const field = (label, val) => '<div style="margin-top:3px"><span style="font-size:11px;font-weight:700;color:var(--muted)">' + label + '：</span>' +
+      '<span style="font-size:12px;white-space:pre-wrap;color:var(--text)">' + (val && val.trim() ? escapeHtml(val.trim()) : '<span style="color:#bbb">（記録なし）</span>') + '</span></div>';
+
+    let html = '';
+    dates.forEach((ds, idx) => {
+      const d = new Date(ds + 'T00:00:00+09:00');
+      const dateLabel = (d.getMonth() + 1) + '/' + d.getDate() + '（' + wlabels[d.getDay()] + '）';
+      const r = repByDate[ds];
+      const filled = isFilled(r);
+      const sess = sessByDate[ds];
+      // 回数ラベル
+      let cycLabel = '';
+      if (sess) {
+        if (sess.is_makeup) cycLabel = '🔁 補習';
+        else if (sess.cycle_no != null && typeof sessionCycleLabel === 'function') cycLabel = sessionCycleLabel(sess);
+      }
+      const isLatest = idx === 0;
+      const staffName = (r && r.staff_id && typeof staffNameById === 'function') ? staffNameById(r.staff_id) : '';
+
+      const headBadges =
+        (cycLabel ? '<span style="font-size:10px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);border-radius:10px;padding:1px 8px">' + escapeHtml(cycLabel) + '</span>' : '') +
+        (isLatest ? '<span style="font-size:10px;font-weight:700;color:#fff;background:var(--orange,#E8862E);border-radius:10px;padding:1px 8px">前回</span>' : '') +
+        (filled
+          ? '<span style="font-size:10px;font-weight:700;color:#1A7340;background:#E6F4EC;border:1px solid #8FCBAA;border-radius:10px;padding:1px 8px">✓ 記入済</span>'
+          : '<span style="font-size:10px;font-weight:700;color:#fff;background:#D14B4B;border-radius:10px;padding:1px 8px">📝 未記入</span>');
+
+      html += '<div style="border:1px solid ' + (filled ? 'var(--border)' : '#E7A9A9') + ';background:' + (filled ? 'var(--surface,#fff)' : '#FDF0F0') + ';border-radius:10px;padding:10px 12px">' +
+        '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:' + (filled ? '4px' : '0') + '">' +
+          '<span style="font-size:13px;font-weight:800;color:var(--text)">' + dateLabel + '</span>' +
+          headBadges +
+          (staffName ? '<span style="font-size:10px;color:var(--muted);margin-left:auto">記録: ' + escapeHtml(staffName) + '</span>' : '') +
+        '</div>';
+      if (filled) {
+        html += field('テーマ', r.theme) + field('内容', r.content) + field('生徒の様子', r.student_notes) + field('宿題', r.homework);
+      }
+      html += '</div>';
+    });
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:24px">報告書を読み込めませんでした。</div>';
+  }
+}
+
 
 // ===== ビデオ補習フロー（生徒側）=====
 // 欠席 →（予約）→ reserved →（視聴完了報告）→ reported →（スタッフ確認）→ approved
