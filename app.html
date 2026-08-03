@@ -29231,29 +29231,69 @@ async function loadAttSheet() {
     // コメントバー（通常のみ）
     if (cbar) cbar.style.display = isNormal ? 'flex' : 'none';
 
-    // 一覧描画
+    // 一覧描画（学校ごとに見出し＋折りたたみ）
     let html = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' +
       escapeHtml(AS_CAT_LABEL[category] || category) + '・' + (isSummer ? '全期間' : (y + '年' + mo + '月')) + '　対象 ' + students.length + '名' +
       (isNormal ? '（コメント欄あり）' : '（出欠のみ）') + '</div>';
-    html += '<div style="display:flex;flex-direction:column;gap:6px">';
+
+    // 学校ごとにグループ化（students は 学校→学年→氏名 でソート済み）
+    const groups = [];
+    const gIndex = {};
     students.forEach((st, idx) => {
+      const sc = st.school || '(学校未設定)';
+      let g = gIndex[sc];
+      if (g == null) { g = groups.length; gIndex[sc] = g; groups.push({ school: sc, items: [] }); }
+      groups[g].items.push({ st: st, idx: idx });
+    });
+
+    const cardHtml = (st, idx) => {
       const hasComment = isNormal && _asComments[st.id] && _asComments[st.id].trim();
-      html += '<div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:9px 12px;background:var(--surface)">';
-      html += '<div style="flex:1;min-width:0">' +
-        '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(st.name) +
-        (st.num !== '' ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">No.' + escapeHtml(String(st.num)) + '</span>' : '') + '</div>' +
-        '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade)) : '') +
-        '　受講 ' + st.subjects.length + '科目' +
-        (isNormal ? (hasComment ? '　<span style="color:var(--green-d);font-weight:700">✓コメント有</span>' : '　<span style="color:#B08A2A">コメント未</span>') : '') +
-        '</div></div>';
-      html += '<button onclick="openAttSheetDoc(' + idx + ')" style="padding:6px 14px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 出席表</button>';
-      html += '</div>';
+      return '<div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:9px 12px;background:var(--surface)">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(st.name) +
+          (st.num !== '' ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">No.' + escapeHtml(String(st.num)) + '</span>' : '') + '</div>' +
+          '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade)) : '') +
+          '　受講 ' + st.subjects.length + '科目' +
+          (isNormal ? (hasComment ? '　<span style="color:var(--green-d);font-weight:700">✓コメント有</span>' : '　<span style="color:#B08A2A">コメント未</span>') : '') +
+          '</div></div>' +
+        '<button onclick="openAttSheetDoc(' + idx + ')" style="padding:6px 14px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 出席表</button>' +
+        '</div>';
+    };
+
+    html += '<div style="display:flex;flex-direction:column;gap:8px">';
+    groups.forEach((g, gi) => {
+      const bodyId = 'as-school-body-' + gi;
+      const caretId = 'as-school-caret-' + gi;
+      // 未コメント件数（通常のみ）
+      let missCount = 0;
+      if (isNormal) g.items.forEach(it => { if (!(_asComments[it.st.id] && _asComments[it.st.id].trim())) missCount++; });
+      html += '<div style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--bg)">' +
+        '<div onclick="toggleAsSchool(' + gi + ')" style="display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;user-select:none;background:var(--surface)">' +
+          '<span id="' + caretId + '" style="font-size:12px;color:var(--muted);transition:transform 0.2s;display:inline-block">▶</span>' +
+          '<span style="font-size:13px;font-weight:800;color:var(--text)">' + escapeHtml(g.school) + '</span>' +
+          '<span style="font-size:11px;font-weight:700;color:var(--muted);background:var(--bg);border:1px solid var(--border);border-radius:20px;padding:1px 9px">' + g.items.length + '名</span>' +
+          (isNormal && missCount > 0 ? '<span style="font-size:11px;font-weight:700;color:#B08A2A;margin-left:auto">未' + missCount + '</span>' : '') +
+        '</div>' +
+        '<div id="' + bodyId + '" style="display:none;flex-direction:column;gap:6px;padding:8px 10px">' +
+          g.items.map(it => cardHtml(it.st, it.idx)).join('') +
+        '</div>' +
+      '</div>';
     });
     html += '</div>';
     body.innerHTML = html;
   } catch (e) {
     body.innerHTML = '<div style="font-size:12px;color:#A04040;text-align:center;padding:20px">読み込みに失敗しました：' + escapeHtml(e.message || String(e)) + '</div>';
   }
+}
+
+// 出席表：学校グループの開閉
+function toggleAsSchool(gi) {
+  const body = document.getElementById('as-school-body-' + gi);
+  const caret = document.getElementById('as-school-caret-' + gi);
+  if (!body) return;
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'flex';
+  if (caret) caret.style.transform = open ? 'rotate(0deg)' : 'rotate(90deg)';
 }
 
 // 出欠マーク → 表示セル
