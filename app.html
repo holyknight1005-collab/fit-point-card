@@ -29359,6 +29359,22 @@ function openAttSheetDoc(idx) {
 let _rbTeacherMap = null;   // loadTeacherClassMap() の戻り値
 let _rbClasses = [];        // 現在一覧に出している授業 [{id,name,subject,category,grade_level}]
 let _rbLoadSeq = 0;         // 非同期の競合対策
+let _rbDataByClass = {};    // class_id -> { rows:[{date,cycleLabel,theme,content,student_notes,homework,total,menRate,makeup,denom}], enrollCount }
+let _rbCat = 'summer';
+let _rbTeacherName = '';
+
+// 丸数字（①〜⑳、超過はそのまま数字）
+function rbCircled(n) {
+  const CIRC = ['⓪','①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳'];
+  return (n >= 1 && n <= 20) ? CIRC[n] : String(n);
+}
+// 回数ラベル：夏期など=①／通常=8-①（月-その月の回）
+function rbCycleLabel(sess, cat) {
+  if (!sess || sess.cycle_no == null) return '';
+  const no = rbCircled(sess.cycle_no);
+  if (cat === 'normal' && sess.cycle_month != null) return sess.cycle_month + '-' + no;
+  return no;
+}
 
 async function initReportBatch() {
   const body = document.getElementById('rb-body');
@@ -29368,7 +29384,6 @@ async function initReportBatch() {
     if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">講師データを読み込めませんでした。</div>';
     return;
   }
-  // 講師セレクトを埋める（担当授業が1つ以上ある講師のみ、氏名50音…はstaff_id順）
   const sel = document.getElementById('rb-teacher-select');
   if (sel) {
     const byT = _rbTeacherMap.byTeacher || {};
@@ -29387,11 +29402,9 @@ async function initReportBatch() {
     });
     sel.innerHTML = html;
   }
-  // 期間の初期値：通常授業なら当月1日〜今日
   rbOnCategoryChange();
 }
 
-// 種別変更：通常授業のときだけ期間バーを出す
 function rbOnCategoryChange() {
   const cat = (document.getElementById('rb-category-select') || {}).value || 'summer';
   const bar = document.getElementById('rb-period-bar');
@@ -29399,19 +29412,19 @@ function rbOnCategoryChange() {
   if (cat === 'normal') {
     const from = document.getElementById('rb-date-from');
     const to = document.getElementById('rb-date-to');
-    const today = getTodayJST(); // 'YYYY-MM-DD'
+    const today = getTodayJST();
     if (from && !from.value) from.value = today.slice(0, 8) + '01';
     if (to && !to.value) to.value = today;
   }
   rbLoadClasses();
 }
 
-// 講師×種別（＋通常は期間）で対象授業を一覧化 → 各授業の報告書件数を出す
 async function rbLoadClasses() {
   const body = document.getElementById('rb-body');
   const actions = document.getElementById('rb-actions');
   const teacherId = (document.getElementById('rb-teacher-select') || {}).value || '';
   const cat = (document.getElementById('rb-category-select') || {}).value || 'summer';
+  _rbCat = cat;
   if (actions) actions.style.display = 'none';
   if (!teacherId) {
     if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">講師を選択してください。</div>';
@@ -29419,7 +29432,9 @@ async function rbLoadClasses() {
   }
   if (!_rbTeacherMap) { await initReportBatch(); return; }
 
-  // その講師の担当授業のうち、選択種別（category）のものだけ
+  const sById = (_rbTeacherMap.staffById || {});
+  _rbTeacherName = (sById[teacherId] && sById[teacherId].name) ? sById[teacherId].name : '';
+
   const all = (_rbTeacherMap.byTeacher || {})[teacherId] || [];
   const classes = all.filter(c => (c.category || 'normal') === cat);
   _rbClasses = classes;
@@ -29428,7 +29443,6 @@ async function rbLoadClasses() {
     return;
   }
 
-  // 期間フィルタ（通常のみ）
   let dateFrom = '', dateTo = '';
   if (cat === 'normal') {
     dateFrom = (document.getElementById('rb-date-from') || {}).value || '';
@@ -29436,148 +29450,224 @@ async function rbLoadClasses() {
   }
 
   if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中…</div>';
-
   const seq = ++_rbLoadSeq;
-  // 各授業の報告書（記入済みのみカウント）を取得
+  const todayStr = getTodayJST();
   const classIds = classes.map(c => c.id);
-  let q = 'class_master_id=in.(' + classIds.join(',') + ')&session_date=lte.' + getTodayJST() +
-    '&select=class_master_id,session_date,theme,content,student_notes,homework,staff_id&order=session_date';
-  if (dateFrom) q += '&session_date=gte.' + dateFrom;
-  if (dateTo) q += '&session_date=lte.' + dateTo;
-  let reps = [];
-  try { reps = await sbGet('class_reports', q) || []; } catch (e) { reps = []; }
-  if (seq !== _rbLoadSeq) return; // 後発の読み込みが走っていたら破棄
 
-  // 記入済みのみ（テーマ/内容/様子/宿題のどれか）
-  const isFilled = r => (r.theme && r.theme.trim()) || (r.content && r.content.trim()) || (r.student_notes && r.student_notes.trim()) || (r.homework && r.homework.trim());
-  const byClass = {};
-  reps.forEach(r => {
-    if (!isFilled(r)) return;
-    (byClass[r.class_master_id] = byClass[r.class_master_id] || []).push(r);
+  // 報告書
+  let repQ = 'class_master_id=in.(' + classIds.join(',') + ')&session_date=lte.' + todayStr +
+    '&select=class_master_id,session_date,theme,content,student_notes,homework&order=session_date';
+  if (dateFrom) repQ += '&session_date=gte.' + dateFrom;
+  if (dateTo) repQ += '&session_date=lte.' + dateTo;
+  // セッション（回数）
+  let sesQ = 'class_master_id=in.(' + classIds.join(',') + ')&session_date=lte.' + todayStr +
+    '&select=class_master_id,session_date,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date';
+  if (dateFrom) sesQ += '&session_date=gte.' + dateFrom;
+  if (dateTo) sesQ += '&session_date=lte.' + dateTo;
+  // 出欠
+  let attQ = 'class_master_id=in.(' + classIds.join(',') + ')&session_date=lte.' + todayStr +
+    '&select=class_master_id,session_date,status';
+  if (dateFrom) attQ += '&session_date=gte.' + dateFrom;
+  if (dateTo) attQ += '&session_date=lte.' + dateTo;
+
+  let reps = [], sess = [], atts = [];
+  try {
+    [reps, sess, atts] = await Promise.all([
+      sbGet('class_reports', repQ).catch(() => []),
+      sbGet('class_sessions', sesQ).catch(() => []),
+      sbGet('session_attendance', attQ).catch(() => [])
+    ]);
+  } catch (e) { reps = []; sess = []; atts = []; }
+  if (seq !== _rbLoadSeq) return;
+  reps = reps || []; sess = sess || []; atts = atts || [];
+
+  // セッション：class|date で代表1件（cycle_no があるものを優先）
+  const sessBy = {};
+  sess.forEach(s => {
+    const key = s.class_master_id + '|' + s.session_date;
+    const prev = sessBy[key];
+    if (!prev || (prev.cycle_no == null && s.cycle_no != null)) sessBy[key] = s;
+  });
+  // 出欠：class|date で present/makeup/absent 集計
+  const attBy = {};
+  atts.forEach(a => {
+    const key = a.class_master_id + '|' + a.session_date;
+    const o = attBy[key] || (attBy[key] = { present: 0, makeup: 0, absent: 0 });
+    if (a.status === 'present') o.present++;
+    else if (a.status === 'makeup') o.makeup++;
+    else if (a.status === 'absent') o.absent++;
+  });
+  // 報告書：class|date で代表1件
+  const repBy = {};
+  reps.forEach(r => { const key = r.class_master_id + '|' + r.session_date; if (!repBy[key]) repBy[key] = r; });
+
+  const isFilled = r => r && ((r.theme && r.theme.trim()) || (r.content && r.content.trim()) || (r.student_notes && r.student_notes.trim()) || (r.homework && r.homework.trim()));
+
+  // 授業ごとに行を組む（授業日 ∪ 報告書日、日付昇順）
+  _rbDataByClass = {};
+  classes.forEach(c => {
+    const dates = {};
+    Object.keys(sessBy).forEach(k => { if (k.indexOf(c.id + '|') === 0) dates[k.split('|')[1]] = true; });
+    Object.keys(repBy).forEach(k => { if (k.indexOf(c.id + '|') === 0) dates[k.split('|')[1]] = true; });
+    const dateList = Object.keys(dates).sort();
+    const rows = dateList.map(d => {
+      const key = c.id + '|' + d;
+      const r = repBy[key] || null;
+      const s = sessBy[key] || null;
+      const a = attBy[key] || null;
+      let total = null, menRate = null, makeup = 0, denom = 0;
+      if (a) {
+        denom = a.present + a.makeup + a.absent;
+        makeup = a.makeup;
+        if (denom > 0) { total = Math.round(((a.present + a.makeup) / denom) * 100); menRate = Math.round((a.present / denom) * 100); }
+      }
+      return {
+        date: d,
+        cycleLabel: rbCycleLabel(s, cat),
+        theme: (r && r.theme) || '', content: (r && r.content) || '',
+        student_notes: (r && r.student_notes) || '', homework: (r && r.homework) || '',
+        filled: isFilled(r),
+        total: total, menRate: menRate, makeup: makeup, denom: denom
+      };
+    });
+    _rbDataByClass[c.id] = { rows: rows };
   });
 
-  // 一覧描画（チェックボックス、報告書件数バッジ）
+  // 一覧描画
   let html = '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">対象授業（チェックしたものを印刷／CSV出力）' +
     (cat === 'normal' && (dateFrom || dateTo) ? '　期間: ' + escapeHtml(dateFrom || '〜') + ' 〜 ' + escapeHtml(dateTo || '〜') : '') + '</div>';
   html += '<div style="display:flex;flex-direction:column;gap:6px">';
+  let totalRepAll = 0;
   classes.forEach(c => {
-    const n = (byClass[c.id] || []).length;
-    const disabled = n === 0;
+    const rows = (_rbDataByClass[c.id] || {}).rows || [];
+    const nFilled = rows.filter(r => r.filled).length;
+    totalRepAll += nFilled;
+    const disabled = rows.length === 0;
     html += '<label style="display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:' + (disabled ? '#f7f7f7' : '#fff') + ';cursor:' + (disabled ? 'default' : 'pointer') + '">' +
       '<input type="checkbox" class="rb-class-chk" value="' + escapeHtml(c.id) + '"' + (disabled ? ' disabled' : ' checked') + ' style="width:16px;height:16px;flex-shrink:0">' +
       '<span style="flex:1;font-size:13px;font-weight:700;color:' + (disabled ? 'var(--muted)' : 'var(--fg)') + '">' + escapeHtml(c.name || '') + '</span>' +
-      '<span style="font-size:11px;font-weight:700;padding:2px 10px;border-radius:20px;' + (n > 0 ? 'color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange)' : 'color:var(--muted);background:#eee;border:1px solid #ddd') + '">報告書 ' + n + '件</span>' +
+      '<span style="font-size:11px;font-weight:700;padding:2px 10px;border-radius:20px;' + (nFilled > 0 ? 'color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange)' : 'color:var(--muted);background:#eee;border:1px solid #ddd') + '">報告書 ' + nFilled + '件</span>' +
       '</label>';
   });
   html += '</div>';
-  const totalReps = Object.values(byClass).reduce((a, arr) => a + arr.length, 0);
-  html += '<div style="font-size:11px;color:var(--muted);margin-top:8px">合計 ' + totalReps + ' 件の報告書</div>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-top:8px">合計 ' + totalRepAll + ' 件の報告書</div>';
   if (body) body.innerHTML = html;
-  if (actions) actions.style.display = totalReps > 0 ? 'flex' : 'none';
-
-  // 後続の印刷／CSVで使えるようキャッシュ
-  _rbRepByClass = byClass;
+  if (actions) actions.style.display = 'flex';
 }
-let _rbRepByClass = {};
 
 function rbCheckAll(on) {
   document.querySelectorAll('.rb-class-chk').forEach(chk => { if (!chk.disabled) chk.checked = on; });
 }
-
 function rbSelectedClassIds() {
   const ids = [];
   document.querySelectorAll('.rb-class-chk').forEach(chk => { if (chk.checked && !chk.disabled) ids.push(chk.value); });
   return ids;
 }
 
-// 選択授業の報告書を「講師1人ぶんを縦連結」でA4印刷
+// 出席率セル（大＝全体／小＝対面）。印刷用HTML片を返す。
+function rbRateCellHtml(row) {
+  if (row.total == null) return '<span style="color:#bbb">–</span>';
+  const col = row.total >= 80 ? '#1A7340' : (row.total >= 50 ? '#C77A1E' : '#C0392B');
+  let s = '<div style="font-size:11pt;font-weight:800;color:' + col + '">' + row.total + '%</div>';
+  if (row.makeup > 0) s += '<div style="font-size:8.5pt;color:#666">対面 ' + row.menRate + '%</div>';
+  return s;
+}
+
+// 選択授業を「講師1人ぶんを縦連結」でA4印刷（表形式）
 function rbPrint() {
   const ids = rbSelectedClassIds();
   if (!ids.length) { showToast('印刷する授業を選択してください', 'info'); return; }
-  const teacherId = (document.getElementById('rb-teacher-select') || {}).value || '';
-  const cat = (document.getElementById('rb-category-select') || {}).value || 'summer';
+  const cat = _rbCat;
   const catShort = AS_CAT_SHORT[cat] || cat;
-  const sById = (_rbTeacherMap && _rbTeacherMap.staffById) || {};
-  const teacherName = (sById[teacherId] && sById[teacherId].name) ? sById[teacherId].name : '';
-  const classById = {};
-  _rbClasses.forEach(c => { classById[c.id] = c; });
-
-  // 選んだ授業を、_rbClasses の並び順（＝科目→登録順）で連結
+  const teacherName = _rbTeacherName || '';
+  const classById = {}; _rbClasses.forEach(c => { classById[c.id] = c; });
   const orderedIds = _rbClasses.map(c => c.id).filter(id => ids.indexOf(id) >= 0);
+
   const wlabels = ['日', '月', '火', '水', '木', '金', '土'];
-  const fmtDate = ds => {
-    const d = new Date(ds + 'T00:00:00+09:00');
-    return (d.getMonth() + 1) + '/' + d.getDate() + '（' + wlabels[d.getDay()] + '）';
-  };
-  const field = (label, val) => '<div style="margin-top:4px"><span style="font-size:9pt;font-weight:700;color:#555">' + label + '：</span>' +
-    '<span style="font-size:10pt;white-space:pre-wrap">' + (val && val.trim() ? escapeHtml(val.trim()) : '<span style="color:#aaa">（記録なし）</span>') + '</span></div>';
+  const fmtDate = ds => { const d = new Date(ds + 'T00:00:00+09:00'); return (d.getMonth() + 1) + '/' + d.getDate(); };
+  const cellTxt = v => (v && v.trim()) ? escapeHtml(v.trim()) : '';
 
   let inner = '';
   orderedIds.forEach(cid => {
     const c = classById[cid] || {};
-    const reps = (_rbRepByClass[cid] || []).slice().sort((a, b) => a.session_date < b.session_date ? -1 : a.session_date > b.session_date ? 1 : 0);
-    if (!reps.length) return;
-    inner += '<div style="margin-top:16px;page-break-inside:avoid">' +
-      '<div style="font-size:12pt;font-weight:800;background:#f1ede3;border:1px solid #bbb;border-radius:4px 4px 0 0;padding:6px 10px">' + escapeHtml(c.name || '') + '　<span style="font-size:9pt;font-weight:600;color:#666">（報告書 ' + reps.length + '件）</span></div>' +
-      '<div style="border:1px solid #bbb;border-top:none;border-radius:0 0 4px 4px;padding:2px 10px 8px">';
-    reps.forEach((r, i) => {
-      inner += '<div style="padding:8px 0;' + (i > 0 ? 'border-top:1px dashed #ccc' : '') + '">' +
-        '<div style="font-size:10.5pt;font-weight:700">' + fmtDate(r.session_date) + '</div>' +
-        field('テーマ', r.theme) +
-        field('内容', r.content) +
-        field('生徒の様子', r.student_notes) +
-        field('宿題', r.homework) +
-        '</div>';
+    const rows = ((_rbDataByClass[cid] || {}).rows || []).filter(r => r.filled || r.denom > 0); // 内容か出欠がある行だけ
+    if (!rows.length) return;
+    // 受講人数＝直近回の denom の最大（おおよその在籍）
+    const enroll = rows.reduce((mx, r) => Math.max(mx, r.denom || 0), 0);
+    inner += '<div style="margin-top:14px;page-break-inside:avoid">' +
+      '<table style="border-collapse:collapse;width:100%;table-layout:fixed">' +
+      '<colgroup><col style="width:9%"><col style="width:8%"><col style="width:18%"><col style="width:26%"><col style="width:27%"><col style="width:12%"></colgroup>' +
+      // 授業名＋受講人数 行
+      '<tr><td colspan="6" style="border:1px solid #999;background:#f1ede3;padding:5px 10px;font-size:11pt;font-weight:800">' +
+        escapeHtml(c.name || '') + '　<span style="font-size:9pt;font-weight:600;color:#555">受講人数 ' + (enroll || '—') + '人</span></td></tr>' +
+      // ヘッダー行
+      '<tr style="background:#faf8f4">' +
+        '<th style="border:1px solid #999;padding:4px;font-size:9pt">日付</th>' +
+        '<th style="border:1px solid #999;padding:4px;font-size:9pt">回数</th>' +
+        '<th style="border:1px solid #999;padding:4px;font-size:9pt">テーマ</th>' +
+        '<th style="border:1px solid #999;padding:4px;font-size:9pt">授業内容</th>' +
+        '<th style="border:1px solid #999;padding:4px;font-size:9pt">生徒様子</th>' +
+        '<th style="border:1px solid #999;padding:4px;font-size:9pt">出席率</th>' +
+      '</tr>';
+    rows.forEach(r => {
+      inner += '<tr style="page-break-inside:avoid">' +
+        '<td style="border:1px solid #999;padding:5px 4px;font-size:9pt;text-align:center;vertical-align:top;white-space:nowrap">' + fmtDate(r.date) + '</td>' +
+        '<td style="border:1px solid #999;padding:5px 4px;font-size:10pt;text-align:center;vertical-align:top">' + escapeHtml(r.cycleLabel || '') + '</td>' +
+        '<td style="border:1px solid #999;padding:5px 6px;font-size:9.5pt;font-weight:700;vertical-align:top;overflow-wrap:anywhere">' + cellTxt(r.theme) + '</td>' +
+        '<td style="border:1px solid #999;padding:5px 6px;font-size:9pt;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere">' + cellTxt(r.content) + '</td>' +
+        '<td style="border:1px solid #999;padding:5px 6px;font-size:9pt;vertical-align:top;white-space:pre-wrap;overflow-wrap:anywhere">' + cellTxt(r.student_notes) + '</td>' +
+        '<td style="border:1px solid #999;padding:5px 4px;text-align:center;vertical-align:top">' + rbRateCellHtml(r) + '</td>' +
+      '</tr>';
     });
-    inner += '</div></div>';
+    inner += '</table></div>';
   });
 
-  if (!inner) { showToast('選択した授業に報告書がありません', 'info'); return; }
+  if (!inner) { showToast('選択した授業に報告書・出欠がありません', 'info'); return; }
 
   const doc =
-    '<div style="font-family:\'Noto Sans JP\',sans-serif;color:#222;max-width:720px;margin:0 auto;padding:8px 16px">' +
-      '<div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #333;padding-bottom:6px;margin-bottom:6px">' +
-        '<div><div style="font-size:17pt;font-weight:800;letter-spacing:2px">' + escapeHtml(catShort) + '　授業報告書まとめ</div></div>' +
-        '<div style="font-size:13pt;font-weight:700;text-align:right">担当：' + escapeHtml(teacherName) + '　先生</div>' +
+    '<div style="font-family:\'Noto Sans JP\',sans-serif;color:#222;max-width:760px;margin:0 auto;padding:6px 12px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #333;padding-bottom:6px;margin-bottom:2px">' +
+        '<div style="font-size:16pt;font-weight:800;letter-spacing:2px">' + escapeHtml(catShort) + '　授業報告書まとめ</div>' +
+        '<div style="font-size:12pt;font-weight:700">担当：' + escapeHtml(teacherName) + '</div>' +
       '</div>' +
       inner +
-      '<div style="text-align:right;margin-top:18px;font-size:11pt;font-weight:700">総合学習塾 fit</div>' +
+      '<div style="text-align:right;margin-top:14px;font-size:10pt;font-weight:700">総合学習塾 fit</div>' +
     '</div>';
 
   const w = window.open('', '_blank');
   if (!w) { showToast('ポップアップがブロックされました。許可してください。', 'error'); return; }
   w.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>報告書まとめ_' + escapeHtml(teacherName) + '</title>' +
-    '<style>@page{size:A4 portrait;margin:14mm}@media print{.noprint{display:none}}body{margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
+    '<style>@page{size:A4 portrait;margin:12mm}@media print{.noprint{display:none}}body{margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
     '.noprint{position:fixed;top:8px;right:8px}</style></head><body>' +
     '<div class="noprint"><button onclick="window.print()" style="padding:8px 16px;font-size:13px;font-weight:700;border:none;border-radius:8px;background:#2D6CB6;color:#fff;cursor:pointer">🖨 印刷</button></div>' +
     doc + '</body></html>');
   w.document.close();
 }
 
-// 選択授業の報告書をCSV（1行=1報告書）
+// CSV（1行=1報告書）。出席率は 全体/対面 を別列で。
 function rbCsv() {
   const ids = rbSelectedClassIds();
   if (!ids.length) { showToast('出力する授業を選択してください', 'info'); return; }
-  const teacherId = (document.getElementById('rb-teacher-select') || {}).value || '';
-  const cat = (document.getElementById('rb-category-select') || {}).value || 'summer';
+  const cat = _rbCat;
   const catShort = AS_CAT_SHORT[cat] || cat;
-  const sById = (_rbTeacherMap && _rbTeacherMap.staffById) || {};
-  const teacherName = (sById[teacherId] && sById[teacherId].name) ? sById[teacherId].name : '';
-  const classById = {};
-  _rbClasses.forEach(c => { classById[c.id] = c; });
+  const teacherName = _rbTeacherName || '';
+  const classById = {}; _rbClasses.forEach(c => { classById[c.id] = c; });
   const orderedIds = _rbClasses.map(c => c.id).filter(id => ids.indexOf(id) >= 0);
+  const wlabels = ['日', '月', '火', '水', '木', '金', '土'];
 
-  const rows = [['講師', '種別', '授業名', '日付', 'テーマ', '内容', '生徒の様子', '宿題']];
+  const rows = [['講師', '種別', '授業名', '日付', '回数', 'テーマ', '授業内容', '生徒様子', '出席率(全体)', '出席率(対面)']];
   let count = 0;
   orderedIds.forEach(cid => {
     const c = classById[cid] || {};
-    const reps = (_rbRepByClass[cid] || []).slice().sort((a, b) => a.session_date < b.session_date ? -1 : a.session_date > b.session_date ? 1 : 0);
-    reps.forEach(r => {
-      rows.push([teacherName, AS_CAT_LABEL[cat] || cat, c.name || '', r.session_date, r.theme || '', r.content || '', r.student_notes || '', r.homework || '']);
+    const drows = ((_rbDataByClass[cid] || {}).rows || []).filter(r => r.filled || r.denom > 0);
+    drows.forEach(r => {
+      rows.push([teacherName, AS_CAT_LABEL[cat] || cat, c.name || '', r.date, r.cycleLabel || '',
+        r.theme || '', r.content || '', r.student_notes || '',
+        (r.total != null ? r.total + '%' : ''), (r.total != null && r.makeup > 0 ? r.menRate + '%' : '')]);
       count++;
     });
   });
-  if (!count) { showToast('選択した授業に報告書がありません', 'info'); return; }
+  if (!count) { showToast('選択した授業に報告書・出欠がありません', 'info'); return; }
 
   const csv = rows.map(r => r.map(asCsvCell).join(',')).join('\r\n');
   const bom = '\uFEFF';
