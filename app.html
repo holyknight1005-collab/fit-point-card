@@ -4084,6 +4084,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <button onclick="switchManageTab('attoverview',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📅 出欠一望</button>
       <button onclick="switchManageTab('attsheet',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🖨 出席表</button>
       <button onclick="switchManageTab('reportbatch',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📝 報告書まとめ</button>
+      <button onclick="switchManageTab('namefix',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">👤 氏名整備</button>
       <button onclick="switchManageTab('timetable',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🕐 時間割かぶり</button>
       <button onclick="switchManageTab('quizstatus',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📝 小テスト状況</button>
       <button onclick="switchManageTab('appusage',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📊 教科アプリ</button>
@@ -4812,6 +4813,17 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="as-body"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">「更新」で読み込みます。</div></div>
     </div>
 
+
+    <!-- 氏名整備（姓名分割・ふりがな）タブ -->
+    <div id="smcontent-namefix" style="display:none">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">姓名の間が<b>スペース無し</b>で登録されている生徒を、姓・名・ふりがなに分けて整えます。保存すると氏名は「<b>姓　名</b>」（全角スペース区切り）に統一され、ふりがなも登録されます。</div>
+      <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
+        <select class="form-select" id="nf-school-select" onchange="renderNameFixList()" style="flex:1;min-width:140px;font-size:13px"><option value="">全学校</option></select>
+        <button onclick="initNameFix()" style="padding:8px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔄 更新</button>
+      </div>
+      <div id="nf-summary" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+      <div id="nf-body"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">「更新」で読み込みます。</div></div>
+    </div>
     <!-- 報告書まとめ印刷／CSV タブ -->
     <div id="smcontent-reportbatch" style="display:none">
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">講師を選ぶと、その講師の担当授業（主担当＋追加担当）が一覧に出ます。<b>提出する授業だけチェック</b>して、まとめて印刷／CSV出力できます。通常授業は<b>期間</b>で絞れます（夏期等は全期間）。</div>
@@ -5811,7 +5823,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dkd';
+const APP_VERSION = '20260702dke';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29286,6 +29298,119 @@ async function loadAttSheet() {
   }
 }
 
+// ============================================================
+// 氏名整備（姓名分割・ふりがな）  namefix タブ
+// スペース無し氏名を 姓/名/姓かな/名かな に分けて整える。
+// 保存で students.family_name/given_name/family_kana/given_kana と
+// name('姓　名') / name_kana('姓かな　名かな') を一括PATCH。
+// 対象＝name に全角スペースが無い＝まだ姓名分割されていない生徒。
+// ============================================================
+var _nfStudents = [];   // 未整備の生徒 [{id,name,name_kana,school,grade}]
+
+async function initNameFix() {
+  const body = document.getElementById('nf-body');
+  const sum = document.getElementById('nf-summary');
+  if (!body) return;
+  body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
+  if (sum) sum.textContent = '';
+  try {
+    // 全アクティブ生徒
+    const rows = await sbGet('students',
+      'is_active=eq.true&select=id,name,name_kana,school,grade&order=school,grade,name') || [];
+    // デモ除外
+    let ids = rows.map(r => r.id);
+    ids = await excludeDemoIds(ids);
+    const keep = new Set(ids);
+    // 未整備＝name に全角スペースが無い
+    _nfStudents = rows.filter(r => keep.has(r.id) && r.name && r.name.indexOf('\u3000') < 0);
+
+    // 学校セレクト
+    const sel = document.getElementById('nf-school-select');
+    if (sel) {
+      const schools = [...new Set(_nfStudents.map(s => s.school || '(学校未設定)'))];
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">全学校</option>' +
+        schools.map(sc => '<option value="' + escapeAttr(sc) + '">' + escapeHtml(sc) + '</option>').join('');
+      if (cur && schools.indexOf(cur) >= 0) sel.value = cur;
+    }
+    renderNameFixList();
+  } catch (e) {
+    body.innerHTML = '<div style="font-size:12px;color:#A04040;text-align:center;padding:20px">読み込みに失敗しました：' + escapeHtml(e.message || String(e)) + '</div>';
+  }
+}
+
+function renderNameFixList() {
+  const body = document.getElementById('nf-body');
+  const sum = document.getElementById('nf-summary');
+  if (!body) return;
+  const scFilter = (document.getElementById('nf-school-select') || {}).value || '';
+  const list = _nfStudents.filter(s => !scFilter || (s.school || '(学校未設定)') === scFilter);
+
+  if (sum) sum.innerHTML = '未整備 <b style="color:var(--orange-d)">' + _nfStudents.length + '</b> 名' +
+    (scFilter ? '（' + escapeHtml(scFilter) + ' ' + list.length + '名表示中）' : '') +
+    '　※保存すると一覧から消えます';
+
+  if (!list.length) {
+    body.innerHTML = '<div style="font-size:13px;color:var(--green-d);text-align:center;padding:24px;font-weight:700">🎉 未整備の生徒はいません。すべて姓名分割済みです。</div>';
+    return;
+  }
+
+  let html = '<div style="display:flex;flex-direction:column;gap:8px">';
+  list.forEach(s => {
+    const disp = escapeHtml(s.name || '');
+    const info = escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(fmtGrade(s.grade)) : '');
+    const kana = s.name_kana ? escapeHtml(s.name_kana) : '';
+    html += '<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface)">' +
+      '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">' +
+        '<span style="font-size:14px;font-weight:800;color:var(--text)">' + disp + '</span>' +
+        '<span style="font-size:11px;color:var(--muted)">' + info + '</span>' +
+        (kana ? '<span style="font-size:11px;color:var(--muted)">（現ふりがな：' + kana + '）</span>' : '') +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">' +
+        '<input id="nf-fam-' + s.id + '" placeholder="姓（漢字）" style="padding:7px 8px;font-size:13px;border:1px solid var(--border);border-radius:7px;font-family:\'Noto Sans JP\',sans-serif">' +
+        '<input id="nf-giv-' + s.id + '" placeholder="名（漢字）" style="padding:7px 8px;font-size:13px;border:1px solid var(--border);border-radius:7px;font-family:\'Noto Sans JP\',sans-serif">' +
+        '<input id="nf-famk-' + s.id + '" placeholder="せい（ふりがな）" style="padding:7px 8px;font-size:13px;border:1px solid var(--border);border-radius:7px;font-family:\'Noto Sans JP\',sans-serif">' +
+        '<input id="nf-givk-' + s.id + '" placeholder="めい（ふりがな）" style="padding:7px 8px;font-size:13px;border:1px solid var(--border);border-radius:7px;font-family:\'Noto Sans JP\',sans-serif">' +
+      '</div>' +
+      '<div style="display:flex;justify-content:flex-end;margin-top:8px">' +
+        '<button onclick="saveNameFix(\'' + escapeAttr(s.id) + '\')" style="padding:6px 16px;font-size:12px;font-weight:700;border:1px solid var(--green-d);border-radius:8px;background:var(--green-l);color:var(--green-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 保存</button>' +
+      '</div>' +
+    '</div>';
+  });
+  html += '</div>';
+  body.innerHTML = html;
+}
+
+async function saveNameFix(id) {
+  const fam = (document.getElementById('nf-fam-' + id) || {}).value || '';
+  const giv = (document.getElementById('nf-giv-' + id) || {}).value || '';
+  const famk = (document.getElementById('nf-famk-' + id) || {}).value || '';
+  const givk = (document.getElementById('nf-givk-' + id) || {}).value || '';
+  const f = fam.trim(), g = giv.trim(), fk = famk.trim(), gk = givk.trim();
+  if (!f || !g) { showToast('姓と名（漢字）を入力してください', 'error'); return; }
+
+  const patch = {
+    family_name: f,
+    given_name: g,
+    name: f + '\u3000' + g
+  };
+  // ふりがなは両方入っているときだけ更新（片方だけは触らない）
+  if (fk && gk) {
+    patch.family_kana = fk;
+    patch.given_kana = gk;
+    patch.name_kana = fk + '\u3000' + gk;
+  }
+  try {
+    await sbPatch('students', 'id=eq.' + id, patch);
+    showToast('✅ ' + f + '\u3000' + g + ' を整えました', 'success');
+    // 一覧から除去して再描画
+    _nfStudents = _nfStudents.filter(s => s.id !== id);
+    renderNameFixList();
+  } catch (e) {
+    showToast('保存に失敗：' + (e.message || String(e)), 'error');
+  }
+}
+
 // 出席表：学校グループの開閉
 function toggleAsSchool(gi) {
   const body = document.getElementById('as-school-body-' + gi);
@@ -32293,7 +32418,7 @@ function switchManageTab(tab, el) {
   // manage-* 系（授業管理など）
   const manageTabs = ['class-master','check-item','mission','quiz'];
   // smcontent-* 系（小メニューから統合したタブ）
-  const menuTabs = ['report','todo','line','teamtask','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','attoverview','attsheet','reportbatch','timetable','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','prospects','interview','examreq','studentreg','demo','revenue','tsushin'];
+  const menuTabs = ['report','todo','line','teamtask','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','attoverview','attsheet','reportbatch','namefix','timetable','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','prospects','interview','examreq','studentreg','demo','revenue','tsushin'];
   manageTabs.forEach(t => {
     const el2 = document.getElementById('manage-' + t);
     if (el2) el2.style.display = 'none';
@@ -32345,6 +32470,7 @@ function switchManageTab(tab, el) {
   if (tab === 'attoverview') initAttOverview();
   if (tab === 'attsheet') initAttSheet();
   if (tab === 'reportbatch') initReportBatch();
+  if (tab === 'namefix') initNameFix();
   if (tab === 'timetable') { loadTimetableConflicts(); loadLongtextPeriods(); }
   if (tab === 'quizstatus') loadQuizStatusClasses();
   if (tab === 'appusage') { loadAppUsage(); loadAccessClasses(); loadClassMathUnits(); }
