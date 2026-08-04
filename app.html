@@ -23292,25 +23292,8 @@ async function previewSessions() {
 
   if (!valid) { showToast('授業を選択してください', 'error'); return; }
 
-  // プレビュー表示
-  const grouped = {};
-  pendingSessions.forEach(s => {
-    if (!grouped[s.session_date]) grouped[s.session_date] = [];
-    grouped[s.session_date].push(s);
-  });
-
-  const weekNames = ['日','月','火','水','木','金','土'];
-  document.getElementById('cs-preview-list').innerHTML = Object.entries(grouped).map(([date, sessions]) => {
-    // タイムゾーン非依存：日付文字列を直接パース
-    const [py, pm, pd] = date.split('-').map(Number);
-    const pDate = new Date(py, pm-1, pd);
-    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px">' +
-      '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">' + pm + '/' + pd + '（' + weekNames[pDate.getDay()] + '）</div>' +
-      sessions.map(s => '<div style="font-size:11px;color:var(--muted)">　' + s.period + '限 ' + s.start_time + '〜' + s.end_time + '　' + s.class_name +
-        (s.cycle_no ? '<span style="color:var(--orange-d);font-weight:700;margin-left:6px">' + sessionCycleLabel(s) + '</span>' : '') +
-        '</div>').join('') +
-    '</div>';
-  }).join('');
+  // プレビュー表示（授業ごとにグループ化＋一括時刻変更ボタン付き）
+  renderCsPreview();
 
   document.getElementById('cs-preview').style.display = 'block';
   document.getElementById('cs-preview').scrollIntoView({behavior:'smooth'});
@@ -23398,22 +23381,75 @@ async function previewSpotSessions() {
     });
   });
 
-  // プレビュー表示（定期登録と同じ見た目・同じ確定フローを使用）
-  const weekNames = ['日','月','火','水','木','金','土'];
-  const [py, pm, pd] = dateStr.split('-').map(Number);
-  const pDate = new Date(py, pm-1, pd);
-  document.getElementById('cs-preview-list').innerHTML =
-    '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px">' +
-      '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">' + pm + '/' + pd + '（' + weekNames[pDate.getDay()] + '）<span style="font-size:10px;color:#2D5FA6;margin-left:6px">単発</span>' +
-        (isMakeup ? '<span style="font-size:10px;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:10px;padding:0 6px;margin-left:4px">🔁 補習（カウントしない）</span>' : '') +
-      '</div>' +
-      pendingSessions.map(s => '<div style="font-size:11px;color:var(--muted)">　' + s.period + '限 ' + s.start_time + '〜' + s.end_time + '　' + s.class_name +
-        (s.cycle_no ? '<span style="color:var(--orange-d);font-weight:700;margin-left:6px">' + sessionCycleLabel(s) + '</span>' : '') +
-        '</div>').join('') +
-    '</div>';
+  // プレビュー表示（定期登録と同じ見た目・同じ確定フローを使用。時間の一括変更も可能）
+  renderCsPreview();
   document.getElementById('cs-preview').style.display = 'block';
   document.getElementById('cs-preview').scrollIntoView({behavior:'smooth'});
   showToast(pendingSessions.length + '件のセッションを登録予定', 'info');
+}
+
+// コマ追加のプレビュー描画：授業（class_master_id）ごとにグループ化し、
+// 各授業に「⏱ 時間を一括変更」ボタンを付ける。押すと openTimePicker で
+// 限 or 直接時刻を選び、その授業の全授業日の period/start_time/end_time を上書きする。
+function renderCsPreview() {
+  const weekNames = ['日','月','火','水','木','金','土'];
+  // 授業ごとにまとめる（class_master_id 単位）。同一授業の中は日付昇順。
+  const byClass = {};
+  const order = [];
+  pendingSessions.forEach(s => {
+    const k = s.class_master_id;
+    if (!byClass[k]) { byClass[k] = { name: s.class_name, list: [] }; order.push(k); }
+    byClass[k].list.push(s);
+  });
+  const html = order.map(k => {
+    const g = byClass[k];
+    const list = g.list.slice().sort((a,b) => (a.session_date < b.session_date ? -1 : (a.session_date > b.session_date ? 1 : (a.period||0)-(b.period||0))));
+    // この授業の時刻が全日同じなら1つ、違えば「複数」表示
+    const timeSet = [...new Set(list.map(s => (s.start_time||'') + '〜' + (s.end_time||'')))];
+    const timeLabel = (timeSet.length === 1) ? timeSet[0] : '（日により異なる）';
+    const perSet = [...new Set(list.map(s => s.period == null ? '時間指定' : (s.period + '限')))];
+    const perLabel = (perSet.length === 1) ? perSet[0] : '複数';
+    const rows = list.map(s => {
+      const [py, pm, pd] = s.session_date.split('-').map(Number);
+      const pDate = new Date(py, pm-1, pd);
+      const per = (s.period == null) ? '時間指定' : (s.period + '限');
+      return '<div style="font-size:11px;color:var(--muted);padding:1px 0">　' + pm + '/' + pd + '（' + weekNames[pDate.getDay()] + '）　' + per + ' ' + (s.start_time||'') + '〜' + (s.end_time||'') +
+        (s.is_makeup ? '<span style="font-size:10px;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:10px;padding:0 6px;margin-left:6px">🔁補習</span>' : '') +
+        (s.cycle_no ? '<span style="color:var(--orange-d);font-weight:700;margin-left:6px">' + sessionCycleLabel(s) + '</span>' : '') + '</div>';
+    }).join('');
+    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:6px">' +
+        '<div style="font-size:13px;font-weight:800;color:var(--text)">' + escapeHtml(g.name || '') +
+          '<span style="font-size:11px;font-weight:600;color:var(--muted);margin-left:8px">' + list.length + '日 / ' + escapeHtml(perLabel) + ' ' + escapeHtml(timeLabel) + '</span></div>' +
+        '<button onclick="csBulkTime(\'' + escapeAttr(k) + '\')" style="font-size:11px;font-weight:700;color:#2D6DB5;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:7px;padding:5px 12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">⏱ 時間を一括変更</button>' +
+      '</div>' + rows +
+    '</div>';
+  }).join('');
+  document.getElementById('cs-preview-list').innerHTML = html;
+}
+
+// 指定授業（class_master_id）の全授業日の時間を一括で上書きする。
+function csBulkTime(classId) {
+  const list = pendingSessions.filter(s => s.class_master_id === classId);
+  if (!list.length) return;
+  const cur = list[0];
+  openTimePicker({
+    title: '時間を一括変更',
+    sub: (cur.class_name || '') + '（' + list.length + '日ぶんまとめて）',
+    period: (cur.period == null ? null : parseInt(cur.period, 10)),
+    start: cur.start_time || '', end: cur.end_time || '',
+    onConfirm: function(res) {
+      pendingSessions.forEach(s => {
+        if (s.class_master_id === classId) {
+          s.period = res.period;
+          s.start_time = res.start;
+          s.end_time = res.end;
+        }
+      });
+      renderCsPreview();
+      showToast('⏱ ' + (cur.class_name || '') + ' の時間を一括変更しました', 'success');
+    }
+  });
 }
 
 async function confirmSessions() {
