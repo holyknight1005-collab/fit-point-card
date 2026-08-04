@@ -29669,16 +29669,33 @@ async function rbLoadClasses() {
   if (dateFrom) attQ += '&session_date=gte.' + dateFrom;
   if (dateTo) attQ += '&session_date=lte.' + dateTo;
 
-  let reps = [], sess = [], atts = [];
+  let reps = [], sess = [], atts = [], enrolls = [];
   try {
-    [reps, sess, atts] = await Promise.all([
+    [reps, sess, atts, enrolls] = await Promise.all([
       sbGet('class_reports', repQ).catch(() => []),
       sbGet('class_sessions', sesQ).catch(() => []),
-      sbGet('session_attendance', attQ).catch(() => [])
+      sbGet('session_attendance', attQ).catch(() => []),
+      // 受講人数（在籍名簿ベース・継続中のみ）。期間フィルタは付けない＝現在の在籍数。
+      sbGetActiveEnrollments('class_master_id=in.(' + classIds.join(',') + ')&select=class_master_id,student_id').catch(() => [])
     ]);
-  } catch (e) { reps = []; sess = []; atts = []; }
+  } catch (e) { reps = []; sess = []; atts = []; enrolls = []; }
   if (seq !== _rbLoadSeq) return;
-  reps = reps || []; sess = sess || []; atts = atts || [];
+  reps = reps || []; sess = sess || []; atts = atts || []; enrolls = enrolls || [];
+
+  // 受講人数：クラスごとに継続中の在籍生徒数（デモ/除外生徒を除く・重複student_id排除）
+  let enrollCountBy = {};
+  try {
+    const enrollStuIds = [...new Set(enrolls.map(e => e.student_id).filter(Boolean))];
+    const keepIds = new Set(await excludeDemoIds(enrollStuIds));
+    const seen = {};
+    enrolls.forEach(e => {
+      if (!e.class_master_id || !e.student_id) return;
+      if (!keepIds.has(e.student_id)) return;
+      const k = e.class_master_id;
+      (seen[k] || (seen[k] = new Set())).add(e.student_id);
+    });
+    Object.keys(seen).forEach(k => { enrollCountBy[k] = seen[k].size; });
+  } catch (e) { enrollCountBy = {}; }
 
   // セッション：class|date で代表1件（cycle_no があるものを優先）
   const sessBy = {};
@@ -29743,7 +29760,7 @@ async function rbLoadClasses() {
         total: total, menRate: menRate, makeup: makeup, denom: denom
       };
     });
-    _rbDataByClass[c.id] = { rows: rows };
+    _rbDataByClass[c.id] = { rows: rows, enrollCount: (enrollCountBy[c.id] || 0) };
   });
 
   // 一覧描画
@@ -29805,8 +29822,9 @@ function rbPrint() {
     const c = classById[cid] || {};
     const rows = ((_rbDataByClass[cid] || {}).rows || []).filter(r => r.filled || r.denom > 0); // 内容か出欠がある行だけ
     if (!rows.length) return;
-    // 受講人数＝直近回の denom の最大（おおよその在籍）
-    const enroll = rows.reduce((mx, r) => Math.max(mx, r.denom || 0), 0);
+    // 受講人数＝在籍名簿（class_enrollments・継続中）の実数。取得できない場合は出欠母数の最大でフォールバック。
+    const enrollReg = (_rbDataByClass[cid] || {}).enrollCount || 0;
+    const enroll = enrollReg > 0 ? enrollReg : rows.reduce((mx, r) => Math.max(mx, r.denom || 0), 0);
     inner += '<div style="margin-top:14px;page-break-inside:avoid">' +
       '<table style="border-collapse:collapse;width:100%;table-layout:fixed">' +
       '<colgroup><col style="width:9%"><col style="width:8%"><col style="width:18%"><col style="width:26%"><col style="width:27%"><col style="width:12%"></colgroup>' +
