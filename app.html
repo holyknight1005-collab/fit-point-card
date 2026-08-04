@@ -19506,6 +19506,25 @@ function closePhotoModal() {
 
 // ===== 授業マスター管理 =====
 const PERIODS = {1:['10:20','11:50'],2:['12:30','14:00'],3:['14:20','15:50'],4:['16:10','17:40'],5:['18:00','19:30'],6:['19:50','21:20']};
+// period=null（限に乗らないイレギュラー時間の授業）を、開始時刻から最寄りの限に寄せる。
+// 週間グリッドは「限」の行にセルを並べる構造のため、時間外授業も一番近い限の枠に表示する。
+// 実際の時刻ラベルはセル側で start_time/end_time をそのまま出すので、寄せるのは「どの行か」だけ。
+// 戻り値: 1〜6 の限番号（判定不能時は null）。
+function nearestPeriodFromTime(hhmm) {
+  if (!hhmm) return null;
+  const s = String(hhmm).slice(0, 5);
+  const m = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const mins = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  let best = null, bestDiff = Infinity;
+  for (const p in PERIODS) {
+    const st = PERIODS[p][0].split(':');
+    const pmin = parseInt(st[0], 10) * 60 + parseInt(st[1], 10);
+    const d = Math.abs(pmin - mins);
+    if (d < bestDiff) { bestDiff = d; best = parseInt(p, 10); }
+  }
+  return best;
+}
 const SUBJ_COLORS = {'英語':'#2D5FA6','国語':'#8B2020','数学':'#7B2D8B','理科':'#1A7340','社会':'#8B6020','その他':'#5A5A5A'};
 // 教科の統一表示順（英語が最需要）。グループ表示は必ずこの順に並べる。
 const SUBJECT_DISPLAY_ORDER = ['英語', '国語', '数学', '理科', '社会', 'その他'];
@@ -23935,8 +23954,9 @@ async function loadStuWeekGrid() {
     const mName = {}; (masters || []).forEach(m => { mName[m.id] = m; });
     const cell = {}, usedPeriods = {};
     (sessions || []).forEach(s => {
-      if (s.period == null) return;
-      const p = parseInt(s.period, 10);
+      // period=null（イレギュラー時間）は開始時刻から最寄りの限に寄せて表示する
+      const p = (s.period == null) ? nearestPeriodFromTime(s.start_time) : parseInt(s.period, 10);
+      if (p == null || isNaN(p)) return;
       // 長文読解などの preferred_period：自分のコマだけ
       const pref = prefOf[s.class_master_id];
       if (pref != null && String(pref) !== String(p)) return;
@@ -24171,12 +24191,13 @@ async function loadWeekGrid() {
     const cell = {};
     const usedPeriods = {};
     (sessions || []).forEach(s => {
-      if (s.period == null) return;
       const m = mName[s.class_master_id];
       // 部門で絞る：現在の部門の講座だけ表示（division 未設定は高校部扱い）。
       const mdiv = (m && m.division) ? m.division : '高校部';
       if (!wkDivMatch(mdiv)) return;
-      const p = parseInt(s.period, 10);
+      // period=null（イレギュラー時間）は開始時刻から最寄りの限に寄せて表示する
+      const p = (s.period == null) ? nearestPeriodFromTime(s.start_time) : parseInt(s.period, 10);
+      if (p == null || isNaN(p)) return;
       usedPeriods[p] = true;
       const tt = periodTimeFor(s.session_date, p, mdiv);
       const st = s.start_time ? String(s.start_time).slice(0,5) : (tt ? tt[0] : '');
