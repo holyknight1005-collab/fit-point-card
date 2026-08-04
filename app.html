@@ -29409,17 +29409,24 @@ function rbCircled(n) {
   return (n >= 1 && n <= 20) ? CIRC[n] : String(n);
 }
 // 回数ラベル：夏期など=①／通常=8-①（月-その月の回）
-function rbCycleLabel(sess, cat, seq) {
-  // cycle_no があればそれを優先（通常授業の登録済み回）。
-  // 無ければ日付昇順の連番 seq（1始まり）で採番＝夏期など。
-  // 補習回(is_makeup)も1回として連番に含める（給料計算に全回数が必要なため）。
-  if (sess && sess.cycle_no != null) {
-    const no = rbCircled(sess.cycle_no);
-    if (cat === 'normal' && sess.cycle_month != null) return sess.cycle_month + '-' + no;
-    return no;
+// 同一日に複数コマある場合、開始連番 startSeq から nComa 個の回数を並べる。
+// 通常授業(cycle_no あり)は登録済み回を基準に、その日のコマ数ぶん連番。
+// 例: 1コマ→「⑤」、2コマ連続→「⑤⑥」。cycle未登録(夏期)は日付連番。
+function rbCycleLabelRange(sess, cat, startSeq, nComa) {
+  nComa = nComa || 1;
+  if (sess && sess.cycle_no != null && cat === 'normal' && sess.cycle_month != null) {
+    const labels = [];
+    for (let i = 0; i < nComa; i++) labels.push(sess.cycle_month + '-' + rbCircled(sess.cycle_no + i));
+    return labels.join('');
   }
-  if (seq != null) return rbCircled(seq);
-  return '';
+  if (sess && sess.cycle_no != null) {
+    const labels = [];
+    for (let i = 0; i < nComa; i++) labels.push(rbCircled(sess.cycle_no + i));
+    return labels.join('');
+  }
+  const labels = [];
+  for (let i = 0; i < nComa; i++) labels.push(rbCircled(startSeq + i));
+  return labels.join('');
 }
 
 async function initReportBatch() {
@@ -29507,7 +29514,7 @@ async function rbLoadClasses() {
   if (dateTo) repQ += '&session_date=lte.' + dateTo;
   // セッション（回数）
   let sesQ = 'class_master_id=in.(' + classIds.join(',') + ')&session_date=lte.' + todayStr +
-    '&select=class_master_id,session_date,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date';
+    '&select=class_master_id,session_date,period,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date,period';
   if (dateFrom) sesQ += '&session_date=gte.' + dateFrom;
   if (dateTo) sesQ += '&session_date=lte.' + dateTo;
   // 出欠
@@ -29532,7 +29539,12 @@ async function rbLoadClasses() {
   sess.forEach(s => {
     const key = s.class_master_id + '|' + s.session_date;
     const prev = sessBy[key];
-    if (!prev || (prev.cycle_no == null && s.cycle_no != null)) sessBy[key] = s;
+    if (!prev) {
+      sessBy[key] = { rep: s, periods: 1 };
+    } else {
+      prev.periods += 1;
+      if (prev.rep.cycle_no == null && s.cycle_no != null) prev.rep = s;
+    }
   });
   // 出欠：class|date で present/makeup/absent 集計
   const attBy = {};
@@ -29560,11 +29572,16 @@ async function rbLoadClasses() {
     const rows = dateList.map(d => {
       const key = c.id + '|' + d;
       const r = repBy[key] || null;
-      const s = sessBy[key] || null;
+      const sInfo = sessBy[key] || null;   // { rep, periods } or null
+      const s = sInfo ? sInfo.rep : null;
       const a = attBy[key] || null;
-      // 授業日（セッション）がある日だけ回数をカウント（補習回も含める）
-      let seq = null;
-      if (s) { seqCounter++; seq = seqCounter; }
+      // 授業日がある日だけ回数をカウント。同一日に複数コマならコマ数ぶん連番を進める（給料＝回数）。
+      let cycleLabel = '';
+      if (sInfo) {
+        const nComa = sInfo.periods || 1;
+        cycleLabel = rbCycleLabelRange(s, cat, seqCounter + 1, nComa);
+        seqCounter += nComa;
+      }
       let total = null, menRate = null, makeup = 0, denom = 0;
       if (a) {
         denom = a.present + a.makeup + a.absent;
@@ -29573,7 +29590,7 @@ async function rbLoadClasses() {
       }
       return {
         date: d,
-        cycleLabel: rbCycleLabel(s, cat, seq),
+        cycleLabel: cycleLabel,
         theme: (r && r.theme) || '', content: (r && r.content) || '',
         student_notes: (r && r.student_notes) || '', homework: (r && r.homework) || '',
         filled: isFilled(r),
