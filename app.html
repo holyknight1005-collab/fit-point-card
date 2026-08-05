@@ -4402,7 +4402,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="sm-todo-rate-requester" style="display:flex;flex-direction:column;gap:6px"></div>
       </div><!-- /todo-manager-zone -->
       <!-- 内容編集モーダル（依頼グループのタイトル/詳細を未完了者へ一括反映） -->
-      <div id="todo-content-edit-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:500;align-items:center;justify-content:center">
+      <div id="todo-content-edit-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9999;align-items:center;justify-content:center">
         <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:380px">
           <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">✏️ 依頼内容を編集</div>
           <div style="font-size:11px;color:var(--muted);margin-bottom:12px">タイトル・詳細・期限が、未完了の担当者<span id="todo-content-edit-count"></span>に反映されます（完了済みの人は変わりません）。</div>
@@ -4419,7 +4419,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         </div>
       </div>
       <!-- 期日変更モーダル -->
-      <div id="todo-due-edit-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:500;align-items:center;justify-content:center">
+      <div id="todo-due-edit-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9999;align-items:center;justify-content:center">
         <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:360px">
           <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px">📅 期日を変更する</div>
           <input type="date" id="todo-due-edit-input" class="form-input-sm" style="margin-bottom:12px">
@@ -4429,8 +4429,8 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           </div>
         </div>
       </div>
-      <!-- 差し戻しモーダル -->
-      <div id="todo-reject-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:500;align-items:center;justify-content:center">
+      <!-- 差し戻しモーダル（開く時に body 直下へ付け替えて親の重なり順から脱出する） -->
+      <div id="todo-reject-box" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9999;align-items:center;justify-content:center">
         <div style="background:var(--bg);border-radius:var(--radius);padding:20px;margin:20px;width:100%;max-width:360px">
           <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px">🔙 差し戻す</div>
           <div id="todo-reject-target" style="font-size:11px;color:var(--muted);margin-bottom:12px"></div>
@@ -18065,6 +18065,19 @@ async function approveTodo(id) {
 // 引数は id のみ。表示用の名前/タイトル/期限は DB から引く。
 async function openTodoReject(id) {
   rejectingTodoId = id;
+  const box = document.getElementById('todo-reject-box');
+  // タブ等の親要素が作る重なり順(stacking context)に閉じ込められて背面に隠れるのを防ぐため、
+  // 開くたびに body 直下へ付け替えてから表示する。
+  if (box && box.parentElement !== document.body) document.body.appendChild(box);
+  const t = document.getElementById('todo-reject-target');
+  if (t) t.textContent = '読み込み中…';
+  document.getElementById('todo-reject-note').value = '';
+  document.getElementById('todo-reject-due').value = '';
+  // 先にモーダルを出す（DB取得が遅くても即座に反応する）
+  box.style.display = 'flex';
+  box.style.alignItems = 'center';
+  box.style.justifyContent = 'center';
+  // 表示用の名前/タイトル/期限は後から埋める
   let name = '', title = '', currentDue = '';
   try {
     const rows = await sbGet('staff_todos', 'id=eq.' + id + '&select=title,due_date,to:to_staff_id(name)');
@@ -18075,14 +18088,11 @@ async function openTodoReject(id) {
       name = (t0.to && t0.to.name) || '';
     }
   } catch (e) {}
-  const t = document.getElementById('todo-reject-target');
-  if (t) t.textContent = (name || '') + '：' + (title || '');
-  document.getElementById('todo-reject-note').value = '';
-  document.getElementById('todo-reject-due').value = currentDue || '';
-  const box = document.getElementById('todo-reject-box');
-  box.style.display = 'flex';
-  box.style.alignItems = 'center';
-  box.style.justifyContent = 'center';
+  // モーダルが閉じられていなければ（別操作されていなければ）反映
+  if (rejectingTodoId === id) {
+    if (t) t.textContent = (name || '') + '：' + (title || '');
+    document.getElementById('todo-reject-due').value = currentDue || '';
+  }
 }
 
 function closeTodoReject() {
@@ -18215,6 +18225,7 @@ function openTodoDueEdit(id, currentDue) {
   editingTodoId = id;
   document.getElementById('todo-due-edit-input').value = currentDue || '';
   const box = document.getElementById('todo-due-edit-box');
+  if (box && box.parentElement !== document.body) document.body.appendChild(box);
   box.style.display = 'flex';
   box.style.alignItems = 'center';
   box.style.justifyContent = 'center';
@@ -18264,6 +18275,7 @@ function openTodoContentEdit(idsPayload, title, detail, due) {
   const cnt = document.getElementById('todo-content-edit-count');
   if (cnt) cnt.textContent = ids.length ? '（' + ids.length + '名）' : '';
   const box = document.getElementById('todo-content-edit-box');
+  if (box && box.parentElement !== document.body) document.body.appendChild(box);
   box.style.display = 'flex';
   box.style.alignItems = 'center';
   box.style.justifyContent = 'center';
