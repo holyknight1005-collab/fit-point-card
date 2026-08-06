@@ -5918,7 +5918,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dki';
+const APP_VERSION = '20260702dkj';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32635,7 +32635,9 @@ function renderLineContacts() {
         '<div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + dirMark + preview + '</div>' +
         (assignee ? '<div style="font-size:10px;color:var(--orange-d)">担当: ' + escapeHtml(assignee) + (method ? ' ・ 最終' + method : '') + '</div>' : (method ? '<div style="font-size:10px;color:var(--muted)">最終' + method + '</div>' : '')) +
       '</div>' +
-      '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">' + badge + '<span style="font-size:10px;color:var(--muted)">' + when + '</span></div>' +
+      '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">' + badge + '<span style="font-size:10px;color:var(--muted)">' + when + '</span>' +
+        (r.unreplied > 0 ? '<button onclick="lineMarkHandledFromList(' + c.id + ',event)" style="margin-top:2px;font-size:10px;font-weight:700;padding:4px 9px;border:1px solid var(--green-d);background:var(--green-l);color:var(--green-d);border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">✓ 処理済</button>' : '') +
+      '</div>' +
     '</div>';
   }).join('');
 }
@@ -32759,6 +32761,36 @@ async function lineMarkHandled(contactId, kind) {
     showToast(kind === 'phone' ? '📞 電話対応を記録しました' : '💬 対応済にしました', 'success');
     renderLineContacts();
     if (kind === 'phone') closeLineThread(); // 電話はモーダルを閉じる。LINEはリンク遷移するので閉じない
+  } catch (e) { showToast('記録に失敗しました', 'error'); }
+}
+
+// 一覧カードから直接「処理済」にする（モーダルを開かない）。
+// Liny側で直接対応した等、アプリで返信/電話をしていないケース向け。要対応だけを解除する。
+async function lineMarkHandledFromList(contactId, ev) {
+  if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+  const now = new Date().toISOString();
+  const staffId = currentStaff ? currentStaff.staff_id : null;
+  const entry = lineContacts.find(r => r.contact.id === contactId);
+  try {
+    // 対応記録を out として残す（種別 direct＝直接対応）
+    await sbPost('line_messages', {
+      contact_id: contactId,
+      direction: 'out',
+      msg_type: 'text',
+      text: '（直接対応・処理済）',
+      handled_kind: 'direct',
+      sent_by_staff_id: staffId,
+      created_at: now
+    });
+    // 未返信 in を返信済に
+    await sbPatch('line_messages', 'contact_id=eq.' + contactId + '&direction=eq.in&replied=eq.false', { replied: true });
+    // contact に最終対応を記録
+    await sbPatch('line_contacts', 'id=eq.' + contactId, { last_reply_at: now, last_reply_by: staffId, last_reply_kind: 'direct', last_message_at: now });
+    if (entry) { entry.unreplied = 0; entry.contact.last_reply_kind = 'direct'; }
+    showToast('✓ 処理済にしました', 'success');
+    renderLineContacts();
+    // ホームの「LINE要対応」件数キャッシュを無効化（次にホームを開くと再集計される）
+    try { _homeLineContacts = null; } catch (e) {}
   } catch (e) { showToast('記録に失敗しました', 'error'); }
 }
 
