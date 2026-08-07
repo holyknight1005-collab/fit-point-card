@@ -5596,6 +5596,18 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <button onclick="openEnrollMatrix()" style="width:100%;margin-top:8px;padding:9px;background:linear-gradient(135deg,#2D6DB5,#184A86);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📋 受講マトリクス（名簿一覧でチェック）</button>
       </div>
       <div class="section-title">登録済み授業</div>
+      <!-- 通常講座の回数不足・はみ出しチェック（dkm） -->
+      <div style="background:var(--surface);border:1.5px solid var(--orange);border-radius:10px;padding:12px;margin-bottom:10px">
+        <div style="font-size:13px;font-weight:800;color:var(--orange-d);margin-bottom:4px">📊 通常講座の回数チェック</div>
+        <div style="font-size:10px;color:var(--muted);line-height:1.6;margin-bottom:8px">選んだ月について、基本4回に足りない講座と、最終回がその月内に終わらない（翌月以降にはみ出す）講座を洗い出します。年間回数固定の講座（超感覚英語など）は対象外です。</div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+          <button onclick="scChangeMonth(-1)" style="padding:6px 10px;border:1px solid var(--border);background:var(--surface);border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">‹</button>
+          <div id="sc-month-label" style="flex:1;text-align:center;font-size:14px;font-weight:800;color:var(--text)">—</div>
+          <button onclick="scChangeMonth(1)" style="padding:6px 10px;border:1px solid var(--border);background:var(--surface);border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">›</button>
+          <button onclick="runSessionCountCheck()" style="padding:6px 12px;border:none;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;font-family:'Noto Sans JP',sans-serif">チェック</button>
+        </div>
+        <div id="sc-result" style="font-size:12px;color:var(--muted)">「チェック」を押すと結果が出ます。</div>
+      </div>
       <button onclick="scanDuplicateMasters()" style="width:100%;margin-bottom:8px;padding:9px;background:var(--surface);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔍 重複マスターを点検</button>
       <div id="cm-dup-result" style="display:none;margin-bottom:10px"></div>
       <button onclick="cleanupOrphanSessions()" style="width:100%;margin-bottom:8px;padding:9px;background:var(--surface);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🧹 無効クラスの残骸授業を掃除</button>
@@ -5918,7 +5930,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dkl';
+const APP_VERSION = '20260702dkm';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -19851,6 +19863,7 @@ async function loadClassMasterList() {
     }
   } catch (e) { /* 数えられなくても一覧は出す */ }
   renderCmList();
+  try { scInitMonth(); scRenderMonthLabel(); } catch (e) {}
 }
 
 function setCmCategoryFilter(key) {
@@ -22981,6 +22994,137 @@ async function doCleanupOrphanSessions() {
 // 同名(＋division)で複数あるマスターを検出。無効＆全紐づきゼロのものだけ
 // ワンタップ掃除可。出欠がある重複は「⚠️手動確認」と明示し、自動削除させない。
 let dupScanData = [];  // [{key, name, division, rows:[{master, sessions, attend, enroll, check}]}]
+
+// ===== 通常講座の回数チェック（不足4回未満／月内はみ出し・dkm） =====
+// 対象：total_sessions 未設定の通常講座（年間回数固定の講習・超感覚英語などは除外）。
+// 回数=その月(cycle_month)のユニーク cycle_no 数（学校別回の重複は1回と数える）。
+// 不足＝ユニーク cycle_no < 4 ／ はみ出し＝最大 cycle_no の回の session_date が翌月以降。
+let scYear = null, scMonth = null; // 選択中のサイクル年・月
+
+function scInitMonth() {
+  if (scYear != null && scMonth != null) return;
+  const t = getTodayJST(); // 'YYYY-MM-DD'
+  const y = parseInt(t.slice(0, 4), 10);
+  const m = parseInt(t.slice(5, 7), 10);
+  scYear = y; scMonth = m;
+}
+
+function scRenderMonthLabel() {
+  const el = document.getElementById('sc-month-label');
+  if (el) el.textContent = scYear + '年 ' + scMonth + '月';
+}
+
+function scChangeMonth(delta) {
+  scInitMonth();
+  scMonth += delta;
+  if (scMonth < 1) { scMonth = 12; scYear--; }
+  else if (scMonth > 12) { scMonth = 1; scYear++; }
+  scRenderMonthLabel();
+  const res = document.getElementById('sc-result');
+  if (res) res.innerHTML = '<span style="color:var(--muted)">月を変えました。「チェック」を押してください。</span>';
+}
+
+// cycle_year の2桁保存バグ（26/27）を正規化
+function scNormYear(y) {
+  y = parseInt(y, 10);
+  if (isNaN(y)) return null;
+  if (y < 100) y += 2000;
+  return y;
+}
+
+async function runSessionCountCheck() {
+  scInitMonth();
+  scRenderMonthLabel();
+  const res = document.getElementById('sc-result');
+  if (res) res.innerHTML = '<span style="color:var(--muted)">集計中…</span>';
+
+  // 対象講座：現在の一覧（自分の担当／管理者は全部）から、total_sessions 未設定＝通常講座のみ
+  const targets = (classMasterList || []).filter(c => !c.total_sessions);
+  if (!targets.length) {
+    if (res) res.innerHTML = '<span style="color:var(--muted)">対象の通常講座がありません。</span>';
+    return;
+  }
+  const ids = targets.map(c => c.id);
+  let sessions = [];
+  try {
+    // その月(cycle_month)の回を取得。補習は回数に数えない。
+    sessions = await sbGet('class_sessions',
+      'class_master_id=in.(' + ids.join(',') + ')&cycle_month=eq.' + scMonth +
+      '&is_makeup=not.eq.true&select=class_master_id,cycle_year,cycle_no,session_date&limit=5000') || [];
+  } catch (e) {
+    if (res) res.innerHTML = '<span style="color:#B84A4A">取得に失敗しました：' + escapeHtml(e.message || String(e)) + '</span>';
+    return;
+  }
+  // 選択年でフィルタ（cycle_year 正規化）
+  sessions = sessions.filter(s => scNormYear(s.cycle_year) === scYear);
+
+  // 講座ごとに集計
+  const byClass = {}; // id -> { nos:Set, maxNo, maxNoDate }
+  sessions.forEach(s => {
+    const cid = s.class_master_id;
+    const rec = byClass[cid] || (byClass[cid] = { nos: new Set(), maxNo: -1, maxNoDate: null });
+    const no = parseInt(s.cycle_no, 10);
+    if (!isNaN(no)) {
+      rec.nos.add(no);
+      if (no > rec.maxNo) { rec.maxNo = no; rec.maxNoDate = s.session_date || null; }
+      else if (no === rec.maxNo && s.session_date && (!rec.maxNoDate || s.session_date > rec.maxNoDate)) {
+        rec.maxNoDate = s.session_date; // 同一最大noが複数（学校別回）なら最も遅い日を採用
+      }
+    }
+  });
+
+  // その月の末日（はみ出し判定用）
+  const lastDay = new Date(scYear, scMonth, 0).getDate();
+  const monthEndStr = scYear + '-' + String(scMonth).padStart(2, '0') + '-' + String(lastDay).padStart(2, '0');
+
+  const shortage = []; // 回数不足
+  const overflow = []; // 月内はみ出し
+  targets.forEach(c => {
+    const rec = byClass[c.id];
+    const cnt = rec ? rec.nos.size : 0;
+    const label = (c.subject ? '【' + c.subject + '】' : '') + (c.name || '(無名授業)');
+    if (cnt < 4) {
+      shortage.push({ label: label, cnt: cnt });
+    }
+    // はみ出し：最終回(最大cycle_no)の日付がその月末を超える
+    if (rec && rec.maxNoDate && rec.maxNoDate > monthEndStr) {
+      overflow.push({ label: label, no: rec.maxNo, date: rec.maxNoDate });
+    }
+  });
+
+  // 描画
+  let html = '';
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">対象 ' + targets.length + ' 講座を集計しました（' + scYear + '年' + scMonth + '月）。</div>';
+
+  if (!shortage.length && !overflow.length) {
+    html += '<div style="background:var(--green-l);border:1px solid var(--green-d);border-radius:8px;padding:10px;color:var(--green-d);font-size:12px;font-weight:700">✅ 問題なし：不足・はみ出しの通常講座はありません。</div>';
+  } else {
+    if (shortage.length) {
+      const zeroCnt = shortage.filter(x => x.cnt === 0).length;
+      html += '<div style="margin-bottom:10px">';
+      html += '<div style="font-size:12px;font-weight:800;color:#B84A4A;margin-bottom:4px">⚠️ 回数不足（4回未満）：' + shortage.length + '件' + (zeroCnt ? '（うち未登録 ' + zeroCnt + '件）' : '') + '</div>';
+      html += shortage.map(x =>
+        '<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 10px;background:#FDECEC;border:1px solid #E0A0A0;border-radius:6px;margin-bottom:4px">' +
+        '<span style="font-size:12px;color:var(--text)">' + escapeHtml(x.label) + (x.cnt === 0 ? '<span style="font-size:10px;color:#B84A4A;margin-left:6px">未登録</span>' : '') + '</span>' +
+        '<span style="font-size:12px;font-weight:700;color:#B84A4A;white-space:nowrap">' + x.cnt + ' / 4 回</span>' +
+        '</div>').join('');
+      html += '</div>';
+    }
+    if (overflow.length) {
+      html += '<div>';
+      html += '<div style="font-size:12px;font-weight:800;color:#B5721B;margin-bottom:4px">📅 月内に終わらない（最終回が翌月以降）：' + overflow.length + '件</div>';
+      html += overflow.map(x => {
+        const d = x.date; const md = d ? (parseInt(d.slice(5,7),10) + '/' + parseInt(d.slice(8,10),10)) : '';
+        return '<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 10px;background:var(--orange-l);border:1px solid var(--orange);border-radius:6px;margin-bottom:4px">' +
+          '<span style="font-size:12px;color:var(--text)">' + escapeHtml(x.label) + '</span>' +
+          '<span style="font-size:12px;font-weight:700;color:#B5721B;white-space:nowrap">第' + x.no + '回 → ' + md + '</span>' +
+          '</div>';
+      }).join('');
+      html += '</div>';
+    }
+  }
+  if (res) res.innerHTML = html;
+}
 
 async function scanDuplicateMasters() {
   const box = document.getElementById('cm-dup-result');
