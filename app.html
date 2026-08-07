@@ -1346,7 +1346,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div style="font-size:10px;color:var(--muted);margin-bottom:4px">学年</div>
       <div id="course-filter-grade" style="display:flex;flex-wrap:wrap;gap:4px"></div>
     </div>
-    <select class="form-select" id="course-class-select" style="margin-bottom:6px"></select>
+    <select class="form-select" id="course-class-select" onchange="if(document.getElementById('course-school-on')?.checked)loadCourseSchoolCycleOptions()" style="margin-bottom:6px"></select>
     <div id="course-filter-count" style="font-size:11px;color:var(--muted);margin-bottom:4px"></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:12px">※ 新しい授業・講習は先に「授業マスター管理」で作成してください</div>
 
@@ -1382,6 +1382,12 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </select>
       <input type="text" id="course-school-note" placeholder="高校名を入力（例：鹿島朝日）" style="display:none;width:100%;box-sizing:border-box;padding:9px 10px;font-size:13px;border:1.5px solid #6FA8E0;border-radius:8px;font-family:'Noto Sans JP',sans-serif">
       <div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.5">選択した全日を、この学校の回として登録します。出席表では回の見出しに🏫バッジが付きます。SSSは高校名を添えられます。</div>
+      <!-- dkr: 学校別回は「同じ回を学校別に分ける」ので、分割元の回番号を引き継ぐ -->
+      <div style="margin-top:8px;font-size:11px;color:#1E4276;font-weight:700">引き継ぐ回番号（この回は何回目の分割か）</div>
+      <select class="form-select" id="course-school-cycle" style="margin-top:4px">
+        <option value="">-- 回番号を選ぶ（推奨）--</option>
+      </select>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.5">全校まとめてやる回を学校別に分ける場合、その回番号（例：7月第4回）を選びます。未選択なら自動採番（続き番号）になります。</div>
     </div>
 
     <button onclick="submitCourseSessions()" style="width:100%;padding:13px;background:linear-gradient(135deg,#2D6DB5,#184A86);border:none;border-radius:10px;color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">✅ 選択した日に一括登録</button>
@@ -5932,7 +5938,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dkp';
+const APP_VERSION = '20260702dkr';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -26704,7 +26710,33 @@ function toggleCourseSchool() {
   if (!on) {
     const sel = document.getElementById('course-school-select'); if (sel) sel.value = '';
     const note = document.getElementById('course-school-note'); if (note) { note.value = ''; note.style.display = 'none'; }
+    const cyc = document.getElementById('course-school-cycle'); if (cyc) cyc.value = '';
+  } else {
+    loadCourseSchoolCycleOptions(); // dkr: 引き継ぐ回番号の選択肢を読み込む
   }
+}
+
+// dkr: 選択中の授業の登録済みサイクルを「引き継ぐ回番号」の選択肢にする。
+async function loadCourseSchoolCycleOptions() {
+  const cyc = document.getElementById('course-school-cycle');
+  if (!cyc) return;
+  const classId = document.getElementById('course-class-select')?.value;
+  cyc.innerHTML = '<option value="">-- 回番号を選ぶ（推奨）--</option>';
+  if (!classId) return;
+  try {
+    const rows = await sbGet('class_sessions',
+      'class_master_id=eq.' + classId + '&is_makeup=not.eq.true&select=cycle_year,cycle_month,cycle_no&order=cycle_year,cycle_month,cycle_no&limit=2000') || [];
+    const seen = new Set();
+    rows.forEach(r => {
+      if (r.cycle_no == null) return;
+      let y = parseInt(r.cycle_year, 10); if (y < 100) y += 2000;
+      const key = y + '-' + r.cycle_month + '-' + r.cycle_no;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const label = (r.cycle_month != null ? r.cycle_month + '月 第' + r.cycle_no + '回' : '第' + r.cycle_no + '回');
+      cyc.innerHTML += '<option value="' + key + '">' + label + '</option>';
+    });
+  } catch (e) { /* 取れなくても自動採番にフォールバック */ }
 }
 function onCourseSchoolChange() {
   const sel = document.getElementById('course-school-select');
@@ -26732,6 +26764,7 @@ function closeCourseSessionModal() {
   const box = document.getElementById('course-school-box'); if (box) box.style.display = 'none';
   const sel = document.getElementById('course-school-select'); if (sel) sel.value = '';
   const note = document.getElementById('course-school-note'); if (note) { note.value = ''; note.style.display = 'none'; }
+  const cyc = document.getElementById('course-school-cycle'); if (cyc) cyc.value = '';
 }
 
 async function submitCourseSessions() {
@@ -26745,9 +26778,18 @@ async function submitCourseSessions() {
   const schoolVal = courseSchoolValue();
   if (schoolOn && !schoolVal) { showToast('学校を選んでください', 'error'); return; }
   showLoading('登録中...');
+  // dkr: 学校別回で「引き継ぐ回番号」が指定されていれば、自動採番せずその回番号を全日に付ける。
+  let fixedCyc = null;
+  if (schoolOn && !isMakeup) {
+    const cv = (document.getElementById('course-school-cycle')?.value || '').trim();
+    if (cv) {
+      const parts = cv.split('-').map(x => parseInt(x, 10));
+      if (parts.length === 3 && !parts.some(isNaN)) fixedCyc = { year: parts[0], month: parts[1], no: parts[2] };
+    }
+  }
   // 補習でなければ、登録済みの続きから自動採番（通常=月4回サイクル / 講習=通し番号）
   let cursor = null, isNormal = true;
-  if (!isMakeup) {
+  if (!isMakeup && !fixedCyc) {
     try {
       isNormal = await isNormalClass(classId);
       const last = await fetchLastCycle(classId);
@@ -26757,22 +26799,24 @@ async function submitCourseSessions() {
   let success = 0;
   for (const d of dates) {
     const t = courseDateTimes[d] || courseBulkTime;
+    // fixedCyc があれば全日その番号、無ければ cursor（自動採番）
+    const useCyc = fixedCyc || cursor;
     const payload = {
       class_master_id: classId,
       session_date: d,
       period: t.period,           // カスタムは null
       start_time: t.start,
       end_time: t.end,
-      cycle_year: cursor ? cursor.year : null,
-      cycle_month: cursor ? cursor.month : null,
-      cycle_no: cursor ? cursor.no : null,
+      cycle_year: useCyc ? useCyc.year : null,
+      cycle_month: useCyc ? useCyc.month : null,
+      cycle_no: useCyc ? useCyc.no : null,
       is_makeup: isMakeup,
       school: schoolVal   // dhu: 学校別回（通常回は null）
     };
     try {
       await sbPost('class_sessions', payload);
       success++;
-      if (cursor) cursor = cycleNext(cursor, isNormal);
+      if (!fixedCyc && cursor) cursor = cycleNext(cursor, isNormal);
     } catch(e) {
       // dhu: school列が未追加の環境では school を外して再試行（それ以外＝重複はスキップ）
       if (/column|PGRST|400/i.test(e.message || '')) {
@@ -26780,7 +26824,7 @@ async function submitCourseSessions() {
           const p2 = Object.assign({}, payload); delete p2.school;
           await sbPost('class_sessions', p2);
           success++;
-          if (cursor) cursor = cycleNext(cursor, isNormal);
+          if (!fixedCyc && cursor) cursor = cycleNext(cursor, isNormal);
         } catch(e2) { /* 重複はスキップ */ }
       }
     }
@@ -31482,6 +31526,15 @@ function attCellHtml(sid, k) {
   if (!attStuInPeriod(sid, k.split('|')[1])) {
     return '<td style="text-align:center;padding:5px;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(0,0,0,0.05) 3px,rgba(0,0,0,0.05) 6px);color:var(--border)" title="担当コマ外">–</td>';
   }
+  // 学校別回：この回の対象校でない生徒は網かけ・タップ不可・母数外。
+  const scope = attSchoolScope(sid, k);
+  if (scope === 'out') {
+    return '<td style="text-align:center;padding:5px;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(45,109,181,0.08) 3px,rgba(45,109,181,0.08) 6px);color:#9CB6D4" title="この回は別の学校の回です">·</td>';
+  }
+  // SSS実校未設定など判定保留：網かけせず出席可のまま、⚠️で気づけるようにする。
+  const undecidedMark = (scope === 'undecided')
+    ? '<span style="position:absolute;top:-2px;left:1px;font-size:9px" title="SSSの実校が未設定です">⚠️</span>'
+    : '';
   const cell = attMatrix.cells[sid + '|' + k];
   if (!cell) {
     return '<td style="text-align:center;padding:5px;color:var(--border)">—</td>';
@@ -31495,7 +31548,7 @@ function attCellHtml(sid, k) {
   else { bg = 'var(--red-l)'; col = 'var(--red)'; mark = '✕'; }
   const dirtyDot = cell.dirty ? '<span style="position:absolute;top:1px;right:3px;font-size:8px;color:var(--orange-d)">●</span>' : '';
   return '<td style="text-align:center;padding:4px">' +
-    '<span onclick="toggleAttCell(\'' + sid + '\',\'' + k + '\')" style="position:relative;display:inline-block;width:34px;height:34px;line-height:34px;border-radius:8px;background:' + bg + ';color:' + col + ';font-weight:700;cursor:pointer;font-size:16px">' + mark + dirtyDot + '</span>' +
+    '<span onclick="toggleAttCell(\'' + sid + '\',\'' + k + '\')" style="position:relative;display:inline-block;width:34px;height:34px;line-height:34px;border-radius:8px;background:' + bg + ';color:' + col + ';font-weight:700;cursor:pointer;font-size:16px">' + mark + dirtyDot + undecidedMark + '</span>' +
     '</td>';
 }
 
@@ -31504,6 +31557,7 @@ function attRowRateHtml(sid) {
   attMatrix.sessKeys.forEach(k => {
     if (!attInEnrollRange(sid, k.split('|')[0])) return;   // 受講期間外は母数に入れない
     if (!attStuInPeriod(sid, k.split('|')[1])) return;     // 担当コマ外は母数に入れない
+    if (attSchoolShaded(sid, k)) return;                   // 学校別回の対象外は母数に入れない
     const c = attMatrix.cells[sid + '|' + k];
     if (!c) return;
     n++; if (c.status === 'present' || c.status === 'makeup') p++; // 補習も出席扱い
@@ -31794,6 +31848,34 @@ function attStartLabel(sid) {
   return lbl + 'から';
 }
 
+// 学校別回の対象判定（dkq）。session.school が設定されているとき、生徒がその学校の対象かを返す。
+// 戻り値: 'in'（対象）/ 'out'（対象外＝網かけ）/ 'undecided'（SSS実校未設定などで判定保留＝網かけせず出席可のまま⚠️表示）
+function attSchoolScope(sid, sessKey) {
+  if (!attMatrix || !attMatrix.sessInfo) return 'in';
+  const info = attMatrix.sessInfo[sessKey];
+  const sc = info && info.school ? String(info.school).trim() : '';
+  if (!sc) return 'in';                       // 通常回（学校指定なし）＝全員対象
+  const stu = attMatrix.students.find(s => s.id === sid);
+  if (!stu) return 'in';
+  const stuSchool = (stu.school || '').trim();
+  // SSS系の回：「SSS」または「SSS：実校名」
+  if (sc === 'SSS' || sc.indexOf('SSS：') === 0 || sc.indexOf('SSS:') === 0) {
+    if (stuSchool !== 'SSS') return 'out';    // そもそもSSS生徒でなければ対象外
+    const detail = sc.replace(/^SSS[：:]/, '').trim();
+    if (!detail) return 'in';                 // 「SSS」だけ＝SSS全員対象
+    const stuDetail = (stu.school_detail || '').trim();
+    if (!stuDetail) return 'undecided';       // SSS生徒だが実校未設定＝取りこぼし防止で保留
+    return (stuDetail === detail) ? 'in' : 'out';
+  }
+  // 通常校の回：students.school 完全一致
+  return (stuSchool === sc) ? 'in' : 'out';
+}
+
+// 学校別回で網かけ（対象外）にすべきか。undecided は網かけしない。
+function attSchoolShaded(sid, sessKey) {
+  return attSchoolScope(sid, sessKey) === 'out';
+}
+
 function renderAttMatrix() {
   const wrap = document.getElementById('att-matrix-wrap');
   if (!attMatrix || !attMatrix.students.length) return;
@@ -31855,6 +31937,7 @@ function attMatrixFooterHtml() {
     attMatrix.students.forEach(s => {
       if (!attInEnrollRange(s.id, k.split('|')[0])) return;   // 受講期間外は母数に入れない
       if (!attStuInPeriod(s.id, k.split('|')[1])) return;     // 担当コマ外は母数に入れない
+      if (attSchoolShaded(s.id, k)) return; // 学校別回の対象外は母数に入れない
       const c = attMatrix.cells[s.id + '|' + k];
       if (!c || !c.status) return;
       if (c.status === 'present') present++;
@@ -31885,6 +31968,7 @@ function toggleAttCell(sid, k) {
   // 受講期間外は記録対象にしない（誤タップで母数が戻るのを防ぐ）
   if (!attInEnrollRange(sid, k.split('|')[0])) return;
   if (!attStuInPeriod(sid, k.split('|')[1])) return;   // 担当コマ外はタップ不可
+  if (attSchoolShaded(sid, k)) return;                 // 学校別回の対象外はタップ不可（undecidedは可）
   const cellKey = sid + '|' + k;
   let cell = attMatrix.cells[cellKey];
   // 状態サイクル: present → absent → makeup（補習）→ present
