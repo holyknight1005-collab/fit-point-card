@@ -5930,7 +5930,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dkm';
+const APP_VERSION = '20260702dkn';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -23077,14 +23077,28 @@ async function runSessionCountCheck() {
   const lastDay = new Date(scYear, scMonth, 0).getDate();
   const monthEndStr = scYear + '-' + String(scMonth).padStart(2, '0') + '-' + String(lastDay).padStart(2, '0');
 
+  // 月別想定回数の上書きを取得（class_master_id -> expected_count）。無ければデフォルト4。
+  const targetMap = {};
+  try {
+    const tg = await sbGet('class_month_target',
+      'class_master_id=in.(' + ids.join(',') + ')&cycle_year=eq.' + scYear + '&cycle_month=eq.' + scMonth +
+      '&select=class_master_id,expected_count') || [];
+    tg.forEach(t => { if (t.class_master_id != null) targetMap[t.class_master_id] = t.expected_count; });
+  } catch (e) { /* テーブル未作成（SQL未適用）ならデフォルト4で続行 */ }
+  const expectedOf = (cid) => {
+    const v = targetMap[cid];
+    return (v == null || isNaN(v)) ? 4 : v;
+  };
+
   const shortage = []; // 回数不足
   const overflow = []; // 月内はみ出し
   targets.forEach(c => {
     const rec = byClass[c.id];
     const cnt = rec ? rec.nos.size : 0;
     const label = (c.subject ? '【' + c.subject + '】' : '') + (c.name || '(無名授業)');
-    if (cnt < 4) {
-      shortage.push({ label: label, cnt: cnt });
+    const expected = expectedOf(c.id);
+    if (cnt < expected) {
+      shortage.push({ label: label, cnt: cnt, expected: expected, id: c.id, isOverride: (targetMap[c.id] != null) });
     }
     // はみ出し：最終回(最大cycle_no)の日付がその月末を超える
     if (rec && rec.maxNoDate && rec.maxNoDate > monthEndStr) {
@@ -23102,11 +23116,14 @@ async function runSessionCountCheck() {
     if (shortage.length) {
       const zeroCnt = shortage.filter(x => x.cnt === 0).length;
       html += '<div style="margin-bottom:10px">';
-      html += '<div style="font-size:12px;font-weight:800;color:#B84A4A;margin-bottom:4px">⚠️ 回数不足（4回未満）：' + shortage.length + '件' + (zeroCnt ? '（うち未登録 ' + zeroCnt + '件）' : '') + '</div>';
+      html += '<div style="font-size:12px;font-weight:800;color:#B84A4A;margin-bottom:4px">⚠️ 回数不足（想定より少ない）：' + shortage.length + '件' + (zeroCnt ? '（うち未登録 ' + zeroCnt + '件）' : '') + '</div>';
       html += shortage.map(x =>
-        '<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 10px;background:#FDECEC;border:1px solid #E0A0A0;border-radius:6px;margin-bottom:4px">' +
-        '<span style="font-size:12px;color:var(--text)">' + escapeHtml(x.label) + (x.cnt === 0 ? '<span style="font-size:10px;color:#B84A4A;margin-left:6px">未登録</span>' : '') + '</span>' +
-        '<span style="font-size:12px;font-weight:700;color:#B84A4A;white-space:nowrap">' + x.cnt + ' / 4 回</span>' +
+        '<div style="padding:6px 10px;background:#FDECEC;border:1px solid #E0A0A0;border-radius:6px;margin-bottom:4px">' +
+        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center">' +
+        '<span style="font-size:12px;color:var(--text)">' + escapeHtml(x.label) + (x.cnt === 0 ? '<span style="font-size:10px;color:#B84A4A;margin-left:6px">未登録</span>' : '') + (x.isOverride ? '<span style="font-size:10px;color:#B5721B;margin-left:6px">想定' + x.expected + '回</span>' : '') + '</span>' +
+        '<span style="font-size:12px;font-weight:700;color:#B84A4A;white-space:nowrap">' + x.cnt + ' / ' + x.expected + ' 回</span>' +
+        '</div>' +
+        '<div style="text-align:right;margin-top:3px"><button onclick="scEditTarget(\'' + x.id + '\')" style="font-size:10px;padding:2px 8px;border:1px solid var(--border);background:var(--surface);border-radius:10px;cursor:pointer;color:var(--muted);font-family:\'Noto Sans JP\',sans-serif">想定回数を変更</button></div>' +
         '</div>').join('');
       html += '</div>';
     }
@@ -23124,6 +23141,49 @@ async function runSessionCountCheck() {
     }
   }
   if (res) res.innerHTML = html;
+}
+
+// 月別想定回数の上書きを登録/更新（class_month_target に upsert）。
+// scYear/scMonth はチェックで選択中の年月。J1化学・8月=1回 のようなイレギュラー用。
+async function scEditTarget(classId) {
+  const cur = prompt(scYear + '年' + scMonth + '月の想定回数を入力してください（基本は4。留学等で減る場合はその回数。空欄で「基本4回に戻す」）', '');
+  if (cur === null) return; // キャンセル
+  const trimmed = cur.trim();
+  const staffId = currentStaff ? (currentStaff.staff_id || null) : null;
+  const now = new Date().toISOString();
+  showLoading('保存中...');
+  try {
+    if (trimmed === '') {
+      // 空欄＝上書きを解除（基本4回に戻す）。既存行があれば expected_count=4 で更新（DELETE不可のため）。
+      const url = 'https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/class_month_target?on_conflict=class_master_id,cycle_year,cycle_month';
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify([{ class_master_id: classId, cycle_year: scYear, cycle_month: scMonth, expected_count: 4, note: '基本に戻す', created_by: staffId, updated_at: now }])
+      });
+    } else {
+      const n = parseInt(trimmed, 10);
+      if (isNaN(n) || n < 0 || n > 31) { hideLoading(); showToast('0〜31の数字で入力してください', 'error'); return; }
+      const url = 'https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/class_month_target?on_conflict=class_master_id,cycle_year,cycle_month';
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify([{ class_master_id: classId, cycle_year: scYear, cycle_month: scMonth, expected_count: n, note: null, created_by: staffId, updated_at: now }])
+      });
+      if (!res.ok) {
+        hideLoading();
+        if (res.status === 404 || res.status === 400) { showToast('保存先テーブルが未作成です（SQL適用が必要）', 'error'); }
+        else { showToast('保存に失敗しました（' + res.status + '）', 'error'); }
+        return;
+      }
+    }
+    hideLoading();
+    showToast('想定回数を保存しました', 'success');
+    runSessionCountCheck(); // 再集計して反映
+  } catch (e) {
+    hideLoading();
+    showToast('保存に失敗しました', 'error');
+  }
 }
 
 async function scanDuplicateMasters() {
