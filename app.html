@@ -4886,7 +4886,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     </div>
     <!-- 請求チェックタブ（石田授業の名簿で「請求チェック済み」の印） -->
     <div id="smcontent-billcheck" style="display:none">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">石田先生の担当授業（主担当＋追加担当）を受講中の生徒を、1人1行でまとめて表示します。請求チェックをしながら<b>「確認OK」の印</b>を付けていけます。印は<b>月ごと</b>に記録され、あとから見返せます。</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">石田先生の<b>通常授業</b>（主担当＋追加担当）ごとに、受講中の生徒名簿を並べます。請求チェックをしながら<b>「確認OK」の印</b>を付けていけます。印は<b>月ごと・授業ごと</b>に記録され、あとから見返せます。</div>
       <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
         <button onclick="bcChangeMonth(-1)" style="padding:8px 10px;font-size:14px;font-weight:800;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer">‹</button>
         <span id="bc-month-label" style="font-size:14px;font-weight:800;min-width:110px;text-align:center">―</span>
@@ -30244,7 +30244,7 @@ function rbCycleLabelRange(sess, cat, startSeq, nComa) {
 // 受講中の生徒を1人1行でまとめ、生徒×年月で「請求チェック済み」フラグを付ける。
 const BILLCHECK_STAFF_CODE = 'fit003';   // 対象講師（石田）
 let _bcYear = null, _bcMonth = null;     // 表示中の対象年月
-let _bcChecked = {};                     // student_id -> billing_checks 行（該当月）
+let _bcChecked = {};                     // "studentId::classId" -> billing_checks 行（該当月）
 
 function bcInitMonth() {
   if (_bcYear != null && _bcMonth != null) return;
@@ -30288,10 +30288,10 @@ async function bcLoadIshidaClasses() {
   cm.forEach(c => { allById[c.id] = c; });
 
   const classById = {};
-  // 主担当
-  cm.forEach(c => { if (c.teacher_staff_id === uuid) classById[c.id] = c; });
-  // 補助
-  ct.forEach(r => { const c = allById[r.class_master_id]; if (c) classById[c.id] = c; });
+  // 主担当（通常授業のみ）
+  cm.forEach(c => { if (c.teacher_staff_id === uuid && (c.category || 'normal') === 'normal') classById[c.id] = c; });
+  // 補助（通常授業のみ）
+  ct.forEach(r => { const c = allById[r.class_master_id]; if (c && (c.category || 'normal') === 'normal') classById[c.id] = c; });
   return { classById, ishidaName: ishida.name || '石田' };
 }
 
@@ -30313,7 +30313,7 @@ async function loadBillCheck() {
   }
   const classIds = Object.keys(classById);
   if (!classIds.length) {
-    if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">石田先生の担当授業が見つかりませんでした。</div>';
+    if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">石田先生の通常授業が見つかりませんでした。</div>';
     return;
   }
 
@@ -30328,15 +30328,16 @@ async function loadBillCheck() {
   // デモ生徒除外
   enrolls = await excludeDemoRows(enrolls, 'student_id');
 
-  // 生徒ごとに受講している石田授業をまとめる
-  const byStu = {};   // student_id -> [class名...]
+  // 授業ごとに受講中の生徒IDをまとめる
+  const byClass = {};   // classId -> Set(studentId)
+  const stuIdSet = new Set();
   enrolls.forEach(e => {
-    const c = classById[e.class_master_id];
-    if (!c) return;
-    if (!byStu[e.student_id]) byStu[e.student_id] = [];
-    if (!byStu[e.student_id].some(x => x.id === c.id)) byStu[e.student_id].push(c);
+    if (!classById[e.class_master_id]) return;
+    if (!byClass[e.class_master_id]) byClass[e.class_master_id] = new Set();
+    byClass[e.class_master_id].add(e.student_id);
+    stuIdSet.add(e.student_id);
   });
-  const stuIds = Object.keys(byStu);
+  const stuIds = Array.from(stuIdSet);
   if (!stuIds.length) {
     if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">受講中の生徒がいません。</div>';
     return;
@@ -30352,65 +30353,88 @@ async function loadBillCheck() {
   students.forEach(s => { stuById[s.id] = s; });
 
   // 該当月の billing_checks を取得（テーブル未作成でも落ちないよう try/catch）
+  // キーは "studentId::classId"
   _bcChecked = {};
   try {
     const checks = await sbGet('billing_checks',
-      'check_year=eq.' + _bcYear + '&check_month=eq.' + _bcMonth + '&scope=eq.ishida&select=id,student_id,checked,checked_by,checked_at') || [];
-    checks.forEach(c => { _bcChecked[c.student_id] = c; });
+      'check_year=eq.' + _bcYear + '&check_month=eq.' + _bcMonth + '&select=id,student_id,class_master_id,checked,checked_by,checked_at') || [];
+    checks.forEach(c => { _bcChecked[c.student_id + '::' + c.class_master_id] = c; });
   } catch (e) { _bcChecked = {}; }
 
-  // 並び順：チェック未 → チェック済み、かつ 学年 → よみがな
-  const rows = stuIds.map(id => {
-    const s = stuById[id] || { id: id, name: '(不明)' };
-    return { s: s, classes: byStu[id] || [] };
-  });
-  rows.sort((a, b) => {
-    const ca = _bcChecked[a.s.id] && _bcChecked[a.s.id].checked ? 1 : 0;
-    const cb = _bcChecked[b.s.id] && _bcChecked[b.s.id].checked ? 1 : 0;
-    if (ca !== cb) return ca - cb;   // 未チェックを上に
-    const ka = (a.s.name_kana || a.s.name || ''), kb = (b.s.name_kana || b.s.name || '');
-    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  // 授業の並び順：授業名（よみがな相当が無いので name 昇順）
+  const orderedClassIds = classIds.slice().sort((a, b) => {
+    const na = (classById[a].name || ''), nb = (classById[b].name || '');
+    return na < nb ? -1 : na > nb ? 1 : 0;
   });
 
-  const total = rows.length;
-  const done = rows.filter(r => _bcChecked[r.s.id] && _bcChecked[r.s.id].checked).length;
-
+  // 全体サマリー（授業数・のべ受講・チェック済み）
+  let grandTotal = 0, grandDone = 0;
+  orderedClassIds.forEach(cid => {
+    const ids = byClass[cid] ? Array.from(byClass[cid]) : [];
+    grandTotal += ids.length;
+    ids.forEach(sid => { if (_bcChecked[sid + '::' + cid] && _bcChecked[sid + '::' + cid].checked) grandDone++; });
+  });
   if (summary) {
     summary.style.display = 'block';
     summary.innerHTML =
       '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:#F7FAF7">' +
-        '<span style="font-size:13px;font-weight:800;color:#333">' + escapeHtml(ishidaName) + '先生の授業</span>' +
-        '<span style="font-size:12px;color:var(--muted)">受講中 <b style="color:#333">' + total + '</b>名</span>' +
-        '<span style="font-size:12px;color:var(--muted)">チェック済み <b style="color:#2E7D32">' + done + '</b> / ' + total + '</span>' +
+        '<span style="font-size:13px;font-weight:800;color:#333">' + escapeHtml(ishidaName) + '先生の通常授業</span>' +
+        '<span style="font-size:12px;color:var(--muted)">' + orderedClassIds.length + '授業</span>' +
+        '<span style="font-size:12px;color:var(--muted)">チェック済み <b style="color:#2E7D32">' + grandDone + '</b> / ' + grandTotal + '</span>' +
       '</div>';
   }
 
-  let html = '<div style="border:1px solid var(--line);border-radius:10px;overflow:hidden">';
-  rows.forEach(r => {
-    const s = r.s;
-    const chk = _bcChecked[s.id] && _bcChecked[s.id].checked;
-    const gradeTxt = s.grade ? fmtGrade(s.grade) : '';
-    const schoolTxt = s.school ? escapeHtml(s.school) : '';
-    const classNames = r.classes.map(c => escapeHtml(c.name)).join('、');
-    const meta = [gradeTxt, schoolTxt].filter(Boolean).map(escapeHtml).join(' / ');
-    const rowBg = chk ? '#EAF6EA' : '#fff';
-    html +=
-      '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);background:' + rowBg + '">' +
-        '<button onclick="bcToggle(\'' + s.id + '\')" style="flex-shrink:0;width:34px;height:34px;border-radius:8px;border:2px solid ' + (chk ? '#2E7D32' : '#CBD5CB') + ';background:' + (chk ? '#2E7D32' : '#fff') + ';color:#fff;font-size:18px;font-weight:900;cursor:pointer;line-height:1">' + (chk ? '✓' : '') + '</button>' +
-        '<div style="flex:1;min-width:0">' +
-          '<div style="font-size:14px;font-weight:700;color:#222">' + escapeHtml(s.name || '(不明)') + (meta ? ' <span style="font-size:11px;font-weight:500;color:var(--muted)">' + meta + '</span>' : '') + '</div>' +
-          '<div style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.4">' + classNames + '</div>' +
-        '</div>' +
-      '</div>';
+  // 授業ごとにセクションを描画
+  let html = '';
+  orderedClassIds.forEach(cid => {
+    const cls = classById[cid];
+    const ids = byClass[cid] ? Array.from(byClass[cid]) : [];
+    // 生徒の並び：未チェック→チェック済み、よみがな
+    const rows = ids.map(id => stuById[id] || { id: id, name: '(不明)' });
+    rows.sort((a, b) => {
+      const ca = _bcChecked[a.id + '::' + cid] && _bcChecked[a.id + '::' + cid].checked ? 1 : 0;
+      const cb = _bcChecked[b.id + '::' + cid] && _bcChecked[b.id + '::' + cid].checked ? 1 : 0;
+      if (ca !== cb) return ca - cb;
+      const ka = (a.name_kana || a.name || ''), kb = (b.name_kana || b.name || '');
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    });
+    const clsDone = rows.filter(s => _bcChecked[s.id + '::' + cid] && _bcChecked[s.id + '::' + cid].checked).length;
+
+    html += '<div style="margin-bottom:14px;border:1px solid var(--line);border-radius:10px;overflow:hidden">';
+    html += '<div style="padding:9px 12px;background:#EEF3F8;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+              '<span style="font-size:13px;font-weight:800;color:#1E4276">' + escapeHtml(cls.name) + '</span>' +
+              (cls.subject ? '<span style="font-size:11px;color:var(--muted)">' + escapeHtml(cls.subject) + '</span>' : '') +
+              '<span style="font-size:11px;color:var(--muted);margin-left:auto">' + clsDone + ' / ' + rows.length + ' 済</span>' +
+            '</div>';
+    if (!rows.length) {
+      html += '<div style="font-size:12px;color:var(--muted);padding:10px 12px">受講中の生徒はいません。</div>';
+    } else {
+      rows.forEach(s => {
+        const key = s.id + '::' + cid;
+        const chk = _bcChecked[key] && _bcChecked[key].checked;
+        const gradeTxt = s.grade ? fmtGrade(s.grade) : '';
+        const schoolTxt = s.school || '';
+        const meta = [gradeTxt, schoolTxt].filter(Boolean).map(escapeHtml).join(' / ');
+        const rowBg = chk ? '#EAF6EA' : '#fff';
+        html +=
+          '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);background:' + rowBg + '">' +
+            '<button onclick="bcToggle(\'' + s.id + '\',\'' + cid + '\')" style="flex-shrink:0;width:32px;height:32px;border-radius:8px;border:2px solid ' + (chk ? '#2E7D32' : '#CBD5CB') + ';background:' + (chk ? '#2E7D32' : '#fff') + ';color:#fff;font-size:17px;font-weight:900;cursor:pointer;line-height:1">' + (chk ? '✓' : '') + '</button>' +
+            '<div style="flex:1;min-width:0">' +
+              '<div style="font-size:14px;font-weight:700;color:#222">' + escapeHtml(s.name || '(不明)') + (meta ? ' <span style="font-size:11px;font-weight:500;color:var(--muted)">' + meta + '</span>' : '') + '</div>' +
+            '</div>' +
+          '</div>';
+      });
+    }
+    html += '</div>';
   });
-  html += '</div>';
   if (body) body.innerHTML = html;
 }
 
-// チェックのオン/オフを切り替えて billing_checks に保存
-async function bcToggle(studentId) {
+// チェックのオン/オフを切り替えて billing_checks に保存（生徒×授業×年月）
+async function bcToggle(studentId, classId) {
   bcInitMonth();
-  const existing = _bcChecked[studentId];
+  const key = studentId + '::' + classId;
+  const existing = _bcChecked[key];
   const nowChecked = !(existing && existing.checked);
   const by = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : (localStorage.getItem('fit_staff_id') || '');
   try {
@@ -30421,16 +30445,16 @@ async function bcToggle(studentId) {
       existing.checked = nowChecked; existing.checked_by = by;
     } else {
       // UPSERT（on_conflict + merge-duplicates で二重INSERTの409を防ぐ）
-      const res = await fetch(SB_URL + '/rest/v1/billing_checks?on_conflict=student_id,check_year,check_month,scope', {
+      const res = await fetch(SB_URL + '/rest/v1/billing_checks?on_conflict=student_id,class_master_id,check_year,check_month', {
         method: 'POST',
         headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
         body: JSON.stringify({
-          student_id: studentId, check_year: _bcYear, check_month: _bcMonth,
-          checked: nowChecked, checked_by: by, scope: 'ishida'
+          student_id: studentId, class_master_id: classId, check_year: _bcYear, check_month: _bcMonth,
+          checked: nowChecked, checked_by: by
         })
       });
       if (!res.ok) throw new Error(await res.text());
-      _bcChecked[studentId] = { student_id: studentId, checked: nowChecked, checked_by: by };
+      _bcChecked[key] = { student_id: studentId, class_master_id: classId, checked: nowChecked, checked_by: by };
     }
   } catch (e) {
     alert('保存に失敗しました。テーブル(billing_checks)のSQLが未適用の可能性があります。\n' + (e.message || ''));
@@ -30439,6 +30463,7 @@ async function bcToggle(studentId) {
   // 画面を再描画（並び順・サマリー更新のため）
   loadBillCheck();
 }
+
 
 async function initReportBatch() {
   const body = document.getElementById('rb-body');
