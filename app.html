@@ -4886,7 +4886,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     </div>
     <!-- 請求チェックタブ（石田授業の名簿で「請求チェック済み」の印） -->
     <div id="smcontent-billcheck" style="display:none">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">石田先生の<b>通常授業</b>（主担当＋追加担当）ごとに、受講中の生徒名簿を並べます。請求チェックをしながら<b>「確認OK」の印</b>を付けていけます。印は<b>月ごと・授業ごと</b>に記録され、あとから見返せます。</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">あなたが担当している<b>通常授業</b>（主担当＋追加担当）ごとに、受講中の生徒名簿を並べます。請求チェックをしながら<b>「確認OK」の印</b>を付けていけます。印は<b>月ごと・授業ごと</b>に記録され、あとから見返せます。</div>
       <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
         <button onclick="bcChangeMonth(-1)" style="padding:8px 10px;font-size:14px;font-weight:800;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer">‹</button>
         <span id="bc-month-label" style="font-size:14px;font-weight:800;min-width:110px;text-align:center">―</span>
@@ -30239,10 +30239,9 @@ function rbCycleLabelRange(sess, cat, startSeq, nComa) {
   return labels.join('');
 }
 
-// ===== 請求チェック（石田授業の名簿で「請求チェック済み」の印・dkt） =====
-// 石田先生(fit003)の担当授業（主担当＋class_teachers補助、kosotsu含む＝高卒も請求対象）を
-// 受講中の生徒を1人1行でまとめ、生徒×年月で「請求チェック済み」フラグを付ける。
-const BILLCHECK_STAFF_CODE = 'fit003';   // 対象講師（石田）
+// ===== 請求チェック（ログイン中スタッフ自身の通常授業の名簿で「請求チェック済み」の印・dkt） =====
+// ログイン中スタッフの担当授業（主担当＋class_teachers補助、通常授業=normalのみ）ごとに、
+// 受講中の生徒名簿を並べ、生徒×授業×年月で「請求チェック済み」フラグを付ける。
 let _bcYear = null, _bcMonth = null;     // 表示中の対象年月
 let _bcChecked = {};                     // "studentId::classId" -> billing_checks 行（該当月）
 
@@ -30271,14 +30270,22 @@ function initBillCheck() {
   loadBillCheck();
 }
 
-// 石田の担当授業（主担当＋補助、kosotsu含む・is_active）を取得
-async function bcLoadIshidaClasses() {
-  // staff から fit003 の UUID を引く
-  let staffRows = [];
-  try { staffRows = await sbGet('staff', 'select=id,staff_id,name') || []; } catch (e) { staffRows = []; }
-  const ishida = staffRows.find(s => String(s.staff_id || '').toLowerCase() === BILLCHECK_STAFF_CODE);
-  if (!ishida) return { classById: {}, ishidaName: '石田' };
-  const uuid = ishida.id;
+// ログイン中スタッフ自身の担当授業（主担当＋補助、通常授業のみ・is_active）を取得
+async function bcLoadMyClasses() {
+  // ログイン中スタッフの UUID・氏名
+  let uuid = (currentStaff && currentStaff.id) ? currentStaff.id : null;
+  let myName = (currentStaff && currentStaff.name) ? currentStaff.name : '';
+  // フォールバック：currentStaff が無ければ localStorage の staff_id から引く
+  if (!uuid) {
+    const code = localStorage.getItem('fit_staff_id') || '';
+    if (code) {
+      try {
+        const rows = await sbGet('staff', 'staff_id=eq.' + encodeURIComponent(code) + '&select=id,name') || [];
+        if (rows.length) { uuid = rows[0].id; myName = rows[0].name || myName; }
+      } catch (e) {}
+    }
+  }
+  if (!uuid) return { classById: {}, myName: myName || '担当者' };
 
   let cm = [], ct = [];
   try { cm = await sbGet('class_master', 'is_active=eq.true&select=id,name,subject,category,grade_level,teacher_staff_id') || []; } catch (e) { cm = []; }
@@ -30292,7 +30299,7 @@ async function bcLoadIshidaClasses() {
   cm.forEach(c => { if (c.teacher_staff_id === uuid && (c.category || 'normal') === 'normal') classById[c.id] = c; });
   // 補助（通常授業のみ）
   ct.forEach(r => { const c = allById[r.class_master_id]; if (c && (c.category || 'normal') === 'normal') classById[c.id] = c; });
-  return { classById, ishidaName: ishida.name || '石田' };
+  return { classById, myName: myName || '担当者' };
 }
 
 async function loadBillCheck() {
@@ -30303,17 +30310,17 @@ async function loadBillCheck() {
   if (summary) summary.style.display = 'none';
   if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中…</div>';
 
-  let classById = {}, ishidaName = '石田';
+  let classById = {}, myName = '担当者';
   try {
-    const r = await bcLoadIshidaClasses();
-    classById = r.classById; ishidaName = r.ishidaName;
+    const r = await bcLoadMyClasses();
+    classById = r.classById; myName = r.myName;
   } catch (e) {
     if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">担当授業を読み込めませんでした。</div>';
     return;
   }
   const classIds = Object.keys(classById);
   if (!classIds.length) {
-    if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">石田先生の通常授業が見つかりませんでした。</div>';
+    if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">あなたが担当している通常授業が見つかりませんでした。</div>';
     return;
   }
 
@@ -30378,7 +30385,7 @@ async function loadBillCheck() {
     summary.style.display = 'block';
     summary.innerHTML =
       '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:#F7FAF7">' +
-        '<span style="font-size:13px;font-weight:800;color:#333">' + escapeHtml(ishidaName) + '先生の通常授業</span>' +
+        '<span style="font-size:13px;font-weight:800;color:#333">' + escapeHtml(myName) + '先生の通常授業</span>' +
         '<span style="font-size:12px;color:var(--muted)">' + orderedClassIds.length + '授業</span>' +
         '<span style="font-size:12px;color:var(--muted)">チェック済み <b style="color:#2E7D32">' + grandDone + '</b> / ' + grandTotal + '</span>' +
       '</div>';
