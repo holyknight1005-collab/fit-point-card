@@ -142,6 +142,10 @@
           <label class="fld">受験者名（任意）</label>
           <input type="text" id="studentRef" placeholder="例: 山田太郎 / 空欄でも可">
         </div>
+        <div id="part1Toggle" class="hidden" style="margin:0 0 14px">
+          <button type="button" class="btn ghost sm" onclick="togglePart1Text()"><span id="part1ToggleLabel">選択肢テキストを表示</span></button>
+          <span class="muted" style="margin-left:8px">本番形式では非表示のまま音声で解答します</span>
+        </div>
         <div id="examBody"></div>
         <div class="flex-end" style="margin-top:16px">
           <button class="btn accent" onclick="submitExam()">採点する</button>
@@ -226,7 +230,8 @@
           <p class="muted">生成プロンプトの出力（JSON）を貼り付けて、まとめて登録します。<br>
             ・Part5: 設問の配列 <code>[{...},{...}]</code><br>
             ・Part6/7: 本文つき <code>{"passage_text":"...","questions":[...]}</code>、または複数セットの配列<br>
-            本文つきなら本文グループごと自動作成します。</p>
+            ・Part1: <code>{"image_url":"...","audio_url":"(任意)","questions":[{...}]}</code> の配列<br>
+            image_url/audio_url つきなら素材ごと自動登録します。</p>
           <textarea id="bulkJson" placeholder='[{"question_text":"...","choices":["a","b","c","d"],"correct_index":0,"explanation":"..."}]' style="min-height:140px"></textarea>
           <div class="flex-end"><button class="btn accent sm" onclick="bulkImport()">この内容を一括登録</button></div>
           <div id="bulkResult" class="muted" style="margin-top:8px"></div>
@@ -265,7 +270,7 @@ const SUPABASE_URL      = "https://jkkfdvvbpzkagbtpqkzp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "toeic-20260808f";
+const APP_VERSION = "toeic-20260808g";
 
 const PARTS = {
   1:{t:"写真描写",d:"写真を見て正しい説明を選ぶ",sec:"listening",choices:4,type:"photo"},
@@ -349,6 +354,7 @@ function goHome(){
 
 /* ================= 受験フロー ================= */
 let curSet=null, curPassages=[], curQuestions={}, examAnswers={};
+let showPart1Text=false; // Part1の選択肢テキスト表示トグル
 
 function renderPartGrid(){
   const g=document.getElementById("partGrid"); g.innerHTML="";
@@ -406,12 +412,25 @@ async function startExam(set){
   document.getElementById("examBadge").textContent="PART "+set.part+" · "+info.t;
   document.getElementById("examBadge").className="badge "+(info.sec==='listening'?'list':'read');
   document.getElementById("examTitle").textContent=set.title;
+  // Part1: 選択肢テキストは既定で非表示、トグルを表示
+  showPart1Text=false;
+  const pt=document.getElementById("part1Toggle");
+  if(set.part===1){pt.classList.remove("hidden");document.getElementById("part1ToggleLabel").textContent="選択肢テキストを表示";}
+  else pt.classList.add("hidden");
+  renderExamBody();
+}
+
+function togglePart1Text(){
+  showPart1Text=!showPart1Text;
+  document.getElementById("part1ToggleLabel").textContent=showPart1Text?"選択肢テキストを隠す":"選択肢テキストを表示";
   renderExamBody();
 }
 
 function renderExamBody(){
   const body=document.getElementById("examBody"); body.innerHTML="";
-  const nChoices=PARTS[curSet.part].choices;
+  const part=curSet.part;
+  const nChoices=PARTS[part].choices;
+  const isPart1=(part===1);
   let globalQ=0;
   curPassages.forEach(pas=>{
     const block=document.createElement("div");
@@ -420,16 +439,34 @@ function renderExamBody(){
       const img=document.createElement("img");img.className="q-img";img.src=pas.image_url;img.alt="写真";
       block.appendChild(img);
     }
+    const qlist=curQuestions[pas.id]||[];
+
+    // 音声: mp3があればそれ、なければWeb Speechで読み上げるボタン
     if(pas.audio_url){
       const wrap=document.createElement("div");wrap.className="q-audio";
       wrap.innerHTML=`<div class="muted">🎧 音声を再生してください</div><audio controls preload="none" src="${esc(pas.audio_url)}"></audio>`;
       block.appendChild(wrap);
+    }else if(isPart1 && qlist.length){
+      // Part1で音声なし → 選択肢A〜DをWeb Speechで読み上げ
+      const q0=qlist[0];
+      const scriptChoices=(Array.isArray(q0.choices)?q0.choices:[]).slice(0,nChoices);
+      const wrap=document.createElement("div");wrap.className="q-audio";
+      const btnId="spk"+Math.random().toString(36).slice(2,8);
+      wrap.innerHTML=`<div class="muted">🔊 音声（読み上げ）</div>
+        <button type="button" class="btn sm" id="${btnId}" style="margin-top:6px">▶ 選択肢を読み上げる</button>
+        <span class="muted" id="${btnId}_st" style="margin-left:8px"></span>`;
+      block.appendChild(wrap);
+      setTimeout(()=>{
+        const b=document.getElementById(btnId);
+        if(b) b.onclick=()=>speakChoices(scriptChoices,btnId+"_st");
+      },0);
     }
+
     if(pas.passage_text){
       const pt=document.createElement("div");pt.className="passage-text";pt.textContent=pas.passage_text;
       block.appendChild(pt);
     }
-    const qlist=curQuestions[pas.id]||[];
+
     qlist.forEach(q=>{
       globalQ++;
       const qb=document.createElement("div");qb.className="q-block";
@@ -438,7 +475,9 @@ function renderExamBody(){
       html+=`<div class="choices" data-qid="${q.id}">`;
       const letters=["A","B","C","D"];
       choices.slice(0,nChoices).forEach((c,i)=>{
-        html+=`<div class="choice" onclick="pickChoice('${q.id}',${i},this)"><span class="ltr">${letters[i]}</span><span>${esc(c)}</span></div>`;
+        // Part1で選択肢テキスト非表示のときは letter のみ表示
+        const label=(isPart1 && !showPart1Text)?"":esc(c);
+        html+=`<div class="choice" onclick="pickChoice('${q.id}',${i},this)"><span class="ltr">${letters[i]}</span><span>${label}</span></div>`;
       });
       html+=`</div>`;
       qb.innerHTML=html;
@@ -447,6 +486,24 @@ function renderExamBody(){
     body.appendChild(block);
   });
   if(globalQ===0) body.innerHTML="<p class='muted'>このテストには設問がまだ登録されていません。</p>";
+}
+
+// Part1の選択肢を順に読み上げ（A, B, C, D）
+function speakChoices(choices, statusId){
+  if(!("speechSynthesis" in window)){
+    const st=document.getElementById(statusId); if(st) st.textContent="この端末は読み上げ非対応です";
+    return;
+  }
+  window.speechSynthesis.cancel();
+  const letters=["A","B","C","D"];
+  const st=document.getElementById(statusId);
+  choices.forEach((c,i)=>{
+    const u=new SpeechSynthesisUtterance(letters[i]+". "+c);
+    u.lang="en-US"; u.rate=0.95;
+    if(i===0 && st) u.onstart=()=>{st.textContent="再生中…";};
+    if(i===choices.length-1 && st) u.onend=()=>{st.textContent="";};
+    window.speechSynthesis.speak(u);
+  });
 }
 
 function pickChoice(qid,idx,el){
@@ -754,6 +811,8 @@ async function bulkImport(){
     for(const set of sets){
       const body={set_id:editingSet.id, seq:pSeq++, passage_type:info.type};
       if(set.passage_text && String(set.passage_text).trim()) body.passage_text=String(set.passage_text).trim();
+      if(set.image_url && String(set.image_url).trim()) body.image_url=String(set.image_url).trim();
+      if(set.audio_url && String(set.audio_url).trim()) body.audio_url=String(set.audio_url).trim();
       const prows=await sbPostReturn("toeic_passages",body);
       const passageId=prows[0].id;
       let qSeq=1;
