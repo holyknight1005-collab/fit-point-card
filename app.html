@@ -4139,6 +4139,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <button onclick="switchManageTab('attendance',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📋 授業出欠</button>
       <button onclick="switchManageTab('attoverview',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📅 出欠一望</button>
       <button onclick="switchManageTab('attsheet',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🖨 出席表</button>
+      <button onclick="switchManageTab('billcheck',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">✅ 請求チェック</button>
       <button onclick="switchManageTab('reportbatch',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📝 報告書まとめ</button>
       <button onclick="switchManageTab('namefix',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">👤 氏名整備</button>
       <button onclick="switchManageTab('timetable',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🕐 時間割かぶり</button>
@@ -4882,6 +4883,18 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
       <div id="nf-summary" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
       <div id="nf-body"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">「更新」で読み込みます。</div></div>
+    </div>
+    <!-- 請求チェックタブ（石田授業の名簿で「請求チェック済み」の印） -->
+    <div id="smcontent-billcheck" style="display:none">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">石田先生の担当授業（主担当＋追加担当）を受講中の生徒を、1人1行でまとめて表示します。請求チェックをしながら<b>「確認OK」の印</b>を付けていけます。印は<b>月ごと</b>に記録され、あとから見返せます。</div>
+      <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
+        <button onclick="bcChangeMonth(-1)" style="padding:8px 10px;font-size:14px;font-weight:800;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer">‹</button>
+        <span id="bc-month-label" style="font-size:14px;font-weight:800;min-width:110px;text-align:center">―</span>
+        <button onclick="bcChangeMonth(1)" style="padding:8px 10px;font-size:14px;font-weight:800;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer">›</button>
+        <button onclick="loadBillCheck()" style="padding:8px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔄 更新</button>
+      </div>
+      <div id="bc-summary" style="display:none;margin-bottom:10px"></div>
+      <div id="bc-body"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">「更新」で読み込みます。</div></div>
     </div>
     <!-- 報告書まとめ印刷／CSV タブ -->
     <div id="smcontent-reportbatch" style="display:none">
@@ -5938,7 +5951,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dks';
+const APP_VERSION = '20260702dkt';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -30226,6 +30239,207 @@ function rbCycleLabelRange(sess, cat, startSeq, nComa) {
   return labels.join('');
 }
 
+// ===== 請求チェック（石田授業の名簿で「請求チェック済み」の印・dkt） =====
+// 石田先生(fit003)の担当授業（主担当＋class_teachers補助、kosotsu含む＝高卒も請求対象）を
+// 受講中の生徒を1人1行でまとめ、生徒×年月で「請求チェック済み」フラグを付ける。
+const BILLCHECK_STAFF_CODE = 'fit003';   // 対象講師（石田）
+let _bcYear = null, _bcMonth = null;     // 表示中の対象年月
+let _bcChecked = {};                     // student_id -> billing_checks 行（該当月）
+
+function bcInitMonth() {
+  if (_bcYear != null && _bcMonth != null) return;
+  const t = getTodayJST();               // 'YYYY-MM-DD'
+  _bcYear = Number(t.slice(0, 4));
+  _bcMonth = Number(t.slice(5, 7));
+}
+function bcRenderMonthLabel() {
+  const el = document.getElementById('bc-month-label');
+  if (el) el.textContent = _bcYear + '年' + _bcMonth + '月分';
+}
+function bcChangeMonth(delta) {
+  bcInitMonth();
+  let m = _bcMonth + delta, y = _bcYear;
+  if (m < 1) { m = 12; y--; }
+  if (m > 12) { m = 1; y++; }
+  _bcYear = y; _bcMonth = m;
+  bcRenderMonthLabel();
+  loadBillCheck();
+}
+function initBillCheck() {
+  bcInitMonth();
+  bcRenderMonthLabel();
+  loadBillCheck();
+}
+
+// 石田の担当授業（主担当＋補助、kosotsu含む・is_active）を取得
+async function bcLoadIshidaClasses() {
+  // staff から fit003 の UUID を引く
+  let staffRows = [];
+  try { staffRows = await sbGet('staff', 'select=id,staff_id,name') || []; } catch (e) { staffRows = []; }
+  const ishida = staffRows.find(s => String(s.staff_id || '').toLowerCase() === BILLCHECK_STAFF_CODE);
+  if (!ishida) return { classById: {}, ishidaName: '石田' };
+  const uuid = ishida.id;
+
+  let cm = [], ct = [];
+  try { cm = await sbGet('class_master', 'is_active=eq.true&select=id,name,subject,category,grade_level,teacher_staff_id') || []; } catch (e) { cm = []; }
+  try { ct = await sbGet('class_teachers', 'staff_id=eq.' + uuid + '&select=class_master_id') || []; } catch (e) { ct = []; }
+
+  const allById = {};
+  cm.forEach(c => { allById[c.id] = c; });
+
+  const classById = {};
+  // 主担当
+  cm.forEach(c => { if (c.teacher_staff_id === uuid) classById[c.id] = c; });
+  // 補助
+  ct.forEach(r => { const c = allById[r.class_master_id]; if (c) classById[c.id] = c; });
+  return { classById, ishidaName: ishida.name || '石田' };
+}
+
+async function loadBillCheck() {
+  bcInitMonth();
+  bcRenderMonthLabel();
+  const body = document.getElementById('bc-body');
+  const summary = document.getElementById('bc-summary');
+  if (summary) summary.style.display = 'none';
+  if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中…</div>';
+
+  let classById = {}, ishidaName = '石田';
+  try {
+    const r = await bcLoadIshidaClasses();
+    classById = r.classById; ishidaName = r.ishidaName;
+  } catch (e) {
+    if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">担当授業を読み込めませんでした。</div>';
+    return;
+  }
+  const classIds = Object.keys(classById);
+  if (!classIds.length) {
+    if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">石田先生の担当授業が見つかりませんでした。</div>';
+    return;
+  }
+
+  // 受講中（継続中）の enrollment を取得。ended_on が空 or 未来日＝在籍。
+  const todayStr = getTodayJST();
+  let enrolls = [];
+  try {
+    enrolls = await sbGet('class_enrollments',
+      'class_master_id=in.(' + classIds.join(',') + ')&select=class_master_id,student_id,ended_on') || [];
+  } catch (e) { enrolls = []; }
+  enrolls = enrolls.filter(e => !e.ended_on || String(e.ended_on) >= todayStr);
+  // デモ生徒除外
+  enrolls = await excludeDemoRows(enrolls, 'student_id');
+
+  // 生徒ごとに受講している石田授業をまとめる
+  const byStu = {};   // student_id -> [class名...]
+  enrolls.forEach(e => {
+    const c = classById[e.class_master_id];
+    if (!c) return;
+    if (!byStu[e.student_id]) byStu[e.student_id] = [];
+    if (!byStu[e.student_id].some(x => x.id === c.id)) byStu[e.student_id].push(c);
+  });
+  const stuIds = Object.keys(byStu);
+  if (!stuIds.length) {
+    if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">受講中の生徒がいません。</div>';
+    return;
+  }
+
+  // 生徒情報を取得
+  let students = [];
+  try {
+    students = await sbGet('students',
+      'id=in.(' + stuIds.join(',') + ')&select=id,name,name_kana,grade,school,school_detail') || [];
+  } catch (e) { students = []; }
+  const stuById = {};
+  students.forEach(s => { stuById[s.id] = s; });
+
+  // 該当月の billing_checks を取得（テーブル未作成でも落ちないよう try/catch）
+  _bcChecked = {};
+  try {
+    const checks = await sbGet('billing_checks',
+      'check_year=eq.' + _bcYear + '&check_month=eq.' + _bcMonth + '&scope=eq.ishida&select=id,student_id,checked,checked_by,checked_at') || [];
+    checks.forEach(c => { _bcChecked[c.student_id] = c; });
+  } catch (e) { _bcChecked = {}; }
+
+  // 並び順：チェック未 → チェック済み、かつ 学年 → よみがな
+  const rows = stuIds.map(id => {
+    const s = stuById[id] || { id: id, name: '(不明)' };
+    return { s: s, classes: byStu[id] || [] };
+  });
+  rows.sort((a, b) => {
+    const ca = _bcChecked[a.s.id] && _bcChecked[a.s.id].checked ? 1 : 0;
+    const cb = _bcChecked[b.s.id] && _bcChecked[b.s.id].checked ? 1 : 0;
+    if (ca !== cb) return ca - cb;   // 未チェックを上に
+    const ka = (a.s.name_kana || a.s.name || ''), kb = (b.s.name_kana || b.s.name || '');
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+
+  const total = rows.length;
+  const done = rows.filter(r => _bcChecked[r.s.id] && _bcChecked[r.s.id].checked).length;
+
+  if (summary) {
+    summary.style.display = 'block';
+    summary.innerHTML =
+      '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:#F7FAF7">' +
+        '<span style="font-size:13px;font-weight:800;color:#333">' + escapeHtml(ishidaName) + '先生の授業</span>' +
+        '<span style="font-size:12px;color:var(--muted)">受講中 <b style="color:#333">' + total + '</b>名</span>' +
+        '<span style="font-size:12px;color:var(--muted)">チェック済み <b style="color:#2E7D32">' + done + '</b> / ' + total + '</span>' +
+      '</div>';
+  }
+
+  let html = '<div style="border:1px solid var(--line);border-radius:10px;overflow:hidden">';
+  rows.forEach(r => {
+    const s = r.s;
+    const chk = _bcChecked[s.id] && _bcChecked[s.id].checked;
+    const gradeTxt = s.grade ? fmtGrade(s.grade) : '';
+    const schoolTxt = s.school ? escapeHtml(s.school) : '';
+    const classNames = r.classes.map(c => escapeHtml(c.name)).join('、');
+    const meta = [gradeTxt, schoolTxt].filter(Boolean).map(escapeHtml).join(' / ');
+    const rowBg = chk ? '#EAF6EA' : '#fff';
+    html +=
+      '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);background:' + rowBg + '">' +
+        '<button onclick="bcToggle(\'' + s.id + '\')" style="flex-shrink:0;width:34px;height:34px;border-radius:8px;border:2px solid ' + (chk ? '#2E7D32' : '#CBD5CB') + ';background:' + (chk ? '#2E7D32' : '#fff') + ';color:#fff;font-size:18px;font-weight:900;cursor:pointer;line-height:1">' + (chk ? '✓' : '') + '</button>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:14px;font-weight:700;color:#222">' + escapeHtml(s.name || '(不明)') + (meta ? ' <span style="font-size:11px;font-weight:500;color:var(--muted)">' + meta + '</span>' : '') + '</div>' +
+          '<div style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.4">' + classNames + '</div>' +
+        '</div>' +
+      '</div>';
+  });
+  html += '</div>';
+  if (body) body.innerHTML = html;
+}
+
+// チェックのオン/オフを切り替えて billing_checks に保存
+async function bcToggle(studentId) {
+  bcInitMonth();
+  const existing = _bcChecked[studentId];
+  const nowChecked = !(existing && existing.checked);
+  const by = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : (localStorage.getItem('fit_staff_id') || '');
+  try {
+    if (existing && existing.id) {
+      // UPDATE
+      await sbPatch('billing_checks', 'id=eq.' + existing.id,
+        { checked: nowChecked, checked_by: by, checked_at: new Date().toISOString() });
+      existing.checked = nowChecked; existing.checked_by = by;
+    } else {
+      // UPSERT（on_conflict + merge-duplicates で二重INSERTの409を防ぐ）
+      const res = await fetch(SB_URL + '/rest/v1/billing_checks?on_conflict=student_id,check_year,check_month,scope', {
+        method: 'POST',
+        headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify({
+          student_id: studentId, check_year: _bcYear, check_month: _bcMonth,
+          checked: nowChecked, checked_by: by, scope: 'ishida'
+        })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      _bcChecked[studentId] = { student_id: studentId, checked: nowChecked, checked_by: by };
+    }
+  } catch (e) {
+    alert('保存に失敗しました。テーブル(billing_checks)のSQLが未適用の可能性があります。\n' + (e.message || ''));
+    return;
+  }
+  // 画面を再描画（並び順・サマリー更新のため）
+  loadBillCheck();
+}
+
 async function initReportBatch() {
   const body = document.getElementById('rb-body');
   try {
@@ -33181,7 +33395,7 @@ function switchManageTab(tab, el) {
   // manage-* 系（授業管理など）
   const manageTabs = ['class-master','check-item','mission','quiz'];
   // smcontent-* 系（小メニューから統合したタブ）
-  const menuTabs = ['report','todo','line','teamtask','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','attoverview','attsheet','reportbatch','namefix','timetable','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','prospects','interview','examreq','shakei','studentreg','demo','revenue','tsushin'];
+  const menuTabs = ['report','todo','line','teamtask','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','attoverview','attsheet','billcheck','reportbatch','namefix','timetable','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','prospects','interview','examreq','shakei','studentreg','demo','revenue','tsushin'];
   manageTabs.forEach(t => {
     const el2 = document.getElementById('manage-' + t);
     if (el2) el2.style.display = 'none';
@@ -33233,6 +33447,7 @@ function switchManageTab(tab, el) {
   if (tab === 'attendance') initAttendanceTab();
   if (tab === 'attoverview') initAttOverview();
   if (tab === 'attsheet') initAttSheet();
+  if (tab === 'billcheck') initBillCheck();
   if (tab === 'reportbatch') initReportBatch();
   if (tab === 'namefix') initNameFix();
   if (tab === 'timetable') { loadTimetableConflicts(); loadLongtextPeriods(); }
