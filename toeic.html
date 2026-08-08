@@ -217,6 +217,15 @@
           <h2 class="sec">設問グループを追加</h2>
           <div id="edNewPassage"></div>
         </div>
+
+        <div id="edBulkArea" style="border-top:2px dashed var(--line);margin:18px 0;padding-top:18px">
+          <h2 class="sec">JSON一括投入</h2>
+          <p class="muted">生成プロンプトの出力（JSON配列）を貼り付けて、まとめて登録します。<br>
+            テキスト系（Part5/6/7）は本文なしなら新しいグループを自動作成します。設問だけを一括登録できます。</p>
+          <textarea id="bulkJson" placeholder='[{"question_text":"...","choices":["a","b","c","d"],"correct_index":0,"explanation":"..."}]' style="min-height:140px"></textarea>
+          <div class="flex-end"><button class="btn accent sm" onclick="bulkImport()">この内容を一括登録</button></div>
+          <div id="bulkResult" class="muted" style="margin-top:8px"></div>
+        </div>
       </div>
     </div>
 
@@ -249,7 +258,7 @@ const SUPABASE_URL      = "https://jjkfdvvbpzkagbtpqkzp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "toeic-20260808a";
+const APP_VERSION = "toeic-20260808b";
 
 const PARTS = {
   1:{t:"写真描写",d:"写真を見て正しい説明を選ぶ",sec:"listening",choices:4,type:"photo"},
@@ -675,6 +684,56 @@ async function addPassage(){
     await renderEditorPassages();
     renderNewPassageForm();
   }catch(e){toast("失敗: "+e.message);}
+}
+
+async function bulkImport(){
+  const raw=document.getElementById("bulkJson").value.trim();
+  const out=document.getElementById("bulkResult");
+  if(!raw){out.textContent="JSONを貼り付けてください。";return;}
+  let arr;
+  try{
+    // コードブロック記号が混じっても許容
+    const cleaned=raw.replace(/```json/gi,"").replace(/```/g,"").trim();
+    arr=JSON.parse(cleaned);
+  }catch(e){out.innerHTML="<span style='color:var(--ng)'>JSONの解析に失敗しました。形式を確認してください。</span>";return;}
+  if(!Array.isArray(arr)||!arr.length){out.innerHTML="<span style='color:var(--ng)'>JSON配列が空です。</span>";return;}
+
+  // バリデーション
+  const nChoices=PARTS[editingSet.part].choices;
+  for(let i=0;i<arr.length;i++){
+    const q=arr[i];
+    if(!Array.isArray(q.choices)||q.choices.length<nChoices){
+      out.innerHTML=`<span style='color:var(--ng)'>${i+1}問目: choices が${nChoices}個必要です。</span>`;return;
+    }
+    if(typeof q.correct_index!=="number"||q.correct_index<0||q.correct_index>=nChoices){
+      out.innerHTML=`<span style='color:var(--ng)'>${i+1}問目: correct_index が不正です（0〜${nChoices-1}）。</span>`;return;
+    }
+  }
+
+  out.textContent="登録中…";
+  try{
+    // テキスト系で本文不要 → 空グループを1つ作ってそこへ全設問を入れる
+    let passageId;
+    const info=PARTS[editingSet.part];
+    let existing=[];try{existing=await sbGet("toeic_passages",`set_id=eq.${editingSet.id}&order=seq.desc&limit=1`);}catch(e){}
+    const nextSeq=existing.length?existing[0].seq+1:1;
+    const prows=await sbPostReturn("toeic_passages",{set_id:editingSet.id,seq:nextSeq,passage_type:info.type});
+    passageId=prows[0].id;
+
+    let seq=1;
+    for(const q of arr){
+      await sbPost("toeic_questions",{
+        passage_id:passageId, seq:seq++,
+        question_text:(q.question_text||"").trim()||null,
+        choices:q.choices.slice(0,nChoices),
+        correct_index:q.correct_index,
+        explanation:(q.explanation||"").trim()||null
+      });
+    }
+    out.innerHTML=`<span style='color:var(--ok)'>${arr.length}問を登録しました。</span>`;
+    document.getElementById("bulkJson").value="";
+    await renderEditorPassages();
+  }catch(e){out.innerHTML="<span style='color:var(--ng)'>登録失敗: "+esc(e.message)+"</span>";}
 }
 
 async function loadAdminResults(){
