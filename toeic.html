@@ -270,7 +270,7 @@ const SUPABASE_URL      = "https://jkkfdvvbpzkagbtpqkzp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "toeic-20260808g";
+const APP_VERSION = "toeic-20260808h";
 
 const PARTS = {
   1:{t:"写真描写",d:"写真を見て正しい説明を選ぶ",sec:"listening",choices:4,type:"photo"},
@@ -331,6 +331,11 @@ async function sbPatch(table, query, body){
   const url = SUPABASE_URL+"/rest/v1/"+table+"?"+query;
   const r = await fetch(url,{method:"PATCH",headers:sbHeaders({"Prefer":"return=minimal"}),body:JSON.stringify(body)});
   if(!r.ok) throw new Error(table+" PATCH "+r.status+" "+(await r.text()));
+}
+async function sbDelete(table, query){
+  const url = SUPABASE_URL+"/rest/v1/"+table+"?"+query;
+  const r = await fetch(url,{method:"DELETE",headers:sbHeaders({"Prefer":"return=minimal"})});
+  if(!r.ok) throw new Error(table+" DELETE "+r.status+" "+(await r.text()));
 }
 
 /* ---------- UI ヘルパ ---------- */
@@ -635,9 +640,28 @@ async function loadAdminSets(){
       const b=document.createElement("button");b.className="btn sm";b.textContent="編集";b.onclick=()=>openEditor(s);
       const t=document.createElement("button");t.className="btn ghost sm";t.textContent=s.is_active?"非公開に":"公開に";
       t.onclick=async()=>{try{await sbPatch("toeic_sets","id=eq."+s.id,{is_active:!s.is_active});loadAdminSets();}catch(e){toast(e.message);}};
-      wrap.appendChild(b);wrap.appendChild(t);row.appendChild(wrap);list.appendChild(row);
+      const d=document.createElement("button");d.className="btn ghost sm";d.textContent="削除";d.style.color="var(--ng)";
+      d.onclick=()=>deleteSet(s);
+      wrap.appendChild(b);wrap.appendChild(t);wrap.appendChild(d);row.appendChild(wrap);list.appendChild(row);
     });
   }catch(e){list.innerHTML="<p class='muted'>失敗: "+esc(e.message)+"</p>";}
+}
+
+async function deleteSet(s){
+  if(!confirm(`「${s.title}」を削除します。\nこのテストの設問もすべて削除されます（受験結果は残ります）。\n元に戻せません。よろしいですか？`)) return;
+  try{
+    let passages=[];
+    try{passages=await sbGet("toeic_passages",`set_id=eq.${s.id}&select=id`);}catch(e){}
+    for(const p of passages){
+      try{await sbDelete("toeic_questions",`passage_id=eq.${p.id}`);}catch(e){}
+    }
+    try{await sbDelete("toeic_passages",`set_id=eq.${s.id}`);}catch(e){}
+    await sbDelete("toeic_sets",`id=eq.${s.id}`);
+    toast("削除しました");
+    loadAdminSets();
+  }catch(e){
+    toast("削除失敗: "+e.message);
+  }
 }
 
 async function openEditor(set){
