@@ -4839,7 +4839,8 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <option value="summer">☀️ 夏期講習</option>
           <option value="winter">⛄ 冬期講習</option>
           <option value="spring">🌸 春期講習</option>
-          <option value="regular">📗 通常授業</option>
+          <option value="normal">📗 通常授業</option>
+          <option value="kosotsu">🎓 高卒</option>
           <option value="">📚 すべて</option>
         </select>
         <button onclick="loadAttOverview()" style="padding:8px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔄 更新</button>
@@ -4850,7 +4851,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
     <!-- 出席表タブ -->
     <div id="smcontent-attsheet" style="display:none">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">生徒1人ごとに1枚の出席表を発行します。<b>種別（夏期／通常）ごとに別シート</b>です。夏期は出欠のみ、通常はコメント欄付き。通常はコメントCSVをダウンロード→別管理で記入→読み込みで反映できます。</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">生徒1人ごとに1枚の出席表を発行します。<b>種別（夏期／通常）ごとに別シート</b>です。夏期は出欠のみ、通常は<b>学校ごとにコメントを直接入力・保存</b>できます（CSV読み込みも可）。<b>✓確認済</b>で抜け漏れチェック、面談での遅延依頼は<b>⏸保留</b>にすると未入力に数えません。</div>
       <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
         <select class="form-select" id="as-division-select" onchange="loadAttSheet()" style="flex:1;min-width:100px;font-size:13px">
           <option value="中学部">🎓 中学部</option>
@@ -4868,6 +4869,10 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="as-comment-bar" style="display:none;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
         <button onclick="downloadAttSheetCommentCsv()" style="padding:7px 12px;font-size:12px;font-weight:700;border:1px solid #2D6CB6;border-radius:8px;background:#EAF2FB;color:#1E4276;cursor:pointer;font-family:'Noto Sans JP',sans-serif">⬇️ コメントCSVダウンロード</button>
         <label style="padding:7px 12px;font-size:12px;font-weight:700;border:1px solid #2D6CB6;border-radius:8px;background:#EAF2FB;color:#1E4276;cursor:pointer;font-family:'Noto Sans JP',sans-serif">⬆️ コメントCSV読み込み<input type="file" accept=".csv" onchange="importAttSheetCommentCsv(this)" style="display:none"></label>
+        <select class="form-select" id="as-scope-select" onchange="loadAttSheet()" style="font-size:12px;padding:6px 8px;min-width:130px">
+          <option value="all">👥 全学校を表示</option>
+          <option value="mine">🙋 自分の担当分のみ</option>
+        </select>
         <span id="as-comment-status" style="font-size:11px;color:var(--muted)"></span>
       </div>
       <div id="as-body"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">「更新」で読み込みます。</div></div>
@@ -5951,7 +5956,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dkt';
+const APP_VERSION = '20260702dkv';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29778,7 +29783,9 @@ async function loadAttOverview() {
 // ============================================================
 let _asLoaded = false;
 let _asData = null;          // { division, category, ym, students:[{id,name,num,grade,school,subjects:[{name,days:[{date,md,wd,per,status}]}]}] }
-let _asComments = {};        // student_id -> comment 文字列（CSV読込で反映）
+let _asComments = {};        // student_id -> comment 文字列（DB＋CSV読込で反映）
+let _asMeta = {};            // student_id -> { id, confirmed, confirmed_by, on_hold, hold_note } DB由来
+let _asMyStuIds = null;      // 自分の担当授業を受講中の生徒IDセット（scope=mine 用）
 
 const AS_CAT_LABEL = { summer:'夏期講習', normal:'通常授業', winter:'冬期講習', spring:'春期講習' };
 const AS_CAT_SHORT = { summer:'夏期', normal:'通常', winter:'冬期', spring:'春期' };
@@ -29928,48 +29935,108 @@ async function loadAttSheet() {
     // コメントバー（通常のみ）
     if (cbar) cbar.style.display = isNormal ? 'flex' : 'none';
 
+    // 通常種別：DBからコメント・確認済/保留メタを読み込む（この月分）
+    if (isNormal) {
+      await asLoadCommentsFromDb(y, mo, students);
+    }
+
     // 一覧描画（学校ごとに見出し＋折りたたみ）
     let html = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' +
       escapeHtml(AS_CAT_LABEL[category] || category) + '・' + (isSummer ? '全期間' : (y + '年' + mo + '月')) + '　対象 ' + students.length + '名' +
       (isNormal ? '（コメント欄あり）' : '（出欠のみ）') + '</div>';
 
-    // 学校ごとにグループ化（students は 学校→学年→氏名 でソート済み）
+    // scope=mine：自分の担当授業を受講中の生徒だけに絞る（通常のみ）
+    let viewStudents = students;
+    const scopeSel = document.getElementById('as-scope-select');
+    const scope = (isNormal && scopeSel) ? scopeSel.value : 'all';
+    if (isNormal && scope === 'mine') {
+      const myIds = await asLoadMyStudentIds();
+      viewStudents = students.filter(st => myIds.has(st.id));
+      if (!viewStudents.length) {
+        body.innerHTML = html + '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">あなたの担当授業を受講中の生徒は、この月・種別にいません。</div>';
+        return;
+      }
+    }
+
+    // 学校ごとにグループ化（viewStudents は 学校→学年→氏名 でソート済み）
     const groups = [];
     const gIndex = {};
-    students.forEach((st, idx) => {
+    viewStudents.forEach((st) => {
+      const idx = students.indexOf(st); // openAttSheetDoc は _asData.students のindexを使う
       const sc = st.school || '(学校未設定)';
       let g = gIndex[sc];
       if (g == null) { g = groups.length; gIndex[sc] = g; groups.push({ school: sc, items: [] }); }
       groups[g].items.push({ st: st, idx: idx });
     });
 
+    // 1生徒分のカード（通常＝コメント編集＋確認済/保留、それ以外＝従来）
     const cardHtml = (st, idx) => {
-      const hasComment = isNormal && _asComments[st.id] && _asComments[st.id].trim();
-      return '<div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:9px 12px;background:var(--surface)">' +
-        '<div style="flex:1;min-width:0">' +
-          '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(st.name) +
-          (st.num !== '' ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">No.' + escapeHtml(String(st.num)) + '</span>' : '') + '</div>' +
-          '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade)) : '') +
-          '　受講 ' + st.subjects.length + '科目' +
-          (isNormal ? (hasComment ? '　<span style="color:var(--green-d);font-weight:700">✓コメント有</span>' : '　<span style="color:#B08A2A">コメント未</span>') : '') +
-          '</div></div>' +
-        '<button onclick="openAttSheetDoc(' + idx + ')" style="padding:6px 14px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 出席表</button>' +
-        '</div>';
+      if (!isNormal) {
+        return '<div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:9px 12px;background:var(--surface)">' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(st.name) +
+            (st.num !== '' ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">No.' + escapeHtml(String(st.num)) + '</span>' : '') + '</div>' +
+            '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade)) : '') + '　受講 ' + st.subjects.length + '科目</div>' +
+          '</div>' +
+          '<button onclick="openAttSheetDoc(' + idx + ')" style="padding:6px 14px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 出席表</button>' +
+          '</div>';
+      }
+      const meta = _asMeta[st.id] || {};
+      const cmt = _asComments[st.id] || '';
+      const hasComment = !!cmt.trim();
+      const onHold = !!meta.on_hold;
+      const confirmed = !!meta.confirmed;
+      // ステータスバッジ
+      let badge;
+      if (onHold) badge = '<span style="color:#7A5AA8;font-weight:700">⏸ 保留（遅延依頼）</span>';
+      else if (!hasComment) badge = '<span style="color:#B08A2A;font-weight:700">● コメント未</span>';
+      else if (confirmed) badge = '<span style="color:var(--green-d);font-weight:700">✓ 確認済</span>';
+      else badge = '<span style="color:#2D6CB6;font-weight:700">✎ 入力済（未確認）</span>';
+      // 左端の帯色
+      const bar = onHold ? '#7A5AA8' : (!hasComment ? '#E5C158' : (confirmed ? '#3B9E5B' : '#2D6CB6'));
+
+      return '<div style="border:1px solid var(--border);border-radius:10px;padding:9px 12px;background:var(--surface);border-left:4px solid ' + bar + '">' +
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(st.name) +
+            (st.num !== '' ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">No.' + escapeHtml(String(st.num)) + '</span>' : '') +
+            '　<span style="font-size:11px;font-weight:400">' + badge + '</span></div>' +
+            '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade)) : '') + '　受講 ' + st.subjects.length + '科目</div>' +
+          '</div>' +
+          '<button onclick="openAttSheetDoc(' + idx + ')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨</button>' +
+        '</div>' +
+        '<textarea id="as-cmt-' + st.id + '" onchange="asOnCommentEdit(\'' + st.id + '\')" placeholder="コメントを入力…" style="width:100%;box-sizing:border-box;font-size:12px;line-height:1.5;border:1px solid var(--border);border-radius:8px;padding:6px 8px;resize:vertical;min-height:46px;font-family:\'Noto Sans JP\',sans-serif;background:var(--bg);color:var(--text)">' + escapeHtml(cmt) + '</textarea>' +
+        '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">' +
+          '<button onclick="asSaveComment(\'' + st.id + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid #2D6CB6;border-radius:7px;background:#EAF2FB;color:#1E4276;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 保存</button>' +
+          '<button onclick="asToggleConfirmed(\'' + st.id + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (confirmed ? '#3B9E5B' : '#CBD5CB') + ';border-radius:7px;background:' + (confirmed ? '#EAF6EA' : '#fff') + ';color:' + (confirmed ? '#2E7D32' : '#666') + ';cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (confirmed ? '✓ 確認済' : '□ 確認する') + '</button>' +
+          '<button onclick="asToggleHold(\'' + st.id + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (onHold ? '#7A5AA8' : '#CBD5CB') + ';border-radius:7px;background:' + (onHold ? '#F1EBF8' : '#fff') + ';color:' + (onHold ? '#5E3B8A' : '#666') + ';cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (onHold ? '⏸ 保留中' : '⏸ 保留') + '</button>' +
+          (meta.confirmed_by ? '<span style="font-size:10px;color:var(--muted)">確認:' + escapeHtml(resolveStaffName(meta.confirmed_by)) + '</span>' : '') +
+        '</div>' +
+      '</div>';
     };
 
     html += '<div style="display:flex;flex-direction:column;gap:8px">';
     groups.forEach((g, gi) => {
       const bodyId = 'as-school-body-' + gi;
       const caretId = 'as-school-caret-' + gi;
-      // 未コメント件数（通常のみ）
-      let missCount = 0;
-      if (isNormal) g.items.forEach(it => { if (!(_asComments[it.st.id] && _asComments[it.st.id].trim())) missCount++; });
+      // 抜け漏れ＝コメント空欄 かつ 保留でない（通常のみ）。保留数も別集計。
+      let missCount = 0, holdCount = 0, doneCount = 0;
+      if (isNormal) g.items.forEach(it => {
+        const m = _asMeta[it.st.id] || {};
+        const has = _asComments[it.st.id] && _asComments[it.st.id].trim();
+        if (m.on_hold) holdCount++;
+        else if (!has) missCount++;
+        else doneCount++;
+      });
       html += '<div style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--bg)">' +
         '<div onclick="toggleAsSchool(' + gi + ')" style="display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;user-select:none;background:var(--surface)">' +
           '<span id="' + caretId + '" style="font-size:12px;color:var(--muted);transition:transform 0.2s;display:inline-block">▶</span>' +
           '<span style="font-size:13px;font-weight:800;color:var(--text)">' + escapeHtml(g.school) + '</span>' +
           '<span style="font-size:11px;font-weight:700;color:var(--muted);background:var(--bg);border:1px solid var(--border);border-radius:20px;padding:1px 9px">' + g.items.length + '名</span>' +
-          (isNormal && missCount > 0 ? '<span style="font-size:11px;font-weight:700;color:#B08A2A;margin-left:auto">未' + missCount + '</span>' : '') +
+          (isNormal ? '<span style="margin-left:auto;display:flex;gap:8px;align-items:center">' +
+            (missCount > 0 ? '<span style="font-size:11px;font-weight:800;color:#B08A2A">未' + missCount + '</span>' : '<span style="font-size:11px;font-weight:800;color:#3B9E5B">✓完了</span>') +
+            (holdCount > 0 ? '<span style="font-size:11px;font-weight:700;color:#7A5AA8">保留' + holdCount + '</span>' : '') +
+          '</span>' : '') +
         '</div>' +
         '<div id="' + bodyId + '" style="display:none;flex-direction:column;gap:6px;padding:8px 10px">' +
           g.items.map(it => cardHtml(it.st, it.idx)).join('') +
@@ -30811,6 +30878,148 @@ function rbCsv() {
 
 
 // コメントCSVダウンロード（通常のみ）
+// ===== 出席表コメントの DB 連携・抜け漏れチェック（dku） =====
+// DB（student_month_comments）からこの月分のコメント・確認済/保留を読み込む
+async function asLoadCommentsFromDb(year, month, students) {
+  _asComments = {};
+  _asMeta = {};
+  if (!students || !students.length) return;
+  const ids = students.map(s => s.id);
+  try {
+    const rows = await sbGet('student_month_comments',
+      'cmt_year=eq.' + year + '&cmt_month=eq.' + month +
+      '&student_id=in.(' + ids.join(',') + ')' +
+      '&select=id,student_id,comment,confirmed,confirmed_by,confirmed_at,on_hold,hold_note') || [];
+    rows.forEach(r => {
+      if (r.comment != null) _asComments[r.student_id] = r.comment;
+      _asMeta[r.student_id] = {
+        id: r.id, confirmed: !!r.confirmed, confirmed_by: r.confirmed_by || '',
+        on_hold: !!r.on_hold, hold_note: r.hold_note || ''
+      };
+    });
+  } catch (e) {
+    // テーブル未作成でも落とさない（CSV読込のみで動作）
+    console.warn('student_month_comments 読み込み失敗（SQL未適用の可能性）', e);
+  }
+}
+
+// 自分（ログイン中スタッフ）の担当授業を受講中の生徒IDセット
+async function asLoadMyStudentIds() {
+  if (_asMyStuIds) return _asMyStuIds;
+  const set = new Set();
+  let uuid = (currentStaff && currentStaff.id) ? currentStaff.id : null;
+  if (!uuid) { _asMyStuIds = set; return set; }
+  try {
+    let cm = await sbGet('class_master', 'is_active=eq.true&select=id,teacher_staff_id') || [];
+    let ct = await sbGet('class_teachers', 'staff_id=eq.' + uuid + '&select=class_master_id') || [];
+    const myClassIds = new Set();
+    cm.forEach(c => { if (c.teacher_staff_id === uuid) myClassIds.add(c.id); });
+    ct.forEach(r => myClassIds.add(r.class_master_id));
+    if (myClassIds.size) {
+      const todayStr = getTodayJST();
+      let en = await sbGet('class_enrollments',
+        'class_master_id=in.(' + Array.from(myClassIds).join(',') + ')&select=student_id,ended_on') || [];
+      en.forEach(e => { if (!e.ended_on || String(e.ended_on) >= todayStr) set.add(e.student_id); });
+    }
+  } catch (e) { console.warn('担当生徒の取得に失敗', e); }
+  _asMyStuIds = set;
+  return set;
+}
+
+// textarea 編集時：メモリの _asComments に反映（保存は「💾保存」で）
+function asOnCommentEdit(sid) {
+  const ta = document.getElementById('as-cmt-' + sid);
+  if (ta) _asComments[sid] = ta.value;
+}
+
+// この生徒のコメント・メタを DB に upsert（共通）
+async function asUpsertComment(sid, patch) {
+  if (!_asData) return false;
+  const y = _asData.y, mo = _asData.mo;
+  const by = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : (localStorage.getItem('fit_staff_id') || '');
+  const meta = _asMeta[sid];
+  const bodyBase = { updated_at: new Date().toISOString(), updated_by: by };
+  try {
+    if (meta && meta.id) {
+      await sbPatch('student_month_comments', 'id=eq.' + meta.id, Object.assign({}, bodyBase, patch));
+    } else {
+      const res = await fetch(SB_URL + '/rest/v1/student_month_comments?on_conflict=student_id,cmt_year,cmt_month', {
+        method: 'POST',
+        headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=representation' },
+        body: JSON.stringify(Object.assign({ student_id: sid, cmt_year: y, cmt_month: mo }, bodyBase, patch))
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const arr = await res.json();
+      if (arr && arr[0]) {
+        _asMeta[sid] = Object.assign(_asMeta[sid] || {}, { id: arr[0].id });
+      }
+    }
+    return true;
+  } catch (e) {
+    alert('保存に失敗しました。テーブル(student_month_comments)のSQLが未適用の可能性があります。\n' + (e.message || ''));
+    return false;
+  }
+}
+
+// CSV読み込み分をまとめて DB へ upsert（生徒×当月のコメント）
+async function asBulkSaveComments(sids) {
+  if (!_asData || !sids || !sids.length) return 0;
+  const y = _asData.y, mo = _asData.mo;
+  const by = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : (localStorage.getItem('fit_staff_id') || '');
+  const nowIso = new Date().toISOString();
+  const payload = sids.map(sid => ({
+    student_id: sid, cmt_year: y, cmt_month: mo,
+    comment: (_asComments[sid] || ''), updated_at: nowIso, updated_by: by
+  }));
+  try {
+    const res = await fetch(SB_URL + '/rest/v1/student_month_comments?on_conflict=student_id,cmt_year,cmt_month', {
+      method: 'POST',
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return sids.length;
+  } catch (e) {
+    alert('CSVの保存に失敗しました。テーブル(student_month_comments)のSQLが未適用の可能性があります。\n' + (e.message || ''));
+    return 0;
+  }
+}
+
+// コメント本文を保存
+async function asSaveComment(sid) {
+  const ta = document.getElementById('as-cmt-' + sid);
+  const val = ta ? ta.value : (_asComments[sid] || '');
+  _asComments[sid] = val;
+  const ok = await asUpsertComment(sid, { comment: val });
+  if (ok) { showToast('コメントを保存しました', 'success'); loadAttSheet(); }
+}
+
+// 確認済みフラグの切り替え
+async function asToggleConfirmed(sid) {
+  const meta = _asMeta[sid] || {};
+  const next = !meta.confirmed;
+  const by = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : (localStorage.getItem('fit_staff_id') || '');
+  // 未保存のtextarea内容も一緒に保存
+  const ta = document.getElementById('as-cmt-' + sid);
+  const patch = { confirmed: next, confirmed_by: next ? by : null, confirmed_at: next ? new Date().toISOString() : null };
+  if (ta) { patch.comment = ta.value; _asComments[sid] = ta.value; }
+  _asMeta[sid] = Object.assign(meta, { confirmed: next, confirmed_by: next ? by : '' });
+  const ok = await asUpsertComment(sid, patch);
+  if (ok) loadAttSheet();
+}
+
+// 保留（遅延依頼）フラグの切り替え
+async function asToggleHold(sid) {
+  const meta = _asMeta[sid] || {};
+  const next = !meta.on_hold;
+  const ta = document.getElementById('as-cmt-' + sid);
+  const patch = { on_hold: next };
+  if (ta) { patch.comment = ta.value; _asComments[sid] = ta.value; }
+  _asMeta[sid] = Object.assign(meta, { on_hold: next });
+  const ok = await asUpsertComment(sid, patch);
+  if (ok) loadAttSheet();
+}
+
 function downloadAttSheetCommentCsv() {
   if (!_asData || !_asData.isNormal) { showToast('通常授業のみコメントを使用します', 'info'); return; }
   const rows = [['student_id', '氏名', 'No', '学校', '学年', 'コメント']];
@@ -30853,19 +31062,23 @@ function importAttSheetCommentCsv(input) {
       if (cmIdx < 0) cmIdx = header.length - 1; // 見つからなければ末尾列
       if (idIdx < 0) { showToast('student_id 列が見つかりません', 'error'); input.value = ''; return; }
       const validIds = new Set(_asData.students.map(s => s.id));
-      let hit = 0;
+      const changed = [];
       for (let i = 1; i < table.length; i++) {
         const row = table[i];
         if (!row || !row.length) continue;
         const sid = (row[idIdx] || '').trim();
         if (!sid || !validIds.has(sid)) continue;
         _asComments[sid] = (row[cmIdx] || '');
-        hit++;
+        changed.push(sid);
       }
       const stEl = document.getElementById('as-comment-status');
-      if (stEl) stEl.textContent = hit + '件のコメントを反映しました';
-      showToast('コメント ' + hit + '件を反映しました', 'success');
-      loadAttSheet(); // 一覧の「コメント有/未」表示を更新
+      if (stEl) stEl.textContent = changed.length + '件を反映中…';
+      // 反映分を DB へ保存してから再描画（保存しないと再読込で消える）
+      asBulkSaveComments(changed).then(saved => {
+        if (stEl) stEl.textContent = saved + '件のコメントを保存しました';
+        showToast('コメント ' + saved + '件を保存しました', 'success');
+        loadAttSheet();
+      });
     } catch (e) {
       showToast('CSV読み込みに失敗：' + (e.message || ''), 'error');
     }
