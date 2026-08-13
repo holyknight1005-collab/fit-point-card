@@ -5956,7 +5956,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dkv';
+const APP_VERSION = '20260702dkw';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6080,6 +6080,28 @@ async function sbGet(table, query) {
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+// PostgREST のデフォルト上限（1000行）を超えるデータを、offset ページングで全件取得する。
+// 出欠一望など「多数の授業×多数の生徒×多数の日付」で1000行を超えるクエリに使う。
+async function sbGetAll(table, query, pageSize) {
+  const size = pageSize || 1000;
+  let offset = 0;
+  let all = [];
+  // 無限ループ防止に上限（100ページ=最大10万行）
+  for (let page = 0; page < 100; page++) {
+    const url = SB_URL + '/rest/v1/' + table + '?' + query + '&limit=' + size + '&offset=' + offset;
+    const res = await fetch(url, {
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY }
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const batch = await res.json();
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    all = all.concat(batch);
+    if (batch.length < size) break;   // 最終ページ
+    offset += size;
+  }
+  return all;
 }
 
 // 書き込み系の共通リクエスト。
@@ -29560,17 +29582,18 @@ async function loadAttOverview() {
     }
     const classIds = masters.map(m => m.id);
 
-    // 授業日（過去〜未来すべて。未来は空欄表示に使う）
-    const sessions = await sbGet('class_sessions',
+    // 授業日（過去〜未来すべて。未来は空欄表示に使う）※1000行超に備えて全件取得
+    const sessions = await sbGetAll('class_sessions',
       'class_master_id=in.(' + classIds.join(',') + ')' +
       '&select=class_master_id,session_date,period,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date,period') || [];
 
     // 受講登録（ended_on=null＝継続中）。preferred_period＝長文読解などで担当コマ(5/6限)が決まっている生徒用。
-    const enrolls = await sbGetActiveEnrollments('class_master_id=in.(' + classIds.join(',') +
-      ')&select=class_master_id,student_id,is_provisional,preferred_period');
+    // ※こちらも1000行上限に備えて全件取得（ended_on=is.null で継続中のみ）
+    const enrolls = await sbGetAll('class_enrollments', 'class_master_id=in.(' + classIds.join(',') +
+      ')&ended_on=is.null&select=class_master_id,student_id,is_provisional,preferred_period');
 
-    // 出欠記録
-    const atts = await sbGet('session_attendance',
+    // 出欠記録 ※これが1000行上限で切れて未記録表示になっていた → 全件取得に変更
+    const atts = await sbGetAll('session_attendance',
       'class_master_id=in.(' + classIds.join(',') + ')&session_date=lte.' + todayStr +
       '&select=class_master_id,session_date,period,student_id,status') || [];
 
