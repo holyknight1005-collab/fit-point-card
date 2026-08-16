@@ -4867,6 +4867,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <select class="form-select" id="as-sort-select" onchange="loadAttSheet()" style="flex:1;min-width:120px;font-size:13px" title="並び順">
           <option value="school">🏫 学校別</option>
           <option value="grade">📶 学年順</option>
+          <option value="gradeschool">📶🏫 学年×学校</option>
           <option value="kana">🔤 五十音順</option>
         </select>
         <button onclick="loadAttSheet()" style="padding:8px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔄 更新</button>
@@ -5961,7 +5962,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dkx';
+const APP_VERSION = '20260702dky';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29834,6 +29835,9 @@ let _asData = null;          // { division, category, ym, students:[{id,name,num
 let _asComments = {};        // student_id -> comment 文字列（DB＋CSV読込で反映）
 let _asMeta = {};            // student_id -> { id, confirmed, confirmed_by, on_hold, hold_note } DB由来
 let _asMyStuIds = null;      // 自分の担当授業を受講中の生徒IDセット（scope=mine 用）
+let _asPrinted = {};         // student_id -> true（この年月×種別で印刷済み・DB由来）
+let _asDirty = {};           // student_id -> { comment?, confirmed? } まとめて保存用のローカル変更バッファ
+let _asPrintSel = {};        // student_id -> true（一括印刷の選択チェック・セッション内のみ）
 
 const AS_CAT_LABEL = { summer:'夏期講習', normal:'通常授業', winter:'冬期講習', spring:'春期講習' };
 const AS_CAT_SHORT = { summer:'夏期', normal:'通常', winter:'冬期', spring:'春期' };
@@ -29972,7 +29976,7 @@ async function loadAttSheet() {
     const sortSel = document.getElementById('as-sort-select');
     const sortMode = sortSel ? sortSel.value : 'school';
     const byName = (a, b) => (a.name || '').localeCompare(b.name || '', 'ja');
-    if (sortMode === 'grade') {
+    if (sortMode === 'grade' || sortMode === 'gradeschool') {
       students.sort((a, b) => {
         const ga = gradeSortKey(a.grade), gb = gradeSortKey(b.grade);
         if (ga !== gb) return ga - gb;
@@ -30007,6 +30011,11 @@ async function loadAttSheet() {
     if (isNormal) {
       await asLoadCommentsFromDb(y, mo, students);
     }
+    // 印刷済み（全種別）をDBから読み込む
+    await asLoadPrintedFromDb(y, mo, category, students);
+    // 月・種別の再読み込みごとに、未保存バッファと印刷選択はクリア
+    _asDirty = {};
+    _asPrintSel = {};
 
     // 一覧描画（学校ごとに見出し＋折りたたみ）
     let html = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' +
@@ -30029,8 +30038,8 @@ async function loadAttSheet() {
     // 一括印刷が「画面に表示中の生徒」だけを対象にできるよう、絞り込み後リストを保持
     _asData.viewStudents = viewStudents;
 
-    // グループ化：school モードは学校ごと（見出し・折りたたみ・未◯カウント維持）。
-    // grade/kana モードは学校をまたいで通しの1グループにする。
+    // グループ化：school=学校ごと / gradeschool=学年ごと（見出し＝学年、内側は学校→氏名順） /
+    //             grade・kana=全校まとめの1グループ。
     const groups = [];
     if (sortMode === 'school') {
       const gIndex = {};
@@ -30041,11 +30050,35 @@ async function loadAttSheet() {
         if (g == null) { g = groups.length; gIndex[sc] = g; groups.push({ school: sc, items: [] }); }
         groups[g].items.push({ st: st, idx: idx });
       });
+    } else if (sortMode === 'gradeschool') {
+      // 学年ごとに大グループ（viewStudents は 学年→学校→氏名 でソート済み）
+      const gIndex = {};
+      viewStudents.forEach((st) => {
+        const idx = students.indexOf(st);
+        const gl = fmtGrade(st.grade) || '(学年未設定)';
+        let g = gIndex[gl];
+        if (g == null) { g = groups.length; gIndex[gl] = g; groups.push({ school: gl, items: [] }); }
+        groups[g].items.push({ st: st, idx: idx });
+      });
     } else {
       const label = (sortMode === 'grade') ? '学年順（全校まとめ）' : '五十音順（全校まとめ）';
       const items = viewStudents.map(st => ({ st: st, idx: students.indexOf(st) }));
       groups.push({ school: label, items: items });
     }
+
+    // 印刷済みバッジ（共通）
+    const printedBadge = (sid) => _asPrinted[sid]
+      ? '<span id="as-prtbadge-' + sid + '" style="font-size:10px;font-weight:700;color:#2E7D32;background:#EAF6EA;border:1px solid #BFE3BF;border-radius:20px;padding:1px 8px">🖨 印刷済み</span>'
+      : '<span id="as-prtbadge-' + sid + '" style="display:none"></span>';
+
+    // 印刷選択チェック（通常＝確認済みのみ有効／非通常＝常に有効）
+    const printSelBox = (sid, enabled) => {
+      const dis = enabled ? '' : ' disabled';
+      const op = enabled ? '1' : '0.4';
+      return '<label id="as-prtselwrap-' + sid + '" title="印刷対象に選ぶ" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);cursor:pointer;opacity:' + op + '">' +
+        '<input type="checkbox" id="as-prtsel-' + sid + '" onchange="asTogglePrintSel(\'' + sid + '\')"' + dis + (_asPrintSel[sid] ? ' checked' : '') + ' style="width:15px;height:15px;cursor:pointer">印刷</label>' +
+        '<span id="as-prtnote-' + sid + '" style="font-size:10px;color:#B08A2A;display:' + (enabled ? 'none' : 'inline') + '">確認後に印刷できます</span>';
+    };
 
     // 1生徒分のカード（通常＝コメント編集＋確認済/保留、それ以外＝従来）
     const cardHtml = (st, idx) => {
@@ -30053,9 +30086,11 @@ async function loadAttSheet() {
         return '<div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:9px 12px;background:var(--surface)">' +
           '<div style="flex:1;min-width:0">' +
             '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(st.name) +
-            (st.num !== '' ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">No.' + escapeHtml(String(st.num)) + '</span>' : '') + '</div>' +
+            (st.num !== '' ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">No.' + escapeHtml(String(st.num)) + '</span>' : '') +
+            '　' + printedBadge(st.id) + '</div>' +
             '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade)) : '') + '　受講 ' + st.subjects.length + '科目</div>' +
           '</div>' +
+          printSelBox(st.id, true) +
           '<button onclick="openAttSheetDoc(' + idx + ')" style="padding:6px 14px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 出席表</button>' +
           '</div>';
       }
@@ -30073,30 +30108,39 @@ async function loadAttSheet() {
       // 左端の帯色
       const bar = onHold ? '#7A5AA8' : (!hasComment ? '#E5C158' : (confirmed ? '#3B9E5B' : '#2D6CB6'));
 
-      return '<div style="border:1px solid var(--border);border-radius:10px;padding:9px 12px;background:var(--surface);border-left:4px solid ' + bar + '">' +
+      return '<div id="as-card-' + st.id + '" style="border:1px solid var(--border);border-radius:10px;padding:9px 12px;background:var(--surface);border-left:4px solid ' + bar + '">' +
         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
           '<div style="flex:1;min-width:0">' +
             '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(st.name) +
             (st.num !== '' ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">No.' + escapeHtml(String(st.num)) + '</span>' : '') +
-            '　<span style="font-size:11px;font-weight:400">' + badge + '</span></div>' +
+            '　<span id="as-badge-' + st.id + '" style="font-size:11px;font-weight:400">' + badge + '</span>　' + printedBadge(st.id) + '</div>' +
             '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade)) : '') + '　受講 ' + st.subjects.length + '科目</div>' +
           '</div>' +
+          printSelBox(st.id, confirmed) +
           '<button onclick="openAttSheetDoc(' + idx + ')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨</button>' +
         '</div>' +
-        '<textarea id="as-cmt-' + st.id + '" onchange="asOnCommentEdit(\'' + st.id + '\')" placeholder="コメントを入力…" style="width:100%;box-sizing:border-box;font-size:12px;line-height:1.5;border:1px solid var(--border);border-radius:8px;padding:6px 8px;resize:vertical;min-height:46px;font-family:\'Noto Sans JP\',sans-serif;background:var(--bg);color:var(--text)">' + escapeHtml(cmt) + '</textarea>' +
+        '<textarea id="as-cmt-' + st.id + '" oninput="asOnCommentEdit(\'' + st.id + '\')" placeholder="コメントを入力…" style="width:100%;box-sizing:border-box;font-size:12px;line-height:1.5;border:1px solid var(--border);border-radius:8px;padding:6px 8px;resize:vertical;min-height:46px;font-family:\'Noto Sans JP\',sans-serif;background:var(--bg);color:var(--text)">' + escapeHtml(cmt) + '</textarea>' +
         '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">' +
-          '<button onclick="asSaveComment(\'' + st.id + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid #2D6CB6;border-radius:7px;background:#EAF2FB;color:#1E4276;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 保存</button>' +
-          '<button onclick="asToggleConfirmed(\'' + st.id + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (confirmed ? '#3B9E5B' : '#CBD5CB') + ';border-radius:7px;background:' + (confirmed ? '#EAF6EA' : '#fff') + ';color:' + (confirmed ? '#2E7D32' : '#666') + ';cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (confirmed ? '✓ 確認済' : '□ 確認する') + '</button>' +
-          '<button onclick="asToggleHold(\'' + st.id + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (onHold ? '#7A5AA8' : '#CBD5CB') + ';border-radius:7px;background:' + (onHold ? '#F1EBF8' : '#fff') + ';color:' + (onHold ? '#5E3B8A' : '#666') + ';cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (onHold ? '⏸ 保留中' : '⏸ 保留') + '</button>' +
+          '<button id="as-confbtn-' + st.id + '" onclick="asToggleConfirmed(\'' + st.id + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (confirmed ? '#3B9E5B' : '#CBD5CB') + ';border-radius:7px;background:' + (confirmed ? '#EAF6EA' : '#fff') + ';color:' + (confirmed ? '#2E7D32' : '#666') + ';cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (confirmed ? '✓ 確認済' : '□ 確認する') + '</button>' +
+          '<button id="as-holdbtn-' + st.id + '" onclick="asToggleHold(\'' + st.id + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (onHold ? '#7A5AA8' : '#CBD5CB') + ';border-radius:7px;background:' + (onHold ? '#F1EBF8' : '#fff') + ';color:' + (onHold ? '#5E3B8A' : '#666') + ';cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (onHold ? '⏸ 保留中' : '⏸ 保留') + '</button>' +
           (meta.confirmed_by ? '<span style="font-size:10px;color:var(--muted)">確認:' + escapeHtml(resolveStaffName(meta.confirmed_by)) + '</span>' : '') +
         '</div>' +
       '</div>';
     };
 
-    // 一括印刷ボタン（現在表示中の全生徒をまとめて1ウィンドウで印刷）
-    html += '<div style="display:flex;justify-content:flex-end;margin-bottom:8px">' +
-      '<button onclick="openAttSheetBulk()" style="padding:7px 16px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange);color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 表示中を一括印刷（' + viewStudents.length + '名）</button>' +
+    // 操作バー：全選択/全解除・選択印刷・（通常のみ）まとめて保存
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">' +
+      '<button onclick="asSelectAllPrint(true)" style="padding:6px 12px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">☑ 全選択</button>' +
+      '<button onclick="asSelectAllPrint(false)" style="padding:6px 12px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">☐ 全解除</button>' +
+      '<span id="as-prtsel-count" style="font-size:11px;color:var(--muted)"></span>' +
+      '<button onclick="openAttSheetBulk()" style="margin-left:auto;padding:7px 16px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange);color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 選択した子を印刷</button>' +
       '</div>';
+    if (isNormal) {
+      html += '<div id="as-saveall-bar" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;padding:8px 12px;border:1px solid #2D6CB6;border-radius:10px;background:#EAF2FB">' +
+        '<span id="as-saveall-count" style="font-size:12px;font-weight:700;color:#1E4276">すべて保存済み</span>' +
+        '<button id="as-saveall-btn" onclick="asSaveAll()" disabled style="margin-left:auto;padding:7px 16px;font-size:12px;font-weight:700;border:none;border-radius:8px;background:#2D6CB6;color:#fff;opacity:0.5;cursor:default;font-family:\'Noto Sans JP\',sans-serif">💾 まとめて保存</button>' +
+        '</div>';
+    }
 
     html += '<div style="display:flex;flex-direction:column;gap:8px">';
     groups.forEach((g, gi) => {
@@ -30122,12 +30166,27 @@ async function loadAttSheet() {
           '</span>' : '') +
         '</div>' +
         '<div id="' + bodyId + '" style="display:none;flex-direction:column;gap:6px;padding:8px 10px">' +
-          g.items.map(it => cardHtml(it.st, it.idx)).join('') +
+          (sortMode === 'gradeschool'
+            ? (function () {
+                // 学年グループ内を学校ごとに小見出しで区切る
+                let out = '', prevSchool = null;
+                g.items.forEach(it => {
+                  const sc = it.st.school || '(学校未設定)';
+                  if (sc !== prevSchool) {
+                    out += '<div style="font-size:11px;font-weight:800;color:var(--muted);padding:4px 2px 2px;border-bottom:1px dashed var(--border);margin-top:4px">🏫 ' + escapeHtml(sc) + '</div>';
+                    prevSchool = sc;
+                  }
+                  out += cardHtml(it.st, it.idx);
+                });
+                return out;
+              })()
+            : g.items.map(it => cardHtml(it.st, it.idx)).join('')) +
         '</div>' +
       '</div>';
     });
     html += '</div>';
     body.innerHTML = html;
+    asUpdatePrintSelCount();
   } catch (e) {
     body.innerHTML = '<div style="font-size:12px;color:#A04040;text-align:center;padding:20px">読み込みに失敗しました：' + escapeHtml(e.message || String(e)) + '</div>';
   }
@@ -30358,21 +30417,60 @@ function openAttSheetDoc(idx) {
     '</div>' +
     doc + '</body></html>');
   w.document.close();
+  // 印刷済みとして記録し、カードのバッジを即時反映
+  asMarkPrinted([st.id]).then(() => {
+    const b = document.getElementById('as-prtbadge-' + st.id);
+    if (b) {
+      b.style.display = 'inline';
+      b.innerHTML = '🖨 印刷済み';
+      b.setAttribute('style', 'font-size:10px;font-weight:700;color:#2E7D32;background:#EAF6EA;border:1px solid #BFE3BF;border-radius:20px;padding:1px 8px');
+    }
+  });
+}
+// 印刷選択チェックのトグル
+function asTogglePrintSel(sid) {
+  const chk = document.getElementById('as-prtsel-' + sid);
+  if (!chk) return;
+  if (chk.checked) _asPrintSel[sid] = true; else delete _asPrintSel[sid];
+  asUpdatePrintSelCount();
 }
 
-// 現在表示中の全生徒を1ウィンドウに縦連結して開く（一括印刷）
+// 全選択／全解除（通常は確認済みのみ選択対象）
+function asSelectAllPrint(on) {
+  if (!_asData) return;
+  const list = (_asData.viewStudents && _asData.viewStudents.length) ? _asData.viewStudents : (_asData.students || []);
+  list.forEach(st => {
+    const chk = document.getElementById('as-prtsel-' + st.id);
+    if (!chk || chk.disabled) return; // 無効（未確認）はスキップ
+    chk.checked = !!on;
+    if (on) _asPrintSel[st.id] = true; else delete _asPrintSel[st.id];
+  });
+  asUpdatePrintSelCount();
+}
+
+// 選択件数の表示更新
+function asUpdatePrintSelCount() {
+  const el = document.getElementById('as-prtsel-count');
+  if (el) {
+    const n = Object.keys(_asPrintSel).length;
+    el.textContent = n ? (n + '名を選択中') : '未選択';
+  }
+}
+
+// 選択した生徒を1ウィンドウに縦連結して開き、印刷済みを記録する
 function openAttSheetBulk() {
   if (!_asData) { showToast('対象の生徒がいません', 'info'); return; }
-  // 表示中（scope=mine 等の絞り込み後）の生徒を対象にする。無ければ全生徒。
-  const list = (_asData.viewStudents && _asData.viewStudents.length) ? _asData.viewStudents : (_asData.students || []);
-  if (!list.length) { showToast('対象の生徒がいません', 'info'); return; }
+  const all = (_asData.viewStudents && _asData.viewStudents.length) ? _asData.viewStudents : (_asData.students || []);
+  // 選択された生徒のみ（表示順を維持）
+  const list = all.filter(st => _asPrintSel[st.id]);
+  if (!list.length) { showToast('印刷する生徒を選んでください（通常授業は確認済みの子のみ選べます）', 'info'); return; }
   const w = window.open('', '_blank');
   if (!w) { showToast('ポップアップがブロックされました。許可してください。', 'error'); return; }
   const catShort = AS_CAT_SHORT[_asData.category] || _asData.category;
-  const pages = list.map((st, i) =>
+  const pages = list.map((st) =>
     '<div style="page-break-after:always;break-after:page">' + buildAttSheetDocHtml(st) + '</div>'
   ).join('');
-  w.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>' + escapeHtml(catShort) + '出席表_一括(' + list.length + '名)</title>' +
+  w.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>' + escapeHtml(catShort) + '出席表_(' + list.length + '名)</title>' +
     '<style>@page{size:A4 portrait;margin:14mm}@media print{.noprint{display:none}}body{margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
     '.noprint{position:fixed;top:8px;right:8px;display:flex;gap:8px;z-index:10}' +
     '.noprint .cnt{align-self:center;font-size:12px;color:#555;background:#fff;border:1px solid #ddd;border-radius:8px;padding:6px 10px}</style></head><body>' +
@@ -30383,6 +30481,18 @@ function openAttSheetBulk() {
     '</div>' +
     pages + '</body></html>');
   w.document.close();
+  // 印刷済みとして記録し、カードにバッジを即時反映
+  const sids = list.map(st => st.id);
+  asMarkPrinted(sids).then(() => {
+    sids.forEach(sid => {
+      const b = document.getElementById('as-prtbadge-' + sid);
+      if (b) {
+        b.style.display = 'inline';
+        b.innerHTML = '🖨 印刷済み';
+        b.setAttribute('style', 'font-size:10px;font-weight:700;color:#2E7D32;background:#EAF6EA;border:1px solid #BFE3BF;border-radius:20px;padding:1px 8px');
+      }
+    });
+  });
 }
 
 // ============================================================
@@ -31023,6 +31133,47 @@ async function asLoadCommentsFromDb(year, month, students) {
   }
 }
 
+// この年月×種別の印刷済みを DB から読み込む（attendance_print_log）
+async function asLoadPrintedFromDb(year, month, category, students) {
+  _asPrinted = {};
+  if (!students || !students.length) return;
+  const ids = students.map(s => s.id);
+  try {
+    const rows = await sbGet('attendance_print_log',
+      'prt_year=eq.' + year + '&prt_month=eq.' + month +
+      '&category=eq.' + encodeURIComponent(category) +
+      '&student_id=in.(' + ids.join(',') + ')' +
+      '&select=student_id') || [];
+    rows.forEach(r => { _asPrinted[r.student_id] = true; });
+  } catch (e) {
+    console.warn('attendance_print_log 読み込み失敗（SQL未適用の可能性）', e);
+  }
+}
+
+// 印刷した生徒を印刷済みとして記録（生徒×年月×種別で upsert）
+async function asMarkPrinted(sids) {
+  if (!_asData || !sids || !sids.length) return;
+  const y = _asData.y, mo = _asData.mo, cat = _asData.category;
+  const by = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : (localStorage.getItem('fit_staff_id') || '');
+  const nowIso = new Date().toISOString();
+  const payload = sids.map(sid => ({
+    student_id: sid, prt_year: y, prt_month: mo, category: cat,
+    printed_at: nowIso, printed_by: by
+  }));
+  try {
+    const res = await fetch(SB_URL + '/rest/v1/attendance_print_log?on_conflict=student_id,prt_year,prt_month,category', {
+      method: 'POST',
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    sids.forEach(sid => { _asPrinted[sid] = true; });
+  } catch (e) {
+    console.warn('印刷済みの記録に失敗（SQL未適用の可能性）', e);
+    showToast('印刷は開きましたが、印刷済みの記録に失敗しました（SQL未適用の可能性）', 'error');
+  }
+}
+
 // 自分（ログイン中スタッフ）の担当授業を受講中の生徒IDセット
 async function asLoadMyStudentIds() {
   if (_asMyStuIds) return _asMyStuIds;
@@ -31046,13 +31197,64 @@ async function asLoadMyStudentIds() {
   return set;
 }
 
-// textarea 編集時：メモリの _asComments に反映（保存は「💾保存」で）
+// textarea 編集時：メモリと未保存バッファに反映（保存は「まとめて保存」で）
 function asOnCommentEdit(sid) {
   const ta = document.getElementById('as-cmt-' + sid);
-  if (ta) _asComments[sid] = ta.value;
+  if (!ta) return;
+  _asComments[sid] = ta.value;
+  (_asDirty[sid] || (_asDirty[sid] = {})).comment = ta.value;
+  asRefreshCardState(sid);
+  asUpdateSaveBar();
 }
 
-// この生徒のコメント・メタを DB に upsert（共通）
+// カード1枚ぶんの見た目（帯色・バッジ・印刷チェックの活性）を再描画せずに更新する
+function asRefreshCardState(sid) {
+  const meta = _asMeta[sid] || {};
+  const cmt = _asComments[sid] || '';
+  const hasComment = !!cmt.trim();
+  const onHold = !!meta.on_hold;
+  const confirmed = !!meta.confirmed;
+  // 帯色
+  const card = document.getElementById('as-card-' + sid);
+  if (card) card.style.borderLeftColor = onHold ? '#7A5AA8' : (!hasComment ? '#E5C158' : (confirmed ? '#3B9E5B' : '#2D6CB6'));
+  // バッジ
+  const badgeEl = document.getElementById('as-badge-' + sid);
+  if (badgeEl) {
+    if (onHold) badgeEl.innerHTML = '<span style="color:#7A5AA8;font-weight:700">⏸ 保留（遅延依頼）</span>';
+    else if (!hasComment) badgeEl.innerHTML = '<span style="color:#B08A2A;font-weight:700">● コメント未</span>';
+    else if (confirmed) badgeEl.innerHTML = '<span style="color:var(--green-d);font-weight:700">✓ 確認済</span>';
+    else badgeEl.innerHTML = '<span style="color:#2D6CB6;font-weight:700">✎ 入力済（未確認）</span>';
+  }
+  // 確認ボタン見た目
+  const cbtn = document.getElementById('as-confbtn-' + sid);
+  if (cbtn) {
+    cbtn.style.borderColor = confirmed ? '#3B9E5B' : '#CBD5CB';
+    cbtn.style.background = confirmed ? '#EAF6EA' : '#fff';
+    cbtn.style.color = confirmed ? '#2E7D32' : '#666';
+    cbtn.textContent = confirmed ? '✓ 確認済' : '□ 確認する';
+  }
+  // 保留ボタン見た目
+  const hbtn = document.getElementById('as-holdbtn-' + sid);
+  if (hbtn) {
+    hbtn.style.borderColor = onHold ? '#7A5AA8' : '#CBD5CB';
+    hbtn.style.background = onHold ? '#F1EBF8' : '#fff';
+    hbtn.style.color = onHold ? '#5E3B8A' : '#666';
+    hbtn.textContent = onHold ? '⏸ 保留中' : '⏸ 保留';
+  }
+  // 印刷選択チェック：確認済みのみ選択可（未確認は無効化＝印刷不可）
+  const pchk = document.getElementById('as-prtsel-' + sid);
+  if (pchk) {
+    const allow = confirmed;
+    pchk.disabled = !allow;
+    if (!allow && pchk.checked) { pchk.checked = false; delete _asPrintSel[sid]; }
+    const wrap = document.getElementById('as-prtselwrap-' + sid);
+    if (wrap) wrap.style.opacity = allow ? '1' : '0.4';
+    const note = document.getElementById('as-prtnote-' + sid);
+    if (note) note.style.display = allow ? 'none' : 'inline';
+  }
+}
+
+// この生徒のコメント・メタを DB に upsert（共通・CSV読込やまとめ保存の1件処理で使用）
 async function asUpsertComment(sid, patch) {
   if (!_asData) return false;
   const y = _asData.y, mo = _asData.mo;
@@ -31105,39 +31307,81 @@ async function asBulkSaveComments(sids) {
   }
 }
 
-// コメント本文を保存
-async function asSaveComment(sid) {
+// 確認済みフラグの切り替え（ローカルのみ・保存は「まとめて保存」）
+function asToggleConfirmed(sid) {
+  // textarea の最新内容も取り込む
   const ta = document.getElementById('as-cmt-' + sid);
-  const val = ta ? ta.value : (_asComments[sid] || '');
-  _asComments[sid] = val;
-  const ok = await asUpsertComment(sid, { comment: val });
-  if (ok) { showToast('コメントを保存しました', 'success'); loadAttSheet(); }
-}
-
-// 確認済みフラグの切り替え
-async function asToggleConfirmed(sid) {
-  const meta = _asMeta[sid] || {};
+  if (ta) { _asComments[sid] = ta.value; (_asDirty[sid] || (_asDirty[sid] = {})).comment = ta.value; }
+  const meta = _asMeta[sid] || (_asMeta[sid] = {});
   const next = !meta.confirmed;
   const by = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : (localStorage.getItem('fit_staff_id') || '');
-  // 未保存のtextarea内容も一緒に保存
-  const ta = document.getElementById('as-cmt-' + sid);
-  const patch = { confirmed: next, confirmed_by: next ? by : null, confirmed_at: next ? new Date().toISOString() : null };
-  if (ta) { patch.comment = ta.value; _asComments[sid] = ta.value; }
-  _asMeta[sid] = Object.assign(meta, { confirmed: next, confirmed_by: next ? by : '' });
-  const ok = await asUpsertComment(sid, patch);
-  if (ok) loadAttSheet();
+  meta.confirmed = next;
+  meta.confirmed_by = next ? by : '';
+  (_asDirty[sid] || (_asDirty[sid] = {})).confirmed = next;
+  asRefreshCardState(sid);
+  asUpdateSaveBar();
 }
 
-// 保留（遅延依頼）フラグの切り替え
-async function asToggleHold(sid) {
-  const meta = _asMeta[sid] || {};
-  const next = !meta.on_hold;
+// 保留（遅延依頼）フラグの切り替え（ローカルのみ・保存は「まとめて保存」）
+function asToggleHold(sid) {
   const ta = document.getElementById('as-cmt-' + sid);
-  const patch = { on_hold: next };
-  if (ta) { patch.comment = ta.value; _asComments[sid] = ta.value; }
-  _asMeta[sid] = Object.assign(meta, { on_hold: next });
-  const ok = await asUpsertComment(sid, patch);
-  if (ok) loadAttSheet();
+  if (ta) { _asComments[sid] = ta.value; (_asDirty[sid] || (_asDirty[sid] = {})).comment = ta.value; }
+  const meta = _asMeta[sid] || (_asMeta[sid] = {});
+  const next = !meta.on_hold;
+  meta.on_hold = next;
+  (_asDirty[sid] || (_asDirty[sid] = {})).on_hold = next;
+  asRefreshCardState(sid);
+  asUpdateSaveBar();
+}
+
+// 未保存件数を保存バーに反映
+function asUpdateSaveBar() {
+  const n = Object.keys(_asDirty).length;
+  const bar = document.getElementById('as-saveall-bar');
+  const cnt = document.getElementById('as-saveall-count');
+  const btn = document.getElementById('as-saveall-btn');
+  if (cnt) cnt.textContent = n ? ('未保存 ' + n + '件') : 'すべて保存済み';
+  if (btn) { btn.disabled = !n; btn.style.opacity = n ? '1' : '0.5'; btn.style.cursor = n ? 'pointer' : 'default'; }
+  if (bar) bar.style.display = 'flex';
+}
+
+// 溜まった変更（コメント本文・確認・保留）をまとめて1回で保存
+async function asSaveAll() {
+  const sids = Object.keys(_asDirty);
+  if (!sids.length) { showToast('保存する変更はありません', 'info'); return; }
+  const y = _asData.y, mo = _asData.mo;
+  const by = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : (localStorage.getItem('fit_staff_id') || '');
+  const nowIso = new Date().toISOString();
+  const payload = sids.map(sid => {
+    const d = _asDirty[sid] || {};
+    const meta = _asMeta[sid] || {};
+    const row = { student_id: sid, cmt_year: y, cmt_month: mo, updated_at: nowIso, updated_by: by };
+    // comment は編集があれば送る（無ければ現在値で上書きしないよう、touchした場合のみ）
+    if ('comment' in d) row.comment = _asComments[sid] || '';
+    if ('confirmed' in d) {
+      row.confirmed = !!d.confirmed;
+      row.confirmed_by = d.confirmed ? by : null;
+      row.confirmed_at = d.confirmed ? nowIso : null;
+    }
+    if ('on_hold' in d) row.on_hold = !!d.on_hold;
+    return row;
+  });
+  const btn = document.getElementById('as-saveall-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
+  try {
+    const res = await fetch(SB_URL + '/rest/v1/student_month_comments?on_conflict=student_id,cmt_year,cmt_month', {
+      method: 'POST',
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    _asDirty = {};
+    showToast(sids.length + '件をまとめて保存しました', 'success');
+    loadAttSheet(); // 確定状態で再描画（meta.id 等を取り直す）
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 まとめて保存'; }
+    alert('まとめて保存に失敗しました。テーブル(student_month_comments)のSQLが未適用の可能性があります。\n' + (e.message || ''));
+  }
 }
 
 function downloadAttSheetCommentCsv() {
