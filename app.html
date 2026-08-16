@@ -5956,7 +5956,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dkw';
+const APP_VERSION = '20260702dkx';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6202,13 +6202,15 @@ async function excludeDemoRows(rows, key) {
 // フィルタ無しで再取得して JS 側で ended_on を見て絞る（二段フォールバック）。
 async function sbGetActiveEnrollments(query) {
   // query は select=... や student_id=eq.xxx 等。&ended_on=is.null を付けて投げる。
+  // dkx: 継続中 enrollment は1000行に接近しているため sbGetAll（offsetページング）で全件取得する。
+  //       単一ID絞りの呼び出しは1ページで返るだけなので実害なし。
   try {
     const q = query + (query ? '&' : '') + 'ended_on=is.null';
-    return await sbGet('class_enrollments', q) || [];
+    return await sbGetAll('class_enrollments', q) || [];
   } catch (e) {
     // 旧環境（列が無い）など → フィルタ無しで取り、JSで ended_on を見て絞る
     try {
-      const rows = await sbGet('class_enrollments', query) || [];
+      const rows = await sbGetAll('class_enrollments', query) || [];
       return rows.filter(r => r.ended_on == null);
     } catch (e2) {
       throw e2;
@@ -29354,7 +29356,7 @@ async function loadAppUsage() {
   wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px">読み込み中...</div>';
   try {
     // 数学・化学のポイントログを取得
-    const logs = await sbGet('point_logs', 'type=in.(math,chem)&select=student_id,points,type,created_at&order=created_at.desc');
+    const logs = await sbGetAll('point_logs', 'type=in.(math,chem)&select=student_id,points,type,created_at&order=created_at.desc');
     if (!logs || !logs.length) {
       auUsageCache = {};
       wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px">数学・化学アプリの利用記録はまだありません。</div>';
@@ -29981,6 +29983,9 @@ async function loadAttSheet() {
       }
     }
 
+    // 一括印刷が「画面に表示中の生徒」だけを対象にできるよう、絞り込み後リストを保持
+    _asData.viewStudents = viewStudents;
+
     // 学校ごとにグループ化（viewStudents は 学校→学年→氏名 でソート済み）
     const groups = [];
     const gIndex = {};
@@ -30037,6 +30042,11 @@ async function loadAttSheet() {
         '</div>' +
       '</div>';
     };
+
+    // 一括印刷ボタン（現在表示中の全生徒をまとめて1ウィンドウで印刷）
+    html += '<div style="display:flex;justify-content:flex-end;margin-bottom:8px">' +
+      '<button onclick="openAttSheetBulk()" style="padding:7px 16px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange);color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 表示中を一括印刷（' + viewStudents.length + '名）</button>' +
+      '</div>';
 
     html += '<div style="display:flex;flex-direction:column;gap:8px">';
     groups.forEach((g, gi) => {
@@ -30209,9 +30219,8 @@ function asMarkCell(status, w, maxw) {
 const AS_MARK_MAX = 8; // 横に並べる授業日の上限ガード（基本は最多科目の回数に自動追従。通常6・稀に7）
 
 // 出席表プレビュー（新ウィンドウ・印刷用）
-function openAttSheetDoc(idx) {
-  if (!_asData || !_asData.students[idx]) return;
-  const st = _asData.students[idx];
+// 1生徒分の帳票HTML片を組み立てて返す（一括印刷でも再利用）。
+function buildAttSheetDocHtml(st) {
   const isNormal = _asData.isNormal;
   const isSummer = _asData.isSummer;
   const y = _asData.y, mo = _asData.mo;
@@ -30219,10 +30228,12 @@ function openAttSheetDoc(idx) {
   const catShort = AS_CAT_SHORT[_asData.category] || catLabel;
   const periodLabel = isSummer ? '全期間' : (y + '年' + mo + '月');
 
-  // 授業名列の幅を「一番長い科目名」に合わせる（折り返しなし・中央揃え）。
+  // 授業名列の幅を科目名に合わせる。長い名前は2行に折り返して欄内に収める。
+  // 折り返し前提なので、1行に必要な幅ではなく「半分の文字数ぶん」を目安に、上限を少し広げる。
   let maxLen = 0;
   st.subjects.forEach(sub => { const L = (sub.name || '').length; if (L > maxLen) maxLen = L; });
-  const nameColW = Math.min(Math.max(maxLen * 9, 70), 170); // 70〜170pxにクランプ（狭め）
+  // 2行想定：概ね半分の文字数×9px。下限90・上限150にクランプ（出欠列の幅を確保しつつ、長名も2行で収める）。
+  const nameColW = Math.min(Math.max(Math.ceil(maxLen / 2) * 9 + 12, 90), 150);
 
   // 出欠列数は「この帳票の全科目の中で最大の授業日数」に合わせる（空列を出さない）。
   let colCount = 0;
@@ -30254,7 +30265,7 @@ function openAttSheetDoc(idx) {
         marks.push(asMarkCell(d.status, null, null));
       }
     }
-    return '<tr><td rowspan="2" style="border:1px solid #bbb;padding:4px 6px;font-size:9pt;font-weight:700;background:#f7f4ec;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(sub.name) + '</td>' + dayHead.join('') + '</tr>' +
+    return '<tr><td rowspan="2" style="border:1px solid #bbb;padding:4px 6px;font-size:9pt;font-weight:700;background:#f7f4ec;text-align:center;white-space:normal;word-break:break-all;overflow-wrap:anywhere;line-height:1.35">' + escapeHtml(sub.name) + '</td>' + dayHead.join('') + '</tr>' +
            '<tr>' + marks.join('') + '</tr>';
   }).join('');
 
@@ -30278,13 +30289,49 @@ function openAttSheetDoc(idx) {
       '<div style="text-align:right;margin-top:18px;font-size:11pt;font-weight:700">総合学習塾 fit</div>' +
     '</div>';
 
+  return doc;
+}
+
+// 1生徒分を新ウィンドウで開く（従来の🖨出席表ボタン）
+function openAttSheetDoc(idx) {
+  if (!_asData || !_asData.students[idx]) return;
+  const st = _asData.students[idx];
+  const doc = buildAttSheetDocHtml(st);
   const w = window.open('', '_blank');
   if (!w) { showToast('ポップアップがブロックされました。許可してください。', 'error'); return; }
   w.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>出席表_' + escapeHtml(st.name) + '</title>' +
     '<style>@page{size:A4 portrait;margin:14mm}@media print{.noprint{display:none}}body{margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
-    '.noprint{position:fixed;top:8px;right:8px}</style></head><body>' +
-    '<div class="noprint"><button onclick="window.print()" style="padding:8px 16px;font-size:13px;font-weight:700;border:none;border-radius:8px;background:#2D6CB6;color:#fff;cursor:pointer">🖨 印刷</button></div>' +
+    '.noprint{position:fixed;top:8px;right:8px;display:flex;gap:8px}</style></head><body>' +
+    '<div class="noprint">' +
+      '<button onclick="window.print()" style="padding:8px 16px;font-size:13px;font-weight:700;border:none;border-radius:8px;background:#2D6CB6;color:#fff;cursor:pointer">🖨 印刷</button>' +
+      '<button onclick="window.close()" style="padding:8px 16px;font-size:13px;font-weight:700;border:1px solid #bbb;border-radius:8px;background:#fff;color:#555;cursor:pointer">✕ 閉じる</button>' +
+    '</div>' +
     doc + '</body></html>');
+  w.document.close();
+}
+
+// 現在表示中の全生徒を1ウィンドウに縦連結して開く（一括印刷）
+function openAttSheetBulk() {
+  if (!_asData) { showToast('対象の生徒がいません', 'info'); return; }
+  // 表示中（scope=mine 等の絞り込み後）の生徒を対象にする。無ければ全生徒。
+  const list = (_asData.viewStudents && _asData.viewStudents.length) ? _asData.viewStudents : (_asData.students || []);
+  if (!list.length) { showToast('対象の生徒がいません', 'info'); return; }
+  const w = window.open('', '_blank');
+  if (!w) { showToast('ポップアップがブロックされました。許可してください。', 'error'); return; }
+  const catShort = AS_CAT_SHORT[_asData.category] || _asData.category;
+  const pages = list.map((st, i) =>
+    '<div style="page-break-after:always;break-after:page">' + buildAttSheetDocHtml(st) + '</div>'
+  ).join('');
+  w.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>' + escapeHtml(catShort) + '出席表_一括(' + list.length + '名)</title>' +
+    '<style>@page{size:A4 portrait;margin:14mm}@media print{.noprint{display:none}}body{margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
+    '.noprint{position:fixed;top:8px;right:8px;display:flex;gap:8px;z-index:10}' +
+    '.noprint .cnt{align-self:center;font-size:12px;color:#555;background:#fff;border:1px solid #ddd;border-radius:8px;padding:6px 10px}</style></head><body>' +
+    '<div class="noprint">' +
+      '<span class="cnt">' + list.length + '名ぶん</span>' +
+      '<button onclick="window.print()" style="padding:8px 16px;font-size:13px;font-weight:700;border:none;border-radius:8px;background:#2D6CB6;color:#fff;cursor:pointer">🖨 まとめて印刷</button>' +
+      '<button onclick="window.close()" style="padding:8px 16px;font-size:13px;font-weight:700;border:1px solid #bbb;border-radius:8px;background:#fff;color:#555;cursor:pointer">✕ 閉じる</button>' +
+    '</div>' +
+    pages + '</body></html>');
   w.document.close();
 }
 
