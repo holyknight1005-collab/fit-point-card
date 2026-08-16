@@ -4864,6 +4864,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <option value="spring">🌸 春期講習</option>
         </select>
         <select class="form-select" id="as-month-select" onchange="loadAttSheet()" style="flex:1;min-width:100px;font-size:13px"></select>
+        <select class="form-select" id="as-sort-select" onchange="loadAttSheet()" style="flex:1;min-width:120px;font-size:13px" title="並び順">
+          <option value="school">🏫 学校別</option>
+          <option value="grade">📶 学年順</option>
+          <option value="kana">🔤 五十音順</option>
+        </select>
         <button onclick="loadAttSheet()" style="padding:8px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔄 更新</button>
       </div>
       <div id="as-comment-bar" style="display:none;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
@@ -20642,6 +20647,24 @@ function fmtGrade(g) {
   return s;
 }
 
+// 学年を並び替え用の数値キーに変換（小1..小6=1..6 / 中1..3=7..9 / 高1..3=10..12 / 卒・浪=13.. / 不明=99）。
+// 「1年」「中1」「高2」「小6」「卒」等の表記ゆれを吸収する。
+function gradeSortKey(g) {
+  const s = (g == null ? '' : String(g)).trim();
+  if (!s) return 99;
+  const zen = s.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  const num = (zen.match(/[0-9]+/) || [])[0];
+  const n = num ? parseInt(num, 10) : 0;
+  if (/小/.test(zen)) return (n >= 1 && n <= 6) ? n : 6;
+  if (/中/.test(zen)) return 6 + ((n >= 1 && n <= 3) ? n : 3);           // 中1=7..中3=9
+  if (/高/.test(zen)) return 9 + ((n >= 1 && n <= 3) ? n : 3);           // 高1=10..高3=12
+  if (/卒/.test(zen)) return 13;                                          // 高卒
+  if (/浪/.test(zen)) return 14;                                          // 浪人
+  // 単位なしの数字のみ（例「1年」「2」）：部門既定が無いのでそのまま数値扱い（高校部想定で高学年帯に寄せない）
+  if (n >= 1 && n <= 12) return n;
+  return 98;
+}
+
 async function loadKarteStudents(classId) {
   const el = document.getElementById('ck-students');
   ckStuClassId = classId;
@@ -29945,10 +29968,30 @@ async function loadAttSheet() {
         subjects: subjects
       });
     });
-    // 学校→学年→氏名で並べ
-    students.sort((a, b) =>
-      ((a.school || '') + (a.grade || '') + (a.name || '')).localeCompare(
-       (b.school || '') + (b.grade || '') + (b.name || ''), 'ja'));
+    // 並び替え（as-sort-select）：school=学校別 / grade=学年順 / kana=五十音順（氏名）
+    const sortSel = document.getElementById('as-sort-select');
+    const sortMode = sortSel ? sortSel.value : 'school';
+    const byName = (a, b) => (a.name || '').localeCompare(b.name || '', 'ja');
+    if (sortMode === 'grade') {
+      students.sort((a, b) => {
+        const ga = gradeSortKey(a.grade), gb = gradeSortKey(b.grade);
+        if (ga !== gb) return ga - gb;
+        const sc = (a.school || '').localeCompare(b.school || '', 'ja');
+        if (sc !== 0) return sc;
+        return byName(a, b);
+      });
+    } else if (sortMode === 'kana') {
+      students.sort(byName);
+    } else {
+      // 学校→学年→氏名（既定）
+      students.sort((a, b) => {
+        const sc = (a.school || '').localeCompare(b.school || '', 'ja');
+        if (sc !== 0) return sc;
+        const ga = gradeSortKey(a.grade), gb = gradeSortKey(b.grade);
+        if (ga !== gb) return ga - gb;
+        return byName(a, b);
+      });
+    }
 
     _asData = { division: division, category: category, ym: ym, y: y, mo: mo, isNormal: isNormal, isSummer: isSummer, students: students };
 
@@ -29986,16 +30029,23 @@ async function loadAttSheet() {
     // 一括印刷が「画面に表示中の生徒」だけを対象にできるよう、絞り込み後リストを保持
     _asData.viewStudents = viewStudents;
 
-    // 学校ごとにグループ化（viewStudents は 学校→学年→氏名 でソート済み）
+    // グループ化：school モードは学校ごと（見出し・折りたたみ・未◯カウント維持）。
+    // grade/kana モードは学校をまたいで通しの1グループにする。
     const groups = [];
-    const gIndex = {};
-    viewStudents.forEach((st) => {
-      const idx = students.indexOf(st); // openAttSheetDoc は _asData.students のindexを使う
-      const sc = st.school || '(学校未設定)';
-      let g = gIndex[sc];
-      if (g == null) { g = groups.length; gIndex[sc] = g; groups.push({ school: sc, items: [] }); }
-      groups[g].items.push({ st: st, idx: idx });
-    });
+    if (sortMode === 'school') {
+      const gIndex = {};
+      viewStudents.forEach((st) => {
+        const idx = students.indexOf(st); // openAttSheetDoc は _asData.students のindexを使う
+        const sc = st.school || '(学校未設定)';
+        let g = gIndex[sc];
+        if (g == null) { g = groups.length; gIndex[sc] = g; groups.push({ school: sc, items: [] }); }
+        groups[g].items.push({ st: st, idx: idx });
+      });
+    } else {
+      const label = (sortMode === 'grade') ? '学年順（全校まとめ）' : '五十音順（全校まとめ）';
+      const items = viewStudents.map(st => ({ st: st, idx: students.indexOf(st) }));
+      groups.push({ school: label, items: items });
+    }
 
     // 1生徒分のカード（通常＝コメント編集＋確認済/保留、それ以外＝従来）
     const cardHtml = (st, idx) => {
