@@ -4872,6 +4872,14 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         </select>
         <button onclick="loadAttSheet()" style="padding:8px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔄 更新</button>
       </div>
+      <div id="as-image-bar" style="display:none;gap:8px;margin-bottom:8px;flex-wrap:wrap;align-items:center;padding:8px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface)">
+        <span style="font-size:12px;font-weight:700;color:var(--text)">🎨 季節イラスト</span>
+        <span style="font-size:11px;color:var(--muted)">この月・種別の全生徒の帳票に共通で入ります</span>
+        <label style="padding:6px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">📷 画像を選ぶ<input type="file" accept="image/*" onchange="asOnImageUpload(this)" style="display:none"></label>
+        <button id="as-img-del" onclick="asDeleteImage()" style="display:none;padding:6px 12px;font-size:12px;font-weight:700;border:1px solid #C0392B;border-radius:8px;background:#FDEDEC;color:#922B21;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🗑 削除</button>
+        <span id="as-img-status" style="font-size:11px;color:var(--muted)"></span>
+        <div id="as-img-preview" style="flex-basis:100%;display:none;margin-top:4px"></div>
+      </div>
       <div id="as-comment-bar" style="display:none;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
         <button onclick="downloadAttSheetCommentCsv()" style="padding:7px 12px;font-size:12px;font-weight:700;border:1px solid #2D6CB6;border-radius:8px;background:#EAF2FB;color:#1E4276;cursor:pointer;font-family:'Noto Sans JP',sans-serif">⬇️ コメントCSVダウンロード</button>
         <label style="padding:7px 12px;font-size:12px;font-weight:700;border:1px solid #2D6CB6;border-radius:8px;background:#EAF2FB;color:#1E4276;cursor:pointer;font-family:'Noto Sans JP',sans-serif">⬆️ コメントCSV読み込み<input type="file" accept=".csv" onchange="importAttSheetCommentCsv(this)" style="display:none"></label>
@@ -5962,7 +5970,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dky';
+const APP_VERSION = '20260702dla';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29838,6 +29846,7 @@ let _asMyStuIds = null;      // 自分の担当授業を受講中の生徒IDセ�
 let _asPrinted = {};         // student_id -> true（この年月×種別で印刷済み・DB由来）
 let _asDirty = {};           // student_id -> { comment?, confirmed? } まとめて保存用のローカル変更バッファ
 let _asPrintSel = {};        // student_id -> true（一括印刷の選択チェック・セッション内のみ）
+let _asImage = null;         // この年月×種別の季節イラスト { id, image_data } DB由来（全生徒共通1枚）
 
 const AS_CAT_LABEL = { summer:'夏期講習', normal:'通常授業', winter:'冬期講習', spring:'春期講習' };
 const AS_CAT_SHORT = { summer:'夏期', normal:'通常', winter:'冬期', spring:'春期' };
@@ -29877,6 +29886,8 @@ async function loadAttSheet() {
   const isNormal = (category === 'normal');
   body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
   if (cbar) cbar.style.display = 'none';
+  const ibar0 = document.getElementById('as-image-bar');
+  if (ibar0) ibar0.style.display = 'none';
   _asData = null;
   try {
     // 対象クラス（アクティブ・部門・種別）
@@ -30013,6 +30024,9 @@ async function loadAttSheet() {
     }
     // 印刷済み（全種別）をDBから読み込む
     await asLoadPrintedFromDb(y, mo, category, students);
+    // 季節イラスト（年月×種別で共通1枚）をDBから読み込み、上部バーに反映
+    await asLoadImageFromDb(y, mo, category);
+    asRenderImageBar();
     // 月・種別の再読み込みごとに、未保存バッファと印刷選択はクリア
     _asDirty = {};
     _asPrintSel = {};
@@ -30092,6 +30106,7 @@ async function loadAttSheet() {
           '</div>' +
           printSelBox(st.id, true) +
           '<button onclick="openAttSheetDoc(' + idx + ')" style="padding:6px 14px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 出席表</button>' +
+          '<button onclick="asExportPdf(' + idx + ')" style="padding:6px 12px;font-size:12px;font-weight:700;border:1px solid #C0392B;border-radius:8px;background:#FDEDEC;color:#922B21;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">📄 PDF</button>' +
           '</div>';
       }
       const meta = _asMeta[st.id] || {};
@@ -30118,6 +30133,7 @@ async function loadAttSheet() {
           '</div>' +
           printSelBox(st.id, confirmed) +
           '<button onclick="openAttSheetDoc(' + idx + ')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨</button>' +
+          '<button onclick="asExportPdf(' + idx + ')" style="padding:5px 10px;font-size:11px;font-weight:700;border:1px solid #C0392B;border-radius:8px;background:#FDEDEC;color:#922B21;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">📄</button>' +
         '</div>' +
         '<textarea id="as-cmt-' + st.id + '" oninput="asOnCommentEdit(\'' + st.id + '\')" placeholder="コメントを入力…" style="width:100%;box-sizing:border-box;font-size:12px;line-height:1.5;border:1px solid var(--border);border-radius:8px;padding:6px 8px;resize:vertical;min-height:46px;font-family:\'Noto Sans JP\',sans-serif;background:var(--bg);color:var(--text)">' + escapeHtml(cmt) + '</textarea>' +
         '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">' +
@@ -30133,7 +30149,8 @@ async function loadAttSheet() {
       '<button onclick="asSelectAllPrint(true)" style="padding:6px 12px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">☑ 全選択</button>' +
       '<button onclick="asSelectAllPrint(false)" style="padding:6px 12px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">☐ 全解除</button>' +
       '<span id="as-prtsel-count" style="font-size:11px;color:var(--muted)"></span>' +
-      '<button onclick="openAttSheetBulk()" style="margin-left:auto;padding:7px 16px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange);color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 選択した子を印刷</button>' +
+      '<button onclick="asExportPdfBulk()" style="margin-left:auto;padding:7px 14px;font-size:12px;font-weight:700;border:1px solid #C0392B;border-radius:8px;background:#FDEDEC;color:#922B21;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">📄 選択をPDF</button>' +
+      '<button onclick="openAttSheetBulk()" style="padding:7px 16px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange);color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 選択した子を印刷</button>' +
       '</div>';
     if (isNormal) {
       html += '<div id="as-saveall-bar" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;padding:8px 12px;border:1px solid #2D6CB6;border-radius:10px;background:#EAF2FB">' +
@@ -30385,6 +30402,11 @@ function buildAttSheetDocHtml(st) {
       '<div style="padding:10px;font-size:10.5pt;line-height:1.7;white-space:pre-wrap;min-height:60px">' +
       (comment.trim() ? escapeHtml(comment) : '<span style="color:#aaa">（コメント未記入）</span>') + '</div></div>') : '';
 
+  // 季節イラスト（年月×種別で共通1枚）。コメント欄の下・右寄せで配置。
+  const imgBlock = (_asImage && _asImage.image_data) ?
+    ('<div style="margin-top:10px;text-align:right"><img src="' + _asImage.image_data +
+      '" alt="季節イラスト" style="max-width:170px;max-height:150px;height:auto;object-fit:contain"></div>') : '';
+
   const doc =
     '<div style="font-family:\'Noto Sans JP\',sans-serif;color:#222;max-width:680px;margin:0 auto;padding:8px 16px">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #333;padding-bottom:6px;margin-bottom:12px">' +
@@ -30395,6 +30417,7 @@ function buildAttSheetDocHtml(st) {
       '<table style="border-collapse:collapse;width:100%;table-layout:fixed">' + colGroup + '<tr><th style="border:1px solid #bbb;background:#f1ede3;padding:4px 6px;font-size:9pt;white-space:nowrap">受講科目 ＼ 回</th>' + colHead.join('') + '</tr>' + rows + '</table>' +
       '<div style="font-size:9pt;color:#555;margin-top:8px">◯ 出席　／　欠 欠席　／　ビデオ補習　　※授業出席は、出席カードに基づいて記載しております。</div>' +
       commentBlock +
+      imgBlock +
       '<div style="text-align:right;margin-top:18px;font-size:11pt;font-weight:700">総合学習塾 fit</div>' +
     '</div>';
 
@@ -31171,6 +31194,219 @@ async function asMarkPrinted(sids) {
   } catch (e) {
     console.warn('印刷済みの記録に失敗（SQL未適用の可能性）', e);
     showToast('印刷は開きましたが、印刷済みの記録に失敗しました（SQL未適用の可能性）', 'error');
+  }
+}
+
+// jsPDF と html2canvas を必要時に動的ロード（PDF出力の初回のみ）
+function asLoadPdfLibs() {
+  return new Promise((resolve, reject) => {
+    const need = [];
+    if (!(window.jspdf && window.jspdf.jsPDF)) need.push('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js');
+    if (!window.html2canvas) need.push('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
+    if (!need.length) { resolve(); return; }
+    let done = 0, failed = false;
+    need.forEach(src => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = () => { done++; if (done === need.length && !failed) resolve(); };
+      s.onerror = () => { if (!failed) { failed = true; reject(new Error('PDF生成ライブラリの読み込みに失敗しました')); } };
+      document.head.appendChild(s);
+    });
+  });
+}
+
+// 1枚の帳票HTMLを、画面外の実寸コンテナに描いて html2canvas でキャンバス化する
+async function asRenderSheetCanvas(st) {
+  const holder = document.createElement('div');
+  // A4縦の実寸に近い幅(px)。buildAttSheetDocHtml は max-width:680px を想定。
+  holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:720px;background:#fff;padding:14px;box-sizing:border-box';
+  holder.innerHTML = buildAttSheetDocHtml(st);
+  document.body.appendChild(holder);
+  try {
+    // 画像(季節イラスト)の読み込みを待つ
+    const imgs = Array.from(holder.querySelectorAll('img'));
+    await Promise.all(imgs.map(im => im.complete ? Promise.resolve() : new Promise(r => { im.onload = r; im.onerror = r; })));
+    const canvas = await window.html2canvas(holder, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false });
+    return canvas;
+  } finally {
+    document.body.removeChild(holder);
+  }
+}
+
+// キャンバスをA4縦1ページに収めて jsPDF に追加する
+function asAddCanvasPage(pdf, canvas, isFirst) {
+  const pw = pdf.internal.pageSize.getWidth();
+  const ph = pdf.internal.pageSize.getHeight();
+  const margin = 8; // mm
+  const availW = pw - margin * 2;
+  const availH = ph - margin * 2;
+  let w = availW;
+  let h = w * canvas.height / canvas.width;
+  if (h > availH) { h = availH; w = h * canvas.width / canvas.height; }
+  const x = (pw - w) / 2;
+  const y = margin;
+  if (!isFirst) pdf.addPage();
+  pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', x, y, w, h);
+}
+
+// 1生徒分をPDFでダウンロード
+async function asExportPdf(idx) {
+  if (!_asData || !_asData.students[idx]) return;
+  const st = _asData.students[idx];
+  showToast('PDFを生成中…', 'info');
+  try {
+    await asLoadPdfLibs();
+    const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+    const canvas = await asRenderSheetCanvas(st);
+    asAddCanvasPage(pdf, canvas, true);
+    const catShort = AS_CAT_SHORT[_asData.category] || _asData.category;
+    pdf.save(catShort + '出席表_' + (st.name || '') + '_' + _asData.ym + '.pdf');
+    // PDF出力も印刷扱いで記録
+    asMarkPrinted([st.id]).then(() => {
+      const b = document.getElementById('as-prtbadge-' + st.id);
+      if (b) { b.style.display = 'inline'; b.innerHTML = '🖨 印刷済み'; b.setAttribute('style', 'font-size:10px;font-weight:700;color:#2E7D32;background:#EAF6EA;border:1px solid #BFE3BF;border-radius:20px;padding:1px 8px'); }
+    });
+    showToast('PDFをダウンロードしました', 'success');
+  } catch (e) {
+    console.warn('PDF生成に失敗', e);
+    showToast('PDF生成に失敗しました（通信環境をご確認ください）', 'error');
+  }
+}
+
+// 選択した生徒を1つのPDF（1人1ページ）でダウンロード
+async function asExportPdfBulk() {
+  if (!_asData) { showToast('対象の生徒がいません', 'info'); return; }
+  const all = (_asData.viewStudents && _asData.viewStudents.length) ? _asData.viewStudents : (_asData.students || []);
+  const list = all.filter(st => _asPrintSel[st.id]);
+  if (!list.length) { showToast('PDF化する生徒を選んでください（通常授業は確認済みの子のみ選べます）', 'info'); return; }
+  showToast('PDFを生成中…（' + list.length + '名）', 'info');
+  try {
+    await asLoadPdfLibs();
+    const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+    for (let i = 0; i < list.length; i++) {
+      const canvas = await asRenderSheetCanvas(list[i]);
+      asAddCanvasPage(pdf, canvas, i === 0);
+    }
+    const catShort = AS_CAT_SHORT[_asData.category] || _asData.category;
+    pdf.save(catShort + '出席表_' + list.length + '名_' + _asData.ym + '.pdf');
+    const sids = list.map(st => st.id);
+    asMarkPrinted(sids).then(() => {
+      sids.forEach(sid => {
+        const b = document.getElementById('as-prtbadge-' + sid);
+        if (b) { b.style.display = 'inline'; b.innerHTML = '🖨 印刷済み'; b.setAttribute('style', 'font-size:10px;font-weight:700;color:#2E7D32;background:#EAF6EA;border:1px solid #BFE3BF;border-radius:20px;padding:1px 8px'); }
+      });
+    });
+    showToast('PDFをダウンロードしました（' + list.length + '名）', 'success');
+  } catch (e) {
+    console.warn('一括PDF生成に失敗', e);
+    showToast('PDF生成に失敗しました（通信環境をご確認ください）', 'error');
+  }
+}
+
+// 季節イラスト（年月×種別で共通1枚）をDBから読み込む
+async function asLoadImageFromDb(year, month, category) {
+  _asImage = null;
+  try {
+    const rows = await sbGet('attendance_sheet_image',
+      'img_year=eq.' + year + '&img_month=eq.' + month +
+      '&category=eq.' + encodeURIComponent(category) +
+      '&select=id,image_data&limit=1') || [];
+    if (rows && rows[0]) _asImage = { id: rows[0].id, image_data: rows[0].image_data };
+  } catch (e) {
+    console.warn('attendance_sheet_image 読み込み失敗（SQL未適用の可能性）', e);
+  }
+}
+
+// 上部の季節イラストバーを現在の _asImage 状態に合わせて描画
+function asRenderImageBar() {
+  const bar = document.getElementById('as-image-bar');
+  if (!bar || !_asData) { if (bar) bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  const prev = document.getElementById('as-img-preview');
+  const del = document.getElementById('as-img-del');
+  const status = document.getElementById('as-img-status');
+  if (_asImage && _asImage.image_data) {
+    if (prev) { prev.style.display = 'block'; prev.innerHTML = '<img src="' + _asImage.image_data + '" alt="プレビュー" style="max-width:150px;max-height:130px;height:auto;border:1px solid var(--border);border-radius:6px;background:#fff">'; }
+    if (del) del.style.display = 'inline';
+    if (status) { status.textContent = '設定済み'; status.style.color = 'var(--green-d)'; }
+  } else {
+    if (prev) { prev.style.display = 'none'; prev.innerHTML = ''; }
+    if (del) del.style.display = 'none';
+    if (status) { status.textContent = '未設定'; status.style.color = 'var(--muted)'; }
+  }
+}
+
+// 画像選択時：クライアント側で縮小・JPEG圧縮してから即アップロード（年月×種別で upsert）
+async function asOnImageUpload(input) {
+  if (!_asData) return;
+  const file = input && input.files && input.files[0];
+  input.value = ''; // 同じファイルの再選択を可能に
+  if (!file) return;
+  const status = document.getElementById('as-img-status');
+  if (status) { status.textContent = '処理中...'; status.style.color = 'var(--muted)'; }
+  try {
+    const dataUrl = await asShrinkImage(file, 500, 0.82);
+    const y = _asData.y, mo = _asData.mo, cat = _asData.category;
+    const by = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : (localStorage.getItem('fit_staff_id') || '');
+    const res = await fetch(SB_URL + '/rest/v1/attendance_sheet_image?on_conflict=img_year,img_month,category', {
+      method: 'POST',
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=representation' },
+      body: JSON.stringify({ img_year: y, img_month: mo, category: cat, image_data: dataUrl, updated_at: new Date().toISOString(), updated_by: by })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const arr = await res.json();
+    _asImage = { id: (arr && arr[0] ? arr[0].id : null), image_data: dataUrl };
+    asRenderImageBar();
+    showToast('季節イラストを設定しました', 'success');
+  } catch (e) {
+    console.warn('画像の保存に失敗', e);
+    showToast('画像の保存に失敗しました（SQL未適用の可能性）', 'error');
+    if (status) { status.textContent = '保存失敗'; status.style.color = '#C0392B'; }
+  }
+}
+
+// 画像を縮小して data URL(JPEG) を返す（最長辺 maxSide px・品質 q）
+function asShrinkImage(file, maxSide, q) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.naturalWidth, h = img.naturalHeight;
+        if (w > maxSide || h > maxSide) {
+          if (w >= h) { h = Math.round(h * maxSide / w); w = maxSide; }
+          else { w = Math.round(w * maxSide / h); h = maxSide; }
+        }
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); // 透過PNG対策で白背景
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(cv.toDataURL('image/jpeg', q));
+      };
+      img.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error('ファイルの読み込みに失敗しました'));
+    reader.readAsDataURL(file);
+  });
+}
+
+// 季節イラストを削除（image_data を null に更新）
+async function asDeleteImage() {
+  if (!_asData || !_asImage) return;
+  if (!confirm('この月・種別の季節イラストを削除しますか？')) return;
+  try {
+    const by = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : (localStorage.getItem('fit_staff_id') || '');
+    if (_asImage.id) {
+      await sbPatch('attendance_sheet_image', 'id=eq.' + _asImage.id, { image_data: null, updated_at: new Date().toISOString(), updated_by: by });
+    }
+    _asImage = null;
+    asRenderImageBar();
+    showToast('季節イラストを削除しました', 'success');
+  } catch (e) {
+    console.warn('画像の削除に失敗', e);
+    showToast('画像の削除に失敗しました', 'error');
   }
 }
 
