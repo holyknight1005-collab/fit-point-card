@@ -5970,7 +5970,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlb';
+const APP_VERSION = '20260702dlc';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -30130,6 +30130,7 @@ async function loadAttSheet() {
       const hasComment = !!cmt.trim();
       const onHold = !!meta.on_hold;
       const confirmed = !!meta.confirmed;
+      const canConf = asCanConfirm(); // 確認済／保留を触れる担当者か
       // ステータスバッジ
       let badge;
       if (onHold) badge = '<span style="color:#7A5AA8;font-weight:700">⏸ 保留（遅延依頼）</span>';
@@ -30155,8 +30156,9 @@ async function loadAttSheet() {
         nameEditor(st) +
         '<textarea id="as-cmt-' + st.id + '" oninput="asOnCommentEdit(\'' + st.id + '\')" placeholder="コメントを入力…" style="width:100%;box-sizing:border-box;font-size:12px;line-height:1.5;border:1px solid var(--border);border-radius:8px;padding:6px 8px;resize:vertical;min-height:46px;font-family:\'Noto Sans JP\',sans-serif;background:var(--bg);color:var(--text)">' + escapeHtml(cmt) + '</textarea>' +
         '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">' +
-          '<button id="as-confbtn-' + st.id + '" onclick="asToggleConfirmed(\'' + st.id + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (confirmed ? '#3B9E5B' : '#CBD5CB') + ';border-radius:7px;background:' + (confirmed ? '#EAF6EA' : '#fff') + ';color:' + (confirmed ? '#2E7D32' : '#666') + ';cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (confirmed ? '✓ 確認済' : '□ 確認する') + '</button>' +
-          '<button id="as-holdbtn-' + st.id + '" onclick="asToggleHold(\'' + st.id + '\')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (onHold ? '#7A5AA8' : '#CBD5CB') + ';border-radius:7px;background:' + (onHold ? '#F1EBF8' : '#fff') + ';color:' + (onHold ? '#5E3B8A' : '#666') + ';cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (onHold ? '⏸ 保留中' : '⏸ 保留') + '</button>' +
+          '<button id="as-confbtn-' + st.id + '" ' + (canConf ? 'onclick="asToggleConfirmed(\'' + st.id + '\')"' : 'disabled') + ' style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (confirmed ? '#3B9E5B' : '#CBD5CB') + ';border-radius:7px;background:' + (confirmed ? '#EAF6EA' : '#fff') + ';color:' + (confirmed ? '#2E7D32' : '#666') + ';cursor:' + (canConf ? 'pointer' : 'not-allowed') + ';opacity:' + (canConf ? '1' : '0.5') + ';font-family:\'Noto Sans JP\',sans-serif">' + (confirmed ? '✓ 確認済' : '□ 確認する') + '</button>' +
+          '<button id="as-holdbtn-' + st.id + '" ' + (canConf ? 'onclick="asToggleHold(\'' + st.id + '\')"' : 'disabled') + ' style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (onHold ? '#7A5AA8' : '#CBD5CB') + ';border-radius:7px;background:' + (onHold ? '#F1EBF8' : '#fff') + ';color:' + (onHold ? '#5E3B8A' : '#666') + ';cursor:' + (canConf ? 'pointer' : 'not-allowed') + ';opacity:' + (canConf ? '1' : '0.5') + ';font-family:\'Noto Sans JP\',sans-serif">' + (onHold ? '⏸ 保留中' : '⏸ 保留') + '</button>' +
+          (canConf ? '' : '<span style="font-size:10px;color:var(--muted)">（確認は担当者のみ）</span>') +
           (meta.confirmed_by ? '<span style="font-size:10px;color:var(--muted)">確認:' + escapeHtml(resolveStaffName(meta.confirmed_by)) + '</span>' : '') +
         '</div>' +
       '</div>';
@@ -31612,7 +31614,18 @@ async function asBulkSaveComments(sids) {
 }
 
 // 確認済みフラグの切り替え（ローカルのみ・保存は「まとめて保存」）
+// コメントの「✓確認済／⏸保留」を切り替えられる人（担当者＋admin）。
+// fit002=橋田・fit010=亀井・fit022=髙田、および admin（fit001/fit003）。
+const AS_CONFIRM_STAFF = ['fit002', 'fit010', 'fit022'];
+function asCanConfirm() {
+  if (!currentStaff) return false;
+  if (currentStaff.role === 'admin') return true;
+  const sid = String(currentStaff.staff_id || '').toLowerCase();
+  return AS_CONFIRM_STAFF.indexOf(sid) !== -1;
+}
+
 function asToggleConfirmed(sid) {
+  if (!asCanConfirm()) { showToast('確認済／保留の変更は担当者のみ可能です', 'info'); return; }
   // textarea の最新内容も取り込む
   const ta = document.getElementById('as-cmt-' + sid);
   if (ta) { _asComments[sid] = ta.value; (_asDirty[sid] || (_asDirty[sid] = {})).comment = ta.value; }
@@ -31628,6 +31641,7 @@ function asToggleConfirmed(sid) {
 
 // 保留（遅延依頼）フラグの切り替え（ローカルのみ・保存は「まとめて保存」）
 function asToggleHold(sid) {
+  if (!asCanConfirm()) { showToast('確認済／保留の変更は担当者のみ可能です', 'info'); return; }
   const ta = document.getElementById('as-cmt-' + sid);
   if (ta) { _asComments[sid] = ta.value; (_asDirty[sid] || (_asDirty[sid] = {})).comment = ta.value; }
   const meta = _asMeta[sid] || (_asMeta[sid] = {});
