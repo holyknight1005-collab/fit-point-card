@@ -6003,7 +6003,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm4';
+const APP_VERSION = '20260702dlm5';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -8725,6 +8725,7 @@ function setDivision(d) {
   try { if (typeof renderStudentList === 'function' && document.getElementById('student-list')) renderStudentList(); } catch (e) {}
   try { if (typeof renderRosterCheckDivBanner === 'function' && document.getElementById('rostercheck-div-banner')) renderRosterCheckDivBanner(); } catch (e) {}
   try { if (typeof loadStudentAnalysis === 'function' && document.getElementById('sa-body') && document.getElementById('smcontent-studentanalysis') && document.getElementById('smcontent-studentanalysis').style.display !== 'none') loadStudentAnalysis(); } catch (e) {}
+  try { if (typeof renderEnrollmentFlow === 'function' && document.getElementById('sa-flow-report')) renderEnrollmentFlow(); } catch (e) {}
   try { if (typeof loadWeekGrid === 'function' && document.getElementById('wk-grid')) loadWeekGrid(); } catch (e) {}
 }
 
@@ -20731,9 +20732,25 @@ function isFreeAfterLapClass(name) {
 
 // 学年表示を正規化する。grade は '3年' や '中3' のように単位込みで保存されているため、
 // 数字だけのとき（'3'）にだけ '年' を足す。二重の「3年年」を防ぐ。
-function fmtGrade(g) {
+function fmtGrade(g, division) {
   const s = (g == null ? '' : String(g)).trim();
   if (!s) return '';
+  // dlm5: 部門を渡された場合は、その部門基準で正規化して表示する。
+  // 中学部 → 中1/中2/中3、高校部 → 1年/2年/3年（数字を拾って部門の単位を付ける）。
+  const div = (division === '中学部' || division === '高校部') ? division
+            : (typeof currentDivision !== 'undefined' ? currentDivision : null);
+  if (div === '中学部' || div === '高校部') {
+    const zen = s.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+    const num = (zen.match(/[0-9]+/) || [])[0];
+    if (num) {
+      const n = parseInt(num, 10);
+      if (div === '中学部' && n >= 1 && n <= 3) return '中' + n;
+      if (div === '高校部' && n >= 1 && n <= 3) return n + '年';
+    }
+    // 数字が拾えない（卒・浪など特殊表記）はそのまま返す
+    return s;
+  }
+  // 部門情報が無い従来経路：既存挙動を維持
   if (/[年中高小卒浪]/.test(s)) return s;           // すでに単位を含む
   if (/^[0-9０-９]+$/.test(s)) return s + '年';       // 数字だけなら「年」付与
   return s;
@@ -21803,7 +21820,10 @@ function kshFilteredStudents() {
 }
 function kshGradeLabel(g) {
   const m = String(g == null ? '' : g).match(/([1-3])/);
-  return m ? (m[1] + '年') : '不明';
+  if (!m) return '不明';
+  // dlm5: 部門基準でラベル化（中学部→中◯ / 高校部→◯年）
+  const div = (typeof currentDivision !== 'undefined') ? currentDivision : '高校部';
+  return (div === '中学部') ? ('中' + m[1]) : (m[1] + '年');
 }
 
 function renderKoushuAnalysis() {
@@ -21876,7 +21896,7 @@ function renderKshSchool(el) {
     const gbtn = (v, l) => '<button onclick="setKshSchoolGrade(\'' + v + '\')" style="padding:4px 11px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
       (kshSchoolGrade === v ? 'border:1.5px solid var(--orange);background:var(--orange);color:#fff'
                             : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + l + '</button>';
-    h += gbtn('', 'すべて') + kshGkeys.map(g2 => gbtn(g2, g2 + '年')).join('');
+    h += gbtn('', 'すべて') + kshGkeys.map(g2 => gbtn(g2, (currentDivision === '中学部' ? '中' + g2 : g2 + '年'))).join('');
     h += '</div>';
   }
 
@@ -43981,9 +44001,9 @@ async function renderEnrollmentFlow() {
   try {
     let rosterRows;
     try {
-      rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status,withdraw_reason,note') || [];
+      rosterRows = await sbGet('roster', 'is_active=eq.true&division=eq.'+encodeURIComponent(currentDivision)+'&select=name,school,grade,enroll_date,withdraw_date,status,withdraw_reason,note') || [];
     } catch (eR) {
-      rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,enroll_date,withdraw_date,status,note') || [];
+      rosterRows = await sbGet('roster', 'is_active=eq.true&division=eq.'+encodeURIComponent(currentDivision)+'&select=name,school,grade,enroll_date,withdraw_date,status,note') || [];
     }
     // students 側の照合キー（在籍・退塾問わず全員。アプリにいる子は roster から数えない）
     const allStu = await sbGet('students', 'select=name,school') || [];
@@ -44068,7 +44088,7 @@ async function renderEnrollmentFlow() {
     '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">' +
       '<div><span style="font-weight:700;color:' + color + '">' + escapeHtml(s.name || '') + '</span>' +
       (s._roster ? '<span style="font-size:9px;color:#999;margin-left:4px">名簿</span>' : '') +
-      '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(s.grade) : '') + '</span></div>' +
+      '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(fmtGrade(s.grade)) : '') + '</span></div>' +
       '<div style="color:var(--muted);font-size:11px">' + labelFn(s) + '</div>' +
     '</div>';
   const nameRows = (rows, labelFn, color) => {
@@ -44111,7 +44131,7 @@ async function renderEnrollmentFlow() {
     return '<div style="padding:6px 0;border-bottom:1px solid var(--border)">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-bottom:4px">' +
         '<div><span style="font-weight:700;color:#C0392B">' + escapeHtml(s.name || '') + '</span>' + nameBadge +
-        '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(s.grade) : '') + '</span></div>' +
+        '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(fmtGrade(s.grade)) : '') + '</span></div>' +
         '<div style="color:var(--muted);font-size:11px">' + fmtDate(s.withdraw_effective_date) + '</div>' +
       '</div>' +
       reasonRow +
@@ -44135,7 +44155,7 @@ async function renderEnrollmentFlow() {
         '<div style="flex:1;min-width:0;font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
           '<span style="font-weight:700;color:#C0392B">' + escapeHtml(s.name || '') + '</span>' +
           '<span style="font-size:9px;color:#fff;background:#999;border-radius:4px;padding:1px 5px;margin-left:6px">名簿</span>' +
-          '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(s.grade) : '') + '</span>' +
+          '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(fmtGrade(s.grade)) : '') + '</span>' +
         '</div>' +
         '<div style="font-size:10px;color:var(--muted);white-space:nowrap">名簿台帳で退塾日を入力</div>' +
       '</div>';
@@ -44143,7 +44163,7 @@ async function renderEnrollmentFlow() {
     return '<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">' +
       '<div style="flex:1;min-width:0;font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
         '<span style="font-weight:700;color:#C0392B">' + escapeHtml(s.name || '') + '</span>' +
-        '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(s.grade) : '') + '</span>' +
+        '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(fmtGrade(s.grade)) : '') + '</span>' +
       '</div>' +
       '<input type="date" id="flow-wdate-' + s.id + '" style="font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;font-family:inherit;color:var(--text);background:#fff">' +
       '<button onclick="saveFlowWithdrawDate(\'' + s.id + '\')" style="padding:5px 9px;background:linear-gradient(135deg,#C0392B,#96271B);border:none;border-radius:6px;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">保存</button>' +
@@ -44162,7 +44182,7 @@ async function renderEnrollmentFlow() {
     '<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">' +
       '<div style="flex:1;min-width:0;font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
         '<span style="font-weight:700">' + escapeHtml(s.name || '') + '</span>' +
-        '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(s.grade) : '') + '</span>' +
+        '<span style="color:var(--muted);font-size:10px;margin-left:6px">' + escapeHtml(s.school || '') + (s.grade ? ' ' + escapeHtml(fmtGrade(s.grade)) : '') + '</span>' +
       '</div>' +
       '<input type="date" id="flow-enroll-' + s.id + '" style="font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;font-family:inherit;color:var(--text);background:#fff">' +
       '<button onclick="saveFlowEnrollDate(\'' + s.id + '\')" style="padding:5px 9px;background:linear-gradient(135deg,#5A9E3C,#3E7A28);border:none;border-radius:6px;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">保存</button>' +
@@ -44457,7 +44477,11 @@ async function renderEnrollmentTrend() {
 // 学校×学年フィルタ用ヘルパ：person/annual行が現在の絞り込みに合致するか
 function trendMatchFilter(school, grade) {
   if (trendFilter.school !== '全校' && school !== trendFilter.school) return false;
-  if (trendFilter.grade !== '全体' && grade !== trendFilter.grade) return false;
+  // dlm5: 学年は数字で照合（'中1'と'1年'を同一学年として扱う）。部門はデータ取得側で既に絞済み。
+  if (trendFilter.grade !== '全体') {
+    const gd = emxGradeDigit(grade), fd = emxGradeDigit(trendFilter.grade);
+    if (!fd || gd !== fd) return false;
+  }
   return true;
 }
 // 在籍区分モードに合致するか。'regular'=通常のみ（時期別のみを除外）／'all'=合算。
@@ -44554,7 +44578,10 @@ function trendFiscalSeries(fyStart, metric, fmonths) {
     trendAnnualRows.forEach(r => {
       if ((r.metric || 'enrolled') !== metric) return;
       if (trendFilter.school !== '全校' && (r.school || '') !== trendFilter.school) return;
-      if (trendFilter.grade !== '全体' && (r.grade || '') !== trendFilter.grade) return;
+      if (trendFilter.grade !== '全体') {
+        const gd = emxGradeDigit(r.grade || ''), fd = emxGradeDigit(trendFilter.grade);
+        if (!fd || gd !== fd) return;
+      }
       const i = idxByYM[parseInt(r.year, 10) + '-' + parseInt(r.month, 10)];
       if (i == null) return;
       acc[i] = (acc[i] || 0) + (parseInt(r.count, 10) || 0);
@@ -44791,16 +44818,17 @@ function backFromSchoolView() {
 async function svEnsureTrendData() {
   // 既にトレンドキャッシュがあれば再利用（同一セッション内）
   if (trendPersonsCache && trendPersonsCache.length && trendAllMonths && trendAllMonths.length) return;
-  // students
+  // students（dlm5: 部門で絞る。トレンドは現在の部門のみ集計）
   let stu = [];
+  const _dv = 'division=eq.' + encodeURIComponent(currentDivision) + '&';
   try {
-    stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,exam_finished,exam_finished_on') || [];
+    stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,exam_finished,exam_finished_on&' + _dv.replace(/&$/,'')) || [];
   } catch (eE) {
    try {
-    stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status') || [];
+    stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date,membership_status&' + _dv.replace(/&$/,'')) || [];
    } catch (e0) {
-    try { stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || []; }
-    catch (e1) { stu = await sbGet('students', 'select=id,name,school,grade,created_at,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date') || []; }
+    try { stu = await sbGet('students', 'select=id,name,school,grade,created_at,enroll_date,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date&' + _dv.replace(/&$/,'')) || []; }
+    catch (e1) { stu = await sbGet('students', 'select=id,name,school,grade,created_at,is_active,inactive_at,inactive_reason,withdraw_status,withdraw_effective_date&' + _dv.replace(/&$/,'')) || []; }
    }
   }
   stu = stu.filter(s => s.inactive_reason !== '除外');
@@ -45014,18 +45042,20 @@ function renderSvEnroll() {
     html += '<div style="overflow-x:auto;border:1px solid #D9D4C7;border-radius:8px">';
     html += '<table class="sv-enroll-table"><thead><tr>' +
       '<th colspan="2" style="text-align:left">年度＼月</th>' + monHead + '</tr></thead><tbody>';
-    // 今年度（在籍：高1/2/3＋合計、続けて入塾/退塾）＝6行
-    html += yrRow('高1', seriesByGrade['1年'], '', yrLabelCell(fyStart, 6));
-    html += yrRow('高2', seriesByGrade['2年'], '');
-    html += yrRow('高3', seriesByGrade['3年'], '');
+    // 今年度（在籍：学年別＋合計、続けて入塾/退塾）＝6行
+    // dlm5: 部門で学年ラベルを切替（中学部→中1/2/3、高校部→高1/2/3）
+    const _gpfx = (currentDivision === '中学部') ? '中' : '高';
+    html += yrRow(_gpfx + '1', seriesByGrade['1年'], '', yrLabelCell(fyStart, 6));
+    html += yrRow(_gpfx + '2', seriesByGrade['2年'], '');
+    html += yrRow(_gpfx + '3', seriesByGrade['3年'], '');
     html += yrRow('合計', curSum, 'sv-sum');
     html += flowRow('入塾', curJoined, '#2E7D32');
     html += flowRow('退塾', curLeft, '#C0392B');
     // 昨年度（トグルON時のみ・同様に6行）＋前年差異
     if (svShowPrevYear) {
-      html += yrRow('高1', prevByGrade['1年'], '', yrLabelCell(fyStart - 1, 6));
-      html += yrRow('高2', prevByGrade['2年'], '');
-      html += yrRow('高3', prevByGrade['3年'], '');
+      html += yrRow(_gpfx + '1', prevByGrade['1年'], '', yrLabelCell(fyStart - 1, 6));
+      html += yrRow(_gpfx + '2', prevByGrade['2年'], '');
+      html += yrRow(_gpfx + '3', prevByGrade['3年'], '');
       html += yrRow('合計', prevSum, 'sv-sum');
       html += flowRow('入塾', prevJoined, '#2E7D32');
       html += flowRow('退塾', prevLeft, '#C0392B');
