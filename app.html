@@ -1498,6 +1498,15 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="svedit-name" style="font-size:14px;font-weight:800;color:#1E4276;margin-bottom:12px"></div>
     <input type="hidden" id="svedit-id">
 
+    <div style="margin-bottom:8px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:3px">部門</div>
+      <select class="form-select" id="svedit-division" onchange="svEditDivisionChange()" style="width:100%;font-size:13px">
+        <option value="高校部">🎓 高校部</option>
+        <option value="中学部">📗 中学部</option>
+      </select>
+      <div id="svedit-division-note" style="display:none;font-size:10px;color:#A04040;background:#FDF2F2;border:1px solid #E8B4B4;border-radius:6px;padding:6px 8px;margin-top:6px;line-height:1.5"></div>
+    </div>
+
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <div style="flex:1">
         <div style="font-size:11px;color:var(--muted);margin-bottom:3px">学校</div>
@@ -6003,7 +6012,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm5';
+const APP_VERSION = '20260702dlm6';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -46041,6 +46050,38 @@ function svFillGradeSelect(selId, division, current, leadOption) {
   sel.innerHTML = html;
 }
 
+// dlm6: 編集モーダルで部門を変えたとき。学年候補を新部門に合わせて組み替え、
+// 元の部門と違う場合は注意書きを出す（誤登録の修正用途）。
+var svEditOrigDivision = '高校部';
+function svEditDivisionChange() {
+  const sel = document.getElementById('svedit-division');
+  if (!sel) return;
+  const newDiv = sel.value;
+  const gradeEl = document.getElementById('svedit-grade');
+  const curGrade = gradeEl ? gradeEl.value : '';
+  // 学年候補を新部門に合わせて作り直し、数字が同じなら対応学年を選び直す
+  const digit = (typeof emxGradeDigit === 'function') ? emxGradeDigit(curGrade) : (String(curGrade).match(/[1-3]/) || [''])[0];
+  const mapped = digit ? (newDiv === '中学部' ? ('中' + digit) : (digit + '年')) : '';
+  svFillGradeSelect('svedit-grade', newDiv, mapped || '');
+  if (gradeEl) gradeEl.value = mapped || '';
+  // 退塾時学年の候補も揃える
+  const wgEl = document.getElementById('svedit-withdraw-grade');
+  if (wgEl) { const wc = wgEl.value; svFillGradeSelect('svedit-withdraw-grade', newDiv, wc || '', '<option value="">（自動：退塾日から推定）</option>'); wgEl.value = wc || ''; }
+  // 注意書き
+  const note = document.getElementById('svedit-division-note');
+  if (note) {
+    if (newDiv !== svEditOrigDivision) {
+      note.innerHTML = '⚠️ この生徒を <b>' + escapeHtml(svEditOrigDivision) + '</b> から <b>' + escapeHtml(newDiv) + '</b> に移します。'
+        + '学年表記やこの生徒が出てくる部門（一覧・人数集計・出欠・出席表）がすべて ' + escapeHtml(newDiv) + ' の扱いに変わります。'
+        + '<br>※ 受講中の講座は元の部門の講座のままです。必要なら「受講講座」欄で ' + escapeHtml(newDiv) + ' の講座に付け替えてください。'
+        + '<br>誤って別部門で登録した場合の修正にお使いください。';
+      note.style.display = 'block';
+    } else {
+      note.style.display = 'none';
+    }
+  }
+}
+
 // id は students.id、または roster由来は 'r:'+roster.id
 function svOpenEditStudent(id) {
   if (typeof svCanEditGradeNotes === 'function' && !svCanEditGradeNotes()) { showToast('この学校の編集権限がありません（担当校のみ編集できます）', 'error'); return; }
@@ -46052,6 +46093,12 @@ function svOpenEditStudent(id) {
   document.getElementById('svedit-school').value = s.school || svSchool || '';
   // 学年の選択肢を部門（中学部/高校部）に応じて組み立ててから値をセット
   const svDiv = s.division || currentDivision || '高校部';
+  // 部門セレクト（誤登録の付け替え用）
+  svEditOrigDivision = (svDiv === '中学部') ? '中学部' : '高校部';
+  const divSel = document.getElementById('svedit-division');
+  if (divSel) divSel.value = svEditOrigDivision;
+  const divNote = document.getElementById('svedit-division-note');
+  if (divNote) divNote.style.display = 'none';
   svFillGradeSelect('svedit-grade', svDiv, s.grade || '');
   document.getElementById('svedit-grade').value = s.grade || '';
   document.getElementById('svedit-track').value = s.course_track || '';
@@ -46271,6 +46318,8 @@ async function saveSvEdit() {
   const id = document.getElementById('svedit-id').value;
   if (!id) return;
   const school = document.getElementById('svedit-school').value.trim();
+  const divisionEl = document.getElementById('svedit-division');
+  const division = divisionEl ? divisionEl.value : null;
   const grade = document.getElementById('svedit-grade').value;
   const track = document.getElementById('svedit-track').value;
   const membership = document.getElementById('svedit-membership').value;
@@ -46302,6 +46351,7 @@ async function saveSvEdit() {
       membership_status: membership,
       enroll_date: enroll
     };
+    if (division === '高校部' || division === '中学部') rbody.division = division;
     if (status === '退塾') {
       rbody.status = '退塾';
       rbody.withdraw_date = wdate;
@@ -46331,6 +46381,7 @@ async function saveSvEdit() {
       // withdraw_reason 列が無い旧環境：理由は note に、他は列を外して再保存
       try {
         const fb = { school: rbody.school, grade: rbody.grade, course_track: rbody.course_track, membership_status: rbody.membership_status, enroll_date: rbody.enroll_date, status: rbody.status, withdraw_date: rbody.withdraw_date };
+        if (rbody.division) fb.division = rbody.division;
         if (status === '退塾') fb.note = wreason || null;
         await sbPatch('roster', 'id=eq.' + encodeURIComponent(rid), fb);
         closeSvEdit();
@@ -46351,6 +46402,7 @@ async function saveSvEdit() {
     membership_status: membership,
     enroll_date: enroll
   };
+  if (division === '高校部' || division === '中学部') body.division = division;
   // 在籍状態
   if (status === 'active') {
     body.is_active = true; body.inactive_reason = null; body.inactive_at = null;
@@ -46393,7 +46445,11 @@ async function saveSvEdit() {
     demoStudentIdSet = null;   // 在籍状態変更を集計に即反映
     hideLoading();
     closeSvEdit();
-    showToast('💾 保存しました', 'success');
+    if ((division === '高校部' || division === '中学部') && division !== svEditOrigDivision) {
+      showToast('💾 保存しました（' + svEditOrigDivision + '→' + division + 'に移動。' + (division !== currentDivision ? '今は' + currentDivision + '表示のため一覧から消えます' : '') + '）', 'success');
+    } else {
+      showToast('💾 保存しました', 'success');
+    }
     renderSvInterviews();
     renderSvReconcile();
   } catch (e) {
