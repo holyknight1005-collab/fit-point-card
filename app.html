@@ -2682,6 +2682,14 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
             </div>
           </div>
         </div>
+        <div style="margin-bottom:8px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">部門</div>
+          <select class="form-select" id="detail-division" onchange="detailDivisionChange()" style="width:100%;font-size:13px">
+            <option value="高校部">🎓 高校部</option>
+            <option value="中学部">📗 中学部</option>
+          </select>
+          <div id="detail-division-note" style="display:none;font-size:10px;color:#A04040;background:#FDF2F2;border:1px solid #E8B4B4;border-radius:6px;padding:6px 8px;margin-top:6px;line-height:1.5"></div>
+        </div>
         <div style="display:flex;gap:8px;margin-bottom:8px">
           <div style="flex:1.4">
             <div style="font-size:11px;color:var(--muted);margin-bottom:4px">学校</div>
@@ -6012,7 +6020,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm6';
+const APP_VERSION = '20260702dlm7';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -10633,6 +10641,8 @@ async function saveStudentAttributes() {
   const birthday = getBirthdayValue('detail');
   const school = document.getElementById('detail-school').value;
   const grade = document.getElementById('detail-grade').value;
+  const divisionEl = document.getElementById('detail-division');
+  const division = divisionEl ? divisionEl.value : null;
   // SSS / その他 のときだけ実校名を保持。それ以外は空にする
   let schoolDetail = '';
   if (school === 'SSS' || school === 'その他') {
@@ -10651,6 +10661,7 @@ async function saveStudentAttributes() {
   if (examFinished && !examOn) { hideLoading(); showToast('受験終了日を入力してください', 'error'); return; }
   try {
     const base = { name: name, name_kana: nameKana, gender: gender || null, club: club || null, birthday: birthday, school: school || null, grade: grade || null, school_detail: schoolDetail || null };
+    if (division === '高校部' || division === '中学部') base.division = division;
     const examFields = { exam_finished: examFinished, exam_finished_on: examOn, exam_finish_kind: examKind };
     // name_kana 列が無い旧環境向けに、base から name_kana を外した版も用意
     const baseNoKana = Object.assign({}, base); delete baseNoKana.name_kana;
@@ -10679,10 +10690,16 @@ async function saveStudentAttributes() {
     detailStudent.school = school;
     detailStudent.grade = grade;
     detailStudent.school_detail = schoolDetail;
+    if (division === '高校部' || division === '中学部') detailStudent.division = division;
     const hdr = document.getElementById('detail-name-header');
     if (hdr) hdr.textContent = name;
     hideLoading();
-    showToast('✅ 属性を保存しました', 'success');
+    if ((division === '高校部' || division === '中学部') && division !== detailOrigDivision) {
+      showToast('✅ 保存しました（' + detailOrigDivision + '→' + division + 'に移動しました）', 'success');
+      detailOrigDivision = division;
+    } else {
+      showToast('✅ 属性を保存しました', 'success');
+    }
     // 氏名・学校を直した結果、同一人物の行が既にあれば統合を提案（出欠ごと消す事故の防止）
     try {
       const merged = await offerMergeAfterRename(detailStudent.id, name, school, nameKana);
@@ -11020,6 +11037,13 @@ async function openStudentDetail(idx, from) {
     document.getElementById('detail-login-pin-toggle').textContent = '表示';
     document.getElementById('detail-newpin').value = '';
     await renderDetailSchoolOptions(s.school || '', s.division);
+    // 部門セレクト（誤登録の付け替え用）＋学年候補を部門に合わせる
+    detailOrigDivision = (s.division === '中学部') ? '中学部' : '高校部';
+    const dDivSel = document.getElementById('detail-division');
+    if (dDivSel) dDivSel.value = detailOrigDivision;
+    const dDivNote = document.getElementById('detail-division-note');
+    if (dDivNote) dDivNote.style.display = 'none';
+    detailFillGradeSelect(detailOrigDivision, s.grade || '');
     document.getElementById('detail-school').value = s.school || '';
     document.getElementById('detail-grade').value = s.grade || '';
     document.getElementById('detail-school-detail').value = s.school_detail || '';
@@ -35993,6 +36017,47 @@ function fillSchoolDatalist(datalistId, division) {
   const div = division || (typeof currentDivision !== 'undefined' ? currentDivision : '高校部');
   const names = schoolsForDivision(div);
   dl.innerHTML = names.map(n => '<option value="' + escapeAttr(n) + '"></option>').join('');
+}
+
+// dlm6: 生徒詳細フォームの部門付け替え（誤登録の修正用）。
+var detailOrigDivision = '高校部';
+function detailFillGradeSelect(division, current) {
+  const sel = document.getElementById('detail-grade');
+  if (!sel) return;
+  const isChu = (division === '中学部');
+  const vals = isChu ? ['中1', '中2', '中3'] : ['1年', '2年', '3年'];
+  const cur = String(current || '').trim();
+  let html = '<option value="">未設定</option>';
+  const list = (cur && vals.indexOf(cur) === -1) ? [cur].concat(vals) : vals;
+  list.forEach(v => { html += '<option value="' + escapeAttr(v) + '">' + escapeHtml(v) + '</option>'; });
+  sel.innerHTML = html;
+}
+async function detailDivisionChange() {
+  const sel = document.getElementById('detail-division');
+  if (!sel) return;
+  const newDiv = sel.value;
+  const gradeEl = document.getElementById('detail-grade');
+  const curGrade = gradeEl ? gradeEl.value : '';
+  const digit = (typeof emxGradeDigit === 'function') ? emxGradeDigit(curGrade) : (String(curGrade).match(/[1-3]/) || [''])[0];
+  const mapped = digit ? (newDiv === '中学部' ? ('中' + digit) : (digit + '年')) : '';
+  detailFillGradeSelect(newDiv, mapped || '');
+  if (gradeEl) gradeEl.value = mapped || '';
+  // 学校候補も新部門に合わせて作り直す（選択は維持）
+  const schoolEl = document.getElementById('detail-school');
+  const keepSchool = schoolEl ? schoolEl.value : '';
+  await renderDetailSchoolOptions(keepSchool, newDiv);
+  const note = document.getElementById('detail-division-note');
+  if (note) {
+    if (newDiv !== detailOrigDivision) {
+      note.innerHTML = '⚠️ この生徒を <b>' + escapeHtml(detailOrigDivision) + '</b> から <b>' + escapeHtml(newDiv) + '</b> に移します。'
+        + '学年表記やこの生徒が出てくる部門（一覧・人数集計・出欠・出席表）がすべて ' + escapeHtml(newDiv) + ' の扱いに変わります。'
+        + '<br>※ 受講中の講座は元の部門の講座のままです。必要なら別途、受講講座を ' + escapeHtml(newDiv) + ' の講座に付け替えてください。'
+        + '<br>誤って別部門で登録した場合の修正にお使いください。';
+      note.style.display = 'block';
+    } else {
+      note.style.display = 'none';
+    }
+  }
 }
 
 async function initProspects() {
