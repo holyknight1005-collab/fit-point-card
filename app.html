@@ -6020,7 +6020,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm7';
+const APP_VERSION = '20260702dlm9';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -45642,21 +45642,37 @@ async function renderSvComment() {
     try { await loadStaffSelect(); } catch (e) {}
   }
 
-  // その学校の在籍生徒
+  // その学校の在籍生徒（通常授業の子のみ。時期別のみは出席表コメント対象外）
   let students = [];
   try {
     students = await sbGet('students',
       'is_active=eq.true&school=eq.' + encodeURIComponent(svSchool) +
-      '&select=id,name,name_kana,grade&order=name_kana') || [];
+      '&select=id,name,name_kana,grade,membership_status&order=name_kana') || [];
+    // 時期別のみを除外（membership_status 未設定は通常扱い）
+    students = students.filter(s => (s.membership_status || '通常') !== '時期別のみ');
     // デモ除外
     let ids = students.map(s => s.id);
     if (typeof excludeDemoIds === 'function') { ids = await excludeDemoIds(ids); const keep = new Set(ids); students = students.filter(s => keep.has(s.id)); }
   } catch (e) {
-    sec.innerHTML = head + '<div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">生徒の取得に失敗しました。</div>';
-    return;
+    // membership_status 列が無い旧環境フォールバック（絞り込みは行わない）
+    try {
+      students = await sbGet('students',
+        'is_active=eq.true&school=eq.' + encodeURIComponent(svSchool) +
+        '&select=id,name,name_kana,grade&order=name_kana') || [];
+      let ids = students.map(s => s.id);
+      if (typeof excludeDemoIds === 'function') { ids = await excludeDemoIds(ids); const keep = new Set(ids); students = students.filter(s => keep.has(s.id)); }
+    } catch (e2) {
+      sec.innerHTML = head + '<div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">生徒の取得に失敗しました。</div>';
+      return;
+    }
   }
-  // 五十音順（name_kana→name）
-  students.sort((a, b) => ((a.name_kana || a.name || '')).localeCompare((b.name_kana || b.name || ''), 'ja'));
+  // 学年（数字昇順）→ 五十音順（name_kana→name）
+  const _gd = (g) => { const n = parseInt(((typeof emxGradeDigit === 'function') ? emxGradeDigit(g) : (String(g || '').match(/[1-3]/) || [''])[0]) || '9', 10); return isNaN(n) ? 9 : n; };
+  students.sort((a, b) => {
+    const ga = _gd(a.grade), gb = _gd(b.grade);
+    if (ga !== gb) return ga - gb;
+    return ((a.name_kana || a.name || '')).localeCompare((b.name_kana || b.name || ''), 'ja');
+  });
 
   // 当月・前月のコメントをDBから取得
   _svCmtComments = {}; _svCmtMeta = {}; _svCmtPrev = {}; _svCmtDirty = {};
@@ -45685,12 +45701,12 @@ async function renderSvComment() {
     '<button onclick="svCmtChangeMonth(-1)" style="padding:6px 10px;font-size:14px;font-weight:800;border:1px solid var(--border);border-radius:8px;background:var(--surface);cursor:pointer">‹</button>' +
     '<span style="font-size:14px;font-weight:800;min-width:120px;text-align:center">' + y + '年' + m + '月</span>' +
     '<button onclick="svCmtChangeMonth(1)" style="padding:6px 10px;font-size:14px;font-weight:800;border:1px solid var(--border);border-radius:8px;background:var(--surface);cursor:pointer">›</button>' +
-    '<span style="font-size:11px;color:var(--muted)">左に前月コメント（参考）、右に今月のコメントを入力</span>' +
+    '<span style="font-size:11px;color:var(--muted)">左に前月コメント（参考）、右に今月のコメントを入力。学年→五十音順・通常授業の子のみ</span>' +
     '<button onclick="svCmtSaveAll()" style="margin-left:auto;padding:8px 16px;font-size:13px;font-weight:700;border:1px solid var(--green-d);border-radius:8px;background:var(--green-d);color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 まとめて保存</button>' +
     '</div>';
 
   if (!students.length) {
-    sec.innerHTML = html + '<div class="sv-placeholder">この学校の在籍生徒がいません。</div>';
+    sec.innerHTML = html + '<div class="sv-placeholder">この学校に通常授業の在籍生徒がいません。</div>';
     return;
   }
 
@@ -48416,11 +48432,11 @@ function trendGridTable(d) {
   const metric = trendGridMetric; // 'enrolled' | 'joined' | 'left'
   const metricLabel = (metric === 'joined') ? '新規入塾' : (metric === 'left') ? '退塾' : '在籍';
 
-  // 学年の並び：SA_GRADES を基本に、データに出てくる他の学年も末尾へ
-  const gradeSet = new Set(SA_GRADES);
-  trendPersonsCache.forEach(p => { if (p.grade) gradeSet.add(p.grade); });
-  trendAnnualRows.forEach(r => { if (r.grade) gradeSet.add(r.grade); });
-  const grades = SA_GRADES.concat([...gradeSet].filter(g => !SA_GRADES.includes(g)));
+  // dlm8: 学年行は部門で固定（中学部→中1/中2/中3、高校部→1年/2年/3年）。
+  // データ側の表記ブレ（'中1'と'1年'など）は数字で照合して吸収する。
+  const isChuDiv = (typeof currentDivision !== 'undefined' && currentDivision === '中学部');
+  const grades = isChuDiv ? ['中1', '中2', '中3'] : ['1年', '2年', '3年'];
+  const gradeDigit = (g) => (typeof emxGradeDigit === 'function') ? emxGradeDigit(g) : (String(g || '').match(/[1-3]/) || [''])[0];
 
   // 年度の12ヶ月メタ（4月→翌3月）。各 fmonths[i] = {y,m,ym,lastDay,label}
   const fmonths = trendFiscalMonths(fyStart);
@@ -48440,8 +48456,9 @@ function trendGridTable(d) {
       const asOf = (monthLast > todayStr) ? todayStr : monthLast;
       grades.forEach(g => {
         let cnt = 0;
+        const gd = gradeDigit(g);
         persons.forEach(p => {
-          if ((p.grade || '') !== g) return;
+          if (gradeDigit(p.grade || '') !== gd) return;
           if (metric === 'enrolled') {
             if (p.enroll && p.enroll <= asOf && (!p.withdraw || asOf < p.withdraw)) cnt++;
           } else if (metric === 'joined') {
@@ -48462,12 +48479,14 @@ function trendGridTable(d) {
     trendAnnualRows.forEach(r => {
       if ((r.metric || 'enrolled') !== metric) return;
       if (trendFilter.school !== '全校' && (r.school || '') !== trendFilter.school) return;
-      const g = r.grade || '';
+      // 学年は数字で該当行に振り分け（'中1'/'1年'いずれの表記でも当年度の行へ）
+      const rd = gradeDigit(r.grade || '');
+      const gKey = grades.find(g => gradeDigit(g) === rd);
       const ry = parseInt(r.year, 10), rm = parseInt(r.month, 10);
       const i = idxByYM[ry + '-' + rm];
       if (i == null) return;
-      if (!grid[g]) return;
-      grid[g][i] = (grid[g][i] || 0) + (parseInt(r.count, 10) || 0);
+      if (!gKey || !grid[gKey]) return;
+      grid[gKey][i] = (grid[gKey][i] || 0) + (parseInt(r.count, 10) || 0);
     });
   }
 
