@@ -777,6 +777,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div style="flex:1 1 200px"><div class="form-label">名前・学校で検索</div>
         <input class="form-input-sm" type="text" id="emx-search" placeholder="🔍 検索" oninput="setEmxSearch(this.value)" style="width:100%"></div>
       <button onclick="exportEmxCsv()" style="padding:8px 14px;font-size:11px;font-weight:700;border-radius:8px;border:1.5px solid #1A7340;background:#fff;color:#1A7340;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📄 CSV出力</button>
+      <button onclick="exportEmxPdf()" style="padding:8px 14px;font-size:11px;font-weight:700;border-radius:8px;border:1.5px solid #2D6CB6;background:#fff;color:#2D6CB6;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🖨 PDF出力</button>
     </div>
     <div style="margin-bottom:6px"><div class="form-label">学年</div><div id="emx-grade-filter" class="filter-bar"></div></div>
     <div style="margin-bottom:8px"><div class="form-label">学校</div><div id="emx-school-filter" class="filter-bar"></div></div>
@@ -3432,6 +3433,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div class="sv-placeholder">読み込み中…</div>
     </div>
 
+    <div class="sv-card sv-collapsible" id="sv-comment-section" data-svtitle="📝 出席表コメント入力（この学校）">
+      <div class="sv-card-h">📝 出席表コメント入力（この学校）</div>
+      <div class="sv-placeholder">読み込み中…</div>
+    </div>
+
     <div class="sv-card sv-collapsible" id="sv-koushu-section" data-svtitle="📋 講習の提出状況（この学校）">
       <div class="sv-card-h">📋 講習の提出状況（この学校）</div>
       <div class="sv-placeholder">読み込み中…</div>
@@ -5997,7 +6003,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dli';
+const APP_VERSION = '20260702dll';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -22680,6 +22686,79 @@ function exportEmxCsv() {
   showToast('CSVを出力しました', 'success');
 }
 
+
+// 受講マトリクスを画面の見た目のままPDF（印刷）で出力する。
+// 画面表と同じ内容を、印刷向け（sticky解除・色保持・A4横）に組み直して新ウィンドウへ。
+function exportEmxPdf() {
+  const stus = emxVisibleStudents(), cls = emxVisibleClasses();
+  if (!stus.length || !cls.length) { showToast('出力する内容がありません', 'error'); return; }
+
+  const label = (EMX_CATEGORY_LABEL[emxCategory] || emxCategory);
+  const subLabel = (emxGrade ? emxGrade + '年' : '全学年') + '／' + (emxSchool || '全学校');
+
+  let t = '<table style="border-collapse:collapse;width:100%;table-layout:auto;font-size:8.5pt">';
+  t += '<tr>' +
+    '<th style="border:1px solid #999;background:#eef3f8;padding:4px 6px;text-align:left;white-space:nowrap">生徒</th>';
+  cls.forEach((c, ci) => {
+    const cc = wkClassColor(c);
+    t += '<th style="border:1px solid #999;background:#eef3f8;padding:3px 2px;vertical-align:bottom;width:26px">' +
+      '<div style="font-size:8.5pt;font-weight:800;color:' + cc + ';margin-bottom:2px">' + (ci + 1) + '</div>' +
+      '<div style="writing-mode:vertical-rl;text-orientation:mixed;white-space:nowrap;max-height:120px;overflow:hidden;font-size:7.5pt;font-weight:700;color:' + cc + ';margin:0 auto">' +
+      escapeHtml(c.name) + '</div></th>';
+  });
+  t += '<th style="border:1px solid #999;background:#eef3f8;padding:3px 4px;width:30px">受講<br>数</th></tr>';
+  stus.forEach((s, si) => {
+    let n = 0;
+    t += '<tr>';
+    t += '<td style="border:1px solid #999;padding:3px 6px;white-space:nowrap">' +
+      '<span style="color:#888;font-size:7.5pt">' + (si + 1) + '.</span> ' + escapeHtml(s.name) +
+      '<span style="color:#888;font-size:7pt;margin-left:4px">' + escapeHtml((s.school || '') + ' ' + (s.grade || '')) + '</span></td>';
+    cls.forEach(c => {
+      const ent = emxEnrolled[s.id + '|' + c.id];
+      const on = !!ent, prov = !!(ent && ent.prov);
+      if (on) n++;
+      const cc = wkClassColor(c);
+      const bg = on ? (prov ? '#FFF3DF' : cc + '22') : '#fff';
+      const mk = on ? (prov ? '⏳' : '✓') : '';
+      t += '<td style="border:1px solid #999;text-align:center;padding:2px 0;background:' + bg + ';color:' + (prov ? '#8F5F12' : cc) + ';font-weight:700;font-size:10pt">' + mk + '</td>';
+    });
+    t += '<td style="border:1px solid #999;text-align:center;padding:2px 0;font-weight:700">' + (n || '') + '</td></tr>';
+  });
+  t += '<tr><td style="border:1px solid #999;padding:3px 6px;font-weight:800;background:#f4f4f4">合計</td>';
+  cls.forEach(c => {
+    let n = 0; stus.forEach(s => { if (emxEnrolled[s.id + '|' + c.id]) n++; });
+    t += '<td style="border:1px solid #999;text-align:center;padding:2px 0;font-weight:700;background:#f4f4f4">' + (n || '') + '</td>';
+  });
+  t += '<td style="border:1px solid #999;background:#f4f4f4"></td></tr>';
+  t += '</table>';
+
+  let legend = '<div style="margin-top:10px;font-size:8pt;line-height:1.7">' +
+    '<div style="font-weight:800;margin-bottom:3px">講座番号</div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:2px 16px">';
+  cls.forEach((c, ci) => {
+    const cc = wkClassColor(c);
+    legend += '<span style="white-space:nowrap"><b style="color:' + cc + '">' + (ci + 1) + '.</b> ' + escapeHtml(c.name) + '</span>';
+  });
+  legend += '</div></div>';
+
+  const w = window.open('', '_blank');
+  if (!w) { showToast('ポップアップがブロックされました。許可してください。', 'error'); return; }
+  w.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>受講マトリクス_' + escapeHtml(label) + '</title>' +
+    '<style>@page{size:A4 landscape;margin:10mm}@media print{.noprint{display:none}}' +
+    'body{margin:0;font-family:\'Noto Sans JP\',sans-serif;color:#222;-webkit-print-color-adjust:exact;print-color-adjust:exact;padding:6px 10px}' +
+    '.noprint{position:fixed;top:8px;right:8px;display:flex;gap:8px}</style></head><body>' +
+    '<div class="noprint">' +
+      '<button onclick="window.print()" style="padding:8px 16px;font-size:13px;font-weight:700;border:none;border-radius:8px;background:#2D6CB6;color:#fff;cursor:pointer">🖨 印刷</button>' +
+      '<button onclick="window.close()" style="padding:8px 16px;font-size:13px;font-weight:700;border:1px solid #bbb;border-radius:8px;background:#fff;color:#555;cursor:pointer">✕ 閉じる</button>' +
+    '</div>' +
+    '<div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #333;padding-bottom:5px;margin-bottom:10px">' +
+      '<div style="font-size:15pt;font-weight:800">受講マトリクス（' + escapeHtml(label) + '）</div>' +
+      '<div style="font-size:9pt;color:#555">' + escapeHtml(subLabel) + '　　生徒' + stus.length + '名／講座' + cls.length + '件　　' + escapeHtml(getTodayJST()) + '</div>' +
+    '</div>' +
+    t + legend + '</body></html>');
+  w.document.close();
+}
+
 // ===== 講習 一括受講登録（dch）=====
 let bulkEnrollClasses = [];   // {id,name,subject,category,grade_level}
 let bulkEnrollStudents = [];  // {id,name,school,grade}
@@ -30729,19 +30808,23 @@ function buildAttSheetDocHtml(st) {
   const comment = isNormal ? (_asComments[st.id] || '') : '';
   const asStaffId = isNormal ? ((_asMeta[st.id] || {}).comment_staff_id || '') : '';
   const asStaffName = asStaffId ? resolveStaffName(asStaffId) : '';
-  const commentBlock = isNormal ?
-    ('<div style="margin-top:14px;border:1px solid #bbb;border-radius:4px">' +
+  const hasImg = !!(_asImage && _asImage.image_data);
+  // コメント本文ブロック（イラストがある時は右にイラスト用の余白を空けて横並び）
+  const commentInner = isNormal ?
+    ('<div style="flex:1;min-width:0;border:1px solid #bbb;border-radius:4px">' +
       '<div style="background:#f1ede3;padding:5px 10px;font-size:10pt;font-weight:700;border-bottom:1px solid #bbb;display:flex;justify-content:space-between;align-items:center">' +
         '<span>＜スタッフより＞</span>' +
         (asStaffName ? '<span style="font-size:9.5pt;font-weight:700">担当：' + escapeHtml(asStaffName) + '</span>' : '') +
       '</div>' +
       '<div style="padding:10px;font-size:10.5pt;line-height:1.7;white-space:pre-wrap;min-height:60px">' +
       (comment.trim() ? escapeHtml(comment) : '<span style="color:#aaa">（コメント未記入）</span>') + '</div></div>') : '';
-
-  // 季節イラスト（年月×種別で共通1枚）。コメント欄の下・右寄せで配置。
-  const imgBlock = (_asImage && _asImage.image_data) ?
-    ('<div style="margin-top:10px;text-align:right"><img src="' + _asImage.image_data +
-      '" alt="季節イラスト" style="max-width:170px;max-height:150px;height:auto;object-fit:contain"></div>') : '';
+  // 季節イラスト（年月×種別で共通1枚）。コメントの横（右側）に配置。
+  const imgInner = (isNormal && hasImg) ?
+    ('<div style="flex:0 0 auto;display:flex;align-items:center;justify-content:center">' +
+      '<img src="' + _asImage.image_data + '" alt="季節イラスト" style="max-width:150px;max-height:140px;height:auto;object-fit:contain"></div>') : '';
+  // コメント＋イラストを横並びにまとめる（イラスト無しならコメントが全幅）
+  const commentArea = isNormal ?
+    ('<div style="display:flex;gap:12px;align-items:stretch;margin-top:14px">' + commentInner + imgInner + '</div>') : '';
 
   const doc =
     '<div style="font-family:\'Noto Sans JP\',sans-serif;color:#222;max-width:680px;margin:0 auto;padding:8px 16px">' +
@@ -30752,8 +30835,7 @@ function buildAttSheetDocHtml(st) {
       '</div>' +
       '<table style="border-collapse:collapse;width:100%;table-layout:fixed">' + colGroup + '<tr><th style="border:1px solid #bbb;background:#f1ede3;padding:4px 6px;font-size:9pt;white-space:nowrap">受講科目 ＼ 回</th>' + colHead.join('') + '</tr>' + rows + '</table>' +
       '<div style="font-size:9pt;color:#555;margin-top:8px">◯ 出席　／　欠 欠席　／　ビデオ補習　　※授業出席は、出席カードに基づいて記載しております。</div>' +
-      commentBlock +
-      imgBlock +
+      commentArea +
       '<div style="text-align:right;margin-top:18px;font-size:11pt;font-weight:700">総合学習塾 fit</div>' +
     '</div>';
 
@@ -44657,7 +44739,7 @@ async function openSchoolView(backTo) {
     // 各描画を個別に隔離（1つ落ちても後続を必ず走らせる）
     [
       renderSvEnroll, renderSvGoal, renderSvGradePlan, renderSvInterviews,
-      renderSvReconcile, renderSvKoushu, renderSvCalendar, renderSvInout, renderSvWeekly,
+      renderSvReconcile, renderSvKoushu, renderSvComment, renderSvCalendar, renderSvInout, renderSvWeekly,
       () => renderSvWithdrawAnalysis({ school: svSchool, allMode: false, showToggle: false }),
       () => renderSvEnrollFunnel({ school: svSchool, allMode: false })
     ].forEach(fn => {
@@ -44805,7 +44887,7 @@ async function refreshSchoolView() {
     // 各描画を個別に隔離（1つ落ちても後続を必ず走らせる）
     [
       renderSvEnroll, renderSvGoal, renderSvGradePlan, renderSvInterviews,
-      renderSvReconcile, renderSvKoushu, renderSvCalendar, renderSvInout, renderSvWeekly,
+      renderSvReconcile, renderSvKoushu, renderSvComment, renderSvCalendar, renderSvInout, renderSvWeekly,
       () => renderSvWithdrawAnalysis({ school: svSchool, allMode: svWithdrawScope === 'all', showToggle: false }),
       () => renderSvEnrollFunnel({ school: svSchool, allMode: svWithdrawScope === 'all' })
     ].forEach(fn => {
@@ -44831,7 +44913,7 @@ function setSvSchool(s) {
   // 各描画を個別に隔離。1つが同期例外/reject で落ちても後続を必ず走らせる。
   const _svRenderers = [
     renderSvSchoolTabs, renderSvPeriodBar, renderSvEnroll, renderSvGoal,
-    renderSvGradePlan, renderSvInterviews, renderSvReconcile, renderSvKoushu, renderSvCalendar,
+    renderSvGradePlan, renderSvInterviews, renderSvReconcile, renderSvKoushu, renderSvComment, renderSvCalendar,
     renderSvInout, renderSvWeekly,
     () => renderSvWithdrawAnalysis({ school: svSchool, allMode: false, showToggle: false }),
     () => renderSvEnrollFunnel({ school: svSchool, allMode: false })
@@ -45409,6 +45491,177 @@ let svKoushuCategory = 'summer';
 let svKoushuGrade = '';        // '' | '1' | '2' | '3'
 function setSvKoushuGrade(v) { svKoushuGrade = v; renderSvKoushu(); }
 function setSvKoushuCategory(v) { svKoushuCategory = v; renderSvKoushu(); }
+
+
+// ===== 学校別UI：出席表コメント入力（この学校）=====
+// その学校の在籍生徒について、前月コメント（参考・読取専用）を見ながら
+// 今月のコメント＋担当を入力する。保存先は出席表と同じ student_month_comments。
+// 対象は通常授業のコメント（cmt_year/cmt_month で管理）。並びは五十音順。
+let svCommentYM = null;         // {y, m} カード内の対象月（初期は当月）
+let _svCmtComments = {};        // student_id -> 今月コメント（入力バッファ）
+let _svCmtMeta = {};            // student_id -> { id, comment_staff_id }（当月DB由来）
+let _svCmtPrev = {};            // student_id -> 前月コメント（読取専用）
+let _svCmtDirty = {};           // student_id -> { comment?, comment_staff_id? }
+
+function svCmtInitYM() {
+  if (svCommentYM) return;
+  const d = getTodayJST ? new Date(getTodayJST() + 'T00:00:00+09:00') : new Date();
+  svCommentYM = { y: d.getFullYear(), m: d.getMonth() + 1 };
+}
+function svCmtChangeMonth(delta) {
+  svCmtInitYM();
+  let y = svCommentYM.y, m = svCommentYM.m + delta;
+  if (m < 1) { m = 12; y--; } else if (m > 12) { m = 1; y++; }
+  svCommentYM = { y: y, m: m };
+  renderSvComment();
+}
+
+async function renderSvComment() {
+  const sec = document.getElementById('sv-comment-section');
+  if (!sec || !svSchool) return;
+  svCmtInitYM();
+  const y = svCommentYM.y, m = svCommentYM.m;
+  let pm = m - 1, py = y; if (pm < 1) { pm = 12; py = y - 1; }
+  const head = '<div class="sv-card-h">📝 出席表コメント入力（この学校）</div>';
+  sec.innerHTML = head + '<div class="sv-placeholder">読み込み中…</div>';
+
+  // スタッフ一覧（担当プルダウン用）
+  if ((typeof allStaffList === 'undefined' || !allStaffList || !allStaffList.length) && typeof loadStaffSelect === 'function') {
+    try { await loadStaffSelect(); } catch (e) {}
+  }
+
+  // その学校の在籍生徒
+  let students = [];
+  try {
+    students = await sbGet('students',
+      'is_active=eq.true&school=eq.' + encodeURIComponent(svSchool) +
+      '&select=id,name,name_kana,grade&order=name_kana') || [];
+    // デモ除外
+    let ids = students.map(s => s.id);
+    if (typeof excludeDemoIds === 'function') { ids = await excludeDemoIds(ids); const keep = new Set(ids); students = students.filter(s => keep.has(s.id)); }
+  } catch (e) {
+    sec.innerHTML = head + '<div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">生徒の取得に失敗しました。</div>';
+    return;
+  }
+  // 五十音順（name_kana→name）
+  students.sort((a, b) => ((a.name_kana || a.name || '')).localeCompare((b.name_kana || b.name || ''), 'ja'));
+
+  // 当月・前月のコメントをDBから取得
+  _svCmtComments = {}; _svCmtMeta = {}; _svCmtPrev = {}; _svCmtDirty = {};
+  if (students.length) {
+    const idList = students.map(s => s.id).join(',');
+    try {
+      const cur = await sbGet('student_month_comments',
+        'cmt_year=eq.' + y + '&cmt_month=eq.' + m + '&student_id=in.(' + idList + ')' +
+        '&select=id,student_id,comment,comment_staff_id') || [];
+      cur.forEach(r => {
+        if (r.comment != null) _svCmtComments[r.student_id] = r.comment;
+        _svCmtMeta[r.student_id] = { id: r.id, comment_staff_id: r.comment_staff_id || '' };
+      });
+    } catch (e) { /* 列未作成等は空で続行 */ }
+    try {
+      const prev = await sbGet('student_month_comments',
+        'cmt_year=eq.' + py + '&cmt_month=eq.' + pm + '&student_id=in.(' + idList + ')' +
+        '&select=student_id,comment') || [];
+      prev.forEach(r => { if (r.comment != null) _svCmtPrev[r.student_id] = r.comment; });
+    } catch (e) {}
+  }
+
+  // ヘッダ（月切替＋保存）
+  let html = head;
+  html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">' +
+    '<button onclick="svCmtChangeMonth(-1)" style="padding:6px 10px;font-size:14px;font-weight:800;border:1px solid var(--border);border-radius:8px;background:var(--surface);cursor:pointer">‹</button>' +
+    '<span style="font-size:14px;font-weight:800;min-width:120px;text-align:center">' + y + '年' + m + '月</span>' +
+    '<button onclick="svCmtChangeMonth(1)" style="padding:6px 10px;font-size:14px;font-weight:800;border:1px solid var(--border);border-radius:8px;background:var(--surface);cursor:pointer">›</button>' +
+    '<span style="font-size:11px;color:var(--muted)">左に前月コメント（参考）、右に今月のコメントを入力</span>' +
+    '<button onclick="svCmtSaveAll()" style="margin-left:auto;padding:8px 16px;font-size:13px;font-weight:700;border:1px solid var(--green-d);border-radius:8px;background:var(--green-d);color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾 まとめて保存</button>' +
+    '</div>';
+
+  if (!students.length) {
+    sec.innerHTML = html + '<div class="sv-placeholder">この学校の在籍生徒がいません。</div>';
+    return;
+  }
+
+  const staffOpts = (sel) => '<option value="">（担当なし）</option>' +
+    (allStaffList || []).map(st => '<option value="' + escapeAttr(st.staff_id) + '"' + ((sel || '') === st.staff_id ? ' selected' : '') + '>' + escapeHtml(st.name || st.staff_id) + '</option>').join('');
+
+  html += '<div style="display:flex;flex-direction:column;gap:8px">';
+  students.forEach(s => {
+    const prev = _svCmtPrev[s.id] || '';
+    const cur = _svCmtComments[s.id] || '';
+    const meta = _svCmtMeta[s.id] || {};
+    html += '<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface)">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">' +
+        '<span style="font-size:13px;font-weight:800;color:var(--text)">' + escapeHtml(s.name || '') + '</span>' +
+        (s.grade ? '<span style="font-size:11px;color:var(--muted)">' + escapeHtml(fmtGrade(s.grade)) + '</span>' : '') +
+        '<label style="margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:var(--muted)">担当' +
+          '<select id="svcmt-staff-' + s.id + '" onchange="svCmtOnStaff(\'' + escapeAttr(s.id) + '\')" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font-family:\'Noto Sans JP\',sans-serif">' + staffOpts(meta.comment_staff_id) + '</select>' +
+        '</label>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
+        '<div>' +
+          '<div style="font-size:10px;font-weight:700;color:var(--muted);margin-bottom:3px">前月（' + pm + '月）のコメント</div>' +
+          '<div style="font-size:12px;line-height:1.6;white-space:pre-wrap;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:7px 9px;min-height:52px;color:' + (prev.trim() ? 'var(--text)' : 'var(--muted)') + '">' + (prev.trim() ? escapeHtml(prev) : '（前月コメントなし）') + '</div>' +
+        '</div>' +
+        '<div>' +
+          '<div style="font-size:10px;font-weight:700;color:var(--green-d);margin-bottom:3px">今月（' + m + '月）のコメント</div>' +
+          '<textarea id="svcmt-cmt-' + s.id + '" oninput="svCmtOnEdit(\'' + escapeAttr(s.id) + '\')" placeholder="コメントを入力…" style="width:100%;box-sizing:border-box;font-size:12px;line-height:1.6;border:1px solid var(--border);border-radius:8px;padding:7px 9px;resize:vertical;min-height:52px;font-family:\'Noto Sans JP\',sans-serif;background:var(--bg);color:var(--text)">' + escapeHtml(cur) + '</textarea>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  });
+  html += '</div>';
+  sec.innerHTML = html;
+}
+
+function svCmtOnEdit(sid) {
+  const ta = document.getElementById('svcmt-cmt-' + sid);
+  if (!ta) return;
+  _svCmtComments[sid] = ta.value;
+  (_svCmtDirty[sid] || (_svCmtDirty[sid] = {})).comment = ta.value;
+}
+function svCmtOnStaff(sid) {
+  const sel = document.getElementById('svcmt-staff-' + sid);
+  if (!sel) return;
+  const meta = _svCmtMeta[sid] || (_svCmtMeta[sid] = {});
+  meta.comment_staff_id = sel.value || '';
+  (_svCmtDirty[sid] || (_svCmtDirty[sid] = {})).comment_staff_id = meta.comment_staff_id;
+}
+
+// 変更のあった生徒だけ student_month_comments に保存（出席表と同じテーブル・同じupsert方式）
+async function svCmtSaveAll() {
+  const dirtyIds = Object.keys(_svCmtDirty);
+  if (!dirtyIds.length) { showToast('変更がありません', 'info'); return; }
+  const y = svCommentYM.y, m = svCommentYM.m;
+  const by = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : (localStorage.getItem('fit_staff_id') || '');
+  const bodyBase = { updated_at: new Date().toISOString(), updated_by: by };
+  let okN = 0, ngN = 0;
+  for (const id of dirtyIds) {
+    const d = _svCmtDirty[id];
+    const patch = {};
+    if ('comment' in d) patch.comment = d.comment;
+    if ('comment_staff_id' in d) patch.comment_staff_id = d.comment_staff_id || null;
+    const meta = _svCmtMeta[id] || {};
+    try {
+      if (meta && meta.id) {
+        await sbPatch('student_month_comments', 'id=eq.' + meta.id, Object.assign({}, bodyBase, patch));
+      } else {
+        const res = await fetch(SB_URL + '/rest/v1/student_month_comments?on_conflict=student_id,cmt_year,cmt_month', {
+          method: 'POST',
+          headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=representation' },
+          body: JSON.stringify(Object.assign({ student_id: id, cmt_year: y, cmt_month: m }, bodyBase, patch))
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const arr = await res.json();
+        if (arr && arr[0]) _svCmtMeta[id] = Object.assign(_svCmtMeta[id] || {}, { id: arr[0].id });
+      }
+      okN++;
+    } catch (e) { ngN++; }
+  }
+  _svCmtDirty = {};
+  if (ngN === 0) showToast('✅ ' + okN + '件のコメントを保存しました', 'success');
+  else showToast('保存 ' + okN + '件 / 失敗 ' + ngN + '件。テーブルのSQLが未適用の可能性があります', 'error');
+}
 
 async function renderSvKoushu() {
   const sec = document.getElementById('sv-koushu-section');
