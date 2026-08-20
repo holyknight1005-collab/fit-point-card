@@ -5970,7 +5970,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlc';
+const APP_VERSION = '20260702dld';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29889,6 +29889,10 @@ async function loadAttSheet() {
   const ibar0 = document.getElementById('as-image-bar');
   if (ibar0) ibar0.style.display = 'none';
   _asData = null;
+  // コメント担当プルダウン用にスタッフ一覧を確保（未ロードなら読む）
+  if ((typeof allStaffList === 'undefined' || !allStaffList || !allStaffList.length) && typeof loadStaffSelect === 'function') {
+    try { await loadStaffSelect(); } catch (e) {}
+  }
   try {
     // 対象クラス（アクティブ・部門・種別）
     let q = 'division=eq.' + encodeURIComponent(division) + '&is_active=eq.true&category=eq.' +
@@ -30156,6 +30160,13 @@ async function loadAttSheet() {
         nameEditor(st) +
         '<textarea id="as-cmt-' + st.id + '" oninput="asOnCommentEdit(\'' + st.id + '\')" placeholder="コメントを入力…" style="width:100%;box-sizing:border-box;font-size:12px;line-height:1.5;border:1px solid var(--border);border-radius:8px;padding:6px 8px;resize:vertical;min-height:46px;font-family:\'Noto Sans JP\',sans-serif;background:var(--bg);color:var(--text)">' + escapeHtml(cmt) + '</textarea>' +
         '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">' +
+          '<span style="font-size:11px;color:var(--muted);font-weight:700">担当</span>' +
+          '<select id="as-staff-' + st.id + '" onchange="asOnStaffEdit(\'' + st.id + '\')" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font-family:\'Noto Sans JP\',sans-serif">' +
+            '<option value="">（未選択）</option>' +
+            allStaffList.map(s => '<option value="' + escapeAttr(s.staff_id) + '"' + ((meta.comment_staff_id || '') === s.staff_id ? ' selected' : '') + '>' + escapeHtml(s.name || s.staff_id) + '</option>').join('') +
+          '</select>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">' +
           '<button id="as-confbtn-' + st.id + '" ' + (canConf ? 'onclick="asToggleConfirmed(\'' + st.id + '\')"' : 'disabled') + ' style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (confirmed ? '#3B9E5B' : '#CBD5CB') + ';border-radius:7px;background:' + (confirmed ? '#EAF6EA' : '#fff') + ';color:' + (confirmed ? '#2E7D32' : '#666') + ';cursor:' + (canConf ? 'pointer' : 'not-allowed') + ';opacity:' + (canConf ? '1' : '0.5') + ';font-family:\'Noto Sans JP\',sans-serif">' + (confirmed ? '✓ 確認済' : '□ 確認する') + '</button>' +
           '<button id="as-holdbtn-' + st.id + '" ' + (canConf ? 'onclick="asToggleHold(\'' + st.id + '\')"' : 'disabled') + ' style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (onHold ? '#7A5AA8' : '#CBD5CB') + ';border-radius:7px;background:' + (onHold ? '#F1EBF8' : '#fff') + ';color:' + (onHold ? '#5E3B8A' : '#666') + ';cursor:' + (canConf ? 'pointer' : 'not-allowed') + ';opacity:' + (canConf ? '1' : '0.5') + ';font-family:\'Noto Sans JP\',sans-serif">' + (onHold ? '⏸ 保留中' : '⏸ 保留') + '</button>' +
           (canConf ? '' : '<span style="font-size:10px;color:var(--muted)">（確認は担当者のみ）</span>') +
@@ -30416,9 +30427,14 @@ function buildAttSheetDocHtml(st) {
   }).join('');
 
   const comment = isNormal ? (_asComments[st.id] || '') : '';
+  const asStaffId = isNormal ? ((_asMeta[st.id] || {}).comment_staff_id || '') : '';
+  const asStaffName = asStaffId ? resolveStaffName(asStaffId) : '';
   const commentBlock = isNormal ?
     ('<div style="margin-top:14px;border:1px solid #bbb;border-radius:4px">' +
-      '<div style="background:#f1ede3;padding:5px 10px;font-size:10pt;font-weight:700;border-bottom:1px solid #bbb">＜スタッフより＞</div>' +
+      '<div style="background:#f1ede3;padding:5px 10px;font-size:10pt;font-weight:700;border-bottom:1px solid #bbb;display:flex;justify-content:space-between;align-items:center">' +
+        '<span>＜スタッフより＞</span>' +
+        (asStaffName ? '<span style="font-size:9.5pt;font-weight:700">担当：' + escapeHtml(asStaffName) + '</span>' : '') +
+      '</div>' +
       '<div style="padding:10px;font-size:10.5pt;line-height:1.7;white-space:pre-wrap;min-height:60px">' +
       (comment.trim() ? escapeHtml(comment) : '<span style="color:#aaa">（コメント未記入）</span>') + '</div></div>') : '';
 
@@ -31162,12 +31178,13 @@ async function asLoadCommentsFromDb(year, month, students) {
     const rows = await sbGet('student_month_comments',
       'cmt_year=eq.' + year + '&cmt_month=eq.' + month +
       '&student_id=in.(' + ids.join(',') + ')' +
-      '&select=id,student_id,comment,confirmed,confirmed_by,confirmed_at,on_hold,hold_note') || [];
+      '&select=id,student_id,comment,confirmed,confirmed_by,confirmed_at,on_hold,hold_note,comment_staff_id') || [];
     rows.forEach(r => {
       if (r.comment != null) _asComments[r.student_id] = r.comment;
       _asMeta[r.student_id] = {
         id: r.id, confirmed: !!r.confirmed, confirmed_by: r.confirmed_by || '',
-        on_hold: !!r.on_hold, hold_note: r.hold_note || ''
+        on_hold: !!r.on_hold, hold_note: r.hold_note || '',
+        comment_staff_id: r.comment_staff_id || ''
       };
     });
   } catch (e) {
@@ -31513,6 +31530,16 @@ function asOnCommentEdit(sid) {
   asUpdateSaveBar();
 }
 
+// コメント担当の選択変更（ローカルに積む・保存は「まとめて保存」）
+function asOnStaffEdit(sid) {
+  const sel = document.getElementById('as-staff-' + sid);
+  if (!sel) return;
+  const meta = _asMeta[sid] || (_asMeta[sid] = {});
+  meta.comment_staff_id = sel.value || '';
+  (_asDirty[sid] || (_asDirty[sid] = {})).comment_staff_id = meta.comment_staff_id;
+  asUpdateSaveBar();
+}
+
 // カード1枚ぶんの見た目（帯色・バッジ・印刷チェックの活性）を再描画せずに更新する
 function asRefreshCardState(sid) {
   const meta = _asMeta[sid] || {};
@@ -31682,6 +31709,7 @@ async function asSaveAll() {
       row.confirmed_at = d.confirmed ? nowIso : null;
     }
     if ('on_hold' in d) row.on_hold = !!d.on_hold;
+    if ('comment_staff_id' in d) row.comment_staff_id = d.comment_staff_id || null;
     return row;
   });
   const btn = document.getElementById('as-saveall-btn');
