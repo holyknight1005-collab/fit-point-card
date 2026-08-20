@@ -6003,7 +6003,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dll';
+const APP_VERSION = '20260702dlm';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -48847,16 +48847,11 @@ async function loadExecDashboard() {
   wrap.style.display = 'block';
   wrap.innerHTML = '<div style="background:#F7FAFD;border:1px solid #D6E4F0;border-radius:12px;padding:14px;margin-bottom:14px"><div style="text-align:center;color:var(--muted);font-size:12px">経営サマリーを集計中…</div></div>';
 
-  // --- 在籍・入塾・退塾の集計（renderEnrollmentTrend と同じ基準。enroll_date / 退塾発効日ベース）---
-  let persons = [];
-  let currentEnrolled = 0;   // 在籍（時期別のみ含む。今いる在籍。学校×学年人数表と同基準）
-  let missingEnrollDate = 0; // 在籍中だが入塾日が未入力の人数
-  let regularCount = 0;      // 通常受講（受講中の通常講座が1つ以上ある人）
-  let seasonalOnly = 0;      // 時期別のみ（在籍だが通常講座を受講していない）
-  const todayStrForCount = getTodayJST();
+  // dlm: 高校部・中学部を並べて表示（部門トグルに依らず両方を集計）。
+  // 受講データ・students は一度だけ取得し、部門ごとに集計する。
+  let hs = null, jhs = null, todayCount = null;
   try {
-    // 受講中の「通常」講座(class_master.category in normal/null)を持つ生徒ID集合を作る。
-    // これが「通常受講」の判定キー。ended_on IS NULL で現在の受講のみ。
+    // 受講中の通常講座を持つ生徒ID集合（部門共通で1回だけ取得）
     let regularSet = new Set();
     try {
       const ae = await sbGetActiveEnrollments('select=student_id,class_master(category)');
@@ -48866,18 +48861,51 @@ async function loadExecDashboard() {
       });
     } catch (e) { regularSet = new Set(); }
 
-    let stu = [];
+    // students を1回取得（部門でフィルタして各集計へ）
+    let stuAll = [];
     try {
-      stu = await sbGet('students', 'select=id,enroll_date,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,division') || [];
+      stuAll = await sbGet('students', 'select=id,enroll_date,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,division') || [];
     } catch (e0) {
       try {
-        stu = await sbGet('students', 'select=id,enroll_date,is_active,inactive_reason,withdraw_status,withdraw_effective_date,division') || [];
+        stuAll = await sbGet('students', 'select=id,enroll_date,is_active,inactive_reason,withdraw_status,withdraw_effective_date,division') || [];
       } catch (e1) {
-        stu = await sbGet('students', 'select=id,is_active,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+        stuAll = await sbGet('students', 'select=id,is_active,inactive_reason,withdraw_status,withdraw_effective_date') || [];
       }
     }
-    // dhy: 経営サマリーは高校部のみ集計（中学部は別枠）。division 未設定は高校部扱い。
-    stu = stu.filter(s => (s.division || '高校部') === '高校部');
+    hs  = computeExecStats(stuAll, regularSet, '高校部');
+    jhs = computeExecStats(stuAll, regularSet, '中学部');
+  } catch (e) {
+    wrap.innerHTML = '<div style="background:#FDF2F2;border:1px solid #E8B4B4;border-radius:12px;padding:14px;margin-bottom:14px;color:#A04040;font-size:12px">経営サマリーの集計に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
+    return;
+  }
+
+  // 本日の来塾人数（部門横断・全体値。既存のヒーロー値を流用。無ければ checkins から数える）
+  const todayStr0 = getTodayJST();
+  const heroEl = document.getElementById('daily-hero-count');
+  if (heroEl && /^\d+$/.test((heroEl.textContent || '').trim())) {
+    todayCount = parseInt(heroEl.textContent.trim(), 10);
+  } else {
+    try {
+      const rows = await sbGet('checkins', 'checkin_date=eq.' + todayStr0 + '&select=student_id') || [];
+      todayCount = new Set(rows.map(r => r.student_id)).size;
+    } catch (e) { todayCount = null; }
+  }
+
+  renderExecDashboard(hs, jhs, todayCount);
+}
+
+// dlm: 1部門ぶんの在籍・入塾・退塾を集計して返す。
+// stuAll=students全件、regularSet=通常受講中の生徒ID集合、division='高校部'/'中学部'。
+// division 未設定の生徒は高校部側に含める（従来挙動を踏襲）。
+function computeExecStats(stuAll, regularSet, division) {
+  let persons = [];
+  let currentEnrolled = 0;
+  let missingEnrollDate = 0;
+  let regularCount = 0;
+  let seasonalOnly = 0;
+  {
+    // dlm: 部門でフィルタ（division 未設定は高校部扱い）。除外生徒は集計から外す。
+    let stu = (stuAll || []).filter(s => (s.division || '高校部') === division);
     stu = stu.filter(s => s.inactive_reason !== '除外');
     stu.forEach(s => {
       const enroll = s.enroll_date || null;
@@ -48898,49 +48926,6 @@ async function loadExecDashboard() {
       persons.push({ enroll: enroll, withdraw: withdraw });
     });
     // roster 合算は行わない（在籍は students を正とする。方針統一）
-    const EXEC_MERGE_ROSTER = false;
-    if (EXEC_MERGE_ROSTER) {
-    try {
-      const rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,enroll_date,withdraw_date,status,membership_status') || [];
-      const allStu = await sbGet('students', 'select=name,school') || [];
-      const stuKeys = new Set(); const stuNames = new Set();
-      allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
-      rosterRows.forEach(r => {
-        if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
-        const isOut = (r.status === '退塾') || (r.membership_status === '退塾') || (!r.status && r.withdraw_date);
-        // 現在在籍判定（roster分）
-        let rEnrolledNow = true;
-        if (isOut) { rEnrolledNow = r.withdraw_date ? !(todayStrForCount > r.withdraw_date) : false; }
-        if (rEnrolledNow) {
-          currentEnrolled++;
-          if (!r.enroll_date) missingEnrollDate++;
-          // roster生は受講データを持たないので membership_status で判定（既定=通常）
-          if (r.membership_status === '時期別のみ') seasonalOnly++;
-          else regularCount++;
-        }
-        persons.push({ enroll: r.enroll_date || null, withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null });
-      });
-    } catch (e) {
-      // membership_status 列が無い旧環境フォールバック
-      try {
-        const rosterRows = await sbGet('roster', 'is_active=eq.true&select=name,school,enroll_date,withdraw_date,status') || [];
-        const allStu = await sbGet('students', 'select=name,school') || [];
-        const stuKeys = new Set(); const stuNames = new Set();
-        allStu.forEach(s => { stuKeys.add(rosterKey(s.name, s.school)); stuNames.add(normalizeName(s.name)); });
-        rosterRows.forEach(r => {
-          if (stuKeys.has(rosterKey(r.name, r.school)) || stuNames.has(normalizeName(r.name))) return;
-          const isOut = (r.status === '退塾') || (!r.status && r.withdraw_date);
-          let rEnrolledNow = true;
-          if (isOut) { rEnrolledNow = r.withdraw_date ? !(todayStrForCount > r.withdraw_date) : false; }
-          if (rEnrolledNow) { currentEnrolled++; if (!r.enroll_date) missingEnrollDate++; regularCount++; }
-          persons.push({ enroll: r.enroll_date || null, withdraw: (isOut && r.withdraw_date) ? r.withdraw_date : null });
-        });
-      } catch (e2) { /* roster無しは無視 */ }
-    }
-    } // end if(EXEC_MERGE_ROSTER)
-  } catch (e) {
-    wrap.innerHTML = '<div style="background:#FDF2F2;border:1px solid #E8B4B4;border-radius:12px;padding:14px;margin-bottom:14px;color:#A04040;font-size:12px">経営サマリーの集計に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
-    return;
   }
 
   // 当月・前月・昨年同月の月末日
@@ -48959,33 +48944,15 @@ async function loadExecDashboard() {
   const cur = monthInfo(0), prev = monthInfo(1), yoy = monthInfo(12);
   // 当月は月末が未来なら今日に丸める（当月末発効の退塾者を「もう抜けた」と数えないため。グリッド表と同基準）
   const curAsOf = (cur.lastDay > todayStr) ? todayStr : cur.lastDay;
-  const enrolledNow = enrolledAt(curAsOf);
-  const enrolledPrev = enrolledAt(prev.lastDay);
-  const enrolledYoY = enrolledAt(yoy.lastDay);
-  const joinedNow = joinedIn(cur.ym);
-  const leftNow = leftIn(cur.ym);
 
-  // 本日の来塾人数（既存のヒーロー値を流用。無ければ checkins から数える）
-  let todayCount = null;
-  const heroEl = document.getElementById('daily-hero-count');
-  if (heroEl && /^\d+$/.test((heroEl.textContent || '').trim())) {
-    todayCount = parseInt(heroEl.textContent.trim(), 10);
-  } else {
-    try {
-      const rows = await sbGet('checkins', 'checkin_date=eq.' + todayStr + '&select=student_id') || [];
-      const uniq = new Set(rows.map(r => r.student_id));
-      todayCount = uniq.size;
-    } catch (e) { todayCount = null; }
-  }
-
-  renderExecDashboard({
+  return {
+    division: division,
     cur: cur, prev: prev, yoy: yoy,
-    enrolledNow: enrolledNow, enrolledPrev: enrolledPrev, enrolledYoY: enrolledYoY,
-    joinedNow: joinedNow, leftNow: leftNow,
-    todayCount: todayCount,
+    enrolledNow: enrolledAt(curAsOf), enrolledPrev: enrolledAt(prev.lastDay), enrolledYoY: enrolledAt(yoy.lastDay),
+    joinedNow: joinedIn(cur.ym), leftNow: leftIn(cur.ym),
     currentEnrolled: currentEnrolled, missingEnrollDate: missingEnrollDate,
     regularCount: regularCount, seasonalOnly: seasonalOnly
-  });
+  };
 }
 
 // 折りたたみ開閉
@@ -48998,19 +48965,10 @@ function toggleExecDashboard() {
   if (caret) caret.style.transform = execDashOpen ? 'rotate(90deg)' : 'rotate(0deg)';
 }
 
-function renderExecDashboard(d) {
+// dlm: 高校部・中学部を並べて表示。hs/jhs は computeExecStats の戻り、todayCount は全体の来塾数。
+function renderExecDashboard(hs, jhs, todayCount) {
   const wrap = document.getElementById('exec-dashboard-section');
   if (!wrap) return;
-
-  const diffBadge = (now, base, label) => {
-    if (base == null) return '<span style="font-size:11px;color:var(--muted)">' + label + '：―</span>';
-    const diff = now - base;
-    const col = diff > 0 ? '#1E8449' : (diff < 0 ? '#C0392B' : '#7F8C8D');
-    const arrow = diff > 0 ? '▲' : (diff < 0 ? '▼' : '−');
-    const sign = diff > 0 ? '+' : '';
-    return '<span style="font-size:11px;color:var(--muted)">' + label + '</span>'
-      + '<span style="font-size:13px;font-weight:800;color:' + col + ';margin-left:4px">' + arrow + ' ' + sign + diff + '</span>';
-  };
 
   const card = (label, value, sub, accent, onclick) =>
     '<div onclick="' + (onclick || '') + '" style="flex:1 1 150px;min-width:140px;background:#fff;border:1px solid #D6E4F0;border-radius:10px;padding:12px 14px;' + (onclick ? 'cursor:pointer;' : '') + '">'
@@ -49019,25 +48977,35 @@ function renderExecDashboard(d) {
     + (sub ? '<div style="margin-top:6px;line-height:1.6">' + sub + '</div>' : '')
     + '</div>';
 
-  // 通常受講カード（受講中の通常講座が1つ以上ある人）
-  const regularSub = (d.seasonalOnly > 0)
-    ? '<span style="font-size:11px;color:var(--muted)">うち時期別のみ <b style="color:#1A6E8E">' + d.seasonalOnly + '</b> 名は別計</span>'
-    : '<span style="font-size:11px;color:#1E8449">時期別のみの在籍なし</span>';
-  const regularCard = card('通常受講', (d.regularCount == null ? '—' : d.regularCount) + '<span style="font-size:13px;color:var(--muted)">名</span>', regularSub, '#2D6CB6', "openHomeFeature('studentanalysis')");
+  // 1部門ぶんのカード行（通常受講・在籍・入塾・退塾）
+  const divisionRow = (d) => {
+    const regularSub = (d.seasonalOnly > 0)
+      ? '<span style="font-size:11px;color:var(--muted)">うち時期別のみ <b style="color:#1A6E8E">' + d.seasonalOnly + '</b> 名は別計</span>'
+      : '<span style="font-size:11px;color:#1E8449">時期別のみの在籍なし</span>';
+    const regularCard = card('通常受講', (d.regularCount == null ? '—' : d.regularCount) + '<span style="font-size:13px;color:var(--muted)">名</span>', regularSub, '#2D6CB6', "openHomeFeature('studentanalysis')");
 
-  // 在籍（時期別含む）カード＝今いる在籍の実数。学校×学年人数表と一致。
-  const curEnrSub = (d.missingEnrollDate > 0)
-    ? '<span style="font-size:11px;color:#C0392B;font-weight:700">⚠️ 入塾日 未入力 ' + d.missingEnrollDate + '名</span>'
-    : '<span style="font-size:11px;color:#1E8449">入塾日すべて入力済</span>';
-  const currentCard = card('在籍（時期別含む）', (d.currentEnrolled == null ? '—' : d.currentEnrolled) + '<span style="font-size:13px;color:var(--muted)">名</span>', curEnrSub, '#1A6E8E', "openHomeFeature('studentanalysis')");
+    const curEnrSub = (d.missingEnrollDate > 0)
+      ? '<span style="font-size:11px;color:#C0392B;font-weight:700">⚠️ 入塾日 未入力 ' + d.missingEnrollDate + '名</span>'
+      : '<span style="font-size:11px;color:#1E8449">入塾日すべて入力済</span>';
+    const currentCard = card('在籍（時期別含む）', (d.currentEnrolled == null ? '—' : d.currentEnrolled) + '<span style="font-size:13px;color:var(--muted)">名</span>', curEnrSub, '#1A6E8E', "openHomeFeature('studentanalysis')");
 
-  // 入塾・退塾カード
-  const flowSub = '<span style="font-size:11px;color:var(--muted)">今月</span>';
-  const joinCard = card('今月の新規入塾', d.joinedNow + '<span style="font-size:13px;color:var(--muted)">名</span>', flowSub, '#5A9E3C', "openHomeFeature('prospects')");
-  const leftCard = card('今月の退塾', d.leftNow + '<span style="font-size:13px;color:var(--muted)">名</span>', flowSub, '#C0392B', "openHomeFeature('studentanalysis')");
+    const flowSub = '<span style="font-size:11px;color:var(--muted)">今月</span>';
+    const joinCard = card('今月の新規入塾', d.joinedNow + '<span style="font-size:13px;color:var(--muted)">名</span>', flowSub, '#5A9E3C', "openHomeFeature('prospects')");
+    const leftCard = card('今月の退塾', d.leftNow + '<span style="font-size:13px;color:var(--muted)">名</span>', flowSub, '#C0392B', "openHomeFeature('studentanalysis')");
 
-  // 本日の来塾
-  const todayCard = card('本日の来塾', (d.todayCount == null ? '—' : d.todayCount) + '<span style="font-size:13px;color:var(--muted)">名</span>', '', '#E67E22', '');
+    const isHs = (d.division === '高校部');
+    const badgeBg = isHs ? '#DCEBFA' : '#E7F3E2';
+    const badgeBd = isHs ? '#9CC0E8' : '#A9CF9A';
+    const badgeCol = isHs ? '#1A4D80' : '#2E6B1F';
+    const icon = isHs ? '🎓' : '📗';
+    return '<div style="margin-bottom:10px">'
+      + '<div style="display:inline-block;font-size:12px;font-weight:800;color:' + badgeCol + ';background:' + badgeBg + ';border:1px solid ' + badgeBd + ';padding:2px 10px;border-radius:20px;margin-bottom:8px">' + icon + ' ' + d.division + '</div>'
+      + '<div style="display:flex;flex-wrap:wrap;gap:10px">' + regularCard + currentCard + joinCard + leftCard + '</div>'
+      + '</div>';
+  };
+
+  // 本日の来塾（部門をまたぐ全体値。1枚だけ下段に）
+  const todayCard = card('本日の来塾（全体）', (todayCount == null ? '—' : todayCount) + '<span style="font-size:13px;color:var(--muted)">名</span>', '', '#E67E22', '');
 
   wrap.innerHTML =
     '<div style="background:linear-gradient(135deg,#EEF4FB,#FFFFFF);border:1.5px solid #9CC0E8;border-radius:12px;padding:14px 16px;margin-bottom:14px">'
@@ -49047,10 +49015,10 @@ function renderExecDashboard(d) {
     +   '<span style="font-size:11px;color:#1A4D80;background:#DCEBFA;border:1px solid #9CC0E8;padding:1px 8px;border-radius:20px;font-weight:700">管理者向け</span>'
     + '</div>'
     + '<div id="exec-dash-body" style="display:' + (execDashOpen ? 'block' : 'none') + '">'
-    +   '<div style="display:flex;flex-wrap:wrap;gap:10px">'
-    +     regularCard + currentCard + joinCard + leftCard + todayCard
-    +   '</div>'
-    +   '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※「通常受講」は受講中の通常講座が1つ以上ある在籍生の人数。「在籍（時期別含む）」は時期別のみの在籍生も含めた今いる在籍の実数で、学校×学年人数表と一致します。差は「時期別のみ」の在籍生です。前月比・昨年同月比や推移は人数推移グラフ（生徒分析タブ）で確認できます。カードをタップすると詳細タブが開きます。</div>'
+    +   divisionRow(hs)
+    +   divisionRow(jhs)
+    +   '<div style="display:flex;flex-wrap:wrap;gap:10px">' + todayCard + '</div>'
+    +   '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※高校部・中学部を並べて表示しています（部門トグルに関係なく両方集計）。「通常受講」は受講中の通常講座が1つ以上ある在籍生の人数。「在籍（時期別含む）」は時期別のみの在籍生も含めた今いる在籍の実数で、各部門の学校×学年人数表と一致します。「本日の来塾」は部門をまたいだ全体値です。カードをタップすると詳細タブが開きます。</div>'
     + '</div>'
     + '</div>';
 }
