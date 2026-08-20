@@ -2239,6 +2239,15 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
       <div id="home-approval-list" style="display:none;flex-direction:column;gap:6px"></div>
     </div>
+    <!-- 氏名未チェック通知（事務担当 fit021・admin のみ／未チェック>0のとき表示） -->
+    <div id="home-namecheck-banner" style="display:none;background:linear-gradient(135deg,#FCEFE6,#FFFFFF);border:1.5px solid #E7B486;border-radius:var(--radius);padding:12px 16px;cursor:pointer" onclick="openStaffManage('namefix')">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:14px;font-weight:700;color:#B96A2A">👤 氏名の未チェック</span>
+        <span id="home-namecheck-count" style="font-size:11px;font-weight:700;color:#fff;background:#D9822B;border-radius:20px;padding:2px 10px">―</span>
+        <span style="margin-left:auto;font-size:11px;font-weight:700;color:#B96A2A">確認する ›</span>
+      </div>
+      <div id="home-namecheck-names" style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6"></div>
+    </div>
     <!-- ★ 自分へのToDo（ホーム上部・すぐ見える） -->
     <div id="home-mytodo-section" style="background:linear-gradient(135deg,#EAF5E1,#FFFFFF);border:1.5px solid var(--green);border-radius:var(--radius);padding:14px 16px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
@@ -4916,6 +4925,9 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <button onclick="initNameFix()" style="padding:8px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔄 更新</button>
       </div>
       <div id="nf-summary" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+        <button onclick="saveNameFixAll()" style="padding:8px 18px;font-size:13px;font-weight:700;border:1px solid var(--green-d);border-radius:8px;background:var(--green-d);color:#fff;cursor:pointer;font-family:'Noto Sans JP',sans-serif">💾 変更をまとめて保存</button>
+      </div>
       <div id="nf-body"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">「更新」で読み込みます。</div></div>
     </div>
     <!-- 請求チェックタブ（石田授業の名簿で「請求チェック済み」の印） -->
@@ -5985,7 +5997,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlf';
+const APP_VERSION = '20260702dlh';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -8572,6 +8584,7 @@ async function initStaff() {
     runRecurringTodoGeneration().then(() => { try { loadHomeMyTodos(); } catch (e) {} });
     loadHomeMyTodos();
     try { loadHomeApprovals(); } catch (e) {}
+    try { loadHomeNameCheck(); } catch (e) {}
     try { loadHomeLine(); } catch (e) {}
     try { loadHomeParentLine(); } catch (e) {}
     loadHomeSchedule();
@@ -8710,6 +8723,37 @@ function setDivision(d) {
 }
 
 // 期限つき・期限なしをまとめて常時表示する。期限なしToDoはカレンダーの
+// 氏名未チェックの通知（事務担当 fit021・admin のみ）。ホーム上部バナーに件数＋名前を出す。
+async function loadHomeNameCheck() {
+  const banner = document.getElementById('home-namecheck-banner');
+  if (!banner || !currentStaff) return;
+  if (typeof canSeeNameFix === 'function' && !canSeeNameFix()) { banner.style.display = 'none'; return; }
+  try {
+    // 未チェック（name_checked が false または未設定）のアクティブ生徒
+    let rows = await sbGetAll('students',
+      'is_active=eq.true&or=(name_checked.is.null,name_checked.eq.false)&select=id,name,name_kana&order=name_kana') || [];
+    // デモ除外
+    let ids = rows.map(r => r.id);
+    ids = await excludeDemoIds(ids);
+    const keep = new Set(ids);
+    rows = rows.filter(r => keep.has(r.id));
+
+    const cnt = rows.length;
+    if (!cnt) { banner.style.display = 'none'; return; }
+    const cEl = document.getElementById('home-namecheck-count');
+    const nEl = document.getElementById('home-namecheck-names');
+    if (cEl) cEl.textContent = '未確認 ' + cnt + ' 名';
+    if (nEl) {
+      const names = rows.slice(0, 8).map(r => escapeHtml(r.name || '(氏名なし)')).join('　');
+      nEl.textContent = names + (cnt > 8 ? '　ほか' + (cnt - 8) + '名' : '');
+    }
+    banner.style.display = 'block';
+  } catch (e) {
+    // name_checked 列が未作成（SQL未適用）などの場合は静かに隠す
+    banner.style.display = 'none';
+  }
+}
+
 // マス目に出せないため、ここが唯一の表示場所になる。
 async function loadHomeMyTodos() {
   const el = document.getElementById('home-mytodo-list');
@@ -30386,6 +30430,21 @@ function renderNameFixList() {
     : (fmtGrade(s.grade) || '(学年未設定)');
 
   let html = '';
+
+  // 上部ピン留め：未確認の生徒（部門・学校の絞り込みは反映、表示モードは無視して常に出す）
+  let pinPool = _nfStudents.slice();
+  if (dv) pinPool = pinPool.filter(s => (s.division || '') === dv);
+  if (scFilter) pinPool = pinPool.filter(s => (s.school || '(学校未設定)') === scFilter);
+  const unchecked = pinPool.filter(s => !s.name_checked);
+  if (unchecked.length) {
+    unchecked.sort(byKana);
+    html += '<div style="position:sticky;top:0;z-index:5;background:#FCEFE6;border:1.5px solid #E7B486;border-radius:10px;padding:10px 12px;margin-bottom:10px">' +
+      '<div style="font-size:12px;font-weight:800;color:#B96A2A;margin-bottom:6px">🔎 未確認 ' + unchecked.length + ' 名（タップで移動）</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:5px">' +
+      unchecked.map(s => '<button onclick="nfJumpTo(\'' + escapeAttr(s.id) + '\')" style="font-size:11px;font-weight:700;color:#8A4E1E;background:#fff;border:1px solid #E7B486;border-radius:20px;padding:3px 10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + escapeHtml(s.name || '(氏名なし)') + '</button>').join('') +
+      '</div></div>';
+  }
+
   let prevG = null;
   list.forEach(s => {
     const g = groupOf(s);
@@ -30399,11 +30458,50 @@ function renderNameFixList() {
   body.innerHTML = html;
 }
 
+// ピン留めから対象の生徒行へジャンプ（無ければ全表示に切替えてから）
+function nfJumpTo(id) {
+  let row = document.getElementById('nf-row-' + id);
+  if (!row) {
+    // 現在の絞り込みで非表示なら「すべて表示」に戻して描画し直す
+    const vsel = document.getElementById('nf-view-select');
+    if (vsel && vsel.value !== 'all') { vsel.value = 'all'; renderNameFixList(); }
+    row = document.getElementById('nf-row-' + id);
+  }
+  if (!row) return;
+  row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const orig = row.style.boxShadow;
+  row.style.boxShadow = '0 0 0 3px #D9822B';
+  setTimeout(() => { row.style.boxShadow = orig; }, 1600);
+}
+
+// 姓/名が空のとき、現在の氏名（全角スペース区切り）から推定して初期値にする
+function nfSplitName(s) {
+  let fam = s.family_name || '', giv = s.given_name || '';
+  if (!fam && !giv) {
+    const nm = (s.name || '');
+    const parts = nm.split('\u3000');
+    if (parts.length === 2 && parts[0].trim() && parts[1].trim()) {
+      fam = parts[0].trim(); giv = parts[1].trim();
+    } else {
+      // 半角スペース区切りも拾う
+      const p2 = nm.split(/\s+/).filter(Boolean);
+      if (p2.length === 2) { fam = p2[0]; giv = p2[1]; }
+    }
+  }
+  let famk = s.family_kana || '', givk = s.given_kana || '';
+  if (!famk && !givk && s.name_kana) {
+    const kp = s.name_kana.split('\u3000');
+    if (kp.length === 2 && kp[0].trim() && kp[1].trim()) { famk = kp[0].trim(); givk = kp[1].trim(); }
+  }
+  return { fam: fam, giv: giv, famk: famk, givk: givk };
+}
+
 function nfRowHtml(s) {
   const ok = nfNameOk(s);
   const checked = !!s.name_checked;
-  const fam = s.family_name || '', giv = s.given_name || '';
-  const famk = s.family_kana || '', givk = s.given_kana || '';
+  const sp = nfSplitName(s);
+  const fam = sp.fam, giv = sp.giv;
+  const famk = sp.famk, givk = sp.givk;
   const info = escapeHtml(s.school || '(学校未設定)') +
     (s.school_detail ? '／' + escapeHtml(s.school_detail) : '') +
     (s.grade ? '　' + escapeHtml(fmtGrade(s.grade)) : '');
@@ -30441,11 +30539,8 @@ async function nfToggleChecked(id, val) {
   try {
     await sbPatch('students', 'id=eq.' + id, patch);
     if (s) { s.name_checked = val; s.name_checked_by = val ? sid : null; s.name_checked_at = patch.name_checked_at || null; }
-    // 行だけ再描画（並び順は維持）
-    const row = document.getElementById('nf-row-' + id);
-    if (row && s) { const tmp = document.createElement('div'); tmp.innerHTML = nfRowHtml(s); row.replaceWith(tmp.firstChild); }
-    // サマリー更新
-    renderNfSummaryOnly();
+    // 確認済みの増減でピン留め・サマリーも変わるため全再描画
+    renderNameFixList();
   } catch (e) {
     showToast('確認済みの保存に失敗：' + (e.message || String(e)), 'error');
     // 失敗時はチェックを戻す
@@ -30502,6 +30597,48 @@ async function saveNameFix(id) {
   } catch (e) {
     showToast('保存に失敗：' + (e.message || String(e)), 'error');
   }
+}
+
+// 表示中の全行のうち、入力が現在値と変わった行だけをまとめて保存
+async function saveNameFixAll() {
+  const rows = document.querySelectorAll('#nf-body [id^="nf-row-"]');
+  if (!rows.length) { showToast('保存対象がありません', 'info'); return; }
+  const targets = [];
+  rows.forEach(row => {
+    const id = row.id.replace('nf-row-', '');
+    const s = _nfStudents.find(x => x.id === id);
+    if (!s) return;
+    const f = ((document.getElementById('nf-fam-' + id) || {}).value || '').trim();
+    const g = ((document.getElementById('nf-giv-' + id) || {}).value || '').trim();
+    const fk = ((document.getElementById('nf-famk-' + id) || {}).value || '').trim();
+    const gk = ((document.getElementById('nf-givk-' + id) || {}).value || '').trim();
+    if (!f || !g) return; // 姓名が空の行はスキップ（個別保存でエラー表示）
+    const newName = f + '\u3000' + g;
+    const newKana = (fk && gk) ? (fk + '\u3000' + gk) : null;
+    // 変更があった行だけ対象に
+    const changed = (s.family_name || '') !== f || (s.given_name || '') !== g || (s.name || '') !== newName ||
+      (newKana != null && (s.name_kana || '') !== newKana);
+    if (!changed) return;
+    const patch = { family_name: f, given_name: g, name: newName };
+    if (newKana != null) { patch.family_kana = fk; patch.given_kana = gk; patch.name_kana = newKana; }
+    targets.push({ id: id, s: s, patch: patch, f: f, g: g });
+  });
+
+  if (!targets.length) { showToast('変更された行はありません', 'info'); return; }
+
+  let okN = 0, ngN = 0;
+  for (const t of targets) {
+    try {
+      await sbPatch('students', 'id=eq.' + t.id, t.patch);
+      // ローカル反映
+      t.s.family_name = t.f; t.s.given_name = t.g; t.s.name = t.patch.name;
+      if (t.patch.name_kana) { t.s.family_kana = t.patch.family_kana; t.s.given_kana = t.patch.given_kana; t.s.name_kana = t.patch.name_kana; }
+      okN++;
+    } catch (e) { ngN++; }
+  }
+  if (ngN === 0) showToast('✅ ' + okN + '名の氏名を保存しました', 'success');
+  else showToast('保存 ' + okN + '名 / 失敗 ' + ngN + '名', ngN ? 'error' : 'success');
+  renderNameFixList(); // 全再描画で⚠️印・背景を更新
 }
 
 // 出席表：学校グループの開閉
