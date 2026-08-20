@@ -6020,7 +6020,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm9';
+const APP_VERSION = '20260702dlm10';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32997,6 +32997,55 @@ function toggleAttGroupBySchool() {
   if (attMatrix) renderAttMatrix();
 }
 
+// この授業に来た体験生（名簿にない＝prospect_trials）を集める。
+// prospect_trials は class_master_id を持たないので「教科一致＋この表の授業日一致」で拾う。
+// 戻り値: [{ prospect_id, name, school, grade, dates:Set('YYYY-MM-DD') }]（来た日ごとに出席マークを置く用）
+async function loadAttTrials(classId, sessions) {
+  try {
+    if (!sessions || !sessions.length) return [];
+    // この授業の教科
+    let subject = '';
+    try {
+      const cm = await sbGet('class_master', 'id=eq.' + classId + '&select=subject') || [];
+      if (cm[0]) subject = cm[0].subject || '';
+    } catch (e) {}
+    const dateSet = new Set(sessions.map(s => String(s.session_date).slice(0, 10)));
+    const minD = [...dateSet].reduce((a, b) => a < b ? a : b);
+    const maxD = [...dateSet].reduce((a, b) => a > b ? a : b);
+    // 期間内の体験ログを取得（attended=true のみ）
+    let q = 'attended=eq.true&trial_date=gte.' + minD + '&trial_date=lte.' + maxD +
+            '&select=prospect_id,trial_date,subject';
+    if (subject) q += '&subject=eq.' + encodeURIComponent(subject);
+    let logs = await sbGet('prospect_trials', q) || [];
+    // この表の授業日にある体験ログだけ
+    logs = logs.filter(l => dateSet.has(String(l.trial_date).slice(0, 10)));
+    if (!logs.length) return [];
+    // prospect の氏名等を引く
+    const pids = [...new Set(logs.map(l => l.prospect_id).filter(Boolean))];
+    let pmap = {};
+    if (pids.length) {
+      const ps = await sbGet('prospects',
+        'id=in.(' + pids.map(encodeURIComponent).join(',') + ')&select=id,name,school,grade') || [];
+      ps.forEach(p => { pmap[p.id] = p; });
+    }
+    // 体験生ごとに来た日をまとめる
+    const byP = {};
+    logs.forEach(l => {
+      const pid = l.prospect_id;
+      if (!pid) return;
+      if (!byP[pid]) {
+        const p = pmap[pid] || {};
+        byP[pid] = { prospect_id: pid, name: p.name || '(体験生)', school: p.school || '', grade: p.grade || '', dates: new Set() };
+      }
+      byP[pid].dates.add(String(l.trial_date).slice(0, 10));
+    });
+    return Object.values(byP)
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ja'));
+  } catch (e) {
+    return [];
+  }
+}
+
 async function loadAttMatrix() {
   const classId = attSelectedClassId;
   if (!classId) return;
@@ -33053,8 +33102,11 @@ async function loadAttMatrix() {
       '&checkin_date=lte.' + maxD + '&select=student_id,checkin_date,created_at,checkout_time') || [];
     // 保存済みの並び順を読んでから描画する（授業ごとに共有）
     await loadAttCustomOrder(classId);
+    // 体験生（名簿にない・prospect_trials に記録）を取得。
+    // prospect_trials は class_master_id を持たないため「教科一致＋この表の授業日」で拾う。
+    const attTrials = await loadAttTrials(classId, sessions);
     hideLoading();
-    buildAttMatrix(sessions, studentIds, atts, checkins);
+    buildAttMatrix(sessions, studentIds, atts, checkins, attTrials);
     attMatrix.classMasterId = classId;
     renderAttMatrix();
   } catch (e) {
@@ -33064,7 +33116,7 @@ async function loadAttMatrix() {
   }
 }
 
-function buildAttMatrix(sessions, studentIds, atts, checkins) {
+function buildAttMatrix(sessions, studentIds, atts, checkins, trials) {
   const sessKeys = sessions.map(s => s.session_date + '|' + (s.period || ''));
   const sessInfo = {};
   sessions.forEach(s => { sessInfo[s.session_date + '|' + (s.period || '')] = s; });
@@ -33137,7 +33189,7 @@ function buildAttMatrix(sessions, studentIds, atts, checkins) {
     dateLabels[k] = { md: (d.getMonth()+1) + '/' + d.getDate(), wd };
   });
 
-  attMatrix = { sessKeys, sessInfo, students, cells, dateLabels };
+  attMatrix = { sessKeys, sessInfo, students, cells, dateLabels, trials: trials || [] };
 }
 
 function attCellHtml(sid, k) {
@@ -33499,6 +33551,42 @@ function attSchoolShaded(sid, sessKey) {
   return attSchoolScope(sid, sessKey) === 'out';
 }
 
+// 体験生（名簿にない参加者）の名前セル。生徒行と違い、カルテ遷移・ドラッグは無し。
+function attTrialNameCellHtml(t) {
+  const sub = [fmtGrade(t.grade), t.school || ''].filter(Boolean).join(' ');
+  const avatar = '<div style="width:28px;height:28px;border-radius:50%;background:#FFE9C7;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#8F5F12;flex-shrink:0">' + escapeHtml((t.name||'?').charAt(0)) + '</div>';
+  return '<td style="position:sticky;left:0;background:#FFFBF3;padding:5px 8px;border-right:1px solid var(--border);z-index:1;width:140px;min-width:140px">' +
+    '<div style="display:flex;align-items:center;gap:7px;min-width:0">' + avatar +
+    '<div style="min-width:0;overflow:hidden">' +
+      '<div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(t.name||'(体験生)') +
+        '<span style="font-size:9px;color:#8F5F12;background:#FFF3DF;border:1px solid #E8C193;border-radius:8px;padding:0 5px;margin-left:5px;white-space:nowrap">体験</span></div>' +
+      (sub ? '<div style="font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(sub) + '</div>' : '') +
+    '</div></div></td>';
+}
+
+// 体験生の各授業日セル。来た日は出席○、来ていない日は空欄。タップ・率・母数には含めない。
+function attTrialCellHtml(t, k) {
+  const date = k.split('|')[0];
+  if (t.dates && t.dates.has(date)) {
+    return '<td style="text-align:center;padding:4px">' +
+      '<span style="display:inline-block;width:34px;height:34px;line-height:34px;border-radius:8px;background:var(--green-l);color:var(--green-d);font-weight:700;font-size:16px" title="体験参加">○</span></td>';
+  }
+  return '<td style="text-align:center;padding:5px;color:var(--border)">·</td>';
+}
+
+// 体験生の行（生徒行の下にまとめて出す）。
+function attTrialRowsHtml() {
+  if (!attMatrix || !attMatrix.trials || !attMatrix.trials.length) return '';
+  const colspan = attMatrix.sessKeys.length + 2;
+  let rows = '<tr><td colspan="' + colspan + '" style="position:sticky;left:0;background:#FFF3DF;color:#8F5F12;font-size:11px;font-weight:700;padding:5px 8px">🔶 体験生（名簿外・' + attMatrix.trials.length + '名）</td></tr>';
+  attMatrix.trials.forEach(t => {
+    rows += '<tr style="border-top:1px solid var(--border)">' + attTrialNameCellHtml(t) +
+      attMatrix.sessKeys.map(k => attTrialCellHtml(t, k)).join('') +
+      '<td style="padding:6px 4px"></td></tr>';
+  });
+  return rows;
+}
+
 function renderAttMatrix() {
   const wrap = document.getElementById('att-matrix-wrap');
   if (!attMatrix || !attMatrix.students.length) return;
@@ -33546,7 +33634,7 @@ function renderAttMatrix() {
       + '</div>'
     : '';
 
-  wrap.innerHTML = orderBar + '<table style="border-collapse:collapse;font-size:12px;width:max-content;table-layout:fixed"><thead>' + header + '</thead><tbody>' + bodyRows + attMatrixFooterHtml() + '</tbody></table>';
+  wrap.innerHTML = orderBar + '<table style="border-collapse:collapse;font-size:12px;width:max-content;table-layout:fixed"><thead>' + header + '</thead><tbody>' + bodyRows + attTrialRowsHtml() + attMatrixFooterHtml() + '</tbody></table>';
   updateAttSortBtn();
   updateAttMatrixSaveBtn();
 }
