@@ -6069,7 +6069,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm15';
+const APP_VERSION = '20260702dlm16';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -49603,43 +49603,38 @@ async function loadExecDashboard() {
   renderExecDashboard(hs, jhs, todayCount, jhsMatrix, hsMatrix);
 }
 
-// 高校部の在籍生を 校舎(大街道/石井/未設定) × 学年(1年/2年/3年) で数える。
+// dlm16: 高校部の在籍生を 学年(1年/2年/3年) だけで数える（校舎軸なし・内訳のみ）。
+// 在籍判定は在籍カードと同じ isEnrolledNow（退塾確定は発効日ベースで除外）に統一。
 async function computeHsCampusMatrix() {
   let stu = await sbGetAll('students',
-    'division=eq.' + encodeURIComponent('高校部') + '&is_active=eq.true&select=id,campus,grade') || [];
+    'division=eq.' + encodeURIComponent('高校部') + '&or=(is_active.eq.true,withdraw_status.eq.' + encodeURIComponent('確定') + ')&select=id,grade,is_active,inactive_reason,withdraw_status,withdraw_effective_date') || [];
   let ids = stu.map(s => s.id);
   ids = await excludeDemoIds(ids);
   const keep = new Set(ids);
-  stu = stu.filter(s => keep.has(s.id));
+  stu = stu.filter(s => keep.has(s.id) && s.inactive_reason !== '除外' && isEnrolledNow(s));
 
-  const campusList = ['大街道', '石井', '(未設定)'];
-  const grades = ['1年', '2年', '3年'];
-  const cell = {};
-  campusList.forEach(c => { cell[c] = { '1年': 0, '2年': 0, '3年': 0, total: 0 }; });
-
-  let noGrade = 0;
+  const byGrade = { '1年': 0, '2年': 0, '3年': 0 };
+  let noGrade = 0, total = 0;
   stu.forEach(s => {
-    const c = campusList.includes(s.campus) ? s.campus : '(未設定)';
     const digit = (typeof emxGradeDigit === 'function') ? emxGradeDigit(s.grade) : (String(s.grade || '').match(/[1-3]/) || [''])[0];
     const g = digit ? (digit + '年') : '';
     if (!g) { noGrade++; return; }
-    cell[c][g]++;
-    cell[c].total++;
+    byGrade[g]++; total++;
   });
-  return { cell, campusList, grades, total: stu.length, noGrade };
+  return { byGrade, grades: ['1年', '2年', '3年'], total, noGrade };
 }
 
 // 中学部の在籍生を 校舎(大街道/石井/未設定) × 種別(公立/中高一貫/未設定) × 学年(中1/中2/中3) で数える。
 // 種別は students.school → schools.name → school_type で引く。
+// dlm16: 中学部の在籍生を ①校舎別（大街道/石井/未設定）と ②種別別（公立/中高一貫/未設定）で、
+// それぞれ学年内訳(中1/中2/中3)付きで数える。在籍判定は在籍カードと同じ isEnrolledNow に統一。
 async function computeJhsCampusMatrix() {
-  // 中学部アクティブ生徒
   let stu = await sbGetAll('students',
-    'division=eq.' + encodeURIComponent('中学部') + '&is_active=eq.true&select=id,campus,grade,school') || [];
-  // デモ除外
+    'division=eq.' + encodeURIComponent('中学部') + '&or=(is_active.eq.true,withdraw_status.eq.' + encodeURIComponent('確定') + ')&select=id,campus,grade,school,is_active,inactive_reason,withdraw_status,withdraw_effective_date') || [];
   let ids = stu.map(s => s.id);
   ids = await excludeDemoIds(ids);
   const keep = new Set(ids);
-  stu = stu.filter(s => keep.has(s.id));
+  stu = stu.filter(s => keep.has(s.id) && s.inactive_reason !== '除外' && isEnrolledNow(s));
 
   // 学校名→種別 のマップ
   await loadSchools(true);
@@ -49648,26 +49643,29 @@ async function computeJhsCampusMatrix() {
     if ((sc.division || '') === '中学部') typeMap[sc.name] = sc.school_type || '';
   });
 
-  const campusList = ['大街道', '石井', '(未設定)'];
-  const typeList = ['公立', '中高一貫', '(未設定)'];
   const grades = ['中1', '中2', '中3'];
-  // cell[campus][type] = {中1,中2,中3,計}
-  const cell = {};
-  campusList.forEach(c => { cell[c] = {}; typeList.forEach(t => { cell[c][t] = { '中1': 0, '中2': 0, '中3': 0, total: 0 }; }); });
+  const mkRow = () => ({ '中1': 0, '中2': 0, '中3': 0, total: 0 });
+  const campusRows = { '大街道': mkRow(), '石井': mkRow(), '(未設定)': mkRow() };
+  const typeRows = { '公立': mkRow(), '中高一貫': mkRow(), '(未設定)': mkRow() };
 
   let noGrade = 0;
   stu.forEach(s => {
-    const c = campusList.includes(s.campus) ? s.campus : '(未設定)';
-    const rawType = typeMap[s.school || ''] || '';
-    const t = (rawType === '公立' || rawType === '中高一貫') ? rawType : '(未設定)';
     const digit = (typeof emxGradeDigit === 'function') ? emxGradeDigit(s.grade) : (String(s.grade || '').match(/[1-3]/) || [''])[0];
     const g = digit ? ('中' + digit) : '';
     if (!g) { noGrade++; return; }
-    cell[c][t][g]++;
-    cell[c][t].total++;
+    const c = campusRows[s.campus] ? s.campus : '(未設定)';
+    const rawType = typeMap[s.school || ''] || '';
+    const t = (rawType === '公立' || rawType === '中高一貫') ? rawType : '(未設定)';
+    campusRows[c][g]++; campusRows[c].total++;
+    typeRows[t][g]++; typeRows[t].total++;
   });
 
-  return { cell, campusList, typeList, grades, total: stu.length, noGrade };
+  return {
+    grades,
+    campus: { order: ['大街道', '石井', '(未設定)'], rows: campusRows },
+    type: { order: ['公立', '中高一貫', '(未設定)'], rows: typeRows },
+    total: stu.length, noGrade
+  };
 }
 
 // dlm: 1部門ぶんの在籍・入塾・退塾を集計して返す。
@@ -49817,95 +49815,81 @@ function renderExecDashboard(hs, jhs, todayCount, jhsMatrix, hsMatrix) {
 function buildHsMatrixHtml(m) {
   if (!m) return '';
   const th = 'padding:5px 7px;font-size:11px;font-weight:700;color:#1A4D80;background:#DCEBFA;border:1px solid #9CC0E8;text-align:center;white-space:nowrap';
-  const td = 'padding:5px 7px;font-size:12px;color:var(--text);border:1px solid #D6E4F0;text-align:center';
-  const tdL = 'padding:5px 8px;font-size:11px;font-weight:700;color:#1A4D80;border:1px solid #D6E4F0;background:#F2F7FC;white-space:nowrap;text-align:left';
-
-  const colTot = { '1年': 0, '2年': 0, '3年': 0, total: 0 };
-  let rows = '';
-  m.campusList.forEach(c => {
-    const cd = m.cell[c];
-    if (cd.total === 0 && c !== '(未設定)') return;
-    rows += '<tr>'
-      + '<td style="' + tdL + '">' + escapeHtml(c) + '</td>'
-      + '<td style="' + td + '">' + (cd['1年'] || 0) + '</td>'
-      + '<td style="' + td + '">' + (cd['2年'] || 0) + '</td>'
-      + '<td style="' + td + '">' + (cd['3年'] || 0) + '</td>'
-      + '<td style="' + td + ';font-weight:800;background:#F2F7FC">' + cd.total + '</td>'
-      + '</tr>';
-    colTot['1年'] += cd['1年']; colTot['2年'] += cd['2年']; colTot['3年'] += cd['3年']; colTot.total += cd.total;
-  });
-  const totalRow = '<tr>'
-    + '<td style="' + tdL + ';background:#CFE3F7">計</td>'
-    + '<td style="' + td + ';font-weight:800;background:#DCEBFA">' + colTot['1年'] + '</td>'
-    + '<td style="' + td + ';font-weight:800;background:#DCEBFA">' + colTot['2年'] + '</td>'
-    + '<td style="' + td + ';font-weight:800;background:#DCEBFA">' + colTot['3年'] + '</td>'
-    + '<td style="' + td + ';font-weight:800;background:#CFE3F7">' + colTot.total + '</td>'
-    + '</tr>';
+  const td = 'padding:6px 7px;font-size:14px;color:var(--text);border:1px solid #D6E4F0;text-align:center;font-weight:700';
+  const g = m.byGrade;
   const noGradeNote = m.noGrade > 0
     ? '<span style="color:#C0392B;font-weight:700"> ／ ⚠️学年未設定 ' + m.noGrade + '名は表外</span>'
     : '';
   return '<div style="margin:2px 0 10px">'
-    + '<div style="font-size:11px;font-weight:800;color:#1A4D80;margin:6px 0 6px">🎓 高校部 人数集計（校舎 × 学年）</div>'
+    + '<div style="font-size:11px;font-weight:800;color:#1A4D80;margin:6px 0 6px">🎓 高校部 学年別 内訳</div>'
     + '<div style="overflow-x:auto">'
-    + '<table style="border-collapse:collapse;width:100%;min-width:300px">'
+    + '<table style="border-collapse:collapse;width:100%;min-width:280px">'
     + '<thead><tr>'
-    +   '<th style="' + th + ';text-align:left">校舎</th>'
     +   '<th style="' + th + '">1年</th><th style="' + th + '">2年</th><th style="' + th + '">3年</th><th style="' + th + '">計</th>'
     + '</tr></thead>'
-    + '<tbody>' + rows + totalRow + '</tbody>'
+    + '<tbody><tr>'
+    +   '<td style="' + td + '">' + (g['1年'] || 0) + '</td>'
+    +   '<td style="' + td + '">' + (g['2年'] || 0) + '</td>'
+    +   '<td style="' + td + '">' + (g['3年'] || 0) + '</td>'
+    +   '<td style="' + td + ';background:#CFE3F7">' + m.total + '</td>'
+    + '</tr></tbody>'
     + '</table></div>'
-    + '<div style="font-size:10px;color:var(--muted);margin-top:5px;line-height:1.5">校舎（大街道／石井）は各生徒に設定した値で集計します。未設定は「基本情報一括」タブで埋められます。' + noGradeNote + '</div>'
+    + (m.noGrade > 0 ? '<div style="font-size:10px;color:var(--muted);margin-top:5px">' + noGradeNote + '</div>' : '')
     + '</div>';
 }
 
-// 中学部の 校舎×種別×学年 クロス表HTML。未設定の行・列も出す（入力進捗が見えるように）。
+// 中学部：①校舎別・②種別別 の2表。各表は 行(校舎/種別) × 学年内訳(中1/中2/中3) + 計。
 function buildJhsMatrixHtml(m) {
   if (!m) return '';
   const th = 'padding:5px 7px;font-size:11px;font-weight:700;color:#2E6B1F;background:#EAF4E5;border:1px solid #C6E0BC;text-align:center;white-space:nowrap';
   const td = 'padding:5px 7px;font-size:12px;color:var(--text);border:1px solid #D6E4F0;text-align:center';
   const tdL = 'padding:5px 8px;font-size:11px;font-weight:700;color:#2E6B1F;border:1px solid #D6E4F0;background:#F4FAF1;white-space:nowrap;text-align:left';
 
-  // 列合計（学年別）と総計
-  const colTot = { '中1': 0, '中2': 0, '中3': 0, total: 0 };
-  let rows = '';
-  m.campusList.forEach(c => {
-    m.typeList.forEach(t => {
-      const cellData = m.cell[c][t];
-      // 全部0の行は「未設定×未設定」以外は隠す（見やすさ優先）。ただし合計には反映済み。
-      if (cellData.total === 0 && !(c === '(未設定)' && t === '(未設定)')) return;
+  // 1つの軸（校舎 or 種別）ぶんの表を作る
+  const oneTable = (headLabel, axis, iconLabel) => {
+    const colTot = { '中1': 0, '中2': 0, '中3': 0, total: 0 };
+    let rows = '';
+    axis.order.forEach(key => {
+      const r = axis.rows[key];
+      // 未設定は0でも出す（入力進捗が見えるように）。それ以外の0行は隠す。
+      if (r.total === 0 && key !== '(未設定)') return;
       rows += '<tr>'
-        + '<td style="' + tdL + '">' + escapeHtml(c) + '<span style="color:var(--muted);font-weight:400"> ・ ' + escapeHtml(t) + '</span></td>'
-        + '<td style="' + td + '">' + (cellData['中1'] || 0) + '</td>'
-        + '<td style="' + td + '">' + (cellData['中2'] || 0) + '</td>'
-        + '<td style="' + td + '">' + (cellData['中3'] || 0) + '</td>'
-        + '<td style="' + td + ';font-weight:800;background:#F4FAF1">' + cellData.total + '</td>'
+        + '<td style="' + tdL + '">' + escapeHtml(key) + '</td>'
+        + '<td style="' + td + '">' + r['中1'] + '</td>'
+        + '<td style="' + td + '">' + r['中2'] + '</td>'
+        + '<td style="' + td + '">' + r['中3'] + '</td>'
+        + '<td style="' + td + ';font-weight:800;background:#F4FAF1">' + r.total + '</td>'
         + '</tr>';
-      colTot['中1'] += cellData['中1']; colTot['中2'] += cellData['中2']; colTot['中3'] += cellData['中3']; colTot.total += cellData.total;
+      colTot['中1'] += r['中1']; colTot['中2'] += r['中2']; colTot['中3'] += r['中3']; colTot.total += r.total;
     });
-  });
-  const totalRow = '<tr>'
-    + '<td style="' + tdL + ';background:#DDEFD5">計</td>'
-    + '<td style="' + td + ';font-weight:800;background:#EAF4E5">' + colTot['中1'] + '</td>'
-    + '<td style="' + td + ';font-weight:800;background:#EAF4E5">' + colTot['中2'] + '</td>'
-    + '<td style="' + td + ';font-weight:800;background:#EAF4E5">' + colTot['中3'] + '</td>'
-    + '<td style="' + td + ';font-weight:800;background:#DDEFD5">' + colTot.total + '</td>'
-    + '</tr>';
+    const totalRow = '<tr>'
+      + '<td style="' + tdL + ';background:#DDEFD5">計</td>'
+      + '<td style="' + td + ';font-weight:800;background:#EAF4E5">' + colTot['中1'] + '</td>'
+      + '<td style="' + td + ';font-weight:800;background:#EAF4E5">' + colTot['中2'] + '</td>'
+      + '<td style="' + td + ';font-weight:800;background:#EAF4E5">' + colTot['中3'] + '</td>'
+      + '<td style="' + td + ';font-weight:800;background:#DDEFD5">' + colTot.total + '</td>'
+      + '</tr>';
+    return '<div style="margin-bottom:10px">'
+      + '<div style="font-size:11px;font-weight:800;color:#2E6B1F;margin:6px 0 6px">' + iconLabel + '</div>'
+      + '<div style="overflow-x:auto">'
+      + '<table style="border-collapse:collapse;width:100%;min-width:300px">'
+      + '<thead><tr>'
+      +   '<th style="' + th + ';text-align:left">' + headLabel + '</th>'
+      +   '<th style="' + th + '">中1</th><th style="' + th + '">中2</th><th style="' + th + '">中3</th><th style="' + th + '">計</th>'
+      + '</tr></thead>'
+      + '<tbody>' + rows + totalRow + '</tbody>'
+      + '</table></div></div>';
+  };
 
   const noGradeNote = m.noGrade > 0
-    ? '<span style="color:#C0392B;font-weight:700"> ／ ⚠️学年未設定 ' + m.noGrade + '名は表外</span>'
+    ? '<div style="font-size:10px;color:#C0392B;font-weight:700;margin-top:2px">⚠️ 学年未設定 ' + m.noGrade + '名は表に含まれません（「基本情報一括」タブで学年を入力してください）</div>'
     : '';
 
   return '<div style="margin:2px 0 4px">'
-    + '<div style="font-size:11px;font-weight:800;color:#2E6B1F;margin:6px 0 6px">📗 中学部 人数集計（校舎 × 種別 × 学年）</div>'
-    + '<div style="overflow-x:auto">'
-    + '<table style="border-collapse:collapse;width:100%;min-width:320px">'
-    + '<thead><tr>'
-    +   '<th style="' + th + ';text-align:left">校舎 ・ 種別</th>'
-    +   '<th style="' + th + '">中1</th><th style="' + th + '">中2</th><th style="' + th + '">中3</th><th style="' + th + '">計</th>'
-    + '</tr></thead>'
-    + '<tbody>' + rows + totalRow + '</tbody>'
-    + '</table></div>'
-    + '<div style="font-size:10px;color:var(--muted);margin-top:5px;line-height:1.5">校舎（大街道／石井）は各生徒に、種別（公立／中高一貫）は学校マスタに設定した値で集計します。未設定は「基本情報一括」タブと設定タブの学校マスタで埋められます。' + noGradeNote + '</div>'
+    + oneTable('校舎', m.campus, '🏫 校舎別（大街道 / 石井）')
+    + oneTable('種別', m.type, '🎓 種別別（公立 / 中高一貫）')
+    + '<div style="font-size:10px;color:var(--muted);margin-top:2px;line-height:1.5">校舎は各生徒に、種別は学校マスタに設定した値で集計します。未設定は「基本情報一括」タブと設定タブの学校マスタで埋められます。</div>'
+    + noGradeNote
     + '</div>';
 }
 
