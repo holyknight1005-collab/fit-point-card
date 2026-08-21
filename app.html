@@ -5236,8 +5236,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <option value="inquiry_desc">問合せ日が新しい順</option>
         </select>
         <select id="prospects-assignee" onchange="setProspectsAssignee(this.value)" style="flex:0 0 auto;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'Noto Sans JP',sans-serif;background:#fff;cursor:pointer"><option value="all">担当：すべて</option></select>
+        <select id="prospects-school" onchange="setProspectsSchool(this.value)" style="flex:0 0 auto;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'Noto Sans JP',sans-serif;background:#fff;cursor:pointer"><option value="all">学校：すべて</option></select>
         <button onclick="downloadProspectsListCsv()" style="flex:0 0 auto;padding:8px 12px;border:none;border-radius:8px;background:linear-gradient(135deg,#4B8B3B,#3A6E2D);color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📥 CSV書き出し</button>
+        <button onclick="openProspectDedup()" style="flex:0 0 auto;padding:8px 12px;border:1px solid #D4A017;border-radius:8px;background:#FEF9E7;color:#9A7D0A;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔁 重複チェック</button>
       </div>
+      <div id="prospects-dedup-area" style="display:none;margin-bottom:10px"></div>
       <div id="prospects-list-area"></div>
       <div id="prospects-table-area" style="display:none;overflow-x:auto"></div>
       <div id="prospects-event-area" style="display:none"></div>
@@ -6069,7 +6072,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm17';
+const APP_VERSION = '20260702dlm19';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -21657,7 +21660,7 @@ async function openAttTrial() {
   attTrialProspects = [];
   try {
     const rows = await sbGet('prospects',
-      'select=id,name,school,grade,status&order=updated_at.desc&limit=800') || [];
+      'or=(deleted.is.null,deleted.eq.false)&select=id,name,school,grade,status&order=updated_at.desc&limit=800') || [];
     attTrialProspects = rows.filter(p => p.status !== '×見送り');
   } catch (e) { attTrialProspects = []; }
   renderAttTrialExistOptions();
@@ -36212,6 +36215,7 @@ let prospectsFilter = 'all';  // 表示中のステータス絞り込み（'all'
 let prospectsSearch = '';     // 検索キーワード（氏名・学校・連絡先・きっかけ・メモを対象）
 let prospectsSort = 'updated_desc'; // 並び替え：updated_desc / name_asc / next_asc / created_desc
 let prospectsAssignee = 'all'; // 担当別フィルタ（'all' / '__none__'(未設定) / staff_id）
+let prospectsSchool = 'all';   // 学校別フィルタ（'all' / '__none__'(未設定) / 学校名）
 let prospectsStaffMap = {};   // staff_id → 氏名（カード表示・フィルタ用）
 let enrollingProspectId = null; // 「入塾」引き継ぎ中の見込みID（生徒登録完了時に紐付け）
 let prospectsView = 'table';   // 'card' | 'table' | 'event'（デフォルトは一覧）
@@ -36603,6 +36607,7 @@ async function initProspects() {
   prospectsSearch = '';
   prospectsSort = 'updated_desc';
   prospectsAssignee = 'all';
+  prospectsSchool = 'all';
   // 学校マスターを先読み（入来塾の学校selectで使う）
   try { await loadSchools(true); } catch (e) {}
   const si = document.getElementById('prospects-search'); if (si) si.value = '';
@@ -36631,13 +36636,14 @@ async function initProspects() {
   const area = document.getElementById('prospects-list-area');
   if (area) area.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
   try {
-    const rows = await sbGet('prospects', 'select=*&order=updated_at.desc');
+    const rows = await sbGet('prospects', 'or=(deleted.is.null,deleted.eq.false)&select=*&order=updated_at.desc');
     prospectsCache = (rows || []).map(p => {
       p._status = normalizeProspectStatus(p.status); // 表示・判定は正規化済みの _status を使う
       return p;
     });
     renderProspectsStatusTabs();
     renderProspectsAssigneeFilter();
+    renderProspectsSchoolFilter();
     applyProspectsView();
   } catch (e) {
     // テーブル未作成（HTTP 400）などのフォールバック
@@ -36711,6 +36717,149 @@ function setProspectsAssignee(val) {
   applyProspectsView();
 }
 
+// 学校別フィルタ：prospectsCache に出てくる学校名を集めてドロップダウンを作る
+function renderProspectsSchoolFilter() {
+  const sel = document.getElementById('prospects-school');
+  if (!sel) return;
+  const names = []; let hasNone = false;
+  prospectsCache.forEach(p => {
+    const sc = (p.school || '').trim();
+    if (sc) { if (names.indexOf(sc) === -1) names.push(sc); }
+    else hasNone = true;
+  });
+  names.sort((a, b) => String(a).localeCompare(String(b), 'ja'));
+  let h = '<option value="all">学校：すべて</option>';
+  names.forEach(nm => {
+    h += '<option value="' + escapeHtml(nm) + '">学校：' + escapeHtml(nm) + '</option>';
+  });
+  if (hasNone) h += '<option value="__none__">学校：未設定</option>';
+  sel.innerHTML = h;
+  sel.value = prospectsSchool;
+}
+
+function setProspectsSchool(val) {
+  prospectsSchool = val || 'all';
+  applyProspectsView();
+}
+
+// ===== 重複見込みチェック（dlm19） =====
+// 氏名（空白除去）＋学校 が一致する見込みを重複候補として検出し、統合削除する。
+function _dedupNameKey(s) { return String(s || '').replace(/\s+/g, ''); }
+
+function findProspectDupGroups() {
+  const map = {};
+  prospectsCache.forEach(p => {
+    if (p.deleted === true) return;
+    const key = _dedupNameKey(p.name) + '|' + String(p.school || '').trim();
+    if (!_dedupNameKey(p.name)) return; // 無名は対象外
+    (map[key] = map[key] || []).push(p);
+  });
+  // 2件以上のグループのみ。各グループは作成が古い順（＝先頭を残す想定）
+  const groups = [];
+  Object.keys(map).forEach(k => {
+    if (map[k].length > 1) {
+      const arr = map[k].slice().sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+      groups.push(arr);
+    }
+  });
+  return groups;
+}
+
+function openProspectDedup() {
+  const area = document.getElementById('prospects-dedup-area');
+  if (!area) return;
+  if (area.style.display === 'block') { area.style.display = 'none'; area.innerHTML = ''; return; }
+  area.style.display = 'block';
+  renderProspectDedup();
+}
+
+function renderProspectDedup() {
+  const area = document.getElementById('prospects-dedup-area');
+  if (!area) return;
+  const groups = findProspectDupGroups();
+  let h = '<div style="border:1px solid #D4A017;border-radius:10px;background:#FEFBF0;padding:12px 13px">'
+    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+    + '<span style="font-size:14px;font-weight:800;color:#9A7D0A">🔁 重複候補（氏名＋学校が一致）</span>'
+    + '<button onclick="openProspectDedup()" style="margin-left:auto;padding:5px 10px;border:1px solid var(--border);border-radius:7px;background:#fff;color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">閉じる</button>'
+    + '</div>';
+  if (!groups.length) {
+    h += '<div style="font-size:12px;color:var(--muted);padding:6px 0">重複候補は見つかりませんでした。</div>';
+  } else {
+    h += '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">同じ氏名・学校の見込みが複数あります。<b>残す1件</b>を選び、他を「この重複を消す」で統合削除できます（消す側の体験記録は、残す側に無いものだけ残す側へ移し、重複分は削除します）。</div>';
+    groups.forEach((g, gi) => {
+      h += '<div style="border:1px solid var(--border);border-radius:8px;background:#fff;padding:10px;margin-bottom:8px">';
+      h += '<div style="font-size:13px;font-weight:800;color:var(--text);margin-bottom:6px">' + escapeHtml(g[0].name || '') + '　<span style="font-weight:700;color:var(--orange-d)">' + escapeHtml(g[0].school || '(学校未設定)') + '</span>　<span style="font-size:11px;color:var(--muted)">' + g.length + '件</span></div>';
+      g.forEach((p, i) => {
+        const st = p._status || normalizeProspectStatus(p.status);
+        const created = String(p.created_at || '').slice(0, 10);
+        const isDefaultKeep = (i === 0);
+        h += '<div style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-top:' + (i ? '1px solid var(--border)' : 'none') + '">';
+        h += '<label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text);cursor:pointer">'
+          + '<input type="radio" name="dedup-keep-' + gi + '" value="' + escapeAttr(p.id) + '"' + (isDefaultKeep ? ' checked' : '') + '> 残す</label>';
+        h += '<div style="flex:1;min-width:0;font-size:12px;color:var(--text)">'
+          + '学年:' + escapeHtml(p.grade || '-') + '　状態:' + escapeHtml(st) + '　連絡先:' + escapeHtml(p.contact || '-') + '　登録:' + escapeHtml(created)
+          + '</div>';
+        h += '<button onclick="dedupDropProspect(' + gi + ',&quot;' + p.id + '&quot;)" style="flex:0 0 auto;padding:5px 10px;border:1px solid #E6B0AA;border-radius:7px;background:#fff;color:#B03A2E;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">この重複を消す</button>';
+        h += '</div>';
+      });
+      h += '</div>';
+    });
+  }
+  h += '</div>';
+  area.innerHTML = h;
+}
+
+// gi グループで、選択中の「残す」を確認し、dropId を統合削除する
+async function dedupDropProspect(gi, dropId) {
+  const radios = document.getElementsByName('dedup-keep-' + gi);
+  let keepId = null;
+  for (let i = 0; i < radios.length; i++) if (radios[i].checked) keepId = radios[i].value;
+  if (!keepId) { alert('残す1件を選んでください。'); return; }
+  if (keepId === dropId) { alert('「残す」に選んだものは消せません。別の行を消してください。'); return; }
+  const keep = prospectsCache.find(p => p.id === keepId);
+  const drop = prospectsCache.find(p => p.id === dropId);
+  if (!keep || !drop) { alert('対象が見つかりませんでした。'); return; }
+  if (!confirm('「' + (drop.name || '') + '（' + (drop.school || '') + '）」の重複を1件削除します。\n残す側：登録 ' + String(keep.created_at || '').slice(0, 10) + '\n消す側：登録 ' + String(drop.created_at || '').slice(0, 10) + '\n\nよろしいですか？')) return;
+  try {
+    showLoading('重複を統合中...');
+    // 消す側の体験ログを取得し、残す側と重複しないものは付け替え、重複は削除
+    const dropTrials = await sbGet('prospect_trials', 'prospect_id=eq.' + encodeURIComponent(dropId) + '&select=id,trial_date,subject') || [];
+    const keepTrials = await sbGet('prospect_trials', 'prospect_id=eq.' + encodeURIComponent(keepId) + '&select=trial_date,subject') || [];
+    const keepSet = new Set(keepTrials.map(t => t.trial_date + '|' + t.subject));
+    for (const t of dropTrials) {
+      const dupKey = t.trial_date + '|' + t.subject;
+      if (keepSet.has(dupKey)) {
+        // 残す側に同じ体験があるので削除（prospect_trials は物理削除可）
+        await sbDelete('prospect_trials', 'id=eq.' + encodeURIComponent(t.id));
+      } else {
+        // 残す側へ付け替え
+        await sbPatch('prospect_trials', 'id=eq.' + encodeURIComponent(t.id), { prospect_id: keepId });
+        keepSet.add(dupKey);
+      }
+    }
+    // 来塾ログがあれば紐づけを外す（論理削除）
+    try {
+      const dropVisits = await sbGet('prospect_visits', 'prospect_id=eq.' + encodeURIComponent(dropId) + '&status=neq.deleted&select=id') || [];
+      for (const v of dropVisits) {
+        await sbPatch('prospect_visits', 'id=eq.' + encodeURIComponent(v.id), { status: 'deleted', event_id: null, updated_at: new Date().toISOString() });
+      }
+    } catch (e) {}
+    // 見込み本体を論理削除
+    await sbPatch('prospects', 'id=eq.' + encodeURIComponent(dropId), { deleted: true, updated_at: new Date().toISOString() });
+    // キャッシュから除去して再描画
+    prospectsCache = prospectsCache.filter(p => p.id !== dropId);
+    hideLoading();
+    renderProspectsStatusTabs();
+    renderProspectsAssigneeFilter();
+    renderProspectsSchoolFilter();
+    applyProspectsView();
+    renderProspectDedup();
+  } catch (e) {
+    hideLoading();
+    alert('統合に失敗しました：' + (e && e.message ? e.message : e));
+  }
+}
+
 function renderProspectsList() {
   const area = document.getElementById('prospects-list-area');
   if (!area) return;
@@ -36719,6 +36868,9 @@ function renderProspectsList() {
   // 担当別フィルタ
   if (prospectsAssignee === '__none__') list = list.filter(p => !p.assigned_to && parseSupportStaff(p).length === 0);
   else if (prospectsAssignee !== 'all') list = list.filter(p => p.assigned_to === prospectsAssignee || parseSupportStaff(p).indexOf(prospectsAssignee) !== -1);
+  // 学校別フィルタ
+  if (prospectsSchool === '__none__') list = list.filter(p => !(p.school || '').trim());
+  else if (prospectsSchool !== 'all') list = list.filter(p => (p.school || '').trim() === prospectsSchool);
   // 検索：氏名・学校・学年・連絡先・きっかけ・メモ・担当を対象に部分一致
   if (prospectsSearch) {
     list = list.filter(p => {
@@ -36921,6 +37073,8 @@ function getFilteredProspects() {
   if (prospectsFilter !== 'all') list = list.filter(p => (p._status || normalizeProspectStatus(p.status)) === prospectsFilter);
   if (prospectsAssignee === '__none__') list = list.filter(p => !p.assigned_to && parseSupportStaff(p).length === 0);
   else if (prospectsAssignee !== 'all') list = list.filter(p => p.assigned_to === prospectsAssignee || parseSupportStaff(p).indexOf(prospectsAssignee) !== -1);
+  if (prospectsSchool === '__none__') list = list.filter(p => !(p.school || '').trim());
+  else if (prospectsSchool !== 'all') list = list.filter(p => (p.school || '').trim() === prospectsSchool);
   if (prospectsSearch) {
     list = list.filter(p => {
       let cv = '';
@@ -47861,7 +48015,7 @@ async function renderSvInout() {
   if (svInoutKind === 'all' || svInoutKind === 'prospect') {
     try {
       const rows = await sbGet('prospects',
-        'school=eq.' + encodeURIComponent(svSchool) + '&select=id,name,grade,status,created_at,enrolled_student_id') || [];
+        'school=eq.' + encodeURIComponent(svSchool) + '&or=(deleted.is.null,deleted.eq.false)&select=id,name,grade,status,created_at,enrolled_student_id') || [];
       prospects = (rows || []).filter(p => {
         if (p.enrolled_student_id) return false;                 // すでに入塾済み
         const st = (typeof normalizeProspectStatus === 'function') ? normalizeProspectStatus(p.status) : p.status;
@@ -48439,12 +48593,12 @@ async function renderSvEnrollFunnel(opts) {
     let q;
     if (allMode) {
       if (scopeSchools && scopeSchools.length) {
-        q = 'school=in.(' + scopeSchools.map(s => '"' + s + '"').join(',') + ')&select=' + selCols;
+        q = 'school=in.(' + scopeSchools.map(s => '"' + s + '"').join(',') + ')&or=(deleted.is.null,deleted.eq.false)&select=' + selCols;
       } else {
-        q = 'select=' + selCols;
+        q = 'or=(deleted.is.null,deleted.eq.false)&select=' + selCols;
       }
     } else {
-      q = 'school=eq.' + encodeURIComponent(school) + '&select=' + selCols;
+      q = 'school=eq.' + encodeURIComponent(school) + '&or=(deleted.is.null,deleted.eq.false)&select=' + selCols;
     }
     pros = await sbGet('prospects', q) || [];
   } catch (e) {
