@@ -5214,6 +5214,13 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <input type="file" id="prospect-csv-input" accept=".csv,text/csv" style="display:none" onchange="onProspectCsvSelected(event)">
         <span style="font-size:11px;color:var(--muted);line-height:1.4">氏名だけ必須。テンプレをDLして編集→読込。</span>
       </div>
+      <div id="prospects-division-bar" style="display:flex;gap:6px;margin-bottom:10px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:11px;color:var(--muted);font-weight:700">部門</span>
+        <div style="display:inline-flex;border:1.5px solid var(--border);border-radius:8px;overflow:hidden">
+          <button id="prospects-div-high" onclick="setProspectsDivision('高校部')" style="padding:7px 16px;border:none;background:var(--orange);color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🎓 高校部</button>
+          <button id="prospects-div-jhs" onclick="setProspectsDivision('中学部')" style="padding:7px 16px;border:none;background:#fff;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📗 中学部</button>
+        </div>
+      </div>
       <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">
         <div style="display:inline-flex;border:1.5px solid var(--border);border-radius:8px;overflow:hidden">
           <button id="prospects-view-card" onclick="setProspectsView('card')" style="padding:7px 14px;border:none;background:#fff;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🗂 カード</button>
@@ -6072,7 +6079,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm19';
+const APP_VERSION = '20260702dlm20';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -36216,6 +36223,42 @@ let prospectsSearch = '';     // 検索キーワード（氏名・学校・連�
 let prospectsSort = 'updated_desc'; // 並び替え：updated_desc / name_asc / next_asc / created_desc
 let prospectsAssignee = 'all'; // 担当別フィルタ（'all' / '__none__'(未設定) / staff_id）
 let prospectsSchool = 'all';   // 学校別フィルタ（'all' / '__none__'(未設定) / 学校名）
+let prospectsDivision = '高校部'; // 入来塾管理の部門タブ（'高校部' / '中学部'）dlm20
+
+// 各見込みの部門を判定。division 列が '中学部'/'高校部' ならそれ、
+// それ以外（NULL・空・列なし）は '高校部' 扱い（既存データ互換）。dlm20
+function prospectDivisionOf(p) {
+  const d = p && p.division ? String(p.division).trim() : '';
+  return (d === '中学部' || d === '高校部') ? d : '高校部';
+}
+
+// prospectsCache を現在の部門タブで絞った配列を返す。dlm20
+function prospectsInDivision() {
+  return prospectsCache.filter(p => prospectDivisionOf(p) === prospectsDivision);
+}
+
+// 部門タブを切り替えて再描画。dlm20
+function setProspectsDivision(div) {
+  prospectsDivision = (div === '中学部') ? '中学部' : '高校部';
+  const hb = document.getElementById('prospects-div-high');
+  const jb = document.getElementById('prospects-div-jhs');
+  if (hb && jb) {
+    const on = prospectsDivision === '高校部';
+    hb.style.background = on ? 'var(--orange)' : '#fff';
+    hb.style.color = on ? '#fff' : 'var(--muted)';
+    jb.style.background = on ? '#fff' : 'var(--orange)';
+    jb.style.color = on ? 'var(--muted)' : '#fff';
+  }
+  // 学校フィルタは部門で変わるので all に戻して作り直す
+  prospectsSchool = 'all';
+  renderProspectsStatusTabs();
+  renderProspectsAssigneeFilter();
+  renderProspectsSchoolFilter();
+  applyProspectsView();
+  // 重複チェックを開いている場合は部門内で作り直す
+  const dz = document.getElementById('prospects-dedup-area');
+  if (dz && dz.style.display === 'block') renderProspectDedup();
+}
 let prospectsStaffMap = {};   // staff_id → 氏名（カード表示・フィルタ用）
 let enrollingProspectId = null; // 「入塾」引き継ぎ中の見込みID（生徒登録完了時に紐付け）
 let prospectsView = 'table';   // 'card' | 'table' | 'event'（デフォルトは一覧）
@@ -36265,7 +36308,9 @@ async function renderProspectSchoolOptions(keep) {
   if (!sel) return;
   const prev = (keep != null) ? keep : sel.value;
   await loadSchools();
-  const div = (typeof currentDivision !== 'undefined' ? currentDivision : '高校部');
+  // 入来塾管理では部門タブ（prospectsDivision）に合わせる。dlm20
+  const div = (typeof prospectsDivision !== 'undefined' ? prospectsDivision
+    : (typeof currentDivision !== 'undefined' ? currentDivision : '高校部'));
   const names = schoolsForDivision(div);
   // 部門ラベル
   const divLbl = document.getElementById('prospect-school-div');
@@ -36608,6 +36653,11 @@ async function initProspects() {
   prospectsSort = 'updated_desc';
   prospectsAssignee = 'all';
   prospectsSchool = 'all';
+  // 部門タブは高校部から。ボタン表示も同期（dlm20）
+  prospectsDivision = '高校部';
+  { const hb = document.getElementById('prospects-div-high'), jb = document.getElementById('prospects-div-jhs');
+    if (hb) { hb.style.background = 'var(--orange)'; hb.style.color = '#fff'; }
+    if (jb) { jb.style.background = '#fff'; jb.style.color = 'var(--muted)'; } }
   // 学校マスターを先読み（入来塾の学校selectで使う）
   try { await loadSchools(true); } catch (e) {}
   const si = document.getElementById('prospects-search'); if (si) si.value = '';
@@ -36660,7 +36710,8 @@ async function initProspects() {
 function renderProspectsStatusTabs() {
   const bar = document.getElementById('prospects-status-tabs');
   if (!bar) return;
-  const countOf = (st) => st === 'all' ? prospectsCache.length : prospectsCache.filter(p => (p._status || normalizeProspectStatus(p.status)) === st).length;
+  const inDiv = prospectsInDivision(); // 現部門のみで件数集計（dlm20）
+  const countOf = (st) => st === 'all' ? inDiv.length : inDiv.filter(p => (p._status || normalizeProspectStatus(p.status)) === st).length;
   const mkBtn = (val, label, color) => {
     const on = prospectsFilter === val;
     const n = countOf(val);
@@ -36695,7 +36746,7 @@ function renderProspectsAssigneeFilter() {
   const sel = document.getElementById('prospects-assignee');
   if (!sel) return;
   const ids = []; let hasNone = false;
-  prospectsCache.forEach(p => {
+  prospectsInDivision().forEach(p => {
     const sup = parseSupportStaff(p);
     if (p.assigned_to) { if (ids.indexOf(p.assigned_to) === -1) ids.push(p.assigned_to); }
     sup.forEach(sid => { if (ids.indexOf(sid) === -1) ids.push(sid); });
@@ -36722,7 +36773,7 @@ function renderProspectsSchoolFilter() {
   const sel = document.getElementById('prospects-school');
   if (!sel) return;
   const names = []; let hasNone = false;
-  prospectsCache.forEach(p => {
+  prospectsInDivision().forEach(p => {
     const sc = (p.school || '').trim();
     if (sc) { if (names.indexOf(sc) === -1) names.push(sc); }
     else hasNone = true;
@@ -36748,7 +36799,7 @@ function _dedupNameKey(s) { return String(s || '').replace(/\s+/g, ''); }
 
 function findProspectDupGroups() {
   const map = {};
-  prospectsCache.forEach(p => {
+  prospectsInDivision().forEach(p => { // 同部門内のみ重複判定（dlm20）
     if (p.deleted === true) return;
     const key = _dedupNameKey(p.name) + '|' + String(p.school || '').trim();
     if (!_dedupNameKey(p.name)) return; // 無名は対象外
@@ -36863,7 +36914,7 @@ async function dedupDropProspect(gi, dropId) {
 function renderProspectsList() {
   const area = document.getElementById('prospects-list-area');
   if (!area) return;
-  let list = prospectsCache.slice();
+  let list = prospectsInDivision(); // 現部門のみ（dlm20）
   if (prospectsFilter !== 'all') list = list.filter(p => (p._status || normalizeProspectStatus(p.status)) === prospectsFilter);
   // 担当別フィルタ
   if (prospectsAssignee === '__none__') list = list.filter(p => !p.assigned_to && parseSupportStaff(p).length === 0);
@@ -37069,7 +37120,7 @@ function applyProspectsView() {
 
 // 現在のフィルタ・検索・並び替えを適用した見込みリストを返す（カード/テーブル共通）
 function getFilteredProspects() {
-  let list = prospectsCache.slice();
+  let list = prospectsInDivision(); // 現部門のみ（dlm20）
   if (prospectsFilter !== 'all') list = list.filter(p => (p._status || normalizeProspectStatus(p.status)) === prospectsFilter);
   if (prospectsAssignee === '__none__') list = list.filter(p => !p.assigned_to && parseSupportStaff(p).length === 0);
   else if (prospectsAssignee !== 'all') list = list.filter(p => p.assigned_to === prospectsAssignee || parseSupportStaff(p).indexOf(prospectsAssignee) !== -1);
@@ -41555,8 +41606,12 @@ async function saveProspect() {
   if (!name) { showErr('氏名を入力してください'); return; }
 
   const id = v('prospect-id');
+  // 部門：編集時は既存値を維持、新規時は現在の部門タブ。dlm20
+  let _division = prospectsDivision;
+  if (id) { const _ex = prospectsCache.find(x => x.id === id); if (_ex && _ex.division) _division = prospectDivisionOf(_ex); }
   const body = {
     name: name,
+    division: _division,
     school: v('prospect-school') || null,
     grade: v('prospect-grade') || null,
     contact: v('prospect-contact') || null,
@@ -41597,8 +41652,9 @@ async function saveProspect() {
     } catch (e1) {
       // 新カラムが未作成なら外して再試行
       const msg = String(e1 && e1.message || e1);
-      if (/visit_date|inquiry_date|support_staff|line_registered_date|interview_date|parent_interview_date|column|schema|PGRST|400/i.test(msg)) {
+      if (/division|visit_date|inquiry_date|support_staff|line_registered_date|interview_date|parent_interview_date|column|schema|PGRST|400/i.test(msg)) {
         const b2 = Object.assign({}, body);
+        delete b2.division;
         delete b2.visit_date; delete b2.inquiry_date; delete b2.support_staff;
         delete b2.line_registered_date; delete b2.interview_date; delete b2.parent_interview_date;
         await saveWith(b2);
@@ -41811,6 +41867,7 @@ async function onProspectCsvSelected(event) {
 
       const body = {
         name: name,
+        division: prospectsDivision, // 現在の部門タブを既定に（dlm20）
         school: school || null,
         grade: get(row, col.grade) || null,
         contact: get(row, col.contact) || null,
@@ -42034,8 +42091,8 @@ async function confirmProspectImport() {
         created = await sbPostReturn('prospects', clean);
       } catch (e1) {
         const m = String(e1 && e1.message || e1);
-        if (/visit_date|inquiry_date|line_registered_date|interview_date|parent_interview_date|column|schema|PGRST|400/i.test(m)) {
-          const b2 = Object.assign({}, clean); delete b2.visit_date; delete b2.inquiry_date;
+        if (/division|visit_date|inquiry_date|line_registered_date|interview_date|parent_interview_date|column|schema|PGRST|400/i.test(m)) {
+          const b2 = Object.assign({}, clean); delete b2.division; delete b2.visit_date; delete b2.inquiry_date;
           delete b2.line_registered_date; delete b2.interview_date; delete b2.parent_interview_date;
           created = await sbPostReturn('prospects', b2);
         } else { throw e1; }
