@@ -2583,6 +2583,10 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="home-student-section">
       <div class="section-title">生徒一覧（タップで詳細）</div>
       <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+        <div style="position:relative">
+          <input type="text" id="student-name-search" oninput="setStudentNameSearch(this.value)" placeholder="🔍 名前・ふりがなで検索" style="width:100%;box-sizing:border-box;padding:9px 34px 9px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;font-family:'Noto Sans JP',sans-serif">
+          <button id="student-name-search-clear" onclick="clearStudentNameSearch()" style="display:none;position:absolute;right:8px;top:50%;transform:translateY(-50%);border:none;background:transparent;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 6px">✕</button>
+        </div>
         <div class="filter-bar" id="filter-school">
           <button class="filter-btn active" onclick="setFilter('school','全員',this)">全員</button>
           <button class="filter-btn" onclick="setFilter('school','松山東',this)">松山東</button>
@@ -6079,7 +6083,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm20';
+const APP_VERSION = '20260702dlm22';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6444,6 +6448,27 @@ const PAGE_SIZE = 20;
 let currentPage = 0;
 let showAll = false;
 let showGraduated = false;  // true=卒塾生のみ表示（admin専用トグル）
+let studentNameSearch = ''; // 生徒一覧の名前・ふりがな検索キーワード（dlm22）
+
+// 名前・ふりがな検索の入力ハンドラ。dlm22
+function setStudentNameSearch(val) {
+  studentNameSearch = (val || '').trim().toLowerCase();
+  const clr = document.getElementById('student-name-search-clear');
+  if (clr) clr.style.display = studentNameSearch ? 'block' : 'none';
+  currentPage = 0;
+  renderStudentList();
+}
+
+// 検索クリア。dlm22
+function clearStudentNameSearch() {
+  studentNameSearch = '';
+  const inp = document.getElementById('student-name-search');
+  if (inp) inp.value = '';
+  const clr = document.getElementById('student-name-search-clear');
+  if (clr) clr.style.display = 'none';
+  currentPage = 0;
+  renderStudentList();
+}
 
 function setFilter(type, value, el) {
   if (type === 'school') {
@@ -6584,7 +6609,13 @@ function renderStudentList() {
       const schoolOK = filterSchool === '全員' || s.school === filterSchool;
       const gradeOK  = filterGrade === '全学年' || s.grade === filterGrade;
       const classOK  = !filterClassStudentIds || filterClassStudentIds.has(s.id);
-      return divOK && activeOK && schoolOK && gradeOK && classOK;
+      // 名前・ふりがな部分一致（dlm22）
+      let searchOK = true;
+      if (studentNameSearch) {
+        const hay = [s.name, s.name_kana].filter(Boolean).join(' ').toLowerCase();
+        searchOK = hay.indexOf(studentNameSearch) !== -1;
+      }
+      return divOK && activeOK && schoolOK && gradeOK && classOK && searchOK;
     });
 
     const total = filtered.length;
@@ -6614,6 +6645,14 @@ function renderStudentList() {
 
     document.getElementById('student-count').textContent = total + '人' + (showAll ? '（全員表示中）' : '');
     renderPagination(total, currentPage);
+
+    if (!total) {
+      document.getElementById('student-list').innerHTML =
+        '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">' +
+        (studentNameSearch ? '「' + escapeHtml(studentNameSearch) + '」に一致する生徒はいません。' : '該当する生徒はいません。') +
+        '</div>';
+      return;
+    }
 
     document.getElementById('student-list').innerHTML = displayed.map(s => {
       const idx = staffStudents.indexOf(s);
@@ -8648,6 +8687,10 @@ async function initStaff() {
     const activeCount = staffStudents.filter(s => s.is_active !== false).length;
     document.getElementById('today-count').textContent = todayIds.size;
     document.getElementById('total-students').textContent = activeCount;
+    // 初期化時は名前検索をクリア（入力欄と状態を揃える）。dlm22
+    studentNameSearch = '';
+    { const _si = document.getElementById('student-name-search'); if (_si) _si.value = '';
+      const _sc = document.getElementById('student-name-search-clear'); if (_sc) _sc.style.display = 'none'; }
     renderStudentList();
     loadStudentListClassFilter();
     // 卒塾生トグルは admin のみ表示
@@ -8688,6 +8731,10 @@ function updateScienceAppsCard() {
 // ===== スタッフポイント（ホーム）=====
 // 自分の持ち点は全スタッフに表示。ランキングは admin のみ（fit001＝代表は除外）。
 let staffRankOpen = false;
+// 自分へのToDo：完了済みセクションの開閉と並べ替え（dlm21）
+let homeDoneTodosOpen = false;
+let homeDoneTodosSort = 'due'; // 'due'（期限順）/ 'kind'（カテゴリ順）
+let _homeDoneTodosCache = [];  // 直近の完了済みToDo
 
 async function loadHomeStaffPoints() {
   if (!currentStaff) return;
@@ -8847,30 +8894,134 @@ async function loadHomeMyTodos() {
       '&or=(is_done.eq.false,and(needs_approval.eq.true,approved_at.is.null))' +
       '&order=due_date.asc&select=*,from:from_staff_id(name)') || [];
     const todos = all.filter(t => (!t.is_done || isTodoAwaitingApproval(t)) && isTodoVisibleNow(t));
-    if (!todos.length) {
-      el.innerHTML = '<div style="font-size:12px;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 13px;text-align:center">未完了のToDoはありません ✨</div>';
-      return;
-    }
-    // 電話ToDoの架電履歴をまとめて取得
-    await loadTodoCallLogs(todos.filter(t => t.todo_kind === 'call').map(t => t.id));
+
+    // 完了済みToDo（直近分）を別途取得して最下部に集約表示する（dlm21）
+    // 承認制で承認待ちのものは「未完了扱い」で上に出るため、ここでは真に完了したものだけを対象にする。
+    try {
+      const done = await sbGet('staff_todos',
+        'to_staff_id=eq.' + currentStaff.id + '&is_done=eq.true' +
+        '&order=done_at.desc.nullslast&limit=100&select=*,from:from_staff_id(name)') || [];
+      _homeDoneTodosCache = done.filter(t => !isTodoAwaitingApproval(t));
+    } catch (e) { _homeDoneTodosCache = []; }
+
+    // 電話ToDoの架電履歴をまとめて取得（未完了・完了済み両方の分）
+    const callIds = todos.filter(t => t.todo_kind === 'call').map(t => t.id)
+      .concat(_homeDoneTodosCache.filter(t => t.todo_kind === 'call').map(t => t.id));
+    await loadTodoCallLogs(callIds);
 
     const today = getTodayJST();
-    // 期限あり（日付順）→ 期限なし の順に並べる
-    const dated = todos.filter(t => t.due_date).sort((a, b) => a.due_date.localeCompare(b.due_date));
-    const undated = todos.filter(t => !t.due_date);
-    const ordered = dated.concat(undated);
 
-    const overdue = dated.filter(t => t.due_date < today && !isTodoAwaitingApproval(t)).length;
-    const head = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:2px;grid-column:1/-1">' +
-      '<span style="font-size:11px;color:var(--muted)">未完了 ' + todos.length + '件</span>' +
-      (overdue > 0 ? '<span style="font-size:10px;background:var(--red-l);color:var(--red);padding:1px 8px;border-radius:10px;font-weight:700">⚠️ 期限切れ ' + overdue + '</span>' : '') +
-      (undated.length ? '<span style="font-size:10px;background:var(--surface2);color:var(--muted);padding:1px 8px;border-radius:10px">期限なし ' + undated.length + '</span>' : '') +
-      '</div>';
+    // 未完了パート
+    let bodyHtml = '';
+    if (!todos.length) {
+      bodyHtml = '<div style="font-size:12px;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 13px;text-align:center;grid-column:1/-1">未完了のToDoはありません ✨</div>';
+    } else {
+      // 期限あり（日付順）→ 期限なし の順に並べる
+      const dated = todos.filter(t => t.due_date).sort((a, b) => a.due_date.localeCompare(b.due_date));
+      const undated = todos.filter(t => !t.due_date);
+      const ordered = dated.concat(undated);
 
-    el.innerHTML = head + ordered.map(t => homeTodoRowHtml(t, today)).join('');
+      const overdue = dated.filter(t => t.due_date < today && !isTodoAwaitingApproval(t)).length;
+      const head = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:2px;grid-column:1/-1">' +
+        '<span style="font-size:11px;color:var(--muted)">未完了 ' + todos.length + '件</span>' +
+        (overdue > 0 ? '<span style="font-size:10px;background:var(--red-l);color:var(--red);padding:1px 8px;border-radius:10px;font-weight:700">⚠️ 期限切れ ' + overdue + '</span>' : '') +
+        (undated.length ? '<span style="font-size:10px;background:var(--surface2);color:var(--muted);padding:1px 8px;border-radius:10px">期限なし ' + undated.length + '</span>' : '') +
+        '</div>';
+      bodyHtml = head + ordered.map(t => homeTodoRowHtml(t, today)).join('');
+    }
+
+    // 完了済みパート（折りたたみで最下部に集約。dlm21）
+    el.innerHTML = bodyHtml + renderHomeDoneTodosSection();
   } catch (e) {
-    el.innerHTML = '<div style="font-size:12px;color:var(--red)">ToDoの読み込みに失敗しました</div>';
+    el.innerHTML = '<div style="font-size:12px;color:var(--red);grid-column:1/-1">ToDoの読み込みに失敗しました</div>';
   }
+}
+
+// 完了済みToDoの折りたたみセクションHTMLを返す（全幅・最下部）。dlm21
+function renderHomeDoneTodosSection() {
+  const list = _homeDoneTodosCache || [];
+  if (!list.length) return '';
+  const caret = homeDoneTodosOpen ? 'rotate(90deg)' : 'rotate(0deg)';
+  let h = '<div style="grid-column:1/-1;margin-top:6px">';
+  h += '<div onclick="toggleHomeDoneTodos()" style="display:flex;align-items:center;gap:7px;cursor:pointer;user-select:none;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 11px">' +
+    '<span style="font-size:12px;color:var(--muted);transition:transform 0.2s;display:inline-block;transform:' + caret + '">›</span>' +
+    '<span style="font-size:12px;font-weight:700;color:var(--muted)">✅ 完了済み</span>' +
+    '<span style="font-size:11px;color:var(--muted)">' + list.length + '件</span>' +
+    '</div>';
+  if (homeDoneTodosOpen) {
+    // 並べ替えトグル
+    const sortBtn = (val, label) => {
+      const on = homeDoneTodosSort === val;
+      return '<button onclick="setHomeDoneTodosSort(\'' + val + '\')" style="padding:4px 11px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;border:1px solid ' +
+        (on ? 'var(--orange)' : 'var(--border)') + ';background:' + (on ? 'var(--orange)' : '#fff') + ';color:' + (on ? '#fff' : 'var(--muted)') + '">' + label + '</button>';
+    };
+    h += '<div style="display:flex;gap:6px;margin:8px 0 6px 0;align-items:center">' +
+      '<span style="font-size:11px;color:var(--muted)">並べ替え</span>' +
+      sortBtn('due', '📅 期限ごと') + sortBtn('kind', '🏷 カテゴリごと') +
+      '</div>';
+    h += renderHomeDoneTodosBody();
+  }
+  h += '</div>';
+  return h;
+}
+
+// 完了済みToDoの中身（期限ごと or カテゴリごとにグルーピング）。dlm21
+function renderHomeDoneTodosBody() {
+  const list = (_homeDoneTodosCache || []).slice();
+  if (!list.length) return '';
+  const cmpStr = (a, b) => String(a || '').localeCompare(String(b || ''));
+  const groups = {}; const order = [];
+  const push = (key, t) => { if (!groups[key]) { groups[key] = []; order.push(key); } groups[key].push(t); };
+
+  if (homeDoneTodosSort === 'kind') {
+    // カテゴリ（todo_kind）ごと。normal=📝通常 / call=☎️電話
+    list.sort((a, b) => cmpStr((b.done_at || ''), (a.done_at || '')));
+    list.forEach(t => push(t.todo_kind === 'call' ? '☎️ 電話' : '📝 通常', t));
+    order.sort(); // 表示順を安定化
+  } else {
+    // 期限ごと。期限なしは末尾。
+    list.sort((a, b) => cmpStr((a.due_date || '9999-99-99'), (b.due_date || '9999-99-99')) || cmpStr((b.done_at || ''), (a.done_at || '')));
+    list.forEach(t => push(t.due_date ? ('期限 ' + t.due_date.replace(/-/g, '/')) : '期限なし', t));
+  }
+
+  return order.map(key => {
+    const rows = groups[key].map(t => homeDoneTodoRowHtml(t)).join('');
+    return '<div style="margin-bottom:8px">' +
+      '<div style="font-size:11px;font-weight:700;color:var(--muted);margin:4px 0 4px 2px">' + escapeHtml(key) + '　<span style="font-weight:400">' + groups[key].length + '件</span></div>' +
+      rows + '</div>';
+  }).join('');
+}
+
+// 完了済みToDoの1行（軽量・グレー表示）。dlm21
+function homeDoneTodoRowHtml(t) {
+  const doneLabel = t.done_at ? String(t.done_at).slice(0, 10).replace(/-/g, '/') : '';
+  const kindBadge = (t.todo_kind === 'call')
+    ? ' <span style="font-size:10px;background:#E8F0FA;color:#2D6CB6;padding:1px 7px;border-radius:10px;font-weight:700">☎️ 電話</span>' : '';
+  const callSummary = todoCallSummaryHtml(t.id) || '';
+  return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 11px;display:flex;align-items:flex-start;gap:9px;width:100%;box-sizing:border-box;margin-bottom:5px;opacity:0.78">' +
+    '<div style="width:20px;height:20px;border-radius:50%;background:var(--green-l);border:2px solid var(--green);flex-shrink:0;margin-top:1px;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--green-d)">✓</div>' +
+    '<div style="flex:1;min-width:0">' +
+      '<div style="font-size:12.5px;color:var(--muted);text-decoration:line-through">' + escapeHtml(t.title || '') + '</div>' +
+      '<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:3px">' +
+        (typeof todoOriginLabel === 'function' ? todoOriginLabel(t) : '') +
+        (doneLabel ? '<span style="font-size:10px;color:var(--muted)">完了 ' + doneLabel + '</span>' : '') +
+        kindBadge +
+      '</div>' +
+      (callSummary ? '<div style="margin-top:5px">' + callSummary + '</div>' : '') +
+    '</div>' +
+  '</div>';
+}
+
+// 完了済みセクションの開閉。dlm21
+function toggleHomeDoneTodos() {
+  homeDoneTodosOpen = !homeDoneTodosOpen;
+  loadHomeMyTodos();
+}
+
+// 完了済みの並べ替え切替。dlm21
+function setHomeDoneTodosSort(val) {
+  homeDoneTodosSort = (val === 'kind') ? 'kind' : 'due';
+  loadHomeMyTodos();
 }
 
 // ホームの「🔍 承認待ち」枠。自分が承認担当（approver_staff_id）または依頼者（from_staff_id）で、
