@@ -6069,7 +6069,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm13';
+const APP_VERSION = '20260702dlm15';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -30534,7 +30534,7 @@ async function initBasicEdit() {
   try {
     await loadSchools(true);
     let rows = await sbGetAll('students',
-      'is_active=eq.true&select=id,name,name_kana,school,grade,division,campus,enroll_date&order=school,grade,name') || [];
+      'is_active=eq.true&select=id,name,name_kana,school,grade,division,campus,enroll_date,membership_status&order=school,grade,name') || [];
     let ids = rows.map(r => r.id);
     ids = await excludeDemoIds(ids);
     const keep = new Set(ids);
@@ -30643,6 +30643,13 @@ function beCampusOptions(current) {
   return html;
 }
 
+// 在籍区分（通常授業か、夏期など時期別のみか）。未設定は集計上「通常」扱い。
+function beMemberOptions(current) {
+  const cur = String(current || '').trim();
+  const vals = [['', '未設定（＝通常扱い）'], ['通常', '通常'], ['時期別のみ', '時期別のみ（夏期等）']];
+  return vals.map(([v, lbl]) => '<option value="' + escapeAttr(v) + '"' + (cur === v ? ' selected' : '') + '>' + escapeHtml(lbl) + '</option>').join('');
+}
+
 function beRowHtml(s) {
   const div = s.division || '高校部';
   const isChu = (div === '中学部');
@@ -30667,6 +30674,8 @@ function beRowHtml(s) {
         '<select id="be-school-' + s.id + '" class="form-select" style="font-size:13px">' + beSchoolOptions(div, s.school) + '</select></label>' +
       '<label style="display:flex;flex-direction:column;gap:2px;font-size:10px;color:var(--muted);font-weight:700">📅 入塾日' +
         '<input id="be-enroll-' + s.id + '" type="date" value="' + escapeAttr(enroll) + '" class="form-input-sm" style="font-size:13px"></label>' +
+      '<label style="display:flex;flex-direction:column;gap:2px;font-size:10px;color:var(--muted);font-weight:700">🗓 在籍区分' +
+        '<select id="be-mem-' + s.id + '" class="form-select" style="font-size:13px">' + beMemberOptions(s.membership_status) + '</select></label>' +
     '</div>' +
   '</div>';
 }
@@ -30696,6 +30705,7 @@ function beRowPatch(s) {
   const grade = (document.getElementById('be-grade-' + s.id) || {}).value || '';
   const school = (document.getElementById('be-school-' + s.id) || {}).value || '';
   const enroll = (document.getElementById('be-enroll-' + s.id) || {}).value || '';
+  const mem = (document.getElementById('be-mem-' + s.id) || {}).value || '';
   const patch = {};
   if (div && div !== (s.division || '')) patch.division = div;
   if (campus !== (s.campus || '')) patch.campus = campus || null;
@@ -30703,6 +30713,7 @@ function beRowPatch(s) {
   if (school !== (s.school || '')) patch.school = school || null;
   const curEnroll = s.enroll_date ? String(s.enroll_date).slice(0, 10) : '';
   if (enroll !== curEnroll) patch.enroll_date = enroll || null;
+  if (mem !== (s.membership_status || '')) patch.membership_status = mem || null;
   return Object.keys(patch).length ? patch : null;
 }
 
@@ -30712,6 +30723,7 @@ function beApplyLocal(s, patch) {
   if ('grade' in patch) s.grade = patch.grade;
   if ('school' in patch) s.school = patch.school;
   if ('enroll_date' in patch) s.enroll_date = patch.enroll_date;
+  if ('membership_status' in patch) s.membership_status = patch.membership_status;
 }
 
 async function saveBasicEditRow(id) {
@@ -49582,7 +49594,39 @@ async function loadExecDashboard() {
     jhsMatrix = await computeJhsCampusMatrix();
   } catch (e) { jhsMatrix = null; }
 
-  renderExecDashboard(hs, jhs, todayCount, jhsMatrix);
+  // dlm15: 高校部の人数集計（校舎 × 学年）。種別軸は高校に馴染まないため無し。
+  let hsMatrix = null;
+  try {
+    hsMatrix = await computeHsCampusMatrix();
+  } catch (e) { hsMatrix = null; }
+
+  renderExecDashboard(hs, jhs, todayCount, jhsMatrix, hsMatrix);
+}
+
+// 高校部の在籍生を 校舎(大街道/石井/未設定) × 学年(1年/2年/3年) で数える。
+async function computeHsCampusMatrix() {
+  let stu = await sbGetAll('students',
+    'division=eq.' + encodeURIComponent('高校部') + '&is_active=eq.true&select=id,campus,grade') || [];
+  let ids = stu.map(s => s.id);
+  ids = await excludeDemoIds(ids);
+  const keep = new Set(ids);
+  stu = stu.filter(s => keep.has(s.id));
+
+  const campusList = ['大街道', '石井', '(未設定)'];
+  const grades = ['1年', '2年', '3年'];
+  const cell = {};
+  campusList.forEach(c => { cell[c] = { '1年': 0, '2年': 0, '3年': 0, total: 0 }; });
+
+  let noGrade = 0;
+  stu.forEach(s => {
+    const c = campusList.includes(s.campus) ? s.campus : '(未設定)';
+    const digit = (typeof emxGradeDigit === 'function') ? emxGradeDigit(s.grade) : (String(s.grade || '').match(/[1-3]/) || [''])[0];
+    const g = digit ? (digit + '年') : '';
+    if (!g) { noGrade++; return; }
+    cell[c][g]++;
+    cell[c].total++;
+  });
+  return { cell, campusList, grades, total: stu.length, noGrade };
 }
 
 // 中学部の在籍生を 校舎(大街道/石井/未設定) × 種別(公立/中高一貫/未設定) × 学年(中1/中2/中3) で数える。
@@ -49698,7 +49742,7 @@ function toggleExecDashboard() {
 }
 
 // dlm: 高校部・中学部を並べて表示。hs/jhs は computeExecStats の戻り、todayCount は全体の来塾数。
-function renderExecDashboard(hs, jhs, todayCount, jhsMatrix) {
+function renderExecDashboard(hs, jhs, todayCount, jhsMatrix, hsMatrix) {
   const wrap = document.getElementById('exec-dashboard-section');
   if (!wrap) return;
 
@@ -49747,8 +49791,9 @@ function renderExecDashboard(hs, jhs, todayCount, jhsMatrix) {
   // 本日の来塾（部門をまたぐ全体値。1枚だけ下段に）
   const todayCard = card('本日の来塾（全体）', (todayCount == null ? '—' : todayCount) + '<span style="font-size:13px;color:var(--muted)">名</span>', '', '#E67E22', '');
 
-  // dlm13: 中学部 校舎×種別×学年 集計表
+  // dlm13/15: 集計表
   const jhsMatrixHtml = buildJhsMatrixHtml(jhsMatrix);
+  const hsMatrixHtml = buildHsMatrixHtml(hsMatrix);
 
   wrap.innerHTML =
     '<div style="background:linear-gradient(135deg,#EEF4FB,#FFFFFF);border:1.5px solid #9CC0E8;border-radius:12px;padding:14px 16px;margin-bottom:14px">'
@@ -49759,11 +49804,57 @@ function renderExecDashboard(hs, jhs, todayCount, jhsMatrix) {
     + '</div>'
     + '<div id="exec-dash-body" style="display:' + (execDashOpen ? 'block' : 'none') + '">'
     +   divisionRow(hs)
+    +   hsMatrixHtml
     +   divisionRow(jhs)
     +   jhsMatrixHtml
     +   '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px">' + todayCard + '</div>'
     +   '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※高校部・中学部を並べて表示しています（部門トグルに関係なく両方集計）。「通常受講」は受講中の通常講座が1つ以上ある在籍生の人数。「在籍（時期別含む）」は時期別のみの在籍生も含めた今いる在籍の実数で、各部門の学校×学年人数表と一致します。「本日の来塾」は部門をまたいだ全体値です。</div>'
     + '</div>'
+    + '</div>';
+}
+
+// 高校部の 校舎×学年 クロス表HTML（種別なし）。青系で高校部の色に合わせる。
+function buildHsMatrixHtml(m) {
+  if (!m) return '';
+  const th = 'padding:5px 7px;font-size:11px;font-weight:700;color:#1A4D80;background:#DCEBFA;border:1px solid #9CC0E8;text-align:center;white-space:nowrap';
+  const td = 'padding:5px 7px;font-size:12px;color:var(--text);border:1px solid #D6E4F0;text-align:center';
+  const tdL = 'padding:5px 8px;font-size:11px;font-weight:700;color:#1A4D80;border:1px solid #D6E4F0;background:#F2F7FC;white-space:nowrap;text-align:left';
+
+  const colTot = { '1年': 0, '2年': 0, '3年': 0, total: 0 };
+  let rows = '';
+  m.campusList.forEach(c => {
+    const cd = m.cell[c];
+    if (cd.total === 0 && c !== '(未設定)') return;
+    rows += '<tr>'
+      + '<td style="' + tdL + '">' + escapeHtml(c) + '</td>'
+      + '<td style="' + td + '">' + (cd['1年'] || 0) + '</td>'
+      + '<td style="' + td + '">' + (cd['2年'] || 0) + '</td>'
+      + '<td style="' + td + '">' + (cd['3年'] || 0) + '</td>'
+      + '<td style="' + td + ';font-weight:800;background:#F2F7FC">' + cd.total + '</td>'
+      + '</tr>';
+    colTot['1年'] += cd['1年']; colTot['2年'] += cd['2年']; colTot['3年'] += cd['3年']; colTot.total += cd.total;
+  });
+  const totalRow = '<tr>'
+    + '<td style="' + tdL + ';background:#CFE3F7">計</td>'
+    + '<td style="' + td + ';font-weight:800;background:#DCEBFA">' + colTot['1年'] + '</td>'
+    + '<td style="' + td + ';font-weight:800;background:#DCEBFA">' + colTot['2年'] + '</td>'
+    + '<td style="' + td + ';font-weight:800;background:#DCEBFA">' + colTot['3年'] + '</td>'
+    + '<td style="' + td + ';font-weight:800;background:#CFE3F7">' + colTot.total + '</td>'
+    + '</tr>';
+  const noGradeNote = m.noGrade > 0
+    ? '<span style="color:#C0392B;font-weight:700"> ／ ⚠️学年未設定 ' + m.noGrade + '名は表外</span>'
+    : '';
+  return '<div style="margin:2px 0 10px">'
+    + '<div style="font-size:11px;font-weight:800;color:#1A4D80;margin:6px 0 6px">🎓 高校部 人数集計（校舎 × 学年）</div>'
+    + '<div style="overflow-x:auto">'
+    + '<table style="border-collapse:collapse;width:100%;min-width:300px">'
+    + '<thead><tr>'
+    +   '<th style="' + th + ';text-align:left">校舎</th>'
+    +   '<th style="' + th + '">1年</th><th style="' + th + '">2年</th><th style="' + th + '">3年</th><th style="' + th + '">計</th>'
+    + '</tr></thead>'
+    + '<tbody>' + rows + totalRow + '</tbody>'
+    + '</table></div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:5px;line-height:1.5">校舎（大街道／石井）は各生徒に設定した値で集計します。未設定は「基本情報一括」タブで埋められます。' + noGradeNote + '</div>'
     + '</div>';
 }
 
