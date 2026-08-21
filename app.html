@@ -5455,7 +5455,31 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <!-- 設定タブ -->
     <div id="smcontent-settings" style="display:none">
 
-      <!-- パスワード変更 -->
+      <!-- 学校マスタ（学校の追加・種別設定） -->
+      <div class="section-title">🏫 学校マスタ（学校の追加・種別）</div>
+      <div class="card-box" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px">
+        <div style="font-size:12px;color:var(--muted)">中学校・高校の一覧です。学校ごとに<b>種別（公立／中高一貫）</b>を設定できます。種別は中学部の人数集計（校舎×種別×学年）で使います。下の入力欄から新しい学校も追加できます。</div>
+        <div style="display:flex;gap:6px">
+          <button id="schmst-div-hs" onclick="setSchMstDivision('高校部')" style="flex:1;padding:7px;border:1.5px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🎓 高校部</button>
+          <button id="schmst-div-jhs" onclick="setSchMstDivision('中学部')" style="flex:1;padding:7px;border:1.5px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📗 中学部</button>
+        </div>
+        <div id="schmst-list" style="display:flex;flex-direction:column;gap:4px;max-height:360px;overflow-y:auto">
+          <div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">読み込み中...</div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:10px;display:flex;flex-direction:column;gap:6px">
+          <div class="form-label">＋ 新しい学校を追加（<span id="schmst-add-div">中学部</span>）</div>
+          <div style="display:flex;gap:6px">
+            <input class="form-input-sm" id="schmst-newname" type="text" placeholder="学校名" style="flex:1">
+            <select class="form-select" id="schmst-newtype" style="width:120px">
+              <option value="">種別なし</option>
+              <option value="公立">公立</option>
+              <option value="中高一貫">中高一貫</option>
+            </select>
+          </div>
+          <button onclick="addSchMstSchool()" style="width:100%;padding:10px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">学校を追加</button>
+        </div>
+      </div>
+
       <div class="section-title">🔑 パスワード変更</div>
       <div class="card-box" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px">
         <div style="font-size:12px;color:var(--muted)">ログインID: <span id="my-staff-id" style="font-weight:700;color:var(--text);font-family:DM Mono,monospace"></span></div>
@@ -6020,7 +6044,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm10';
+const APP_VERSION = '20260702dlm11';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -15214,6 +15238,7 @@ function loadSettingsTab() {
   document.getElementById('my-staff-id').textContent = currentStaff.staff_id;
   initStaffBirthdaySelects();
   loadAlertExcludeList();
+  if (typeof initSchMstPanel === 'function') initSchMstPanel();
   const adminSection = document.getElementById('sm-admin-section');
   const adminMonitor = document.getElementById('sm-admin-monitor');
   const adminPromote = document.getElementById('sm-admin-promote');
@@ -35898,7 +35923,7 @@ async function loadSchools(force) {
   if (_schoolsCache && !force) return _schoolsCache;
   try {
     _schoolsCache = await sbGet('schools',
-      'is_active=eq.true&order=sort_order,name&select=id,division,name,sort_order') || [];
+      'is_active=eq.true&order=sort_order,name&select=id,division,name,sort_order,school_type') || [];
   } catch (e) {
     _schoolsCache = null;   // テーブル未作成など
   }
@@ -36066,6 +36091,120 @@ async function addSaddSchool() {
       await loadSchools(true);
       await renderSaddSchoolOptions(name);
       showToast('すでに登録済みでした。選択しました', 'info');
+    } else {
+      showToast('追加に失敗しました: ' + (e.message || ''), 'error');
+    }
+  }
+}
+
+// ===== 設定タブ：学校マスタ管理（学校の追加・種別設定 dlm11） =====
+// schools テーブルを部門別に一覧表示し、各校の school_type（公立/中高一貫）を設定する。
+// 中学部の人数集計（校舎×種別×学年）の種別軸をここで整える。
+let schMstDivision = '中学部';
+let _schMstDirty = {};   // id -> 選択中の種別（未保存）
+
+async function initSchMstPanel() {
+  schMstDivision = '中学部';
+  _schMstDirty = {};
+  updateSchMstDivBtns();
+  await loadSchools(true);
+  renderSchMstList();
+}
+
+function setSchMstDivision(div) {
+  schMstDivision = div;
+  const lbl = document.getElementById('schmst-add-div');
+  if (lbl) lbl.textContent = div;
+  updateSchMstDivBtns();
+  renderSchMstList();
+}
+
+function updateSchMstDivBtns() {
+  const hs = document.getElementById('schmst-div-hs');
+  const jhs = document.getElementById('schmst-div-jhs');
+  const on = (b, col) => { if (b) { b.style.border = '1.5px solid ' + col; b.style.background = col; b.style.color = '#fff'; } };
+  const off = (b) => { if (b) { b.style.border = '1.5px solid var(--border)'; b.style.background = 'var(--surface)'; b.style.color = 'var(--muted)'; } };
+  if (schMstDivision === '中学部') { on(jhs, 'var(--green-d)'); off(hs); }
+  else { on(hs, '#2D6DB5'); off(jhs); }
+}
+
+function renderSchMstList() {
+  const box = document.getElementById('schmst-list');
+  if (!box) return;
+  const list = (_schoolsCache || []).filter(s => (s.division || '高校部') === schMstDivision);
+  if (!list.length) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">この部門の学校がありません。下から追加してください。</div>';
+    return;
+  }
+  box.innerHTML = list.map(s => {
+    const cur = (_schMstDirty[s.id] != null) ? _schMstDirty[s.id] : (s.school_type || '');
+    const dirty = (_schMstDirty[s.id] != null && _schMstDirty[s.id] !== (s.school_type || ''));
+    const opt = (v, lbl) => '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + lbl + '</option>';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:' + (dirty ? '#FFF8EE' : 'var(--surface)') + '">' +
+      '<div style="flex:1;font-size:13px;color:var(--text)">' + escapeHtml(s.name) + '</div>' +
+      '<select onchange="onSchMstTypeChange(' + s.id + ',this.value)" class="form-select" style="width:130px;font-size:12px">' +
+        opt('', '種別なし') + opt('公立', '公立') + opt('中高一貫', '中高一貫') +
+      '</select>' +
+      (dirty ? '<button onclick="saveSchMstType(' + s.id + ')" style="padding:6px 10px;background:var(--orange);border:none;border-radius:7px;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">💾</button>'
+             : '<span style="width:34px"></span>') +
+    '</div>';
+  }).join('');
+}
+
+function onSchMstTypeChange(id, val) {
+  _schMstDirty[id] = val;
+  renderSchMstList();
+}
+
+async function saveSchMstType(id) {
+  const val = _schMstDirty[id];
+  if (val == null) return;
+  showLoading('保存中...');
+  try {
+    await sbPatch('schools', 'id=eq.' + encodeURIComponent(id), { school_type: val || null });
+    // キャッシュを更新
+    const row = (_schoolsCache || []).find(s => String(s.id) === String(id));
+    if (row) row.school_type = val || null;
+    delete _schMstDirty[id];
+    hideLoading();
+    showToast('✅ 種別を保存しました', 'success');
+    renderSchMstList();
+  } catch (e) {
+    hideLoading();
+    showToast('保存に失敗しました: ' + (e.message || ''), 'error');
+  }
+}
+
+async function addSchMstSchool() {
+  const inp = document.getElementById('schmst-newname');
+  if (!inp) return;
+  const name = (inp.value || '').trim();
+  if (!name) { showToast('学校名を入力してください', 'error'); return; }
+  const type = (document.getElementById('schmst-newtype') || {}).value || '';
+  const div = schMstDivision;
+  // 同名がすでにあれば追加しない
+  const existing = (_schoolsCache || []).filter(s => (s.division || '高校部') === div).map(s => s.name);
+  if (existing.includes(name)) {
+    showToast('すでにある学校です', 'info');
+    return;
+  }
+  showLoading('学校を追加中...');
+  try {
+    const body = { division: div, name: name, sort_order: 900, is_active: true };
+    if (type) body.school_type = type;
+    await sbPost('schools', body);
+    await loadSchools(true);
+    inp.value = '';
+    const tsel = document.getElementById('schmst-newtype'); if (tsel) tsel.value = '';
+    hideLoading();
+    showToast('✅「' + name + '」を追加しました', 'success');
+    renderSchMstList();
+  } catch (e) {
+    hideLoading();
+    if (String(e.message || '').indexOf('23505') >= 0) {
+      await loadSchools(true);
+      showToast('すでに登録済みでした', 'info');
+      renderSchMstList();
     } else {
       showToast('追加に失敗しました: ' + (e.message || ''), 'error');
     }
