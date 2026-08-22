@@ -5798,6 +5798,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
               <option value="winter">⛄ 冬期講習</option>
               <option value="spring">🌸 春期講習</option>
               <option value="common_test">🎯 共通テスト対策</option>
+              <option value="regular_test">📝 定期テスト対策</option>
               <option value="trial">✨ 体験授業</option>
               <option value="free_open">🆓 無料開放</option>
               <option value="other">📚 その他講習</option>
@@ -5832,6 +5833,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
               <option value="winter">⛄ 冬期講習</option>
               <option value="spring">🌸 春期講習</option>
               <option value="common_test">🎯 共通テスト対策</option>
+              <option value="regular_test">📝 定期テスト対策</option>
               <option value="trial">✨ 体験授業</option>
               <option value="free_open">🆓 無料開放</option>
               <option value="other">📚 その他講習</option>
@@ -6161,7 +6163,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm36';
+const APP_VERSION = '20260702dlm37';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -20463,6 +20465,7 @@ const CLASS_CATEGORIES = [
   { key: 'winter',      label: '冬期講習',     icon: '⛄' },
   { key: 'spring',      label: '春期講習',     icon: '🌸' },
   { key: 'common_test', label: '共通テスト対策', icon: '🎯' },
+  { key: 'regular_test', label: '定期テスト対策', icon: '📝' },
   { key: 'trial',       label: '体験授業',     icon: '✨' },
   { key: 'free_open',   label: '無料開放',     icon: '🆓' },
   { key: 'other',       label: 'その他講習',   icon: '📚' }
@@ -32487,7 +32490,7 @@ function rbCsv() {
 // 閲覧: canSeeKomaCount()（admin/fit002/fit003/fit010）。SQL不要。
 // 実施者未記録(staff_id空)は別行にまとめ、給与対象外として注記。
 // ============================================================
-let _kcRows = [];        // [{staffId,name,count,unfilled,breakdown:[{cid,name,category,division,count,plan,unfilled,people}]}]
+let _kcRows = [];        // dlm37 [{staffId,name,jhsKoma,hsKoma,otherKoma,svKoma,totalKoma,classUnfilled,svUnfilled,unfilled,breakdown:[{cid,name,category,division,bucket,count,plan,unfilled,people}]}]
 let _kcMonthLabel = '';  // 'YYYY年M月'
 let _kcUnknown = 0;      // 実施者未記録のコマ数
 
@@ -32523,19 +32526,29 @@ async function loadKomaCount() {
   _kcMonthLabel = y + '年' + m + '月';
   if (body) body.innerHTML = '<div style="font-size:13px;color:var(--muted);text-align:center;padding:20px">集計中...</div>';
 
-  let reps = [], sess = [], cms = [], tmap = null, enrolls = [];
+  // 講師名を氏名で出すため全スタッフを事前ロード（resolveStaffName が使う allStaffList を用意）
   try {
-    [reps, sess, cms, tmap] = await Promise.all([
+    if (typeof allStaffList === 'undefined' || !allStaffList || !allStaffList.length) {
+      const raw = await sbGet('staff', 'select=id,name,staff_id') || [];
+      if (raw && raw.length) allStaffList = raw;
+    }
+  } catch (e) {}
+
+  let reps = [], sess = [], cms = [], tmap = null, enrolls = [], svAssigns = [];
+  try {
+    [reps, sess, cms, tmap, svAssigns] = await Promise.all([
       sbGetAll('class_reports', 'session_date=gte.' + from + '&session_date=lte.' + to + '&select=staff_id,class_master_id,session_date,theme,content,student_notes,homework').catch(() => []),
       sbGetAll('class_sessions', 'session_date=gte.' + from + '&session_date=lte.' + to + '&select=class_master_id,session_date,period').catch(() => []),
       sbGet('class_master', 'select=id,name,category,division').catch(() => []),
-      loadTeacherClassMap().catch(() => ({ byTeacher: {}, staffById: {} }))
+      loadTeacherClassMap().catch(() => ({ byTeacher: {}, staffById: {} })),
+      // dlm37: 自習監督の決定済みシフト（cancelled=false）。report_text 空 = 監督報告未記入。テーブル未作成でも落とさない。
+      sbGet('supervision_assignments', 'sv_date=gte.' + from + '&sv_date=lte.' + to + '&cancelled=eq.false&select=sv_date,period,staff_id,staff_name,report_text').catch(() => [])
     ]);
   } catch (e) {
     if (body) body.innerHTML = '<div style="font-size:13px;color:#C0392B;text-align:center;padding:20px">データ取得に失敗しました。</div>';
     return;
   }
-  reps = reps || []; sess = sess || []; cms = cms || [];
+  reps = reps || []; sess = sess || []; cms = cms || []; svAssigns = svAssigns || [];
 
   // 授業マスタのマップ
   const cmById = {};
@@ -32546,7 +32559,6 @@ async function loadKomaCount() {
   try {
     const allClassIds = cms.map(c => c.id);
     if (allClassIds.length) {
-      // 大量になり得るのでまとめて取得
       enrolls = await sbGetActiveEnrollments('class_master_id=in.(' + allClassIds.join(',') + ')&select=class_master_id,student_id') || [];
       const stuIds = [...new Set(enrolls.map(e => e.student_id).filter(Boolean))];
       const keep = new Set(await excludeDemoIds(stuIds));
@@ -32569,7 +32581,7 @@ async function loadKomaCount() {
   });
 
   // 実施者ごとのコマ数（＝自分が書いた報告書の数）と、講座別内訳
-  const byStaff = {};        // sid -> 合計コマ
+  const byStaff = {};        // sid -> 合計コマ（授業のみ）
   const byStaffClass = {};   // sid -> { cid -> コマ }
   let unknown = 0;
   reps.forEach(r => {
@@ -32593,16 +32605,12 @@ async function loadKomaCount() {
   });
 
   // 講師の担当授業ごとの「その月の予定セッション数」と「未記入(誰も書いていない)セッション数」
-  // sess を cid|date でユニーク化（同日複数コマは各コマ=別セッション扱い：class_sessionsは period 別に行がある）
-  // ここでは予定コマ = セッション行数、未記入 = そのセッションに報告書が無い数
-  const classSessions = {};   // cid -> [ 'date' 単位のコマ ] → 実際には行ごと
+  const classSessions = {};   // cid -> [ 'date' 単位のコマ ]
   sess.forEach(s => {
     const cid = s.class_master_id;
     if (!cid) return;
     (classSessions[cid] || (classSessions[cid] = [])).push(s.session_date);
   });
-
-  // 講座別：予定コマ数・未記入数・人数
   const classPlan = {};   // cid -> { plan, unfilled }
   Object.keys(classSessions).forEach(cid => {
     const dates = classSessions[cid];
@@ -32614,10 +32622,28 @@ async function loadKomaCount() {
     classPlan[cid] = { plan: plan, unfilled: unfilled };
   });
 
-  // 行を組む
-  const rows = Object.keys(byStaff).map(sid => {
+  // dlm37: 自習監督の集計（staff_idコード別）。コマ = 決定済み件数、未記入 = report_text 空。
+  const svByStaff = {};      // sid -> { koma, unfilled }
+  svAssigns.forEach(a => {
+    const sid = a.staff_id ? String(a.staff_id) : '';
+    if (!sid) return;
+    const o = svByStaff[sid] || (svByStaff[sid] = { koma: 0, unfilled: 0 });
+    o.koma++;
+    if (!a.report_text || !String(a.report_text).trim()) o.unfilled++;
+  });
+
+  // 授業区分の判定：その他(体験/無料開放/定期テスト対策) を優先、それ以外は division で中学/高校。
+  // 共通テスト対策(common_test)は高校の正規講座なので division 通り（高校）に数える。
+  const catBucket = (cm) => {
+    const cat = (cm && cm.category) || 'normal';
+    if (cat === 'trial' || cat === 'free_open' || cat === 'regular_test') return 'other';
+    return ((cm && cm.division) === '中学部') ? 'jhs' : 'hs';
+  };
+
+  // 行を組む（授業を書いた人 ∪ 自習監督が決まった人）
+  const staffIdSet = new Set([...Object.keys(byStaff), ...Object.keys(svByStaff)]);
+  const rows = [...staffIdSet].map(sid => {
     const myClassIds = codeToClassIds[sid] || new Set();
-    // 内訳：自分が報告を書いた講座 ∪ 自分の担当講座（予定があるもの）
     const cidSet = new Set(Object.keys(byStaffClass[sid] || {}));
     myClassIds.forEach(cid => { if (classPlan[cid]) cidSet.add(cid); });
     const breakdown = [...cidSet].map(cid => {
@@ -32629,71 +32655,198 @@ async function loadKomaCount() {
         name: (cid === '(不明)') ? '（授業不明）' : (cm.name || '（授業名なし）'),
         category: cm.category || 'normal',
         division: cm.division || '高校部',
-        count: (byStaffClass[sid] || {})[cid] || 0,   // 自分が書いた数
+        bucket: catBucket(cm),
+        count: (byStaffClass[sid] || {})[cid] || 0,
         plan: plan,
         unfilled: unfilled,
         people: enrollCountBy[cid] || 0
       };
     });
-    // 並び順：中学通常→中学夏期→高校通常→高校夏期→その他
     breakdown.sort((a, b) => kcSortKey(a) - kcSortKey(b) || (a.name < b.name ? -1 : 1));
-    // 自分の未記入合計（担当講座で誰も書いていないセッション数の合計）
-    let myUnfilled = 0;
-    myClassIds.forEach(cid => { myUnfilled += (classPlan[cid] || {}).unfilled || 0; });
-    return { staffId: sid, name: resolveStaffName(sid) || sid, count: byStaff[sid], unfilled: myUnfilled, breakdown: breakdown };
+
+    // 中学/高校/その他 コマ数（＝自分が書いた報告書を区分ごとに集計）
+    let jhsKoma = 0, hsKoma = 0, otherKoma = 0;
+    breakdown.forEach(b => {
+      if (b.bucket === 'jhs') jhsKoma += b.count;
+      else if (b.bucket === 'other') otherKoma += b.count;
+      else hsKoma += b.count;
+    });
+
+    // 授業の未記入合計（担当講座で誰も書いていないセッション数の合計）
+    let classUnfilled = 0;
+    myClassIds.forEach(cid => { classUnfilled += (classPlan[cid] || {}).unfilled || 0; });
+
+    // 自習監督
+    const sv = svByStaff[sid] || { koma: 0, unfilled: 0 };
+    const svKoma = sv.koma, svUnfilled = sv.unfilled;
+
+    const classKoma = jhsKoma + hsKoma + otherKoma;
+    const totalKoma = classKoma + svKoma;
+    const totalUnfilled = classUnfilled + svUnfilled;
+
+    return {
+      staffId: sid, name: resolveStaffName(sid) || sid,
+      jhsKoma: jhsKoma, hsKoma: hsKoma, otherKoma: otherKoma, svKoma: svKoma,
+      totalKoma: totalKoma, classUnfilled: classUnfilled, svUnfilled: svUnfilled, unfilled: totalUnfilled,
+      breakdown: breakdown
+    };
   });
-  rows.sort((a, b) => (a.staffId < b.staffId ? -1 : a.staffId > b.staffId ? 1 : 0));
+  // 並び：合計コマ数の多い順（画像の並びに合わせる）。同数は staff_id 昇順。
+  rows.sort((a, b) => (b.totalKoma - a.totalKoma) || (a.staffId < b.staffId ? -1 : a.staffId > b.staffId ? 1 : 0));
   _kcRows = rows;
   _kcUnknown = unknown;
 
-  const totalKoma = rows.reduce((s, r) => s + r.count, 0);
-  let html = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">' +
-    '<div style="flex:1;min-width:130px;background:var(--orange-l);border:1px solid var(--orange);border-radius:10px;padding:12px 14px">' +
+  const grandTotal = rows.reduce((s, r) => s + r.totalKoma, 0);
+  const grandUnfilled = rows.reduce((s, r) => s + r.unfilled, 0);
+  const svTotal = rows.reduce((s, r) => s + r.svKoma, 0);
+
+  let html = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
+    '<div style="flex:1;min-width:120px;background:var(--orange-l);border:1px solid var(--orange);border-radius:10px;padding:12px 14px">' +
       '<div style="font-size:12px;color:var(--orange-d);font-weight:700">' + escapeHtml(_kcMonthLabel) + ' 合計コマ数</div>' +
-      '<div style="font-size:26px;font-weight:800;color:var(--orange-d)">' + totalKoma + '<span style="font-size:13px;font-weight:700">コマ</span></div>' +
+      '<div style="font-size:26px;font-weight:800;color:var(--orange-d)">' + grandTotal + '<span style="font-size:13px;font-weight:700">コマ</span></div>' +
     '</div>' +
-    '<div style="flex:1;min-width:130px;background:#EAF2FB;border:1px solid #9CC0E8;border-radius:10px;padding:12px 14px">' +
-      '<div style="font-size:12px;color:#1E4276;font-weight:700">実施講師数</div>' +
+    '<div style="flex:1;min-width:120px;background:#EAF2FB;border:1px solid #9CC0E8;border-radius:10px;padding:12px 14px">' +
+      '<div style="font-size:12px;color:#1E4276;font-weight:700">実施人数</div>' +
       '<div style="font-size:26px;font-weight:800;color:#1E4276">' + rows.length + '<span style="font-size:13px;font-weight:700">人</span></div>' +
+    '</div>' +
+    '<div style="flex:1;min-width:120px;background:#FDECEC;border:1px solid #E0A0A0;border-radius:10px;padding:12px 14px">' +
+      '<div style="font-size:12px;color:#C0392B;font-weight:700">報告書未記入</div>' +
+      '<div style="font-size:26px;font-weight:800;color:#C0392B">' + grandUnfilled + '<span style="font-size:13px;font-weight:700">コマ</span></div>' +
     '</div></div>';
 
   if (!rows.length) {
-    html += '<div style="font-size:13px;color:var(--muted);text-align:center;padding:20px">この月の報告書はありませんでした。</div>';
-  } else {
-    html += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">講師名をタップすると講座ごとの内訳（コマ数・人数・未記入）が開きます。</div>';
-    html += '<div style="display:flex;flex-direction:column;gap:8px">';
-    rows.forEach((r, idx) => {
-      const hasUnfilled = r.unfilled > 0;
-      html += '<div style="border:1px solid var(--line);border-radius:10px;overflow:hidden">' +
-        // 講師ヘッダー行
-        '<div onclick="kcToggleDetail(' + idx + ')" style="display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;background:#faf8f4">' +
-          '<span id="kc-arrow-' + idx + '" style="font-size:13px;color:var(--muted);width:16px">▶</span>' +
-          '<span style="font-size:16px;font-weight:800;flex:1">' + escapeHtml(r.name) + '<span style="font-size:12px;font-weight:600;color:var(--muted);margin-left:8px">' + escapeHtml(r.staffId) + '</span></span>' +
-          (hasUnfilled ? '<span style="font-size:12px;font-weight:800;color:#C0392B;background:#FDECEC;border:1px solid #E0A0A0;border-radius:20px;padding:3px 10px">未記入 ' + r.unfilled + '</span>' : '') +
-          '<span style="font-size:20px;font-weight:800;color:var(--orange-d)">' + r.count + '<span style="font-size:12px">コマ</span></span>' +
-        '</div>' +
-        // 内訳（初期非表示）
-        '<div id="kc-detail-' + idx + '" style="display:none;padding:6px 14px 10px 34px;background:#fff">';
-      (r.breakdown || []).forEach(b => {
-        const catLabel = kcCatLabel(b);
-        const uf = (b.unfilled > 0) ? '<span style="font-size:12px;font-weight:800;color:#C0392B;margin-left:8px">未記入 ' + b.unfilled + '</span>' : '';
-        html += '<div style="display:flex;align-items:baseline;gap:6px;padding:5px 0;border-bottom:1px solid #f2efe8">' +
-          '<span style="font-size:14px;font-weight:700;flex:1">' + escapeHtml(b.name) + ' <span style="font-size:11px;font-weight:600;color:var(--muted)">' + catLabel + '</span></span>' +
-          '<span style="font-size:14px;color:var(--fg)">' + b.count + ' コマ・' + b.people + ' 人</span>' + uf +
-          '</div>';
-      });
-      html += '</div></div>';
-    });
-    html += '</div>';
-    html += '<div style="font-size:14px;font-weight:800;text-align:right;margin-top:10px;color:var(--orange-d)">合計 ' + totalKoma + ' コマ</div>';
+    html += '<div style="font-size:13px;color:var(--muted);text-align:center;padding:20px">この月の報告書・自習監督はありませんでした。</div>';
+    if (body) body.innerHTML = html;
+    return;
   }
+
+  html += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">講師名をタップすると講座ごとの内訳（コマ数・受講人数・未記入）が開きます。「その他」は体験授業・無料開放・定期テスト対策、「自習」は自習監督の決定済みシフトです。</div>';
+
+  // 横スクロール可能なラッパー（狭い画面でも列が潰れない）
+  html += '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><div style="min-width:660px">';
+
+  // ===== ヘッダー行（列見出し） =====
+  const colH = 'font-size:11px;font-weight:700;color:var(--muted);text-align:center;line-height:1.35';
+  html += '<div class="kc-head" style="display:flex;align-items:flex-end;gap:8px;padding:0 14px 8px;border-bottom:1px solid var(--line)">' +
+      '<span style="width:22px"></span>' +
+      '<span style="flex:1;text-align:left;' + colH + '">講師名</span>' +
+      '<span style="width:64px;' + colH + '">中学<br>コマ数</span>' +
+      '<span style="width:64px;' + colH + '">高校<br>コマ数</span>' +
+      '<span style="width:64px;' + colH + '">その他<br>コマ数</span>' +
+      '<span style="width:64px;' + colH + '">自習監督<br>コマ数</span>' +
+      '<span style="width:80px;' + colH + '">合計コマ数<br>（反映済み）</span>' +
+      '<span style="width:74px;' + colH + '">報告書未記入<br>コマ数</span>' +
+      '<span style="width:16px"></span>' +
+    '</div>';
+
+  html += '<div style="display:flex;flex-direction:column">';
+  rows.forEach((r, idx) => {
+    html += kcRowHtml(r, idx);
+  });
+  html += '</div>';
+
+  html += '<div style="display:flex;align-items:center;gap:8px;padding:12px 14px;margin-top:2px;border-top:2px solid var(--line);font-weight:800">' +
+      '<span style="width:22px"></span>' +
+      '<span style="flex:1;text-align:left;font-size:14px">合計</span>' +
+      '<span style="width:64px;text-align:center;font-size:14px">' + rows.reduce((s,r)=>s+r.jhsKoma,0) + '</span>' +
+      '<span style="width:64px;text-align:center;font-size:14px">' + rows.reduce((s,r)=>s+r.hsKoma,0) + '</span>' +
+      '<span style="width:64px;text-align:center;font-size:14px">' + rows.reduce((s,r)=>s+r.otherKoma,0) + '</span>' +
+      '<span style="width:64px;text-align:center;font-size:14px">' + svTotal + '</span>' +
+      '<span style="width:80px;text-align:center;font-size:16px;color:var(--orange-d)">' + grandTotal + '</span>' +
+      '<span style="width:74px;text-align:center;font-size:14px;color:#C0392B">' + grandUnfilled + '</span>' +
+      '<span style="width:16px"></span>' +
+    '</div>';
+
+  html += '</div></div>'; // min-width / overflow-x ラッパーを閉じる
+
   if (unknown > 0) {
     html += '<div style="font-size:12px;color:#C0392B;margin-top:10px;line-height:1.6">⚠️ 実施者(報告者)が未記録の報告書が ' + unknown + ' コマあります。給与対象の集計に含めていません。</div>';
   }
   if (body) body.innerHTML = html;
 }
 
-// 講座の並び順キー：中学通常(0)→中学夏期(1)→高校通常(2)→高校夏期(3)→体験/無料(4)→その他(9)
+// dlm37: 講師1人ぶんの行（ヘッダー＋展開する内訳）を組む。画像準拠のカードUI。
+function kcRowHtml(r, idx) {
+  const numTd = 'width:64px;text-align:center;font-size:16px;font-weight:800;color:var(--fg)';
+  const zeroCol = 'width:64px;text-align:center;font-size:15px;font-weight:700;color:#c9c9c9';
+  const cell = (v) => (v > 0
+    ? '<span style="' + numTd + '">' + v + '<span style="font-size:11px;font-weight:600;color:var(--muted)"> コマ</span></span>'
+    : '<span style="' + zeroCol + '">0<span style="font-size:11px;font-weight:600"> コマ</span></span>');
+  const ufBadge = r.unfilled > 0
+    ? '<span style="width:74px;text-align:center;font-size:16px;font-weight:800;color:#C0392B">' + r.unfilled + '<span style="font-size:11px;font-weight:600"> コマ</span></span>'
+    : '<span style="width:74px;text-align:center;font-size:15px;font-weight:700;color:#c9c9c9">0<span style="font-size:11px;font-weight:600"> コマ</span></span>';
+
+  let h = '<div style="border-bottom:1px solid var(--line)">' +
+    '<div onclick="kcToggleDetail(' + idx + ')" style="display:flex;align-items:center;gap:8px;padding:14px;cursor:pointer">' +
+      '<span style="width:22px;height:22px;border:1.5px solid var(--line);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--muted);flex:0 0 auto">' + (idx + 1) + '</span>' +
+      '<span style="flex:1;text-align:left;font-size:16px;font-weight:800">' + escapeHtml(r.name) + '</span>' +
+      cell(r.jhsKoma) + cell(r.hsKoma) + cell(r.otherKoma) + cell(r.svKoma) +
+      '<span style="width:80px;text-align:center;font-size:17px;font-weight:800;color:var(--orange-d)">' + r.totalKoma + '<span style="font-size:11px;font-weight:600;color:var(--muted)"> コマ</span></span>' +
+      ufBadge +
+      '<span id="kc-arrow-' + idx + '" style="width:16px;text-align:center;font-size:12px;color:var(--muted)">▶</span>' +
+    '</div>' +
+    // ---- 内訳（初期非表示） ----
+    '<div id="kc-detail-' + idx + '" style="display:none;background:#faf9f6;padding:4px 14px 12px">';
+
+  const bd = r.breakdown || [];
+  const hasClass = bd.length > 0;
+  if (hasClass) {
+    // 内訳の見出し
+    h += '<div style="display:flex;align-items:center;gap:8px;padding:8px 6px;font-size:11px;font-weight:700;color:var(--muted)">' +
+        '<span style="width:52px">区分</span>' +
+        '<span style="flex:1">授業名</span>' +
+        '<span style="width:80px;text-align:center">受講人数</span>' +
+        '<span style="width:96px;text-align:center">反映済みコマ数</span>' +
+        '<span style="width:110px;text-align:center">報告書未記入コマ数</span>' +
+      '</div>';
+    bd.forEach(b => {
+      const badge = kcBucketBadge(b.bucket);
+      const uf = (b.unfilled > 0)
+        ? '<span style="width:110px;text-align:center;font-size:14px;font-weight:800;color:#C0392B">' + b.unfilled + ' コマ</span>'
+        : '<span style="width:110px;text-align:center;font-size:13px;color:#bdbdbd">0 コマ</span>';
+      h += '<div style="display:flex;align-items:center;gap:8px;padding:8px 6px;border-top:1px solid #ece9e2;background:#fff">' +
+          '<span style="width:52px">' + badge + '</span>' +
+          '<span style="flex:1;font-size:13px;font-weight:600">' + escapeHtml(b.name) + '</span>' +
+          '<span style="width:80px;text-align:center;font-size:13px">' + b.people + ' 名</span>' +
+          '<span style="width:96px;text-align:center;font-size:14px;font-weight:700">' + b.count + ' コマ</span>' +
+          uf +
+        '</div>';
+    });
+  }
+  // 自習監督の内訳行
+  if (r.svKoma > 0) {
+    const uf = (r.svUnfilled > 0)
+      ? '<span style="width:110px;text-align:center;font-size:14px;font-weight:800;color:#C0392B">' + r.svUnfilled + ' コマ</span>'
+      : '<span style="width:110px;text-align:center;font-size:13px;color:#bdbdbd">0 コマ</span>';
+    h += '<div style="display:flex;align-items:center;gap:8px;padding:8px 6px;border-top:1px solid #ece9e2;background:#fff">' +
+        '<span style="width:52px"><span style="font-size:11px;font-weight:700;color:#7A5AA8;background:#EFE9F7;border:1px solid #CDBDE8;border-radius:6px;padding:2px 8px">自習</span></span>' +
+        '<span style="flex:1;font-size:13px;font-weight:600">自習監督（決定シフト）</span>' +
+        '<span style="width:80px;text-align:center;font-size:13px;color:var(--muted)">—</span>' +
+        '<span style="width:96px;text-align:center;font-size:14px;font-weight:700">' + r.svKoma + ' コマ</span>' +
+        uf +
+      '</div>';
+  }
+  // 内訳・合計行
+  h += '<div style="display:flex;align-items:center;gap:8px;padding:10px 6px;border-top:1px solid #ddd8cf;background:#f2efe8;font-weight:800">' +
+      '<span style="width:52px;font-size:13px">合計</span>' +
+      '<span style="flex:1"></span>' +
+      '<span style="width:80px;text-align:center;font-size:13px;color:var(--muted)">—</span>' +
+      '<span style="width:96px;text-align:center;font-size:14px">' + r.totalKoma + ' コマ</span>' +
+      '<span style="width:110px;text-align:center;font-size:14px;color:#C0392B">' + r.unfilled + ' コマ</span>' +
+    '</div>';
+
+  h += '</div></div>';
+  return h;
+}
+
+// 区分バッジ（中学=青／高校=橙／その他=灰）
+function kcBucketBadge(bucket) {
+  if (bucket === 'jhs') return '<span style="font-size:11px;font-weight:700;color:#1E4276;background:#E6F0FB;border:1px solid #A9C8E8;border-radius:6px;padding:2px 8px">中学</span>';
+  if (bucket === 'other') return '<span style="font-size:11px;font-weight:700;color:#8A6D3B;background:#FBF3E2;border:1px solid #E4CE9E;border-radius:6px;padding:2px 8px">その他</span>';
+  return '<span style="font-size:11px;font-weight:700;color:#B25A00;background:#FCEEDD;border:1px solid #E8B98A;border-radius:6px;padding:2px 8px">高校</span>';
+}
+
+
 function kcSortKey(b) {
   const isJhs = (b.division === '中学部');
   const cat = b.category || 'normal';
@@ -32701,7 +32854,7 @@ function kcSortKey(b) {
   if (isJhs && cat === 'summer') return 1;
   if (!isJhs && cat === 'normal') return 2;
   if (!isJhs && cat === 'summer') return 3;
-  if (cat === 'trial' || cat === 'free_open') return 4;
+  if (cat === 'trial' || cat === 'free_open' || cat === 'regular_test') return 4;
   return 9;
 }
 function kcCatLabel(b) {
@@ -32709,6 +32862,7 @@ function kcCatLabel(b) {
   const cat = b.category;
   const catName = cat === 'summer' ? '夏期' : cat === 'winter' ? '冬期' : cat === 'spring' ? '春期'
     : cat === 'kosotsu' ? '高卒' : cat === 'common_test' ? '共テ対策'
+    : cat === 'regular_test' ? '定期テスト対策'
     : cat === 'trial' ? '体験' : cat === 'free_open' ? '無料開放'
     : cat === 'other' ? 'その他' : '通常';
   return div + '・' + catName;
@@ -32726,14 +32880,28 @@ function kcToggleDetail(idx) {
 function kcCsv() {
   if (!canSeeKomaCount()) { showToast('閲覧権限がありません', 'error'); return; }
   if (!_kcRows.length && _kcUnknown === 0) { showToast('先に集計してください', 'info'); return; }
-  const rows = [['対象月', '講師', 'staff_id', '授業', '種別', 'コマ数', '受講人数', '未記入']];
+  // dlm37: サマリー表（講師×区分）＋ 授業別内訳 の2部構成。
+  const rows = [['対象月', '講師', 'staff_id', '中学コマ', '高校コマ', 'その他コマ', '自習監督コマ', '合計コマ', '報告書未記入コマ']];
   _kcRows.forEach(r => {
-    (r.breakdown || []).forEach(b => { rows.push([_kcMonthLabel, r.name, r.staffId, b.name, kcCatLabel(b), b.count, b.people, b.unfilled]); });
-    rows.push([_kcMonthLabel, r.name, r.staffId, '（小計）', '', r.count, '', r.unfilled]);
+    rows.push([_kcMonthLabel, r.name, r.staffId, r.jhsKoma, r.hsKoma, r.otherKoma, r.svKoma, r.totalKoma, r.unfilled]);
   });
-  if (_kcUnknown > 0) rows.push([_kcMonthLabel, '（実施者未記録・給与対象外）', '', '', '', _kcUnknown, '', '']);
-  const total = _kcRows.reduce((s, r) => s + r.count, 0);
-  rows.push([_kcMonthLabel, '合計（記録分のみ）', '', '', '', total, '', '']);
+  // 合計行
+  const T = (f) => _kcRows.reduce((s, r) => s + (r[f] || 0), 0);
+  rows.push([_kcMonthLabel, '合計', '', T('jhsKoma'), T('hsKoma'), T('otherKoma'), T('svKoma'), T('totalKoma'), T('unfilled')]);
+  if (_kcUnknown > 0) rows.push([_kcMonthLabel, '（実施者未記録・給与対象外）', '', '', '', '', '', _kcUnknown, '']);
+
+  // 授業別内訳（区切り行のあと）
+  rows.push([]);
+  rows.push(['【授業別内訳】']);
+  rows.push(['対象月', '講師', 'staff_id', '区分', '授業名', '受講人数', '反映済みコマ数', '報告書未記入コマ数']);
+  _kcRows.forEach(r => {
+    (r.breakdown || []).forEach(b => {
+      const div = b.bucket === 'jhs' ? '中学' : b.bucket === 'other' ? 'その他' : '高校';
+      rows.push([_kcMonthLabel, r.name, r.staffId, div, b.name, b.people, b.count, b.unfilled]);
+    });
+    if (r.svKoma > 0) rows.push([_kcMonthLabel, r.name, r.staffId, '自習', '自習監督（決定シフト）', '', r.svKoma, r.svUnfilled]);
+  });
+
   const csv = rows.map(r => r.map(asCsvCell).join(',')).join('\r\n');
   const bom = '\uFEFF';
   const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
@@ -51325,13 +51493,15 @@ function buildJhsMatrixHtml(m) {
   const tdL = 'padding:5px 8px;font-size:11px;font-weight:700;color:#2E6B1F;border:1px solid #D6E4F0;background:#F4FAF1;white-space:nowrap;text-align:left';
 
   // 1つの軸（校舎 or 種別）ぶんの表を作る
-  const oneTable = (headLabel, axis, iconLabel) => {
+  // dlm37: (未設定)行は表に出さず、人数があるときだけ表の下に注記で「います」と示す。
+  const oneTable = (headLabel, axis, iconLabel, unsetLabel) => {
     const colTot = { '中1': 0, '中2': 0, '中3': 0, total: 0 };
     let rows = '';
     axis.order.forEach(key => {
       const r = axis.rows[key];
-      // 未設定は0でも出す（入力進捗が見えるように）。それ以外の0行は隠す。
-      if (r.total === 0 && key !== '(未設定)') return;
+      // (未設定)行は表に出さない（人数は下の注記で示す）。0行も隠す。
+      if (key === '(未設定)') return;
+      if (r.total === 0) return;
       rows += '<tr>'
         + '<td style="' + tdL + '">' + escapeHtml(key) + '</td>'
         + '<td style="' + td + '">' + r['中1'] + '</td>'
@@ -51348,6 +51518,11 @@ function buildJhsMatrixHtml(m) {
       + '<td style="' + td + ';font-weight:800;background:#EAF4E5">' + colTot['中3'] + '</td>'
       + '<td style="' + td + ';font-weight:800;background:#DDEFD5">' + colTot.total + '</td>'
       + '</tr>';
+    // 未設定人数（表に出していない分）。あるときだけ注記を出す。
+    const unsetN = (axis.rows['(未設定)'] && axis.rows['(未設定)'].total) || 0;
+    const unsetNote = unsetN > 0
+      ? '<div style="font-size:10px;color:#C0392B;font-weight:700;margin-top:4px">⚠️ ' + escapeHtml(unsetLabel) + '未設定の生徒が ' + unsetN + '名 います（表には含めていません）</div>'
+      : '';
     return '<div style="margin-bottom:10px">'
       + '<div style="font-size:11px;font-weight:800;color:#2E6B1F;margin:6px 0 6px">' + iconLabel + '</div>'
       + '<div style="overflow-x:auto">'
@@ -51357,7 +51532,9 @@ function buildJhsMatrixHtml(m) {
       +   '<th style="' + th + '">中1</th><th style="' + th + '">中2</th><th style="' + th + '">中3</th><th style="' + th + '">計</th>'
       + '</tr></thead>'
       + '<tbody>' + rows + totalRow + '</tbody>'
-      + '</table></div></div>';
+      + '</table></div>'
+      + unsetNote
+      + '</div>';
   };
 
   const noGradeNote = m.noGrade > 0
@@ -51365,8 +51542,8 @@ function buildJhsMatrixHtml(m) {
     : '';
 
   return '<div style="margin:2px 0 4px">'
-    + oneTable('校舎', m.campus, '🏫 校舎別（大街道 / 石井・通常のみ）')
-    + oneTable('種別', m.type, '🎓 種別別（公立 / 中高一貫・通常のみ）')
+    + oneTable('校舎', m.campus, '🏫 校舎別（大街道 / 石井・通常のみ）', '校舎')
+    + oneTable('種別', m.type, '🎓 種別別（公立 / 中高一貫・通常のみ）', '種別')
     + '<div style="font-size:10px;color:var(--muted);margin-top:2px;line-height:1.5">校舎は各生徒に、種別は学校マスタに設定した値で集計します。未設定は「基本情報一括」タブと設定タブの学校マスタで埋められます。</div>'
     + noGradeNote
     + '</div>';
