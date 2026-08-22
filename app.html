@@ -6163,7 +6163,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm37';
+const APP_VERSION = '20260702dlm38';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -18914,6 +18914,33 @@ async function approveTodo(id) {
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
+// 依頼者が未完了の担当者を強制的に完了扱いにする（dlm38）。
+// ポイントは「強制完了を押した日が期限内なら +1、期限を過ぎていたら -1」。
+// 判定は done_at=今 で行うため、既存の isTodoLateByDoneAt をそのまま流用する。
+async function forceCompleteTodo(id, name) {
+  const who = name ? '「' + name + '」' : 'この担当者';
+  if (!confirm(who + 'を強制的に完了扱いにしますか？\n（本人が未報告でも完了になります。取り消せません）')) return;
+  showLoading('完了処理中...');
+  try {
+    const rows = await sbGet('staff_todos', 'id=eq.' + id + '&select=*');
+    const todo = rows?.[0];
+    if (!todo) { hideLoading(); showToast('対象が見つかりません', 'error'); return; }
+    if (todo.is_done) { hideLoading(); showToast('すでに完了しています', 'error'); refreshTodoViews(); return; }
+    const nowIso = new Date().toISOString();
+    // done_at を今にして遅延判定 → 押した日が期限内なら +1、期限超なら -1
+    const isLate = isTodoLateByDoneAt({ due_date: todo.due_date, done_at: nowIso });
+    // 承認制でも依頼者操作なので同時に承認済みにする（承認待ちに残さない）
+    await sbPatch('staff_todos', 'id=eq.' + id, {
+      is_done: true, done_at: nowIso, approved_at: nowIso,
+      done_by_staff_id: currentStaff.id, rejected_at: null, reject_note: null
+    });
+    await awardTodoPoints(todo.to_staff_id, isLate);
+    hideLoading();
+    showToast(isLate ? '⚡ 強制完了しました（期限超 -1pt）' : '⚡ 強制完了しました（+1pt）', isLate ? 'error' : 'success');
+    refreshTodoViews();
+  } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
 // 差し戻し
 // onclick に日本語・特殊文字を埋め込むと属性が壊れて押せなくなるため、
 // 引数は id のみ。表示用の名前/タイトル/期限は DB から引く。
@@ -19014,31 +19041,26 @@ async function loadSentTodos() {
     const toIds = group.todos.map(t => t.to_staff_id).filter(Boolean);
     const copyPayload = encodeURIComponent(JSON.stringify({ title: group.title, detail: group.detail, to: toIds }));
 
-    // 中身
-    const innerHtml = group.todos.map(t => {
-      const isOverdue = !t.is_done && t.due_date && t.due_date < today;
-      const waiting = isTodoAwaitingApproval(t);
-      return '<div style="display:flex;flex-direction:column;gap:6px;padding:9px 14px;border-top:1px solid var(--border)">' +
-        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0">' +
-          '<div style="font-size:13px;font-weight:500;color:' + (t.is_done&&!waiting?'var(--muted)':'var(--text)') + ';' + (t.is_done&&!waiting?'text-decoration:line-through':'') + '">' + (t.to?.name||'—') + '</div>' +
-          (t.done_at ? '<span style="font-size:10px;color:var(--green-d)">✅ ' + new Date(t.done_at).toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'}) + '</span>' :
-            (t.read_at ? '<span style="font-size:10px;color:var(--muted)">✓既読 ' + new Date(t.read_at).toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'}) + '</span>' :
-              '<span style="font-size:10px;color:#B08968">未読</span>')) +
-          (isOverdue ? '<span style="font-size:10px;color:var(--red)">⚠️ 期限超</span>' : '') +
+    // 中身。完了済み（承認待ちを除く）と、それ以外（未完了・承認待ち）に分ける。
+    // 複数依頼のときは完了済みを折りたたみ、未完了を見やすくする。dlm38
+    const doneMembers = group.todos.filter(t => t.is_done && !isTodoAwaitingApproval(t));
+    const activeMembers = group.todos.filter(t => !(t.is_done && !isTodoAwaitingApproval(t)));
+    const activeHtml = activeMembers.map(t => renderSentMemberRow(t, today)).join('');
+    const doneHtml = doneMembers.map(t => renderSentMemberRow(t, today)).join('');
+    // 完了済みの折りたたみ。複数人依頼で完了者がいるときだけ折りたたみUIを出す。
+    // 1人依頼のときは従来どおりそのまま並べる。
+    let innerHtml;
+    if (group.todos.length > 1 && doneMembers.length > 0) {
+      const dId = 'sent-done-' + gi;
+      innerHtml = activeHtml +
+        '<div onclick="toggleSentDone(\'' + dId + '\')" style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-top:1px solid var(--border);cursor:pointer;user-select:none;background:var(--surface2)">' +
+          '<span style="font-size:11px;color:var(--green-d);font-weight:700">✅ 完了済み ' + doneMembers.length + '名</span>' +
+          '<span id="' + dId + '-arw" style="color:var(--muted);font-size:13px;transition:transform 0.2s">›</span>' +
         '</div>' +
-        '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-          (waiting
-            ? '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#EDE7F6;color:#6B4FA0;font-weight:700">🔍 承認待ち</span>'
-            : '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:' + (t.is_done?'var(--green-l)':'var(--orange-l)') + ';color:' + (t.is_done?'var(--green-d)':'var(--orange-d)') + '">' + (t.is_done?'完了':'未完了') + '</span>') +
-          (!t.is_done && t.rejected_at ? '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#FBF0E6;color:#B06A3A">🔙 差し戻し済</span>' : '') +
-          ((waiting && (t.approver_staff_id ? t.approver_staff_id === currentStaff.id : t.from_staff_id === currentStaff.id)) ? '<button onclick="approveTodo(\'' + t.id + '\')" style="padding:2px 9px;background:var(--green-l);border:1px solid var(--green-d);border-radius:6px;font-size:10px;cursor:pointer;color:var(--green-d);font-weight:700;font-family:\'Noto Sans JP\',sans-serif">✅ 承認</button>' : '') +
-          ((waiting && (t.approver_staff_id ? t.approver_staff_id === currentStaff.id : t.from_staff_id === currentStaff.id)) ? '<button onclick="openTodoReject(\'' + t.id + '\')" style="padding:2px 9px;background:var(--surface);border:1px solid #D08A5A;border-radius:6px;font-size:10px;cursor:pointer;color:#B06A3A;font-family:\'Noto Sans JP\',sans-serif">🔙 差し戻し</button>' : '') +
-          (waiting && t.approver_staff_id && t.approver_staff_id !== currentStaff.id ? '<span style="font-size:10px;color:var(--muted)">承認担当：' + escapeHtml(staffNameById(t.approver_staff_id)) + '</span>' : '') +
-          (!t.is_done ? '<button onclick="openTodoDueEdit(\'' + t.id + '\',\'' + (t.due_date||'') + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">期日変更</button>' : '') +
-          '<button onclick="removeTodoAssignee(\'' + t.id + '\',\'' + escapeAttr(t.to?.name||'') + '\',\'' + escapeAttr(t.title) + '\')" title="この人を依頼から外す" style="padding:2px 8px;background:var(--surface);border:1px solid #E5A5A5;border-radius:6px;font-size:10px;cursor:pointer;color:#C75050;font-family:\'Noto Sans JP\',sans-serif">✕ 対象外</button>' +
-        '</div>' +
-      '</div>';
-    }).join('');
+        '<div id="' + dId + '" style="display:none">' + doneHtml + '</div>';
+    } else {
+      innerHtml = activeHtml + doneHtml;
+    }
 
     const groupId = 'sent-group-' + gi;
     return '<div style="background:var(--surface);border:1px solid ' + (overdue?'#F5BABA':(waitingN?'#C7B8E0':'var(--border)')) + ';border-radius:10px;overflow:hidden">' +
@@ -19072,6 +19094,46 @@ function toggleSentGroup(id) {
   const isOpen = el.style.display !== 'none';
   el.style.display = isOpen ? 'none' : 'block';
   if (arrow) arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+}
+
+// 「完了済み ○名」セクションの開閉（dlm38）
+function toggleSentDone(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const arrow = document.getElementById(id + '-arw');
+  const isOpen = el.style.display !== 'none';
+  el.style.display = isOpen ? 'none' : 'block';
+  if (arrow) arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+}
+
+// 「自分が依頼したToDo」カード内の担当者1名ぶんの行を描画（dlm38で関数化）。
+// 未完了で承認待ちでない担当者には、依頼者本人だけに「⚡強制完了」ボタンを出す。
+function renderSentMemberRow(t, today) {
+  const isOverdue = !t.is_done && t.due_date && t.due_date < today;
+  const waiting = isTodoAwaitingApproval(t);
+  // 強制完了は「依頼者本人」だけが押せる（承認担当だけの指定者には出さない）
+  const canForce = !t.is_done && !waiting && t.from_staff_id === currentStaff.id;
+  return '<div style="display:flex;flex-direction:column;gap:6px;padding:9px 14px;border-top:1px solid var(--border)">' +
+    '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0">' +
+      '<div style="font-size:13px;font-weight:500;color:' + (t.is_done&&!waiting?'var(--muted)':'var(--text)') + ';' + (t.is_done&&!waiting?'text-decoration:line-through':'') + '">' + (t.to?.name||'—') + '</div>' +
+      (t.done_at ? '<span style="font-size:10px;color:var(--green-d)">✅ ' + new Date(t.done_at).toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'}) + '</span>' :
+        (t.read_at ? '<span style="font-size:10px;color:var(--muted)">✓既読 ' + new Date(t.read_at).toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'}) + '</span>' :
+          '<span style="font-size:10px;color:#B08968">未読</span>')) +
+      (isOverdue ? '<span style="font-size:10px;color:var(--red)">⚠️ 期限超</span>' : '') +
+    '</div>' +
+    '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+      (waiting
+        ? '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#EDE7F6;color:#6B4FA0;font-weight:700">🔍 承認待ち</span>'
+        : '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:' + (t.is_done?'var(--green-l)':'var(--orange-l)') + ';color:' + (t.is_done?'var(--green-d)':'var(--orange-d)') + '">' + (t.is_done?'完了':'未完了') + '</span>') +
+      (!t.is_done && t.rejected_at ? '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#FBF0E6;color:#B06A3A">🔙 差し戻し済</span>' : '') +
+      ((waiting && (t.approver_staff_id ? t.approver_staff_id === currentStaff.id : t.from_staff_id === currentStaff.id)) ? '<button onclick="approveTodo(\'' + t.id + '\')" style="padding:2px 9px;background:var(--green-l);border:1px solid var(--green-d);border-radius:6px;font-size:10px;cursor:pointer;color:var(--green-d);font-weight:700;font-family:\'Noto Sans JP\',sans-serif">✅ 承認</button>' : '') +
+      ((waiting && (t.approver_staff_id ? t.approver_staff_id === currentStaff.id : t.from_staff_id === currentStaff.id)) ? '<button onclick="openTodoReject(\'' + t.id + '\')" style="padding:2px 9px;background:var(--surface);border:1px solid #D08A5A;border-radius:6px;font-size:10px;cursor:pointer;color:#B06A3A;font-family:\'Noto Sans JP\',sans-serif">🔙 差し戻し</button>' : '') +
+      (waiting && t.approver_staff_id && t.approver_staff_id !== currentStaff.id ? '<span style="font-size:10px;color:var(--muted)">承認担当：' + escapeHtml(staffNameById(t.approver_staff_id)) + '</span>' : '') +
+      (canForce ? '<button onclick="forceCompleteTodo(\'' + t.id + '\',\'' + escapeAttr(t.to?.name||'') + '\')" title="この担当者を強制的に完了扱いにする" style="padding:2px 9px;background:#FFF3E0;border:1px solid #E0A55A;border-radius:6px;font-size:10px;cursor:pointer;color:#B26A00;font-weight:700;font-family:\'Noto Sans JP\',sans-serif">⚡ 強制完了</button>' : '') +
+      (!t.is_done ? '<button onclick="openTodoDueEdit(\'' + t.id + '\',\'' + (t.due_date||'') + '\')" style="padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">期日変更</button>' : '') +
+      '<button onclick="removeTodoAssignee(\'' + t.id + '\',\'' + escapeAttr(t.to?.name||'') + '\',\'' + escapeAttr(t.title) + '\')" title="この人を依頼から外す" style="padding:2px 8px;background:var(--surface);border:1px solid #E5A5A5;border-radius:6px;font-size:10px;cursor:pointer;color:#C75050;font-family:\'Noto Sans JP\',sans-serif">✕ 対象外</button>' +
+    '</div>' +
+  '</div>';
 }
 
 // 期日変更
