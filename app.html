@@ -4395,8 +4395,10 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div class="section-title">📬 自分へのToDo</div>
       <div id="sm-my-todos" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
       <button onclick="openTodoCreate()" style="width:100%;padding:12px;margin-bottom:14px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">➕ ToDoを依頼する</button>
-      <!-- 自分が依頼したToDo -->
-      <div class="section-title" style="margin-top:12px">📤 自分が依頼したToDo</div>
+      <!-- 自分が依頼したToDo（見出しタップでセクション全体を開閉。dlm38） -->
+      <div onclick="toggleTodoSection('sent')" class="section-title" style="margin-top:12px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px">
+        <span id="arrow-sent" style="display:inline-block;transition:transform .15s;transform:rotate(90deg)">▶</span>📤 自分が依頼したToDo
+      </div>
       <div id="sm-sent-todos" style="display:flex;flex-direction:column;gap:8px"></div>
 
       <!-- 全体ToDo一覧・進捗（admin/TODO管理者のみ表示） -->
@@ -19030,7 +19032,8 @@ async function loadSentTodos() {
     groups[key].todos.push(t);
   });
 
-  el.innerHTML = Object.values(groups).map((group, gi) => {
+  // カード1枚（1グループ）を描画する。dlm38で関数化し、完了済みカードの折りたたみに使う。
+  function renderSentGroupCard(group, gi, today) {
     const title = group.title;
     const pending = group.todos.filter(t => !t.is_done).length;
     const waitingN = group.todos.filter(isTodoAwaitingApproval).length;
@@ -19083,7 +19086,37 @@ async function loadSentTodos() {
         '<button onclick="deleteTodoGroup(\'' + encodeURIComponent(JSON.stringify(group.todos.map(t=>t.id))) + '\',\'' + escapeAttr(title) + '\',' + group.todos.length + ')" style="padding:5px 12px;background:var(--surface);border:1px solid #E5A5A5;border-radius:8px;font-size:11px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;color:#C75050">🗑 この依頼を削除</button></div>' +
       '<div id="' + groupId + '" style="display:none">' + innerHtml + '</div>' +
     '</div>';
-  }).join('');
+  }
+
+  // グループを「未完了が残っているカード」と「全員完了済みのカード」に振り分ける。
+  // 完了済みは「✅ 完了した依頼 ○件」の折りたたみにまとめ、未完了カードを上に見せる。dlm38
+  const allGroups = Object.values(groups);
+  const activeGroups = allGroups.filter(g => g.todos.some(t => !(t.is_done && !isTodoAwaitingApproval(t))));
+  const doneGroups = allGroups.filter(g => g.todos.every(t => t.is_done && !isTodoAwaitingApproval(t)));
+  const activeCards = activeGroups.map((g, i) => renderSentGroupCard(g, i, today)).join('');
+  const doneCards = doneGroups.map((g, i) => renderSentGroupCard(g, activeGroups.length + i, today)).join('');
+  let html = activeCards;
+  if (doneGroups.length > 0) {
+    html += '<div onclick="toggleSentDoneGroups()" style="display:flex;align-items:center;gap:6px;padding:9px 12px;margin-top:2px;cursor:pointer;user-select:none;background:var(--surface2);border:1px solid var(--border);border-radius:10px">' +
+        '<span style="font-size:12px;color:var(--green-d);font-weight:700">✅ 完了した依頼 ' + doneGroups.length + '件</span>' +
+        '<span id="sent-donegroups-arw" style="color:var(--muted);font-size:14px;transition:transform 0.2s;margin-left:auto">›</span>' +
+      '</div>' +
+      '<div id="sent-donegroups" style="display:none;flex-direction:column;gap:8px;margin-top:8px">' + doneCards + '</div>';
+  }
+  if (!activeGroups.length && !doneGroups.length) {
+    html = '<div class="card-box" style="font-size:12px;color:var(--muted);text-align:center">依頼中のToDoはありません</div>';
+  }
+  el.innerHTML = html;
+}
+
+// 「完了した依頼 ○件」セクションの開閉（dlm38）
+function toggleSentDoneGroups() {
+  const el = document.getElementById('sent-donegroups');
+  if (!el) return;
+  const arrow = document.getElementById('sent-donegroups-arw');
+  const isOpen = el.style.display !== 'none';
+  el.style.display = isOpen ? 'none' : 'flex';
+  if (arrow) arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
 }
 
 function toggleSentGroup(id) {
@@ -19308,10 +19341,12 @@ function toggleTodoSection(key) {
     target = document.getElementById('overdue-list-body');
   } else if (key === 'overdue-person') {
     target = document.getElementById('overdue-person-body');
+  } else if (key === 'sent') {
+    target = document.getElementById('sm-sent-todos');
   }
   if (!target) return;
   const isOpen = target.style.display !== 'none';
-  target.style.display = isOpen ? 'none' : (key === 'all-todos' ? 'grid' : (key === 'recurring' ? 'flex' : 'block'));
+  target.style.display = isOpen ? 'none' : (key === 'all-todos' ? 'grid' : ((key === 'recurring' || key === 'sent') ? 'flex' : 'block'));
   if (extra) extra.style.display = isOpen ? 'none' : 'flex';
   if (arrow) arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
 }
