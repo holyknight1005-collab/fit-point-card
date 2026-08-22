@@ -355,6 +355,16 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="day-modal-body" style="display:flex;flex-direction:column;gap:14px"></div>
   </div>
 </div>
+<!-- 基本情報一括 一時開放モーダル（dlm23） -->
+<div id="be-grant-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:700;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:420px;width:100%;max-height:82vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div id="be-grant-modal-title" style="font-size:15px;font-weight:700;color:var(--text)"></div>
+      <button onclick="closeBasicEditGrantModal()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div id="be-grant-modal-body"></div>
+  </div>
+</div>
 <!-- 授業報告書 一覧モーダル（週間カレンダー授業タップ・dkd） -->
 <div id="classrep-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:690;align-items:center;justify-content:center;padding:16px">
   <div style="background:var(--bg);border-radius:16px;padding:18px;max-width:440px;width:100%;max-height:86vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
@@ -4975,6 +4985,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <option value="noenroll">📅 入塾日 未設定のみ</option>
         </select>
         <button onclick="initBasicEdit()" style="padding:8px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔄 更新</button>
+        <button id="be-grant-btn" onclick="openBasicEditGrantPanel()" style="display:none;padding:8px 12px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:#fff;color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif" title="一般スタッフに30分だけ開放">🔓 一時開放</button>
       </div>
       <div id="be-summary" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
       <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
@@ -6083,7 +6094,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm22';
+const APP_VERSION = '20260702dlm23';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -8709,6 +8720,8 @@ async function initStaff() {
     runRecurringTodoGeneration().then(() => { try { loadHomeMyTodos(); } catch (e) {} });
     loadHomeMyTodos();
     try { loadHomeApprovals(); } catch (e) {}
+    // 自分の一時アクセス（基本情報一括）を読み込み、タブ表示を更新（dlm23）
+    try { refreshMyBasicEditGrant().then(() => { try { updateBasicEditTabVisibility(); } catch (e) {} }); } catch (e) {}
     try { loadHomeNameCheck(); } catch (e) {}
     try { loadHomeLine(); } catch (e) {}
     try { loadHomeParentLine(); } catch (e) {}
@@ -9254,7 +9267,7 @@ async function loadHomeApprovals() {
     sec.style.display = 'block';
     if (cnt) cnt.textContent = list.length + '件';
     const today = getTodayJST();
-    el.innerHTML = list.map(t => {
+    const todoHtml = list.map(t => {
       const toName = (t.to && t.to.name) || '—';
       const doneStr = t.done_at ? new Date(t.done_at).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' }) : '';
       const late = (t.due_date && t.done_at && toJSTDateStr(new Date(t.done_at)) > t.due_date);
@@ -9269,6 +9282,7 @@ async function loadHomeApprovals() {
         '<button onclick="openTodoReject(\'' + t.id + '\')" style="flex-shrink:0;padding:5px 10px;background:#fff;border:1px solid #E8B4B4;border-radius:8px;font-size:11px;font-weight:700;color:var(--red);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">差し戻し</button>' +
       '</div>';
     }).join('');
+    el.innerHTML = todoHtml;
   } catch (e) {
     sec.style.display = 'none';
   }
@@ -13020,9 +13034,9 @@ function openStaffManage(tab) {
   // 氏名整備タブは admin と事務担当（fit021）のみ表示
   const nfTab = document.getElementById('manage-tab-namefix');
   if (nfTab) nfTab.style.display = canSeeNameFix() ? '' : 'none';
-  // 基本情報一括編集タブも admin と事務担当（fit021）のみ
+  // 基本情報一括編集タブ：admin/fit021 は常時、それ以外は一時アクセス承認中のみ（dlm23）
   const beTab = document.getElementById('manage-tab-basicedit');
-  if (beTab) beTab.style.display = canSeeNameFix() ? '' : 'none';
+  if (beTab) beTab.style.display = canUseBasicEdit() ? '' : 'none';
   // タブボタンを探してアクティブ表示（onclick属性で一致させる）
   let btn = null;
   document.querySelectorAll('#screen-staff-manage .manage-tab-btn').forEach(b => {
@@ -14119,6 +14133,169 @@ function canSeeNameFix() {
   if (!currentStaff) return false;
   if (currentStaff.role === 'admin') return true;
   return String(currentStaff.staff_id || '').toLowerCase() === 'fit021';
+}
+
+// ===== 基本情報一括の一時アクセス権（承認方式・30分固定）dlm23 =====
+// admin・fit021 は常時可。それ以外は承認済み(status=approved)かつ expires_at 未来のみ可。
+let _basicEditGrantUntil = null;   // 自分に有効な一時アクセスの失効時刻（Date）。無効時は null
+let _basicEditGrantTimer = null;   // 失効時にUIを閉じるためのタイマー
+
+// 基本権限（admin / fit021）を持つか
+function hasBasicEditBaseRole() {
+  if (!currentStaff) return false;
+  if (currentStaff.role === 'admin') return true;
+  return String(currentStaff.staff_id || '').toLowerCase() === 'fit021';
+}
+
+// 承認者になれる人（＝一時アクセスを承認できる人）。基本権限と同じ。
+function canApproveBasicEditAccess() { return hasBasicEditBaseRole(); }
+
+// 今この瞬間に基本情報一括を使えるか（基本権限 or 有効な一時アクセス）
+function canUseBasicEdit() {
+  if (hasBasicEditBaseRole()) return true;
+  return !!(_basicEditGrantUntil && _basicEditGrantUntil.getTime() > Date.now());
+}
+
+// 自分の有効な一時アクセスをDBから読み込み、_basicEditGrantUntil を更新する。dlm23
+async function refreshMyBasicEditGrant() {
+  _basicEditGrantUntil = null;
+  if (!currentStaff || hasBasicEditBaseRole()) return; // 基本権限者は不要
+  try {
+    const nowIso = new Date().toISOString();
+    const rows = await sbGet('temp_access_grants',
+      'staff_id=eq.' + encodeURIComponent(currentStaff.id) +
+      '&feature=eq.basicedit&status=eq.approved&expires_at=gt.' + encodeURIComponent(nowIso) +
+      '&order=expires_at.desc&limit=1&select=expires_at') || [];
+    if (rows.length && rows[0].expires_at) {
+      _basicEditGrantUntil = new Date(rows[0].expires_at);
+      scheduleBasicEditGrantExpiry();
+    }
+  } catch (e) { /* テーブル未作成などは無視（＝一時アクセス無し） */ }
+}
+
+// 失効時刻でタブを自動的に閉じるタイマーを仕込む。dlm23
+function scheduleBasicEditGrantExpiry() {
+  if (_basicEditGrantTimer) { clearTimeout(_basicEditGrantTimer); _basicEditGrantTimer = null; }
+  if (!_basicEditGrantUntil) return;
+  const ms = _basicEditGrantUntil.getTime() - Date.now();
+  if (ms <= 0) { _basicEditGrantUntil = null; return; }
+  _basicEditGrantTimer = setTimeout(() => {
+    _basicEditGrantUntil = null;
+    // タブボタンを隠し、開いていれば閉じる
+    try { const beTab = document.getElementById('manage-tab-basicedit'); if (beTab && !hasBasicEditBaseRole()) beTab.style.display = 'none'; } catch (e) {}
+    try {
+      const be = document.getElementById('smcontent-basicedit');
+      if (be && be.style.display !== 'none') {
+        switchManageTab('report', null);
+        if (typeof showToast === 'function') showToast('基本情報一括の一時アクセス（30分）が終了しました', 'info');
+      }
+    } catch (e) {}
+  }, Math.min(ms, 2147483000)); // setTimeout上限対策
+}
+
+// 承認者向け：一時アクセス開放パネルを開く（スタッフを選んで30分開放）。dlm23
+async function openBasicEditGrantPanel() {
+  if (!canApproveBasicEditAccess()) { showToast('権限がありません', 'error'); return; }
+  let staffList = [];
+  try {
+    staffList = await sbGet('staff', 'is_active=eq.true&order=staff_id&select=id,name,staff_id,role') || [];
+  } catch (e) { staffList = []; }
+  // admin / fit021（＝常時利用可）は対象外
+  const targets = staffList.filter(s => {
+    const sid = String(s.staff_id || '').toLowerCase();
+    return s.role !== 'admin' && sid !== 'fit021';
+  });
+  // 現在有効な開放を取得して残り時間を表示
+  let activeById = {};
+  try {
+    const nowIso = new Date().toISOString();
+    const grants = await sbGet('temp_access_grants',
+      'feature=eq.basicedit&status=eq.approved&expires_at=gt.' + encodeURIComponent(nowIso) +
+      '&order=expires_at.desc&select=staff_id,expires_at') || [];
+    grants.forEach(g => { if (!activeById[g.staff_id]) activeById[g.staff_id] = g.expires_at; });
+  } catch (e) {}
+
+  const rows = targets.map(s => {
+    const exp = activeById[s.id];
+    const remMin = exp ? Math.max(0, Math.ceil((new Date(exp).getTime() - Date.now()) / 60000)) : 0;
+    const badge = remMin > 0
+      ? '<span style="font-size:10px;background:var(--green-l);color:var(--green-d);padding:1px 8px;border-radius:10px;font-weight:700">開放中 残り' + remMin + '分</span>'
+      : '';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--border)">' +
+      '<div style="flex:1;min-width:0"><span style="font-size:13px;font-weight:700">' + escapeHtml(s.name || '') + '</span>' +
+        ' <span style="font-size:10px;color:var(--muted)">' + escapeHtml(s.staff_id || '') + '</span>　' + badge + '</div>' +
+      '<button onclick="grantBasicEditAccessTo(\'' + s.id + '\')" style="flex-shrink:0;padding:6px 14px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;font-size:11px;font-weight:700;color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (remMin > 0 ? '延長(30分)' : '30分開放') + '</button>' +
+      (remMin > 0 ? '<button onclick="revokeBasicEditAccessFor(\'' + s.id + '\')" style="flex-shrink:0;padding:6px 10px;background:#fff;border:1px solid #E8B4B4;border-radius:8px;font-size:11px;font-weight:700;color:var(--red);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">停止</button>' : '') +
+    '</div>';
+  }).join('');
+
+  const html = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.6">スタッフを選んで「30分開放」を押すと、その人が基本情報一括を30分間だけ使えるようになります。</div>' +
+    (rows || '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">対象スタッフがいません</div>');
+  const t = document.getElementById('be-grant-modal-title');
+  const b = document.getElementById('be-grant-modal-body');
+  const m = document.getElementById('be-grant-modal');
+  if (t) t.textContent = '📋 基本情報一括の一時開放';
+  if (b) b.innerHTML = html;
+  if (m) m.style.display = 'flex';
+}
+
+// 一時開放モーダルを閉じる。dlm23
+function closeBasicEditGrantModal() {
+  const m = document.getElementById('be-grant-modal');
+  if (m) m.style.display = 'none';
+}
+
+// 承認者が指定スタッフに30分開放（または延長）。dlm23
+async function grantBasicEditAccessTo(staffId) {
+  if (!canApproveBasicEditAccess()) { showToast('権限がありません', 'error'); return; }
+  try {
+    showLoading('開放中...');
+    const nowIso = new Date().toISOString();
+    const expires = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    // 既存の有効レコードがあれば延長、なければ新規
+    const existing = await sbGet('temp_access_grants',
+      'staff_id=eq.' + encodeURIComponent(staffId) + '&feature=eq.basicedit&status=eq.approved&expires_at=gt.' + encodeURIComponent(nowIso) +
+      '&order=expires_at.desc&limit=1&select=id') || [];
+    if (existing.length) {
+      await sbPatch('temp_access_grants', 'id=eq.' + encodeURIComponent(existing[0].id), {
+        expires_at: expires, approved_by: currentStaff.id, approved_at: nowIso
+      });
+    } else {
+      await sbPostReturn('temp_access_grants', {
+        staff_id: staffId, feature: 'basicedit', status: 'approved',
+        requested_at: nowIso, approved_by: currentStaff.id, approved_at: nowIso, expires_at: expires
+      });
+    }
+    hideLoading();
+    showToast('✅ 30分間開放しました', 'success');
+    openBasicEditGrantPanel(); // パネルを更新
+  } catch (e) { hideLoading(); showToast('開放に失敗しました：' + (e.message || e), 'error'); }
+}
+
+// 承認者が開放を途中で停止（有効レコードを失効させる）。dlm23
+async function revokeBasicEditAccessFor(staffId) {
+  if (!canApproveBasicEditAccess()) { showToast('権限がありません', 'error'); return; }
+  if (!confirm('この開放を停止しますか？')) return;
+  try {
+    showLoading('停止中...');
+    const nowIso = new Date().toISOString();
+    const past = new Date(Date.now() - 1000).toISOString();
+    const rows = await sbGet('temp_access_grants',
+      'staff_id=eq.' + encodeURIComponent(staffId) + '&feature=eq.basicedit&status=eq.approved&expires_at=gt.' + encodeURIComponent(nowIso) +
+      '&select=id') || [];
+    for (const r of rows) {
+      await sbPatch('temp_access_grants', 'id=eq.' + encodeURIComponent(r.id), { status: 'revoked', expires_at: past });
+    }
+    hideLoading();
+    showToast('停止しました', 'info');
+    openBasicEditGrantPanel();
+  } catch (e) { hideLoading(); showToast('停止に失敗しました：' + (e.message || e), 'error'); }
+}
+
+// basicedit タブボタンの表示/非表示を今の権限で更新。dlm23
+function updateBasicEditTabVisibility() {
+  const beTab = document.getElementById('manage-tab-basicedit');
+  if (beTab) beTab.style.display = canUseBasicEdit() ? '' : 'none';
 }
 
 // ===== お気に入り / 全機能メニュー =====
@@ -30703,13 +30880,26 @@ async function initBasicEdit() {
   const body = document.getElementById('be-body');
   const sum = document.getElementById('be-summary');
   if (!body) return;
-  if (!canSeeNameFix()) {
-    body.innerHTML = '<div style="font-size:13px;color:#A04040;text-align:center;padding:24px;font-weight:700">この画面は管理者と事務担当のみ利用できます。</div>';
+  // 開くたびに最新の一時アクセス状況を取り込む（承認直後でも反映される）。dlm23
+  if (!hasBasicEditBaseRole()) { try { await refreshMyBasicEditGrant(); } catch (e) {} }
+  if (!canUseBasicEdit()) {
+    body.innerHTML = '<div style="text-align:center;padding:24px">' +
+      '<div style="font-size:13px;color:#A04040;font-weight:700;margin-bottom:10px">この画面は管理者・事務担当、または一時開放された方のみ利用できます。</div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.6">利用したい場合は、管理者または事務担当に「基本情報一括の一時開放」を依頼してください。開放されると30分間だけ編集できます。</div>' +
+      '</div>';
     if (sum) sum.textContent = '';
     return;
   }
+  // 一時開放ボタンは承認者（admin/fit021）のみ表示。dlm23
+  { const gb = document.getElementById('be-grant-btn'); if (gb) gb.style.display = canApproveBasicEditAccess() ? '' : 'none'; }
   body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
-  if (sum) sum.textContent = '';
+  // 一時アクセスで開いている場合は残り時間を案内（基本権限者は空のまま）
+  if (!hasBasicEditBaseRole() && _basicEditGrantUntil) {
+    const remMin = Math.max(0, Math.ceil((_basicEditGrantUntil.getTime() - Date.now()) / 60000));
+    if (sum) sum.textContent = '⏳ 一時アクセス中：残り約' + remMin + '分';
+  } else if (sum) {
+    sum.textContent = '';
+  }
   try {
     await loadSchools(true);
     let rows = await sbGetAll('students',
