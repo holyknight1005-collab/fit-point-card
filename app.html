@@ -17165,12 +17165,38 @@ async function loadStaffList() {
         '<div style="font-size:11px;color:var(--muted);font-family:DM Mono,monospace">' + s.staff_id + '　' + (s.role==='admin'?'管理者':'スタッフ') + '</div>' +
       '</div>' +
       '<button onclick="toggleScienceTag(\'' + s.id + '\',' + hasRikei + ')" style="padding:4px 10px;background:' + (hasRikei?'#F0E0F5':'var(--surface2)') + ';border:1px solid ' + (hasRikei?'#C99AD6':'var(--border)') + ';border-radius:6px;color:' + (hasRikei?'#7B2D8B':'var(--muted)') + ';font-size:11px;cursor:pointer;flex-shrink:0">' + (hasRikei?'理系を外す':'理系にする') + '</button>' +
+      '<button onclick="editStaffName(\'' + s.id + '\',\'' + s.name.replace(/'/g,"\\'") + '\')" style="padding:4px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:11px;cursor:pointer;flex-shrink:0">✏️氏名編集</button>' +
       (s.id !== currentStaff?.id ?
         '<button onclick="resetStaffPin(\'' + s.id + '\',\'' + s.staff_id + '\',\'' + s.name.replace(/'/g,"\\'") + '\')" style="padding:4px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:11px;cursor:pointer;flex-shrink:0">🔑PW初期化</button>' +
         '<button onclick="toggleStaffActive(\'' + s.id + '\',' + s.is_active + ')" style="padding:4px 10px;background:' + (s.is_active?'var(--red-l)':'var(--green-l)') + ';border:1px solid ' + (s.is_active?'#F5BABA':'#A8D891') + ';border-radius:6px;color:' + (s.is_active?'var(--red)':'var(--green-d)') + ';font-size:11px;cursor:pointer;flex-shrink:0">' + (s.is_active?'無効化':'有効化') + '</button>'
         : '<span style="font-size:10px;color:var(--muted)">自分</span>') +
     '</div>';
   }).join('');
+}
+
+// スタッフ氏名の訂正（admin操作）。dlm37
+async function editStaffName(id, currentName) {
+  const nv = prompt('新しい氏名を入力してください', currentName || '');
+  if (nv === null) return;               // キャンセル
+  const name = String(nv).trim();
+  if (!name) { showToast('氏名が空です', 'error'); return; }
+  if (name === (currentName || '')) return; // 変更なし
+  showLoading('更新中...');
+  try {
+    await sbPatch('staff', 'id=eq.' + id, { name: name });
+    // 表示キャッシュも更新して即反映
+    if (currentStaff && currentStaff.id === id) currentStaff.name = name;
+    if (typeof allStaffList !== 'undefined' && Array.isArray(allStaffList)) {
+      const hit = allStaffList.find(s => s.id === id);
+      if (hit) hit.name = name;
+    }
+    hideLoading();
+    showToast('氏名を「' + name + '」に変更しました', 'success');
+    loadStaffList();
+  } catch(e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
 }
 
 // 理系タグの付与・解除（admin操作）
@@ -32691,8 +32717,8 @@ async function loadKomaCount() {
       breakdown: breakdown
     };
   });
-  // 並び：合計コマ数の多い順（画像の並びに合わせる）。同数は staff_id 昇順。
-  rows.sort((a, b) => (b.totalKoma - a.totalKoma) || (a.staffId < b.staffId ? -1 : a.staffId > b.staffId ? 1 : 0));
+  // 並び：staff_id 昇順（fit002→fit003→…）。
+  rows.sort((a, b) => (a.staffId < b.staffId ? -1 : a.staffId > b.staffId ? 1 : 0));
   _kcRows = rows;
   _kcUnknown = unknown;
 
