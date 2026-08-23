@@ -6165,7 +6165,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm39';
+const APP_VERSION = '20260702dlm41';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32110,11 +32110,15 @@ async function loadBillCheck() {
   let enrolls = [];
   try {
     enrolls = await sbGet('class_enrollments',
-      'class_master_id=in.(' + classIds.join(',') + ')&select=class_master_id,student_id,ended_on') || [];
+      'class_master_id=in.(' + classIds.join(',') + ')&select=class_master_id,student_id,ended_on,lap_done') || [];
   } catch (e) { enrolls = []; }
   enrolls = enrolls.filter(e => !e.ended_on || String(e.ended_on) >= todayStr);
   // デモ生徒除外
   enrolls = await excludeDemoRows(enrolls, 'student_id');
+
+  // 2周目（1周完了・以降無料）の生徒×授業を控える（請求チェック対象外にする）
+  const _bcLap = {};   // "studentId::classId" -> true
+  enrolls.forEach(e => { if (e.lap_done) _bcLap[e.student_id + '::' + e.class_master_id] = true; });
 
   // 授業ごとに受講中の生徒IDをまとめる
   const byClass = {};   // classId -> Set(studentId)
@@ -32186,23 +32190,37 @@ async function loadBillCheck() {
       const ka = (a.name_kana || a.name || ''), kb = (b.name_kana || b.name || '');
       return ka < kb ? -1 : ka > kb ? 1 : 0;
     });
-    const clsDone = rows.filter(s => _bcChecked[s.id + '::' + cid] && _bcChecked[s.id + '::' + cid].checked).length;
+    const clsDone = rows.filter(s => !_bcLap[s.id + '::' + cid] && _bcChecked[s.id + '::' + cid] && _bcChecked[s.id + '::' + cid].checked).length;
+    const clsBillable = rows.filter(s => !_bcLap[s.id + '::' + cid]).length;
 
     html += '<div style="margin-bottom:14px;border:1px solid var(--line);border-radius:10px;overflow:hidden">';
     html += '<div style="padding:9px 12px;background:#EEF3F8;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
               '<span style="font-size:13px;font-weight:800;color:#1E4276">' + escapeHtml(cls.name) + '</span>' +
               (cls.subject ? '<span style="font-size:11px;color:var(--muted)">' + escapeHtml(cls.subject) + '</span>' : '') +
-              '<span style="font-size:11px;color:var(--muted);margin-left:auto">' + clsDone + ' / ' + rows.length + ' 済</span>' +
+              '<span style="font-size:11px;color:var(--muted);margin-left:auto">' + clsDone + ' / ' + clsBillable + ' 済</span>' +
             '</div>';
     if (!rows.length) {
       html += '<div style="font-size:12px;color:var(--muted);padding:10px 12px">受講中の生徒はいません。</div>';
     } else {
       rows.forEach(s => {
         const key = s.id + '::' + cid;
+        const isLap = !!_bcLap[key];
         const chk = _bcChecked[key] && _bcChecked[key].checked;
         const gradeTxt = s.grade ? fmtGrade(s.grade) : '';
         const schoolTxt = s.school || '';
         const meta = [gradeTxt, schoolTxt].filter(Boolean).map(escapeHtml).join(' / ');
+        if (isLap) {
+          // 2周目（以降無料）＝請求対象外。チェック不可・対象外バッジ。
+          html +=
+            '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);background:#F4F8F4">' +
+              '<div style="flex-shrink:0;width:32px;height:32px;border-radius:8px;border:2px dashed #A8C9A8;background:#EAF7EA;color:#3B6D11;font-size:15px;font-weight:900;display:flex;align-items:center;justify-content:center;line-height:1">🆓</div>' +
+              '<div style="flex:1;min-width:0">' +
+                '<div style="font-size:14px;font-weight:700;color:#6B7A6B">' + escapeHtml(s.name || '(不明)') + (meta ? ' <span style="font-size:11px;font-weight:500;color:var(--muted)">' + meta + '</span>' : '') +
+                ' <span style="font-size:9px;background:#EAF7EA;color:#3B6D11;border:1px solid #8CC98C;padding:1px 6px;border-radius:10px;white-space:nowrap">2周目・請求対象外</span></div>' +
+              '</div>' +
+            '</div>';
+          return;
+        }
         const rowBg = chk ? '#EAF6EA' : '#fff';
         html +=
           '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);background:' + rowBg + '">' +
@@ -32687,12 +32705,13 @@ async function loadKomaCount() {
   try {
     const allClassIds = cms.map(c => c.id);
     if (allClassIds.length) {
-      enrolls = await sbGetActiveEnrollments('class_master_id=in.(' + allClassIds.join(',') + ')&select=class_master_id,student_id') || [];
+      enrolls = await sbGetActiveEnrollments('class_master_id=in.(' + allClassIds.join(',') + ')&select=class_master_id,student_id,lap_done') || [];
       const stuIds = [...new Set(enrolls.map(e => e.student_id).filter(Boolean))];
       const keep = new Set(await excludeDemoIds(stuIds));
       const seen = {};
       enrolls.forEach(e => {
         if (!e.class_master_id || !e.student_id || !keep.has(e.student_id)) return;
+        if (e.lap_done) return; // 2周目（以降無料）は請求対象外なので人数に数えない
         (seen[e.class_master_id] || (seen[e.class_master_id] = new Set())).add(e.student_id);
       });
       Object.keys(seen).forEach(k => { enrollCountBy[k] = seen[k].size; });
@@ -34289,10 +34308,15 @@ async function loadAttendanceRoster() {
   showLoading('名簿を読み込み中...');
   try {
     // 名簿（デモ生徒は除外）
-    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,is_provisional');
+    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,is_provisional,lap_done');
     // 申込未提出（見込み）の生徒を控えておく
     attProvisional = {};
-    enrolls.forEach(e => { if (e.is_provisional) attProvisional[e.student_id] = true; });
+    // 2周目（1周完了・以降無料）の生徒を控えておく（請求対象外・出席は付ける）
+    attLapDone = {};
+    enrolls.forEach(e => {
+      if (e.is_provisional) attProvisional[e.student_id] = true;
+      if (e.lap_done) attLapDone[e.student_id] = true;
+    });
     const studentIds = await excludeDemoIds(enrolls.map(e => e.student_id));
     if (!studentIds.length) {
       hideLoading();
@@ -34365,8 +34389,12 @@ async function loadAttendanceRoster() {
       }
       return { student: stu, status: status, note: note, checkinTime: inTime, noteOpen: !!note, isMakeup: makeupSet.has(sid), review: reviewMap[sid] || null, reviewOpen: false };
     }).sort((a,b) => {
-      const sa = (a.student.school||'') + (a.student.grade||'') + (a.student.name||'');
-      const sb = (b.student.school||'') + (b.student.grade||'') + (b.student.name||'');
+      // 2周目（無料）の生徒は末尾にまとめる
+      const la = attLapDone[a.student.id] ? 1 : 0;
+      const lb = attLapDone[b.student.id] ? 1 : 0;
+      if (la !== lb) return la - lb;
+      const sa = (a.student.school||'') + (a.student.grade||'') + (a.student.name_kana||a.student.name||'');
+      const sb = (b.student.school||'') + (b.student.grade||'') + (b.student.name_kana||b.student.name||'');
       return sa.localeCompare(sb, 'ja');
     });
 
@@ -34393,6 +34421,7 @@ function renderAttendanceRoster() {
     }
     const makeupTag = row.isMakeup ? '<span style="font-size:9px;background:#E8E2F5;color:#6B4FA0;padding:1px 6px;border-radius:10px;margin-left:4px">📺 補習承認</span>' : '';
     const provTag = attProvisional[s.id] ? '<span style="font-size:9px;background:#FFF3DF;color:#8F5F12;border:1px solid #E8C193;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="申込書が未提出です">⏳ 申込未提出</span>' : '';
+    const lapTag = attLapDone[s.id] ? '<span style="font-size:9px;background:#EAF7EA;color:#3B6D11;border:1px solid #8CC98C;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="1周完了・2周目のため請求対象外です">🆓 2周目・無料</span>' : '';
     const sub = [s.school, fmtGrade(s.grade), inLabel].filter(Boolean).join(' ・ ');
     // アバター
     const avatar = s.photo_url
@@ -34414,7 +34443,7 @@ function renderAttendanceRoster() {
       '<div style="display:flex;align-items:center;gap:10px">' +
         avatar +
         '<div style="flex:1;min-width:0">' +
-          '<div style="font-size:14px;font-weight:500;color:var(--text)">' + (s.name||'(不明)') + ' ' + noteBadge + makeupTag + provTag + '</div>' +
+          '<div style="font-size:14px;font-weight:500;color:var(--text)">' + (s.name||'(不明)') + ' ' + noteBadge + makeupTag + provTag + lapTag + '</div>' +
           '<div style="font-size:11px;color:var(--muted)">' + sub + '</div>' +
         '</div>' +
         linyContactBtns(s, {small:true}) +
@@ -35405,6 +35434,7 @@ async function resetAttCustomOrder() {
 // 開始前・終了後の授業日は出席率の母数から外す（9月開始なら7・8月は対象外）
 let attEnrollRange = {};
 let attProvisional = {};   // student_id -> true（申込未提出だが参加）
+let attLapDone = {};       // student_id -> true（2周目・1周完了で以降無料＝請求対象外だが出席は付ける）
 
 // その生徒にとって、その授業日が集計対象かどうか
 // 日付は 'YYYY-MM-DD' なので文字列比較でそのまま前後判定できる（JSTのズレも起きない）
@@ -49662,9 +49692,31 @@ async function renderSvInout() {
   // 入塾
   const joined = students.filter(s => inRange(s.enroll_date))
     .sort((a, b) => (b.enroll_date || '').localeCompare(a.enroll_date || ''));
-  // 退塾
-  const left = students.filter(s => s.is_active === false && s.inactive_reason === '退塾' && inRange(s.withdraw_effective_date))
-    .sort((a, b) => (b.withdraw_effective_date || '').localeCompare(a.withdraw_effective_date || ''));
+  // 退塾（students：正式登録の退塾）
+  let left = students.filter(s => s.is_active === false && s.inactive_reason === '退塾' && inRange(s.withdraw_effective_date))
+    .map(s => Object.assign({}, s, { _fromRoster: false }));
+  // 退塾（roster：名簿台帳だけの退塾者＝students に無い人。退塾理由分析と数を揃える）
+  // 分析側と同条件：is_active=true & status='退塾'。期間は withdraw_date で判定。
+  try {
+    const rosLeft = await sbGet('roster',
+      'school=eq.' + encodeURIComponent(svSchool) + '&is_active=eq.true&status=eq.' + encodeURIComponent('退塾') +
+      '&select=id,name,grade,withdraw_date,withdraw_reason') || [];
+    // students に既にいる名前は重複計上しない（正規化名で突合）
+    const stuNameSet = new Set(students.map(s => (typeof normalizeName === 'function') ? normalizeName(s.name || '') : (s.name || '')));
+    rosLeft.forEach(r => {
+      const nn = (typeof normalizeName === 'function') ? normalizeName(r.name || '') : (r.name || '');
+      if (stuNameSet.has(nn)) return;                 // students 側と重複 → 二重計上しない
+      if (!inRange(r.withdraw_date)) return;          // 期間フィルタ（withdraw_date ベース）
+      left.push({
+        id: null,                                     // students.id が無い（連絡ボタン等は出さない）
+        name: r.name || '', grade: r.grade || '',
+        withdraw_effective_date: r.withdraw_date || '',
+        withdraw_reason: r.withdraw_reason || '',
+        _fromRoster: true
+      });
+    });
+  } catch (e) { /* roster 未取得でも students 分は表示する */ }
+  left.sort((a, b) => (b.withdraw_effective_date || '').localeCompare(a.withdraw_effective_date || ''));
 
   // 未入塾（見込み prospects：この学校・未入塾・見送り以外）。期間は created_at で判定。
   let prospects = [];
@@ -49744,7 +49796,24 @@ async function renderSvInout() {
   }
   if (showAll || svInoutKind === 'leave') {
     html += block('🚪 退塾', left.length,
-      left.map(s => chip(s.name || '', gLbl(s.grade), md(s.withdraw_effective_date), '#C0392B', null, s, { noAlert: true })).join(''));
+      left.map(s => {
+        if (!s._fromRoster) {
+          // students 由来：従来どおり chip（連絡ボタン付き）
+          return chip(s.name || '', gLbl(s.grade), md(s.withdraw_effective_date), '#C0392B', null, s, { noAlert: true });
+        }
+        // roster 由来：students.id が無いので連絡ボタンなし。名簿台帳バッジ＋退塾理由を表示。
+        const sub = md(s.withdraw_effective_date);
+        const rosBadge = '<span style="font-size:9px;background:#F1EDE3;color:#8A7A55;border:1px solid #D9CDB0;padding:1px 5px;border-radius:8px;margin-left:5px;white-space:nowrap">📋 名簿台帳</span>';
+        const reasonTxt = s.withdraw_reason ? '<span style="font-size:10px;color:var(--muted);margin-left:5px">（' + escapeHtml(s.withdraw_reason) + '）</span>' : '';
+        const gr = gLbl(s.grade);
+        return '<div style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border)">' +
+          (sub ? '<span style="font-size:11px;font-weight:700;color:#C0392B;min-width:42px;white-space:nowrap">' + escapeHtml(sub) + '</span>' : '') +
+          '<span style="font-size:13px;color:var(--text)">' + escapeHtml(s.name || '') +
+            (gr ? '<span style="font-size:10px;color:var(--muted);margin-left:4px">' + escapeHtml(gr) + '</span>' : '') +
+            rosBadge + reasonTxt +
+          '</span>' +
+        '</div>';
+      }).join(''));
   }
   if (showAll || svInoutKind === 'prospect') {
     const svInoutCanEdit = (typeof svCanEditGradeNotes === 'function') ? svCanEditGradeNotes() : true;
