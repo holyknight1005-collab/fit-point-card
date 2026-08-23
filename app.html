@@ -6178,7 +6178,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm46';
+const APP_VERSION = '20260702dlm47';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -26348,13 +26348,33 @@ async function loadLongtextPeriods() {
       (stuClasses[e.student_id] || (stuClasses[e.student_id] = new Set())).add(e.class_master_id);
     });
     const allOtherCmIds = [...new Set(otherEnrolls.map(e => e.class_master_id).filter(id => id !== ld.id))];
-    let cmPeriods = {}; // class_master_id -> Set(period) 今日以降の実績
+    // 長文読解が実施される曜日を集める（基本は日曜だが、データから動的に取得）。
+    // かぶり判定は「同じ曜日の同時限」に限る。曜日が違えば物理的にかぶらないので警告しない。
+    const todayStr = getTodayJST();
+    const jstWeekday = (dateStr) => {
+      // 'YYYY-MM-DD' の曜日(0=日..6=土)を JST 固定で返す
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || ''));
+      if (!m) return null;
+      return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getDay();
+    };
+    let ldWeekdays = new Set();
+    try {
+      const ldSess = await sbGet('class_sessions',
+        'class_master_id=eq.' + ld.id + '&session_date=gte.' + todayStr +
+        '&period=not.is.null&select=session_date') || [];
+      ldSess.forEach(s => { const w = jstWeekday(s.session_date); if (w != null) ldWeekdays.add(w); });
+    } catch (e) {}
+    // 実績が無い場合の保険：長文は基本日曜(0)
+    if (!ldWeekdays.size) ldWeekdays.add(0);
+    // 他授業の「長文と同じ曜日に入っている時限」を集める（曜日フィルタ込み）。
+    let cmPeriods = {}; // class_master_id -> Set(period) 長文と同曜日・今日以降の実績
     if (allOtherCmIds.length) {
-      const todayStr = getTodayJST();
       const sess = await sbGet('class_sessions',
         'class_master_id=in.(' + allOtherCmIds.join(',') + ')&session_date=gte.' + todayStr +
-        '&period=not.is.null&select=class_master_id,period') || [];
+        '&period=not.is.null&select=class_master_id,session_date,period') || [];
       sess.forEach(s => {
+        const w = jstWeekday(s.session_date);
+        if (w == null || !ldWeekdays.has(w)) return;   // 長文と違う曜日は無視（誤検出防止）
         (cmPeriods[s.class_master_id] || (cmPeriods[s.class_master_id] = new Set())).add(String(s.period));
       });
     }
