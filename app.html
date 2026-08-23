@@ -6178,7 +6178,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm45';
+const APP_VERSION = '20260702dlm46';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -21326,6 +21326,22 @@ async function loadKarteHistory(classId) {
     const active = rows.filter(r => !r.ended_on);
     const ended  = rows.filter(r => r.ended_on);
     const stopped = ended.filter(r => r.end_reason !== '予定通り終了');
+    // 誤登録の取消（物理削除）を安全に許可する条件を判定するため、
+    // この授業に出欠記録がある生徒IDを集める（1件でもあれば取消不可＝データが宙に浮くのを防ぐ）。
+    const todayStr = getTodayJST();
+    let attendedStuSet = new Set();
+    try {
+      const attRows = await sbGet('session_attendance',
+        'class_master_id=eq.' + classId + '&select=student_id') || [];
+      attRows.forEach(a => { if (a.student_id) attendedStuSet.add(a.student_id); });
+    } catch (e) { /* 取得失敗時は安全側で「全員取消不可」に倒す */ attendedStuSet = null; }
+    // 取消可否：started_on が今日 かつ 出欠記録ゼロ（当日追加したばかりの誤登録のみ）
+    const canUndo = (r) => {
+      if (attendedStuSet === null) return false;           // 出欠取得に失敗＝安全側で不可
+      if (!r.started_on || String(r.started_on).slice(0, 10) !== todayStr) return false;
+      if (attendedStuSet.has(r.student_id)) return false;  // 出欠が付いている＝不可
+      return true;
+    };
     if (cntEl) {
       cntEl.textContent = '継続 ' + active.length + '名 / 終了 ' + ended.length + '名' +
         (stopped.length ? '（ストップ ' + stopped.length + '）' : '');
@@ -21345,8 +21361,13 @@ async function loadKarteHistory(classId) {
     html += active.length
       ? '<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px">' + active.map(r =>
           '<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:#F7FBF7;border:1px solid #CFE6CF;border-radius:8px;flex-wrap:wrap">' +
-            '<div style="flex:1;min-width:100px">' + stuLine(r) + '</div>' +
+            '<div style="flex:1;min-width:100px">' + stuLine(r) +
+              (canUndo(r) ? '<span style="font-size:9px;color:#B26A00;background:#FFF3E0;border:1px solid #E8C193;border-radius:8px;padding:0 5px;margin-left:5px;white-space:nowrap">本日登録</span>' : '') +
+            '</div>' +
             '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' + escapeHtml(startLabel(r)) + '</span>' +
+            (canUndo(r)
+              ? '<button onclick="undoMisEnroll(\'' + r.id + '\',\'' + escapeAttr((nameById[r.student_id]||{}).name || '') + '\')" title="本日追加したばかりの誤登録を取り消します（受講履歴に残りません）" style="padding:3px 8px;background:#fff;border:1px solid #E6B0AA;border-radius:6px;color:#B03A2E;font-size:10px;font-weight:700;cursor:pointer;flex-shrink:0;font-family:\'Noto Sans JP\',sans-serif">🗑 取消</button>'
+              : '') +
           '</div>').join('') + '</div>'
       : '<div style="font-size:11px;color:var(--muted);margin-bottom:12px">継続中の受講生はいません。</div>';
     // 終了
@@ -21374,6 +21395,46 @@ async function loadKarteHistory(classId) {
   } catch (e) {
     if (cntEl) cntEl.textContent = '';
     el.innerHTML = '<div class="ck-empty">受講履歴を読み込めませんでした：' + escapeHtml(e.message || '') + '</div>';
+  }
+}
+
+// 本日追加したばかりの誤登録を物理削除する（受講履歴に残さない＝ストップ扱いにしない）。
+// 安全のため削除直前に再チェック：started_on が今日 かつ この授業に出欠記録が無いことを必須にする。
+async function undoMisEnroll(enrollId, stuName) {
+  if (!enrollId) return;
+  if (!confirm('「' + (stuName || 'この生徒') + '」の受講登録を取り消します。\n\n本日追加したばかりの誤登録を、受講履歴に残さず完全に消します（受講ストップにはなりません）。\nよろしいですか？')) return;
+  showLoading('取消中...');
+  try {
+    // 対象行の現在値を取得して再検証
+    const rows = await sbGet('class_enrollments',
+      'id=eq.' + encodeURIComponent(enrollId) +
+      '&select=id,class_master_id,student_id,started_on,ended_on') || [];
+    const r = rows[0];
+    if (!r) { hideLoading(); showToast('対象が見つかりませんでした', 'error'); loadKarteHistory(ckHistClassId); return; }
+    const todayStr = getTodayJST();
+    if (r.ended_on) { hideLoading(); showToast('既に終了している受講は取り消せません', 'error'); loadKarteHistory(ckHistClassId); return; }
+    if (!r.started_on || String(r.started_on).slice(0, 10) !== todayStr) {
+      hideLoading(); showToast('本日登録されたものだけ取消できます', 'error'); loadKarteHistory(ckHistClassId); return;
+    }
+    // 出欠が付いていないか最終確認（付いていたら中止）
+    const att = await sbGet('session_attendance',
+      'class_master_id=eq.' + encodeURIComponent(r.class_master_id) +
+      '&student_id=eq.' + encodeURIComponent(r.student_id) + '&select=session_date&limit=1') || [];
+    if (att.length) {
+      hideLoading();
+      showToast('出欠が記録されているため取り消せません（通常の受講解除をご利用ください）', 'error');
+      loadKarteHistory(ckHistClassId);
+      return;
+    }
+    // 物理削除（class_enrollments は anon DELETE 可）
+    await sbDelete('class_enrollments', 'id=eq.' + encodeURIComponent(enrollId));
+    hideLoading();
+    showToast('🗑 誤登録を取り消しました', 'success');
+    loadKarteHistory(ckHistClassId);
+    if (typeof loadKarteStudents === 'function' && ckStuClassId === ckHistClassId) loadKarteStudents(ckHistClassId);
+  } catch (e) {
+    hideLoading();
+    showToast('取消に失敗しました: ' + (e && e.message ? e.message : e), 'error');
   }
 }
 
