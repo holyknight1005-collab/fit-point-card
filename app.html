@@ -6178,7 +6178,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm43';
+const APP_VERSION = '20260702dlm45';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -30558,8 +30558,14 @@ async function loadAttOverview() {
 
     // 受講登録（ended_on=null＝継続中）。preferred_period＝長文読解などで担当コマ(5/6限)が決まっている生徒用。
     // ※こちらも1000行上限に備えて全件取得（ended_on=is.null で継続中のみ）
-    const enrolls = await sbGetAll('class_enrollments', 'class_master_id=in.(' + classIds.join(',') +
-      ')&ended_on=is.null&select=class_master_id,student_id,is_provisional,preferred_period');
+    let enrolls;
+    try {
+      enrolls = await sbGetAll('class_enrollments', 'class_master_id=in.(' + classIds.join(',') +
+        ')&ended_on=is.null&select=class_master_id,student_id,is_provisional,preferred_period,lap_done');
+    } catch (eLap) {
+      enrolls = await sbGetAll('class_enrollments', 'class_master_id=in.(' + classIds.join(',') +
+        ')&ended_on=is.null&select=class_master_id,student_id,is_provisional,preferred_period');
+    }
 
     // 出欠記録 ※これが1000行上限で切れて未記録表示になっていた → 全件取得に変更
     const atts = await sbGetAll('session_attendance',
@@ -30582,11 +30588,13 @@ async function loadAttOverview() {
     sessions.forEach(s => { (sessByClass[s.class_master_id] || (sessByClass[s.class_master_id] = [])).push(s); });
     const enrByClass = {};        // classId -> [student_id,...]（デモ除外済）
     const provByClass = {};       // classId -> Set(student_id) 仮受講
+    const lapByClass = {};        // classId -> Set(student_id) 2周目（1周完了・以降無料）
     const prefByClassStu = {};    // classId|student_id -> preferred_period（担当コマ）。未設定は入れない。
     enrolls.forEach(e => {
       if (!stuSet.has(e.student_id)) return;
       (enrByClass[e.class_master_id] || (enrByClass[e.class_master_id] = [])).push(e.student_id);
       if (e.is_provisional) (provByClass[e.class_master_id] || (provByClass[e.class_master_id] = new Set())).add(e.student_id);
+      if (e.lap_done) (lapByClass[e.class_master_id] || (lapByClass[e.class_master_id] = new Set())).add(e.student_id);
       if (e.preferred_period != null) prefByClassStu[e.class_master_id + '|' + e.student_id] = e.preferred_period;
     });
     // その生徒がその授業・その時限の「担当コマ」に該当するか。
@@ -30638,8 +30646,11 @@ async function loadAttOverview() {
         return;
       }
 
-      // その授業の生徒を名前順に
+      // その授業の生徒を名前順に（2周目・無料の子は末尾へまとめる）
+      const _lapSet = lapByClass[m.id] || new Set();
       const sids = [...new Set(cstu)].sort((a, b) => {
+        const la = _lapSet.has(a) ? 1 : 0, lb = _lapSet.has(b) ? 1 : 0;
+        if (la !== lb) return la - lb;                 // 2周目を後ろへ
         const A = stuMap[a] || {}, B = stuMap[b] || {};
         return ((A.grade || '') + (A.name || '')).localeCompare((B.grade || '') + (B.name || ''), 'ja');
       });
@@ -30702,6 +30713,8 @@ async function loadAttOverview() {
       sids.forEach(sid => {
         const stu = stuMap[sid] || {};
         const isProv = provByClass[m.id] && provByClass[m.id].has(sid);
+        const isLap = lapByClass[m.id] && lapByClass[m.id].has(sid);
+        const lapBadge = isLap ? '<span style="font-size:8px;color:#3B6D11;background:#EAF7EA;border:1px solid #8CC98C;border-radius:7px;padding:0 4px;margin-left:3px;white-space:nowrap" title="1周完了・2周目のため請求対象外です">🆓2周目</span>' : '';
         const avatar = stu.photo_url
           ? '<div style="width:24px;height:24px;border-radius:50%;background-image:url(' + stu.photo_url + ');background-size:cover;background-position:center;flex-shrink:0"></div>'
           : '<div style="width:24px;height:24px;border-radius:50%;background:var(--orange-l);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--orange-d);flex-shrink:0">' + escapeHtml((stu.name || '?').charAt(0)) + '</div>';
@@ -30710,7 +30723,7 @@ async function loadAttOverview() {
         html += '<td style="position:sticky;left:0;background:var(--surface);z-index:1;padding:4px 8px;border-right:1px solid var(--border);width:120px;min-width:120px">' +
           '<div onclick="openInterviewKarte(\'' + escapeAttr(sid) + '\',\'att\')" style="display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0" title="カルテを開く">' + avatar +
           '<div style="min-width:0;overflow:hidden"><div style="font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(stu.name || '(不明)') + '</div>' +
-          (sub ? '<div style="font-size:9px;color:var(--muted)">' + escapeHtml(sub) + (isProv ? ' ⏳' : '') + '</div>' : '') +
+          ((sub || isLap) ? '<div style="font-size:9px;color:var(--muted)">' + escapeHtml(sub) + (isProv ? ' ⏳' : '') + lapBadge + '</div>' : '') +
           '</div></div></td>';
         let p = 0, n = 0;
         csess.forEach(s => {
@@ -35141,16 +35154,34 @@ async function loadAttTrials(classId, sessions) {
     let pmap = {};
     if (pids.length) {
       const ps = await sbGet('prospects',
-        'id=in.(' + pids.map(encodeURIComponent).join(',') + ')&select=id,name,school,grade') || [];
+        'id=in.(' + pids.map(encodeURIComponent).join(',') + ')&select=id,name,school,grade,enrolled_student_id') || [];
       ps.forEach(p => { pmap[p.id] = p; });
     }
+    // 入塾済みの見込みは体験生行に出さない（表記ゆれで名簿に載っているのに残り続けるのを防ぐ）。
+    //   ①prospect.enrolled_student_id が入っている＝入塾済みに紐付け済み
+    //   ②正規化氏名が students の在籍者と一致（異体字・スペース差を吸収）
+    let enrolledNames = new Set();
+    try {
+      const allStu = await sbGet('students', 'is_active=eq.true&select=name') || [];
+      allStu.forEach(s => {
+        const nn = (typeof normalizeName === 'function') ? normalizeName(s.name || '') : (s.name || '');
+        if (nn) enrolledNames.add(nn);
+      });
+    } catch (e) { /* students 取得失敗時は従来どおり全件表示 */ }
+    const isEnrolledProspect = (p) => {
+      if (!p) return false;
+      if (p.enrolled_student_id) return true;
+      const nn = (typeof normalizeName === 'function') ? normalizeName(p.name || '') : (p.name || '');
+      return nn && enrolledNames.has(nn);
+    };
     // 体験生ごとに来た日をまとめる
     const byP = {};
     logs.forEach(l => {
       const pid = l.prospect_id;
       if (!pid) return;
+      const p = pmap[pid] || {};
+      if (isEnrolledProspect(p)) return;   // 入塾済み＝体験生行から除外
       if (!byP[pid]) {
-        const p = pmap[pid] || {};
         byP[pid] = { prospect_id: pid, name: p.name || '(体験生)', school: p.school || '', grade: p.grade || '', dates: new Set() };
       }
       byP[pid].dates.add(String(l.trial_date).slice(0, 10));
@@ -35174,10 +35205,19 @@ async function loadAttMatrix() {
       'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
       '&select=session_date,period,start_time,end_time,cycle_year,cycle_month,cycle_no,is_makeup,school&order=session_date,period') || [];
     // 受講名簿（デモ生徒は除外）
-    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,is_provisional,preferred_period');
+    // lap_done は das で追加した列。SQL未適用環境では 400 になるので、失敗時は列なしで再取得する。
+    let enrolls;
+    try {
+      enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,is_provisional,preferred_period,lap_done');
+    } catch (eLap) {
+      enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,is_provisional,preferred_period');
+    }
     // 仮受講（申込未提出だが参加）の生徒を控える
     attProvisional = {};
     enrolls.forEach(e => { if (e.is_provisional) attProvisional[e.student_id] = true; });
+    // 2周目（1周完了・以降無料）の生徒を控える（バッジ表示＋末尾まとめ用。出席は付ける）
+    attLapDone = {};
+    enrolls.forEach(e => { if (e.lap_done) attLapDone[e.student_id] = true; });
     // 担当コマ（長文読解などで5限/6限のどちらか担当）。未設定は入れない＝全コマ対象。
     attPrefByStu = {};
     enrolls.forEach(e => { if (e.preferred_period != null) attPrefByStu[e.student_id] = e.preferred_period; });
@@ -35372,6 +35412,9 @@ function attStudentCellHtml(s, drag) {
   const provTag = attProvisional[s.id]
     ? '<span style="font-size:9px;color:#8F5F12;background:#FFF3DF;border:1px solid #E8C193;border-radius:8px;padding:0 5px;margin-left:4px;white-space:nowrap" title="申込書が未提出です">\u23F3 申込未提出</span>'
     : '';
+  const lapTag = attLapDone[s.id]
+    ? '<span style="font-size:9px;color:#3B6D11;background:#EAF7EA;border:1px solid #8CC98C;border-radius:8px;padding:0 5px;margin-left:4px;white-space:nowrap" title="1周完了・2周目のため請求対象外です">\uD83C\uDD93 2周目・無料</span>'
+    : '';
   const handle = drag
     ? '<span style="font-size:13px;color:var(--muted);cursor:grab;flex-shrink:0;user-select:none" title="ドラッグして並び替え">⋮⋮</span>'
     : '';
@@ -35380,7 +35423,7 @@ function attStudentCellHtml(s, drag) {
     '<div onclick="openInterviewKarte(\'' + escapeAttr(s.id) + '\',\'att\')" style="display:flex;align-items:center;gap:7px;cursor:pointer;min-width:0" title="カルテを開く">' + avatar +
     '<div style="min-width:0;overflow:hidden"><div style="font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(s.name||'(不明)') +
       '<span style="font-size:10px;color:var(--muted);margin-left:4px">›</span></div>' +
-    ((sub || startTag || provTag) ? '<div style="font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(sub) + startTag + provTag + '</div>' : '') +
+    ((sub || startTag || provTag || lapTag) ? '<div style="font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(sub) + startTag + provTag + lapTag + '</div>' : '') +
     '</div></div></div></td>';
 }
 
@@ -35704,6 +35747,13 @@ function attTrialRowsHtml() {
   return rows;
 }
 
+// 2周目（lap_done）の生徒を並びの末尾へ回す（相対順は維持）。出席一覧・出欠一望で下にまとめる用。
+function attLapToBottom(list) {
+  const normal = [], lap = [];
+  (list || []).forEach(s => { (attLapDone[s.id] ? lap : normal).push(s); });
+  return normal.concat(lap);
+}
+
 function renderAttMatrix() {
   const wrap = document.getElementById('att-matrix-wrap');
   if (!attMatrix || !attMatrix.students.length) return;
@@ -35721,16 +35771,16 @@ function renderAttMatrix() {
     const colspan = attMatrix.sessKeys.length + 2;
     Object.keys(groups).sort((a,b)=>a.localeCompare(b,'ja')).forEach(sc => {
       bodyRows += '<tr><td colspan="' + colspan + '" style="position:sticky;left:0;background:var(--orange-l);color:var(--orange-d);font-size:11px;font-weight:700;padding:5px 8px">🏫 ' + escapeHtml(sc) + '（' + groups[sc].length + '名）</td></tr>';
-      groups[sc].sort((a,b)=>((a.grade||'')+(a.name||'')).localeCompare((b.grade||'')+(b.name||''),'ja')).forEach(s => {
+      attLapToBottom(groups[sc].sort((a,b)=>((a.grade||'')+(a.name||'')).localeCompare((b.grade||'')+(b.name||''),'ja'))).forEach(s => {
         bodyRows += '<tr style="border-top:1px solid var(--border)">' + attStudentCellHtml(s) +
           attMatrix.sessKeys.map(k => attCellHtml(s.id, k)).join('') + attRowRateHtml(s.id) + '</tr>';
       });
     });
   } else {
-    const sorted = (attSortMode === 'custom')
+    const sorted = attLapToBottom((attSortMode === 'custom')
       ? applyAttCustomOrder(attMatrix.students)
       : [...attMatrix.students].sort((a,b) =>
-          ((a.school||'')+(a.grade||'')+(a.name||'')).localeCompare((b.school||'')+(b.grade||'')+(b.name||''),'ja'));
+          ((a.school||'')+(a.grade||'')+(a.name||'')).localeCompare((b.school||'')+(b.grade||'')+(b.name||''),'ja')));
     const drag = (attSortMode === 'custom');
     sorted.forEach(s => {
       const dragAttrs = drag
