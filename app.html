@@ -6178,7 +6178,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm47';
+const APP_VERSION = '20260702dlm48';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -26403,7 +26403,10 @@ async function loadLongtextPeriods() {
     ttLongtextRows.sort((a, b) =>
       (ttGradeNum(a.student.grade) || 9) - (ttGradeNum(b.student.grade) || 9) ||
       (a.student.name || '').localeCompare(b.student.name || ''));
-    if (cntEl) cntEl.textContent = ttLongtextRows.length + '名';
+    if (cntEl) {
+      const unsetN = ttLongtextRows.filter(r => !r.isSet).length;
+      cntEl.textContent = ttLongtextRows.length + '名' + (unsetN ? '（未割り振り ' + unsetN + '）' : '（全員割り振り済み）');
+    }
     listEl.innerHTML = ttLongtextRows.map((r, i) => {
       const nm = r.student.name || '(不明)';
       const gi = [r.student.school, r.student.grade].filter(Boolean).join(' ');
@@ -26412,9 +26415,13 @@ async function loadLongtextPeriods() {
         const conf = r.conflictAt[p] && r.conflictAt[p].length;
         const warn = conf ? ' ⚠️' : '';
         const title = conf ? (' title="' + escapeHtml(r.conflictAt[p].join('・') + 'とかぶり') + '"') : '';
+        // 未割り振り(初期値)の選択中ボタンは、確定でないと分かるよう点線＋淡色で表示する。
+        const onStyle = r.isSet
+          ? 'background:#2D5FA6;color:#fff;border:1.5px solid #2D5FA6;'
+          : 'background:#EAF2FB;color:#2D5FA6;border:1.5px dashed #2D5FA6;';
         return '<button onclick="ttSetPeriod(' + i + ',' + p + ')"' + title +
           ' style="flex:1;padding:9px 4px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
-          (on ? 'background:#2D5FA6;color:#fff;border:1.5px solid #2D5FA6;' : 'background:#fff;color:#2D5FA6;border:1.5px solid #9CC0E8;') +
+          (on ? onStyle : 'background:#fff;color:#2D5FA6;border:1.5px solid #9CC0E8;') +
           (conf ? 'box-shadow:inset 0 0 0 2px #F0C000;' : '') + '">' +
           p + '限' + warn + '</button>';
       };
@@ -26423,11 +26430,18 @@ async function loadLongtextPeriods() {
             [r.conflictAt[5].length ? '5限:' + r.conflictAt[5].join('・') : '', r.conflictAt[6].length ? '6限:' + r.conflictAt[6].join('・') : ''].filter(Boolean).join(' / ') +
           '</div>'
         : '';
-      return '<div style="border:1px solid #C6DBF2;border-radius:10px;padding:10px 12px;background:#F8FBFF" data-row="' + i + '">' +
+      // 未割り振りの子はカード自体を黄色系・点線枠で強調。登録済みは通常＋「✓割り振り済み」。
+      const cardStyle = r.isSet
+        ? 'border:1px solid #C6DBF2;background:#F8FBFF'
+        : 'border:1.5px dashed #E0A96F;background:#FFFBF2';
+      const statusTag = r.isSet
+        ? '<span style="font-size:9px;color:#3B6D11;background:#EAF7EA;border:1px solid #8CC98C;padding:0 6px;border-radius:10px;white-space:nowrap">✓ 割り振り済み</span>'
+        : '<span style="font-size:9px;color:#B5741A;background:#FBF1E0;border:1px solid #E0A96F;padding:0 6px;border-radius:10px;white-space:nowrap;font-weight:700">⚠️ 未割り振り（初期' + r.defaultPref + '限）</span>';
+      return '<div style="border-radius:10px;padding:10px 12px;' + cardStyle + '" data-row="' + i + '">' +
         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">' +
           '<span style="font-size:13px;font-weight:700;color:#2D5FA6">' + escapeHtml(nm) + '</span>' +
           (gi ? '<span style="font-size:10px;color:var(--muted)">' + escapeHtml(gi) + '</span>' : '') +
-          (r.isSet ? '' : '<span style="font-size:9px;color:var(--muted);background:#EAF2FB;border:1px solid #C6DBF2;padding:0 6px;border-radius:10px">初期値</span>') +
+          statusTag +
         '</div>' +
         '<div style="display:flex;gap:8px">' + mkBtn(5) + mkBtn(6) + '</div>' +
         confNote +
@@ -26440,24 +26454,60 @@ async function loadLongtextPeriods() {
   }
 }
 
-// トグル操作（メモリ上の currentPref を更新して再描画）
+// トグル操作（メモリ上の currentPref を更新。タップ＝明示割り振りなので isSet を立てて再描画）
 function ttSetPeriod(idx, period) {
   if (!ttLongtextRows[idx]) return;
   ttLongtextRows[idx].currentPref = period;
-  // 該当行のボタンだけ再描画（軽量に全体再描画）
+  ttLongtextRows[idx].isSet = true;   // タップした時点で「割り振り済み」に変わる
+  ttRenderLongtextRow(idx);           // カードを丸ごと描き直す（背景・タグ・ボタン見た目も更新）
+}
+
+// 1行分のカードHTMLを組み立てて差し替える。loadLongtextPeriods の描画と同じ見た目にする。
+function ttRenderLongtextRow(idx) {
+  const r = ttLongtextRows[idx];
   const listEl = document.getElementById('tt-ld-list');
   const rowEl = listEl ? listEl.querySelector('[data-row="' + idx + '"]') : null;
-  if (!rowEl) return;
-  const r = ttLongtextRows[idx];
-  rowEl.querySelectorAll('button').forEach(btn => {
-    const p = btn.textContent.trim().charAt(0); // '5' or '6'
-    const on = String(r.currentPref) === p;
+  if (!r || !rowEl) return;
+  const nm = r.student.name || '(不明)';
+  const gi = [r.student.school, r.student.grade].filter(Boolean).join(' ');
+  const mkBtn = (p) => {
+    const on = String(r.currentPref) === String(p);
     const conf = r.conflictAt[p] && r.conflictAt[p].length;
-    btn.style.background = on ? '#2D5FA6' : '#fff';
-    btn.style.color = on ? '#fff' : '#2D5FA6';
-    btn.style.border = on ? '1.5px solid #2D5FA6' : '1.5px solid #9CC0E8';
-    btn.style.boxShadow = conf ? 'inset 0 0 0 2px #F0C000' : 'none';
-  });
+    const warn = conf ? ' ⚠️' : '';
+    const title = conf ? (' title="' + escapeHtml(r.conflictAt[p].join('・') + 'とかぶり') + '"') : '';
+    const onStyle = r.isSet
+      ? 'background:#2D5FA6;color:#fff;border:1.5px solid #2D5FA6;'
+      : 'background:#EAF2FB;color:#2D5FA6;border:1.5px dashed #2D5FA6;';
+    return '<button onclick="ttSetPeriod(' + idx + ',' + p + ')"' + title +
+      ' style="flex:1;padding:9px 4px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+      (on ? onStyle : 'background:#fff;color:#2D5FA6;border:1.5px solid #9CC0E8;') +
+      (conf ? 'box-shadow:inset 0 0 0 2px #F0C000;' : '') + '">' +
+      p + '限' + warn + '</button>';
+  };
+  const confNote = (r.conflictAt[5].length || r.conflictAt[6].length)
+    ? '<div style="font-size:10px;color:#B5741A;margin-top:4px">⚠️ ' +
+        [r.conflictAt[5].length ? '5限:' + r.conflictAt[5].join('・') : '', r.conflictAt[6].length ? '6限:' + r.conflictAt[6].join('・') : ''].filter(Boolean).join(' / ') +
+      '</div>'
+    : '';
+  const statusTag = r.isSet
+    ? '<span style="font-size:9px;color:#3B6D11;background:#EAF7EA;border:1px solid #8CC98C;padding:0 6px;border-radius:10px;white-space:nowrap">✓ 割り振り済み</span>'
+    : '<span style="font-size:9px;color:#B5741A;background:#FBF1E0;border:1px solid #E0A96F;padding:0 6px;border-radius:10px;white-space:nowrap;font-weight:700">⚠️ 未割り振り（初期' + r.defaultPref + '限）</span>';
+  rowEl.style.border = r.isSet ? '1px solid #C6DBF2' : '1.5px dashed #E0A96F';
+  rowEl.style.background = r.isSet ? '#F8FBFF' : '#FFFBF2';
+  rowEl.innerHTML =
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">' +
+      '<span style="font-size:13px;font-weight:700;color:#2D5FA6">' + escapeHtml(nm) + '</span>' +
+      (gi ? '<span style="font-size:10px;color:var(--muted)">' + escapeHtml(gi) + '</span>' : '') +
+      statusTag +
+    '</div>' +
+    '<div style="display:flex;gap:8px">' + mkBtn(5) + mkBtn(6) + '</div>' +
+    confNote;
+  // 未割り振り数のカウントを更新
+  const cntEl = document.getElementById('tt-ld-count');
+  if (cntEl) {
+    const unsetN = ttLongtextRows.filter(x => !x.isSet).length;
+    cntEl.textContent = ttLongtextRows.length + '名' + (unsetN ? '（未割り振り ' + unsetN + '）' : '（全員割り振り済み）');
+  }
 }
 
 // 保存：各行の currentPref を class_enrollments.preferred_period に反映。
