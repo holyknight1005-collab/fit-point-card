@@ -6178,7 +6178,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm42';
+const APP_VERSION = '20260702dlm43';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -49824,7 +49824,7 @@ async function renderSvInout() {
   try {
     students = await sbGet('students',
       'school=eq.' + encodeURIComponent(svSchool) +
-      '&select=id,name,grade,enroll_date,is_active,inactive_reason,withdraw_effective_date,liny_id,parent_liny_id') || [];
+      '&select=id,name,grade,enroll_date,is_active,inactive_reason,withdraw_status,withdraw_effective_date,liny_id,parent_liny_id') || [];
   } catch (e) {
     sec.innerHTML = '<div class="sv-card-h">🚪 入塾・退塾・未入塾一覧</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">生徒の取得に失敗しました。</div>';
     return;
@@ -49839,8 +49839,19 @@ async function renderSvInout() {
   const joined = students.filter(s => inRange(s.enroll_date))
     .sort((a, b) => (b.enroll_date || '').localeCompare(a.enroll_date || ''));
   // 退塾（students：正式登録の退塾）
-  let left = students.filter(s => s.is_active === false && s.inactive_reason === '退塾' && inRange(s.withdraw_effective_date))
-    .map(s => Object.assign({}, s, { _fromRoster: false }));
+  // ①is_active=false & inactive_reason='退塾'（正式にストップ済み）
+  // ②withdraw_status='確定' で発効日が到来済み（is_active はまだ true のままだが退塾確定）
+  //   ②は①の落とし込み前の状態。退塾申請だけ確定して is_active を落としていない子を拾う。
+  const _leftIds = new Set();
+  let left = [];
+  students.forEach(s => {
+    const byStop = (s.is_active === false && s.inactive_reason === '退塾' && inRange(s.withdraw_effective_date));
+    const byConfirm = (s.withdraw_status === '確定' && s.withdraw_effective_date && s.withdraw_effective_date <= todayStr && inRange(s.withdraw_effective_date));
+    if ((byStop || byConfirm) && !_leftIds.has(s.id)) {
+      _leftIds.add(s.id);
+      left.push(Object.assign({}, s, { _fromRoster: false }));
+    }
+  });
   // 退塾（roster：名簿台帳だけの退塾者＝students に無い人。退塾理由分析と数を揃える）
   // 分析側と同条件：is_active=true & status='退塾'。期間は withdraw_date で判定。
   try {
