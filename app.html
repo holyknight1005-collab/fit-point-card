@@ -6178,7 +6178,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm48';
+const APP_VERSION = '20260702dlm49';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -17692,9 +17692,22 @@ async function runRecurringTodoGeneration() {
     try {
       // 宛先を決める
       let recipients = [];
+      // 学校×「誰か1人でOK」のときは、学校ごとに別グループを作る（各校の誰か1人で完了）。
+      // それ以外は従来どおり全宛先を1グループにまとめる。
+      let schoolGroups = null;   // [{ recipients:[...], key:'松山東' }] or null
       if (tpl.target_type === 'school') {
-        recipients = await resolveChargeStaffIds(
-          Array.isArray(tpl.target_schools) ? tpl.target_schools : []);
+        if (tpl.completion_mode === 'any') {
+          const bySchool = await resolveChargeStaffIdsBySchool(
+            Array.isArray(tpl.target_schools) ? tpl.target_schools : []);
+          schoolGroups = Object.keys(bySchool)
+            .filter(k => (bySchool[k] || []).length)
+            .map(k => ({ key: k, recipients: bySchool[k] }));
+          // 全体の宛先（存在チェック用）
+          recipients = [...new Set(schoolGroups.flatMap(g => g.recipients))];
+        } else {
+          recipients = await resolveChargeStaffIds(
+            Array.isArray(tpl.target_schools) ? tpl.target_schools : []);
+        }
       } else if (tpl.target_type === 'teacher') {
         // 授業マスターの担当から自動で集める。人事異動に自動追従する
         recipients = await resolveTeacherStaffIds();
@@ -17739,8 +17752,9 @@ async function runRecurringTodoGeneration() {
         { last_generated_ym: ym, updated_at: new Date().toISOString() });
 
       const cmode = tpl.completion_mode === 'any' ? 'any' : 'each';
-      const groupId = newTodoGroupId();
-      for (const toId of recipients) {
+
+      // 1件分の staff_todo を生成する（group_id はグループごとに切り替える）
+      const postOne = async (toId, groupId) => {
         await sbPost('staff_todos', {
           from_staff_id: currentStaff.id,
           to_staff_id: toId,
@@ -17757,7 +17771,6 @@ async function runRecurringTodoGeneration() {
           is_private: !!tpl.is_private
         }).catch(async (err) => {
           if (/column|PGRST|400/i.test(String(err && err.message || err))) {
-            // 非公開テンプレは公開ToDoとして生成しない（このテンプレだけ今月スキップ）
             if (tpl.is_private) throw new Error('非公開ToDoの列が未適用');
             await sbPost('staff_todos', {
               from_staff_id: currentStaff.id, to_staff_id: toId,
@@ -17765,6 +17778,21 @@ async function runRecurringTodoGeneration() {
             });
           } else throw err;
         });
+      };
+
+      if (schoolGroups) {
+        // 学校ごとに別グループ＝各校の担当の誰か1人が完了すればその校ぶんが完了
+        for (const g of schoolGroups) {
+          const gid = newTodoGroupId();
+          for (const toId of g.recipients) {
+            await postOne(toId, gid);
+          }
+        }
+      } else {
+        const groupId = newTodoGroupId();
+        for (const toId of recipients) {
+          await postOne(toId, groupId);
+        }
       }
     } catch (e) { /* 1件失敗しても他のテンプレは続行する */ }
   }
@@ -44296,6 +44324,31 @@ async function resolveChargeStaffIds(schools) {
     if (uuid && out.indexOf(uuid) < 0) out.push(uuid);
   });
   return out;
+}
+
+// 学校ごとの担当スタッフ(UUID配列)を返す。{ '松山東': [uuid,...], '松山南': [...] }
+// 定期ToDoで「各校の誰か1人でOK」を成立させるため、学校単位でグループ分けするのに使う。
+async function resolveChargeStaffIdsBySchool(schools) {
+  const targets = (schools || []).map(s => ({ raw: s, norm: normSchoolForTodo(s) }));
+  const map = {};
+  if (!targets.length) return map;
+  let perms = [], staffRows = [];
+  try {
+    perms = await sbGet('staff_permissions', 'select=staff_id,charge_schools') || [];
+    staffRows = await sbGet('staff', 'select=id,staff_id,name') || [];
+  } catch (e) { return map; }
+  const uuidByCode = {};
+  staffRows.forEach(s => { if (s.staff_id) uuidByCode[String(s.staff_id).toLowerCase()] = s.id; });
+  targets.forEach(t => {
+    const list = [];
+    perms.forEach(p => {
+      if (!isStaffInChargeOf(p.charge_schools, t.norm)) return;
+      const uuid = uuidByCode[String(p.staff_id || '').toLowerCase()];
+      if (uuid && list.indexOf(uuid) < 0) list.push(uuid);
+    });
+    map[t.raw] = list;
+  });
+  return map;
 }
 
 // このスタッフが指定校の担当かどうか。charge_schools だけを見る（school_scope は見ない）
