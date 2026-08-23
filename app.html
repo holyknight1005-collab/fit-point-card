@@ -6165,7 +6165,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm38';
+const APP_VERSION = '20260702dlm39';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -34606,6 +34606,45 @@ async function upsertSessionAttendance(rows) {
   }
 }
 
+// 5限→6限などで出欠を付け直したとき、同じ授業・同じ日の「別の時限」に残った
+// 既存の出欠を、いま保存した時限へ寄せる（DELETE不可のためPATCHで対応）。
+// ・寄せ先が空 → 旧行の period を書き換えて移動
+// ・寄せ先に既に行がある → 旧行を欠席(absent)にして無効化（表示は寄せ先の1本が正）
+// targetPeriod が null（時限未設定）の授業は対象外（曖昧なため触らない）。
+async function consolidateAttendancePeriods(classId, sdate, targetPeriod, studentIds) {
+  if (targetPeriod == null) return; // 時限未設定は対象外
+  if (!studentIds || !studentIds.length) return;
+  let dbRows = [];
+  try {
+    dbRows = await sbGet('session_attendance',
+      'class_master_id=eq.' + classId + '&session_date=eq.' + sdate +
+      '&select=id,period,student_id,status') || [];
+  } catch(e) { return; }
+  const saving = new Set(studentIds);
+  const atTarget = new Set(dbRows.filter(r => r.period === targetPeriod).map(r => r.student_id));
+  const nowIso = new Date().toISOString();
+  const staffId = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : null;
+  for (const r of dbRows) {
+    if (r.period === targetPeriod) continue;          // 既に寄せ先＝対象外
+    if (!saving.has(r.student_id)) continue;          // 今回保存した生徒のみ寄せる
+    let patchBody = null;
+    if (atTarget.has(r.student_id)) {
+      if (r.status !== 'absent') patchBody = { status: 'absent', updated_by: staffId, updated_at: nowIso };
+    } else {
+      patchBody = { period: targetPeriod, updated_by: staffId, updated_at: nowIso };
+      atTarget.add(r.student_id); // 移動後は寄せ先が埋まる（同生徒に別period行が複数あった場合の保険）
+    }
+    if (!patchBody) continue;
+    try {
+      await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/session_attendance?id=eq.' + r.id, {
+        method: 'PATCH',
+        headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify(patchBody)
+      });
+    } catch(e) { /* 個別失敗は無視して続行 */ }
+  }
+}
+
 async function saveAttendance() {
   if (!attSelectedClassId || !attSelectedSession || !attRosterRows.length) return;
   if (!confirm('この授業日の出欠を保存しますか？')) return;
@@ -34625,12 +34664,20 @@ async function saveAttendance() {
     }));
     // period が NULL でも安全な upsert（GET→PATCH/INSERTフォールバック）で保存
     const result = await upsertSessionAttendance(rows);
-    hideLoading();
     if (!result.ok) {
+      hideLoading();
       showToast('保存に失敗しました（' + (result.status || '') + '）', 'error');
       console.error('session_attendance保存エラー:', result.status, result.detail);
       return;
     }
+    // 別の時限に残った同生徒の出欠を、いま保存した時限へ寄せる
+    await consolidateAttendancePeriods(
+      attSelectedClassId,
+      attSelectedSession.session_date,
+      attSelectedSession.period,
+      attRosterRows.map(r => r.student.id)
+    );
+    hideLoading();
     showToast('出欠を保存しました（出席' + attRosterRows.filter(r=>r.status==='present').length + '・補習' + attRosterRows.filter(r=>r.status==='makeup').length + '・欠席' + attRosterRows.filter(r=>r.status==='absent').length + '）', 'success');
   } catch(e) {
     hideLoading();
