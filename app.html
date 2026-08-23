@@ -22316,6 +22316,7 @@ async function attTrialInsertLog(prospectId) {
     prospect_id: prospectId,
     trial_date: attTrialCtx.date || null,
     subject: attTrialCtx.subject || null,
+    class_master_id: attTrialCtx.classId || null,  // dlm38: どの授業の体験かを保存（同日同教科の重複表示を防ぐ）
     attended: true,
     note: attTrialCtx.className ? ('出席表から登録：' + attTrialCtx.className) : '出席表から登録',
     created_by: currentStaff ? (currentStaff.staff_id || null) : null,
@@ -30887,7 +30888,11 @@ async function loadAttSheet() {
     // 並び替え（as-sort-select）：school=学校別 / grade=学年順 / kana=五十音順（氏名）
     const sortSel = document.getElementById('as-sort-select');
     const sortMode = sortSel ? sortSel.value : 'school';
-    const byName = (a, b) => (a.name || '').localeCompare(b.name || '', 'ja');
+    // 五十音順は必ず「ふりがな(name_kana)」優先で比較する。漢字名(name)で localeCompare すると
+    // 読みではなく漢字コード順に近い並びになり、途中から五十音が崩れる。dlm38で修正。
+    const byName = (a, b) =>
+      String((a && a.name_kana) || (a && a.name) || '')
+        .localeCompare(String((b && b.name_kana) || (b && b.name) || ''), 'ja');
     if (sortMode === 'grade' || sortMode === 'gradeschool') {
       students.sort((a, b) => {
         const ga = gradeSortKey(a.grade), gb = gradeSortKey(b.grade);
@@ -34879,7 +34884,10 @@ function toggleAttGroupBySchool() {
 }
 
 // この授業に来た体験生（名簿にない＝prospect_trials）を集める。
-// prospect_trials は class_master_id を持たないので「教科一致＋この表の授業日一致」で拾う。
+// dlm38: prospect_trials に class_master_id を保存するようにしたので、
+//   まず「この授業(class_master_id)一致＋この表の授業日」で拾う。
+//   class_master_id が空の旧データだけ、従来の「教科一致＋授業日一致」で救済する。
+//   （同日同教科の授業が複数あると旧データは複数表示されうるが、既存分はSQLで埋め済みの想定）
 // 戻り値: [{ prospect_id, name, school, grade, dates:Set('YYYY-MM-DD') }]（来た日ごとに出席マークを置く用）
 async function loadAttTrials(classId, sessions) {
   try {
@@ -34893,13 +34901,19 @@ async function loadAttTrials(classId, sessions) {
     const dateSet = new Set(sessions.map(s => String(s.session_date).slice(0, 10)));
     const minD = [...dateSet].reduce((a, b) => a < b ? a : b);
     const maxD = [...dateSet].reduce((a, b) => a > b ? a : b);
-    // 期間内の体験ログを取得（attended=true のみ）
+    // 期間内の体験ログを取得（attended=true のみ）。class_master_id も引く。
     let q = 'attended=eq.true&trial_date=gte.' + minD + '&trial_date=lte.' + maxD +
-            '&select=prospect_id,trial_date,subject';
-    if (subject) q += '&subject=eq.' + encodeURIComponent(subject);
-    let logs = await sbGet('prospect_trials', q) || [];
-    // この表の授業日にある体験ログだけ
-    logs = logs.filter(l => dateSet.has(String(l.trial_date).slice(0, 10)));
+            '&select=prospect_id,trial_date,subject,class_master_id';
+    let allLogs = await sbGet('prospect_trials', q) || [];
+    // この表の授業日にある体験ログだけに絞る
+    allLogs = allLogs.filter(l => dateSet.has(String(l.trial_date).slice(0, 10)));
+    // 採用条件：
+    //   ① class_master_id がこの授業と一致（新方式・厳密）
+    //   ② class_master_id が空（旧データ）で、教科がこの授業と一致（従来フォールバック）
+    const logs = allLogs.filter(l => {
+      if (l.class_master_id) return String(l.class_master_id) === String(classId);
+      return subject ? (l.subject === subject) : true;
+    });
     if (!logs.length) return [];
     // prospect の氏名等を引く
     const pids = [...new Set(logs.map(l => l.prospect_id).filter(Boolean))];
@@ -34984,7 +34998,7 @@ async function loadAttMatrix() {
     // 保存済みの並び順を読んでから描画する（授業ごとに共有）
     await loadAttCustomOrder(classId);
     // 体験生（名簿にない・prospect_trials に記録）を取得。
-    // prospect_trials は class_master_id を持たないため「教科一致＋この表の授業日」で拾う。
+    // dlm38: class_master_id 一致で拾う（旧データは教科＋日付でフォールバック）。
     const attTrials = await loadAttTrials(classId, sessions);
     hideLoading();
     buildAttMatrix(sessions, studentIds, atts, checkins, attTrials);
