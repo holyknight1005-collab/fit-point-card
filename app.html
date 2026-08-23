@@ -4188,6 +4188,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <button onclick="switchManageTab('birthday',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🎂 誕生日</button>
       <button onclick="switchManageTab('announce',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📢 お知らせ</button>
       <button onclick="switchManageTab('attendance',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📋 授業出欠</button>
+      <button onclick="switchManageTab('reghistory',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🕘 登録履歴</button>
       <button onclick="switchManageTab('attoverview',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📅 出欠一望</button>
       <button onclick="switchManageTab('attsheet',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🖨 出席表</button>
       <button onclick="switchManageTab('billcheck',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">✅ 請求チェック</button>
@@ -5054,6 +5055,18 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <button onclick="kcCsv()" style="padding:7px 14px;font-size:12px;font-weight:700;border:1px solid #2D6CB6;border-radius:8px;background:#EAF2FB;color:#1E4276;cursor:pointer;font-family:'Noto Sans JP',sans-serif">⬇️ CSV</button>
       </div>
       <div id="kc-body"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">対象月を選んで「集計」を押してください。</div></div>
+    </div>
+
+    <!-- 授業日の登録履歴タブ（class_sessions を作成日時の新しい順に一覧）dlm42 -->
+    <div id="smcontent-reghistory" style="display:none">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">カレンダーや一括登録で<b>作成された授業日（授業回・補習）</b>を、<b>登録した日時の新しい順</b>に表示します。誤って登録したものをここで見つけて削除できます。表示は直近200件です。</div>
+      <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+        <button onclick="regHistFilter='all';loadRegHistory(this)" id="rh-f-all" style="padding:5px 12px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff">すべて</button>
+        <button onclick="regHistFilter='makeup';loadRegHistory(this)" id="rh-f-makeup" style="padding:5px 12px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1.5px solid var(--border);background:var(--surface);color:var(--muted)">🔁 補習のみ</button>
+        <span style="flex:1"></span>
+        <button onclick="loadRegHistory()" style="padding:5px 12px;font-size:11px;font-weight:700;border-radius:8px;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1px solid var(--border);background:var(--surface);color:var(--text)">🔄 更新</button>
+      </div>
+      <div id="rh-body"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中…</div></div>
     </div>
 
     <!-- 自習監督タブ（希望→決定→報告）dlm29 -->
@@ -6165,7 +6178,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm41';
+const APP_VERSION = '20260702dlm42';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -27749,10 +27762,35 @@ function closeCourseSessionModal() {
   const cyc = document.getElementById('course-school-cycle'); if (cyc) cyc.value = '';
 }
 
+// ログイン中スタッフの担当授業ID集合を返す（主担当 teacher_staff_id ∪ 追加担当 class_teachers）。
+// カレンダー授業登録の「担当外かどうか」判定に使う。
+async function getMyClassIdSet() {
+  const set = new Set();
+  if (!currentStaff || !currentStaff.id) return set;
+  try {
+    const main = await sbGet('class_master', 'teacher_staff_id=eq.' + currentStaff.id + '&select=id') || [];
+    main.forEach(c => set.add(String(c.id)));
+  } catch (e) { /* 取れなければ空のまま */ }
+  try {
+    const ct = await sbGet('class_teachers', 'staff_id=eq.' + currentStaff.id + '&select=class_master_id') || [];
+    ct.forEach(r => { if (r.class_master_id) set.add(String(r.class_master_id)); });
+  } catch (e) { /* class_teachers 未作成なら主担当のみ */ }
+  return set;
+}
+
 async function submitCourseSessions() {
   const classId = document.getElementById('course-class-select').value;
   if (!classId) { showToast('授業を選んでください', 'error'); return; }
   if (!courseSelectedDates.size) { showToast('日付が選ばれていません', 'error'); return; }
+  // 担当外の授業を登録しようとしたら警告（ブロックはしない）
+  try {
+    const mySet = await getMyClassIdSet();
+    if (mySet.size && !mySet.has(String(classId))) {
+      const selEl = document.getElementById('course-class-select');
+      const cname = (selEl && selEl.selectedIndex >= 0) ? selEl.options[selEl.selectedIndex].text : 'この授業';
+      if (!confirm('⚠️ 「' + cname + '」はあなたの担当授業ではありません。\nそれでもこの授業に授業日を登録しますか？')) return;
+    }
+  } catch (e) { /* 判定に失敗しても登録自体は止めない */ }
   const dates = [...courseSelectedDates].sort();
   const isMakeup = !!document.getElementById('course-makeup')?.checked;
   // dhu: 学校別回。ONなのに学校未選択ならエラー
@@ -32640,6 +32678,113 @@ let _kcRows = [];        // dlm37 [{staffId,name,jhsKoma,hsKoma,otherKoma,svKoma
 let _kcMonthLabel = '';  // 'YYYY年M月'
 let _kcUnknown = 0;      // 実施者未記録のコマ数
 
+// ===== 授業日の登録履歴（class_sessions を作成日時の新しい順に一覧・削除）dlm42 =====
+let regHistFilter = 'all';   // 'all' | 'makeup'
+
+async function loadRegHistory(btnEl) {
+  // フィルタボタンの見た目更新
+  ['all', 'makeup'].forEach(f => {
+    const b = document.getElementById('rh-f-' + f);
+    if (!b) return;
+    const on = (regHistFilter === f);
+    b.style.background = on ? '#2D6CB6' : 'var(--surface)';
+    b.style.color = on ? '#fff' : 'var(--muted)';
+    b.style.borderColor = on ? '#2D6CB6' : 'var(--border)';
+  });
+  const body = document.getElementById('rh-body');
+  if (!body) return;
+  body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中…</div>';
+  try {
+    let q = 'select=id,class_master_id,session_date,period,is_makeup,school,created_at&order=created_at.desc&limit=200';
+    if (regHistFilter === 'makeup') q = 'is_makeup=eq.true&' + q;
+    const rows = await sbGet('class_sessions', q) || [];
+    if (!rows.length) {
+      body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">登録履歴がありません。</div>';
+      return;
+    }
+    // 授業名を突合
+    const cids = [...new Set(rows.map(r => r.class_master_id).filter(Boolean))];
+    const nameById = {};
+    if (cids.length) {
+      try {
+        const cms = await sbGet('class_master', 'id=in.(' + cids.join(',') + ')&select=id,name,subject') || [];
+        cms.forEach(c => { nameById[c.id] = c; });
+      } catch (e) { /* 名前が引けなくてもID表示で続行 */ }
+    }
+    // 登録日時（JST）でグルーピング。同一操作は同秒で入るので「日時（分まで）」でまとめる。
+    const groups = {};   // 'YYYY/MM/DD HH:MM' -> [rows]
+    const fmtDT = (iso) => {
+      if (!iso) return '（不明）';
+      const t = new Date(iso);
+      const j = new Date(t.getTime() + 9 * 3600000);
+      const p = n => String(n).padStart(2, '0');
+      return j.getUTCFullYear() + '/' + p(j.getUTCMonth() + 1) + '/' + p(j.getUTCDate()) + ' ' + p(j.getUTCHours()) + ':' + p(j.getUTCMinutes());
+    };
+    rows.forEach(r => {
+      const k = fmtDT(r.created_at);
+      (groups[k] || (groups[k] = [])).push(r);
+    });
+    const gkeys = Object.keys(groups).sort((a, b) => a < b ? 1 : -1); // 新しい順
+    let html = '';
+    gkeys.forEach(gk => {
+      const list = groups[gk];
+      html += '<div style="margin-bottom:12px;border:1px solid var(--border);border-radius:10px;overflow:hidden">';
+      html += '<div style="padding:7px 11px;background:#EEF3F8;border-bottom:1px solid var(--border);font-size:11px;font-weight:800;color:#1E4276">🕘 ' + escapeHtml(gk) + ' に登録（' + list.length + '件）</div>';
+      list.forEach(r => {
+        const cm = nameById[r.class_master_id] || {};
+        const cname = cm.name || '(不明な授業)';
+        const subj = cm.subject ? ('・' + cm.subject) : '';
+        const mk = r.is_makeup ? '<span style="font-size:9px;background:#EFE6FB;color:#6B4FA0;border:1px solid #C9B7ED;padding:1px 6px;border-radius:8px;margin-left:5px;white-space:nowrap">🔁 補習</span>' : '';
+        const pr = (r.period != null) ? (r.period + '限') : '時間指定';
+        const sch = r.school ? ('<span style="font-size:10px;color:var(--muted);margin-left:5px">' + escapeHtml(r.school) + '</span>') : '';
+        html += '<div style="display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid var(--border)">' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:13px;font-weight:700;color:#222">' + escapeHtml(cname) + '<span style="font-size:10px;color:var(--muted);font-weight:500">' + escapeHtml(subj) + '</span>' + mk + '</div>' +
+            '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(r.session_date) + '（' + escapeHtml(pr) + '）' + sch + '</div>' +
+          '</div>' +
+          '<button onclick="regHistDelete(\'' + r.id + '\',\'' + escapeAttr(cname) + '\',\'' + escapeAttr(r.session_date) + '\',\'' + escapeAttr(pr) + '\')" style="flex-shrink:0;padding:6px 10px;font-size:11px;font-weight:700;border:1px solid #E0A0A0;border-radius:8px;background:#FDECEC;color:#C0392B;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🗑 削除</button>' +
+        '</div>';
+      });
+      html += '</div>';
+    });
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<div style="font-size:12px;color:#C0392B;text-align:center;padding:20px">履歴の取得に失敗しました：' + escapeHtml(e.message || '') + '</div>';
+  }
+}
+
+async function regHistDelete(sessionId, cname, sdate, prLabel) {
+  if (!sessionId) return;
+  if (!confirm('この授業日を削除します。よろしいですか？\n\n' + cname + '\n' + sdate + '（' + prLabel + '）\n\n※すでに出欠が付いている場合は、その出欠も一緒に確認します。')) return;
+  showLoading('削除中...');
+  try {
+    // 削除対象セッションの情報を取り、同じ授業・同じ日に出欠があるか確認（あれば警告）
+    let sinfo = null;
+    try {
+      const s = await sbGet('class_sessions', 'id=eq.' + sessionId + '&select=class_master_id,session_date') || [];
+      sinfo = s[0] || null;
+    } catch (e) { /* 取れなくても削除は続行 */ }
+    if (sinfo) {
+      try {
+        const atts = await sbGet('session_attendance',
+          'class_master_id=eq.' + sinfo.class_master_id + '&session_date=eq.' + sinfo.session_date + '&select=id') || [];
+        if (atts.length) {
+          hideLoading();
+          if (!confirm('⚠️ この授業日には出欠が ' + atts.length + ' 件ついています。\n授業日を削除しても出欠記録は残ります（別途、授業出欠画面で対応してください）。\n\nこのまま授業日だけ削除しますか？')) return;
+          showLoading('削除中...');
+        }
+      } catch (e) { /* 出欠確認に失敗しても削除は続行 */ }
+    }
+    await sbDelete('class_sessions', 'id=eq.' + sessionId);
+    hideLoading();
+    showToast('✅ 授業日を削除しました', 'success');
+    loadRegHistory();
+  } catch (e) {
+    hideLoading();
+    showToast('削除に失敗しました：' + (e.message || ''), 'error');
+  }
+}
+
 function initKomaCount() {
   if (!canSeeKomaCount()) {
     const body = document.getElementById('kc-body');
@@ -36853,7 +36998,7 @@ function switchManageTab(tab, el) {
   // manage-* 系（授業管理など）
   const manageTabs = ['class-master','check-item','mission','quiz'];
   // smcontent-* 系（小メニューから統合したタブ）
-  const menuTabs = ['report','todo','line','teamtask','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','attoverview','attsheet','billcheck','reportbatch','komacount','supervision','namefix','basicedit','timetable','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','prospects','interview','examreq','shakei','studentreg','demo','revenue','tsushin'];
+  const menuTabs = ['report','todo','line','teamtask','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','attoverview','attsheet','billcheck','reportbatch','komacount','supervision','namefix','basicedit','timetable','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','prospects','interview','examreq','shakei','studentreg','demo','revenue','tsushin','reghistory'];
   manageTabs.forEach(t => {
     const el2 = document.getElementById('manage-' + t);
     if (el2) el2.style.display = 'none';
@@ -36908,6 +37053,7 @@ function switchManageTab(tab, el) {
   if (tab === 'billcheck') initBillCheck();
   if (tab === 'reportbatch') initReportBatch();
   if (tab === 'komacount') initKomaCount();
+  if (tab === 'reghistory') loadRegHistory();
   if (tab === 'supervision') initSupervision();
   if (tab === 'namefix') initNameFix();
   if (tab === 'basicedit') initBasicEdit();
