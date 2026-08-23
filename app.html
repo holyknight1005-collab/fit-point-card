@@ -6178,7 +6178,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm49';
+const APP_VERSION = '20260702dlm51';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -39284,7 +39284,7 @@ function renderProspectsTable() {
   let head = '<tr>' + th('感触', '72px') + th('氏名', '90px') + th('問合せ日') + th('来塾日') + th('最新<br>来塾日') + th('次の<br>体験') + th('きっかけ', '80px') + th('学校') + th('学年') + th('担当', '110px')
     + th('LINE', '54px') + th('面談', '54px') + th('保護者<br>面談', '54px') + th('体験', '70px');
   prospectFields.forEach(f => { head += th(escapeHtml(f.label), '90px'); });
-  head += th('', '72px') + '</tr>';
+  head += th('', '128px') + '</tr>';
 
   const rows = list.map(p => {
     const st = p._status || normalizeProspectStatus(p.status);
@@ -39351,7 +39351,10 @@ function renderProspectsTable() {
         row += td('<span style="cursor:pointer;display:block;min-height:16px;text-align:center" onclick="editProspectText(&quot;' + p.id + '&quot;,&quot;' + f.id + '&quot;)">' + (val ? escapeHtml(String(val)) : '<span style=\'color:var(--muted)\'>＋</span>') + '</span>');
       }
     });
-    row += td('<button onclick="openProspectHistory(&quot;' + p.id + '&quot;)" style="border:none;background:none;cursor:pointer;font-size:14px" title="対応履歴">🕒</button><button onclick="openProspectModal(&quot;' + p.id + '&quot;)" style="border:none;background:none;cursor:pointer;font-size:13px" title="編集">✏️</button>', 'text-align:center');
+    const enrollBtnTbl = (PROSPECT_POSITIVE.indexOf(st) !== -1)
+      ? '<button onclick="advanceProspect(&quot;' + p.id + '&quot;,&quot;__enroll__&quot;)" title="生徒登録へ進む" style="border:none;background:#27AE60;border-radius:5px;color:#fff;font-size:11px;font-weight:700;cursor:pointer;padding:4px 7px;margin-right:4px;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">✅入塾</button>'
+      : '';
+    row += td(enrollBtnTbl + '<button onclick="openProspectHistory(&quot;' + p.id + '&quot;)" style="border:none;background:none;cursor:pointer;font-size:14px" title="対応履歴">🕒</button><button onclick="openProspectModal(&quot;' + p.id + '&quot;)" style="border:none;background:none;cursor:pointer;font-size:13px" title="編集">✏️</button>', 'text-align:center;white-space:nowrap');
     row += '</tr>';
     return row;
   }).join('');
@@ -44201,22 +44204,51 @@ async function saveNewStudent() {
   if (!name) { showErr('氏名を入力してください'); return; }
   if (!enrollDate) { showErr('入塾日を入力してください'); return; }
 
-  // 重複チェック：同名生徒は警告（メールは扱わない）。見込みからの引き継ぎ(enrollingProspectId)はスキップ。
-  if (!enrollingProspectId) {
-    try {
-      const existing = await sbGet('students', 'select=name,school,is_active') || [];
-      const nn = normalizeName(name);
-      const school = v('sadd-school');
-      const nameHit = existing.filter(s => normalizeName(s.name) === nn
-        && (!s.school || !school || normalizeSchool(s.school) === normalizeSchool(school)));
-      if (nameHit.length) {
-        const d = nameHit[0];
-        const w = '⚠️ 同名の生徒が既にいます：' + (d.name || '') + (d.school ? '（' + d.school + '）' : '')
-          + (d.is_active === false ? '【退塾/卒業】' : '【在籍中】');
-        if (!confirm(w + '\n\nこのまま新規登録しますか？')) return;
+  // 重複チェック：同名生徒がいれば警告。
+  // 見込みからの引き継ぎ(enrollingProspectId)中でも実施し、在籍中の同名生徒がいたら
+  // 「新規登録」ではなく「既存生徒に紐付け」を選べるようにする（二重登録の防止）。
+  try {
+    const existing = await sbGet('students', 'select=id,name,school,grade,is_active,enroll_date') || [];
+    const nn = normalizeName(name);
+    const school = v('sadd-school');
+    const nameHit = existing.filter(s => normalizeName(s.name) === nn
+      && (!s.school || !school || normalizeSchool(s.school) === normalizeSchool(school)));
+    if (nameHit.length) {
+      // 在籍中の同名を優先的に紐付け候補にする
+      const activeHit = nameHit.find(s => s.is_active !== false) || nameHit[0];
+      const label = (activeHit.name || '') + (activeHit.school ? '（' + activeHit.school + '）' : '')
+        + (activeHit.grade ? ' ' + activeHit.grade : '')
+        + (activeHit.is_active === false ? '【退塾/卒業】' : '【在籍中】');
+      if (enrollingProspectId) {
+        // 見込み引き継ぎ中：既に生徒がいる → 新規作成せず、その生徒に紐付けるか確認
+        const doLink = confirm('⚠️ 同名の生徒が既に登録されています：\n' + label +
+          '\n\n二重登録を防ぐため、新しく作らずに【この既存の生徒に紐付け】ますか？\n' +
+          '（OK＝既存生徒に紐付け／キャンセル＝何もしない）');
+        if (doLink) {
+          showLoading('紐付け中...');
+          try {
+            await sbPatch('prospects', 'id=eq.' + enrollingProspectId,
+              { enrolled_student_id: activeHit.id, status: '☆入塾書待ち', updated_at: new Date().toISOString() });
+            hideLoading();
+            closeStudentAddModal();
+            showToast('🔗 既存の生徒「' + (activeHit.name || '') + '」に紐付けました', 'success');
+            if (typeof initProspects === 'function' && document.getElementById('smcontent-prospects') && document.getElementById('smcontent-prospects').style.display !== 'none') {
+              await initProspects();
+            }
+          } catch (linkErr) {
+            hideLoading();
+            showErr('紐付けに失敗しました：' + (linkErr && linkErr.message ? linkErr.message : linkErr));
+          }
+          return;   // 新規登録はしない
+        }
+        // doLink=キャンセル → 何もせず中断（誤って新規作成しないため）
+        return;
+      } else {
+        // 通常の新規登録：従来どおり「このまま新規登録するか」を確認
+        if (!confirm('⚠️ 同名の生徒が既にいます：' + label + '\n\nこのまま新規登録しますか？')) return;
       }
-    } catch (e) { /* 取得失敗時はチェックをスキップして登録を妨げない */ }
-  }
+    }
+  } catch (e) { /* 取得失敗時はチェックをスキップして登録を妨げない */ }
 
   const pin = String(Math.floor(10000 + Math.random() * 90000));
   const divVal = currentDivision || '高校部';
