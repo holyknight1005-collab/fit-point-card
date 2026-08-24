@@ -6195,7 +6195,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm52';
+const APP_VERSION = '20260702dlm53';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32654,8 +32654,12 @@ async function reLoad() {
         hasRecord: !!(rep && ((rep.theme && rep.theme.trim()) || (rep.content && rep.content.trim()) || (rep.student_notes && rep.student_notes.trim()) || (rep.homework && rep.homework.trim())))
       });
     });
-    // 日付昇順・同日は限順
-    rows.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.period || 0) - (b.period || 0)));
+    // 授業ごとにまとめる：授業名→日付→限 の順
+    rows.sort((a, b) => {
+      if (a.className !== b.className) return a.className < b.className ? -1 : 1;
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      return (a.period || 0) - (b.period || 0);
+    });
     _reRows = rows;
 
     if (!rows.length) {
@@ -32680,7 +32684,27 @@ function reRenderRows() {
   if (!body) return;
   const done = _reRows.filter(r => r.hasRecord).length;
   let html = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">全 <b style="color:var(--text)">' + _reRows.length + '</b> 回 ／ 記入済 <b style="color:var(--green-d)">' + done + '</b> ・ 未記入 <b style="color:var(--red)">' + (_reRows.length - done) + '</b></div>';
+
+  // 授業ごとの件数を先に集計（見出しに出す）
+  const clsCount = {};
+  _reRows.forEach(r => {
+    if (!clsCount[r.classId]) clsCount[r.classId] = { total: 0, done: 0, name: r.className };
+    clsCount[r.classId].total++;
+    if (r.hasRecord) clsCount[r.classId].done++;
+  });
+
+  let curClassId = null;
   _reRows.forEach((r, i) => {
+    // 授業が変わったらグループ見出しを挿入
+    if (r.classId !== curClassId) {
+      curClassId = r.classId;
+      const cc = clsCount[r.classId] || { total: 0, done: 0 };
+      html += '<div style="display:flex;align-items:center;gap:8px;margin:14px 0 8px;padding-bottom:5px;border-bottom:2px solid var(--orange)">' +
+        '<span style="font-size:15px;font-weight:800;color:var(--text)">📚 ' + escapeHtml(r.className) + '</span>' +
+        '<span style="flex:1"></span>' +
+        '<span style="font-size:11px;color:var(--muted)">記入 <b style="color:var(--green-d)">' + cc.done + '</b>/' + cc.total + '</span>' +
+      '</div>';
+    }
     const p = r.date.split('-').map(Number);
     const dateLabel = p[1] + '/' + p[2] + '（' + reWd(r.date) + '）';
     const periodLabel = r.period ? (r.period + '限') : '';
@@ -32690,8 +32714,7 @@ function reRenderRows() {
       : '<span id="re-status-' + i + '" style="font-size:10px;font-weight:700;color:#C0392B;background:#FCE9E7;border:1px solid #F3C6C0;border-radius:20px;padding:1px 8px">未記入</span>';
     html += '<div class="re-row" data-idx="' + i + '" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:8px">' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">' +
-        '<span style="font-size:13px;font-weight:800;color:var(--text)">' + escapeHtml(r.className) + '</span>' +
-        '<span style="font-size:12px;color:var(--orange-d);font-weight:700">' + dateLabel + (periodLabel ? ' ' + periodLabel : '') + '</span>' + cyc +
+        '<span style="font-size:13px;color:var(--orange-d);font-weight:700">' + dateLabel + (periodLabel ? ' ' + periodLabel : '') + '</span>' + cyc +
         '<span style="flex:1"></span>' + statusChip +
       '</div>' +
       '<div style="display:flex;flex-direction:column;gap:6px">' +
