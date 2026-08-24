@@ -6195,7 +6195,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm55';
+const APP_VERSION = '20260702dlm56';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -27201,6 +27201,7 @@ function openStaffCalModal(dateISO, simple) {
         ? '<button onclick="openSessionTimeEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.start_time ? String(s.start_time).slice(0,5) : '') + '\',\'' + (s.end_time ? String(s.end_time).slice(0,5) : '') + '\')" style="margin-left:8px;font-size:10px;font-weight:700;color:#2D6DB5;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">⏱ 時間変更</button>'
           + '<button onclick="openSessionDateEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\')" style="margin-left:6px;font-size:10px;font-weight:700;color:#96690F;background:#FEF3E0;border:1px solid #E8C98A;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📅 日程変更</button>'
           + '<button onclick="openSessionCycleEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\')" style="margin-left:6px;font-size:10px;font-weight:700;color:#7A3E9D;background:#F3EAFB;border:1px solid #C9A2E6;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🔢 回数編集</button>'
+          + '<button onclick="toggleSessionMakeup(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.is_makeup ? '1' : '0') + '\')" style="margin-left:6px;font-size:10px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (s.is_makeup ? '↩ 通常に戻す' : '🔁 補習にする') + '</button>'
         : '';
       const chgBadge = s.change_log
         ? '<div style="font-size:10px;color:#96690F;background:#FEF3E0;border:1px solid #E8C98A;border-radius:6px;padding:2px 7px;margin-top:4px;display:inline-block">📅 ' +
@@ -27529,6 +27530,33 @@ async function saveSessionCycle(classId, dateISO, periodStr, isNormal) {
     hideLoading();
     const ov = document.getElementById('session-cycle-modal'); if (ov) ov.remove();
     showToast('🔢 回数を保存しました' + (cascade ? '（前後も連番更新）' : ''), 'success');
+    if (typeof loadStaffCalendar === 'function') { try { loadStaffCalendar(); } catch (e) {} }
+    if (typeof loadTodayClasses === 'function') { try { loadTodayClasses(); } catch (e) {} }
+    if (typeof loadSessionList === 'function') { try { loadSessionList(); } catch (e) {} }
+  } catch (e) { hideLoading(); showToast('エラー: ' + (e && e.message ? e.message : e), 'error'); }
+}
+
+// 既存の授業回を「通常⇄補習」に切り替える（案C：cycle_no は変更しない。番号調整が要る場合は🔢回数編集で手動）。
+// 対象1回だけを is_makeup トグル。curMakeup は現在値（0/1文字列）。
+async function toggleSessionMakeup(classId, dateISO, periodStr, curMakeup) {
+  const curPeriod = periodStr === '' ? null : parseInt(periodStr);
+  const isMakeupNow = (curMakeup === '1' || curMakeup === true || curMakeup === 1);
+  const toMakeup = !isMakeupNow;
+  const p = dateISO.split('-').map(Number);
+  const wd = ['日','月','火','水','木','金','土'];
+  const dt = new Date(p[0], p[1]-1, p[2]);
+  const dateLabel = p[1] + '月' + p[2] + '日（' + wd[dt.getDay()] + '）' + (curPeriod != null ? '／' + curPeriod + '限' : '');
+  const msg = toMakeup
+    ? ('この回を「🔁 補習」に変更しますか？\n' + dateLabel + '\n\n※ 回数（サイクル番号）はそのまま残ります。番号を空けたい場合は「🔢 回数編集」で調整してください。')
+    : ('この回を「通常授業」に戻しますか？\n' + dateLabel + '\n\n※ 回数（サイクル番号）はそのまま残ります。連番を振り直したい場合は「🔢 回数編集」で調整してください。');
+  if (!confirm(msg)) return;
+  showLoading('保存中...');
+  try {
+    let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + dateISO;
+    q += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
+    await sbPatch('class_sessions', q, { is_makeup: toMakeup });
+    hideLoading();
+    showToast(toMakeup ? '🔁 補習に変更しました' : '通常授業に戻しました', 'success');
     if (typeof loadStaffCalendar === 'function') { try { loadStaffCalendar(); } catch (e) {} }
     if (typeof loadTodayClasses === 'function') { try { loadTodayClasses(); } catch (e) {} }
     if (typeof loadSessionList === 'function') { try { loadSessionList(); } catch (e) {} }
