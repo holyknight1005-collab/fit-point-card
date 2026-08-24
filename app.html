@@ -4193,6 +4193,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <button onclick="switchManageTab('attsheet',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🖨 出席表</button>
       <button onclick="switchManageTab('billcheck',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">✅ 請求チェック</button>
       <button onclick="switchManageTab('reportbatch',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📝 報告書まとめ</button>
+      <button onclick="switchManageTab('reportedit',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">✏️ 報告書入力</button>
       <button id="manage-tab-komacount" onclick="switchManageTab('komacount',this)" class="tab-btn manage-tab-btn" style="display:none;flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🧮 コマ数集計</button>
       <button onclick="switchManageTab('supervision',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🪑 自習監督</button>
       <button id="manage-tab-namefix" onclick="switchManageTab('namefix',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">👤 氏名整備</button>
@@ -5042,6 +5043,22 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <button onclick="rbCsv()" style="padding:7px 14px;font-size:12px;font-weight:700;border:1px solid #2D6CB6;border-radius:8px;background:#EAF2FB;color:#1E4276;cursor:pointer;font-family:'Noto Sans JP',sans-serif">⬇️ CSV</button>
       </div>
       <div id="rb-body"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">講師を選択してください。</div></div>
+    </div>
+
+    <!-- 報告書入力タブ（自分の担当授業を月まとめで編集） -->
+    <div id="smcontent-reportedit" style="display:none">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">月を選ぶと、その月の<b>自分の担当授業（主担当＋追加担当）</b>のすべての授業回が一覧で出ます。各回の報告書をその場で編集して、行ごと、または画面下の<b>まとめて保存</b>で一括保存できます。記入済みの回も表示・修正できます。</div>
+      <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
+        <select class="form-select" id="re-teacher-select" onchange="reLoad()" style="flex:1;min-width:140px;font-size:13px;display:none"><option value="">講師を選択…</option></select>
+        <button onclick="reShiftMonth(-1)" style="padding:6px 10px;font-size:13px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:#fff;color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">‹</button>
+        <span id="re-month-label" style="font-size:14px;font-weight:800;color:var(--text);min-width:96px;text-align:center">—</span>
+        <button onclick="reShiftMonth(1)" style="padding:6px 10px;font-size:13px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:#fff;color:var(--text);cursor:pointer;font-family:'Noto Sans JP',sans-serif">›</button>
+        <button onclick="reLoad()" style="padding:7px 14px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:'Noto Sans JP',sans-serif">更新</button>
+      </div>
+      <div id="re-body"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">「更新」で読み込みます。</div></div>
+      <div id="re-saveall-bar" style="display:none;position:sticky;bottom:0;background:var(--surface);border-top:1px solid var(--border);padding:10px 4px;margin-top:8px;z-index:5">
+        <button onclick="reSaveAll()" style="width:100%;padding:12px;font-size:14px;font-weight:700;border:none;border-radius:10px;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;cursor:pointer;font-family:'Noto Sans JP',sans-serif;box-shadow:0 3px 10px rgba(245,166,35,0.3)">💾 変更をまとめて保存 <span id="re-dirty-count" style="font-size:12px;opacity:0.9"></span></button>
+      </div>
     </div>
 
     <!-- コマ数集計タブ（給与用・admin/橋田/亀井/石田のみ） -->
@@ -6965,7 +6982,7 @@ async function openAppDeliveryModal() {
   try {
     // 授業・生徒一覧をロード（未取得ならまとめて）
     appDeliveryClasses = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject') || [];
-    appDeliveryStudents = sortStudentsJa(await sbGetTolerant('students', 'is_active=eq.true&order=school,grade,name&select=id,name,name_kana,school,grade', 'is_active=eq.true&order=school,grade,name&select=id,name,school,grade') || []);
+    appDeliveryStudents = await sbGet('students', 'is_active=eq.true&order=school,grade,name&select=id,name,school,grade') || [];
     hideLoading();
   } catch (e) {
     hideLoading();
@@ -10913,8 +10930,7 @@ function filterPointPicker(kind) {
       const schoolOK = school === '全員' || s.school === school;
       const kwOK = !kw || (s.name && s.name.toLowerCase().includes(kw));
       return activeOK && schoolOK && kwOK;
-    })
-    .sort((a, b) => studentSortKey(a.s).localeCompare(studentSortKey(b.s), 'ja'));
+    });
   sel.innerHTML = '<option value="">-- 選択してください（' + opts.length + '人）--</option>' +
     opts.map(({ s, i }) =>
       '<option value="' + i + '">' + s.name +
@@ -13121,7 +13137,7 @@ function openStaffManage(tab) {
     'student-view':'生徒画面', 'birthday':'誕生日', 'calendar':'予定表',
     'alert':'アラート', 'announce':'お知らせ', 'attendance':'授業出欠', 'attoverview':'出欠一望', 'attsheet':'出席表', 'timetable':'時間割かぶり',
     'quizstatus':'小テスト状況', 'appusage':'教科アプリ', 'classanalysis':'授業分析', 'studentanalysis':'生徒分析', 'rostercheck':'名簿照合', 'prospects':'入来塾管理', 'interview':'面談', 'studentreg':'生徒登録', 'demo':'デモ確認', 'tsushin':'通信コース', 'revenue':'売上', 'settings':'設定',
-    'namefix':'氏名整備', 'basicedit':'基本情報一括'
+    'namefix':'氏名整備', 'basicedit':'基本情報一括', 'reportedit':'報告書入力'
   };
   document.getElementById('manage-header-title').textContent = titles[tab] || '管理';
   // 売上タブは admin または revenue 権限を持つスタッフに表示
@@ -14477,6 +14493,7 @@ function visibleFeatures() {
 var MANAGE_TABS_EXTRA = [
   { key:'billcheck',   icon:'✅', label:'請求チェック',   action:function(){ openHomeFeature('billcheck'); } },
   { key:'reportbatch', icon:'📝', label:'報告書まとめ',   action:function(){ openHomeFeature('reportbatch'); } },
+  { key:'reportedit',  icon:'✏️', label:'報告書入力',     action:function(){ openHomeFeature('reportedit'); } },
   { key:'komacount',   icon:'🧮', label:'コマ数集計',     action:function(){ openHomeFeature('komacount'); },
     visible:function(){ return (typeof canSeeKomaCount === 'function') && canSeeKomaCount(); } },
   { key:'supervision', icon:'🪑', label:'自習監督',       action:function(){ openHomeFeature('supervision'); } },
@@ -14655,7 +14672,7 @@ function closeStaffMenu() {
 
 
 async function loadMonitorStaffSelect() {
-  const staff = sortStaffByCode(await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id'));
+  const staff = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=name');
   const sel = document.getElementById('monitor-staff-select');
   sel.innerHTML = '<option value="">スタッフを選択</option>' +
     (staff||[]).map(s => '<option value="' + s.id + '">' + s.name + '（' + s.staff_id + '）</option>').join('');
@@ -16510,7 +16527,7 @@ async function openCalendarReg(presetDate, presetScope, presetSchool, presetStaf
     try { staffStudents = await sbGet('students', 'select=*&order=school,grade,name') || []; } catch(e) {}
   }
   if (!calRegStaffList.length) {
-    try { calRegStaffList = sortStaffByCode(await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id') || []); } catch(e) {}
+    try { calRegStaffList = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=name') || []; } catch(e) {}
   }
   // 担当スタッフを事前チェック
   if (wantStaffPreset) {
@@ -20610,17 +20627,6 @@ function sortStudentsJa(list) {
     studentSortKey(a).localeCompare(studentSortKey(b), 'ja')
   );
 }
-// スタッフ配列を staff_id 昇順（fit002, fit003, …）で並べ替える。
-// 既定で fit001（代表）を除外する。含めたい場合は sortStaffByCode(list, {includeRep:true}) を使う。
-function sortStaffByCode(list, opts) {
-  const includeRep = !!(opts && opts.includeRep);
-  return (list || [])
-    .filter(s => includeRep || String((s && s.staff_id) || '').toLowerCase() !== 'fit001')
-    .slice()
-    .sort((a, b) =>
-      String((a && a.staff_id) || '').localeCompare(String((b && b.staff_id) || ''), 'en')
-    );
-}
 // name_kana 未適用環境でも落ちないよう、列エラーなら fallback クエリで再取得する。
 async function sbGetTolerant(table, query, fallbackQuery) {
   try {
@@ -23767,7 +23773,7 @@ let cmBulkTeachers = null; // スタッフ一覧キャッシュ
 
 async function ensureCmBulkTeachers() {
   if (cmBulkTeachers) return cmBulkTeachers;
-  try { cmBulkTeachers = sortStaffByCode(await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id') || []); }
+  try { cmBulkTeachers = await sbGet('staff', 'is_active=eq.true&select=id,name&order=name') || []; }
   catch (e) { cmBulkTeachers = []; }
   return cmBulkTeachers;
 }
@@ -24456,7 +24462,7 @@ async function setClassTeacher(classId) {
   const cm = (classMasterList || []).find(c => c.id === classId);
   // スタッフ一覧
   try {
-    ctModalStaff = sortStaffByCode(await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id') || []);
+    ctModalStaff = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=name') || [];
   } catch (e) { showToast('スタッフ取得に失敗しました', 'error'); return; }
   // 部（staff_permissions.departments）を読み、「◯◯部をまとめて選ぶ」に使う
   ctModalDepts = {};
@@ -25480,8 +25486,8 @@ async function openIvAppt(presetStudentId, presetDate) {
   if (sel) {
     sel.innerHTML = '<option value="">読み込み中...</option>';
     try {
-      const stus = sortStudentsJa(await excludeDemoRows(await sbGetTolerant('students',
-        'select=id,name,name_kana,school,grade&order=name', 'select=id,name,school,grade&order=name') || []));
+      const stus = await excludeDemoRows(await sbGet('students',
+        'select=id,name,school,grade&order=name') || []);
       sel.innerHTML = '<option value="">生徒を選択</option>' + stus.map(s =>
         '<option value="' + s.id + '">' + escapeHtml(s.name) +
         (s.school ? '（' + escapeHtml(s.school) + (s.grade || '') + '）' : '') + '</option>').join('');
@@ -25492,7 +25498,7 @@ async function openIvAppt(presetStudentId, presetDate) {
   const stf = document.getElementById('iva-staff');
   if (stf) {
     try {
-      const list = sortStaffByCode(await sbGet('staff', 'select=staff_id,name&order=staff_id') || []);
+      const list = await sbGet('staff', 'select=staff_id,name&order=name') || [];
       stf.innerHTML = '<option value="">（未定）</option>' + list.map(s =>
         '<option value="' + escapeHtml(s.staff_id || '') + '">' + escapeHtml(s.name) + '</option>').join('');
       if (currentStaff && currentStaff.staff_id) stf.value = currentStaff.staff_id;
@@ -32493,6 +32499,344 @@ async function bcToggle(studentId, classId) {
 }
 
 
+// ============================================================
+// ✏️ 報告書入力（reportedit タブ）
+// 月を選ぶ → 自分の担当授業（主担当∪追加担当）のその月の全セッションを
+// 縦一覧で表示 → 各回の class_reports をその場で編集（テーマ/内容/連絡/宿題）。
+// 行ごと保存 or まとめて保存（変更のあった行だけ upsert）。
+// admin は講師プルダウンで他講師分に切替可。
+// データ元/保存: class_reports (UNIQUE class_master_id, session_date)
+// 担当解決: loadTeacherClassMap()
+// ============================================================
+let _reTeacherMap = null;       // loadTeacherClassMap() の戻り
+let _reViewStaffId = null;      // 現在表示中の講師UUID（adminは切替可、他は自分固定）
+let _reMonthOffset = 0;         // 今月からのオフセット（0=今月, -1=先月 …）
+let _reRows = [];               // [{classId, className, date, period, cycleLabel, theme, content, notes, homework, hasRecord}]
+let _reDirty = {};              // rowKey -> true（未保存の変更あり）
+
+function reMonthYm() {
+  const t = new Date();
+  const base = new Date(t.getFullYear(), t.getMonth() + _reMonthOffset, 1);
+  return base.getFullYear() + '-' + String(base.getMonth() + 1).padStart(2, '0');
+}
+function reRowKey(classId, date, period) {
+  return classId + '|' + date + '|' + (period == null ? '' : period);
+}
+function reShiftMonth(delta) {
+  // 未来の月には進めない（今月まで）
+  if (delta > 0 && _reMonthOffset >= 0) return;
+  _reMonthOffset += delta;
+  reRenderMonthLabel();
+  reLoad();
+}
+function reRenderMonthLabel() {
+  const ym = reMonthYm();
+  const el = document.getElementById('re-month-label');
+  if (el) el.textContent = ym.slice(0, 4) + '年' + Number(ym.slice(5, 7)) + '月';
+}
+function reUpdateDirtyBar() {
+  const bar = document.getElementById('re-saveall-bar');
+  const cnt = document.getElementById('re-dirty-count');
+  const n = Object.keys(_reDirty).length;
+  if (cnt) cnt.textContent = n ? '（' + n + '件）' : '';
+  if (bar) bar.style.display = _reRows.length ? 'block' : 'none';
+}
+
+async function initReportEdit() {
+  _reMonthOffset = 0;
+  _reDirty = {};
+  reRenderMonthLabel();
+  // 担当マップ取得
+  try {
+    _reTeacherMap = await loadTeacherClassMap();
+  } catch (e) { _reTeacherMap = { byTeacher: {}, classById: {}, staffById: {} }; }
+
+  // 表示対象講師の決定：admin はプルダウンで切替、それ以外は自分固定
+  const sel = document.getElementById('re-teacher-select');
+  const isAdmin = !!(currentStaff && currentStaff.role === 'admin');
+  const myUuid = currentStaff ? currentStaff.id : null;
+  if (isAdmin && sel) {
+    sel.style.display = '';
+    // byTeacher に授業を持つ講師だけを、staff_id 順で並べる
+    const ids = Object.keys(_reTeacherMap.byTeacher || {});
+    const staffById = _reTeacherMap.staffById || {};
+    ids.sort((a, b) => {
+      const ca = (staffById[a] && staffById[a].staff_id) || '';
+      const cb = (staffById[b] && staffById[b].staff_id) || '';
+      return ca < cb ? -1 : ca > cb ? 1 : 0;
+    });
+    let opts = '<option value="">講師を選択…</option>';
+    ids.forEach(id => {
+      const s = staffById[id] || {};
+      const label = (s.name || s.staff_id || '(不明)') + (s.staff_id ? '（' + s.staff_id + '）' : '');
+      opts += '<option value="' + id + '"' + (id === myUuid ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+    });
+    sel.innerHTML = opts;
+    // 自分が講師一覧にいれば自分を初期選択、いなければ未選択
+    _reViewStaffId = (myUuid && _reTeacherMap.byTeacher[myUuid]) ? myUuid : null;
+    sel.value = _reViewStaffId || '';
+  } else {
+    if (sel) sel.style.display = 'none';
+    _reViewStaffId = myUuid;
+  }
+  reLoad();
+}
+
+async function reLoad() {
+  const body = document.getElementById('re-body');
+  if (!body) return;
+  // admin のプルダウン変更を反映
+  const sel = document.getElementById('re-teacher-select');
+  if (sel && sel.style.display !== 'none') _reViewStaffId = sel.value || null;
+
+  if (!_reViewStaffId) {
+    body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">講師を選択してください。</div>';
+    _reRows = []; _reDirty = {}; reUpdateDirtyBar();
+    return;
+  }
+  body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
+  _reDirty = {};
+
+  const ym = reMonthYm();
+  const from = ym + '-01';
+  const mm = /^(\d{4})-(\d{2})$/.exec(ym);
+  const lastDay = mm ? new Date(Number(mm[1]), Number(mm[2]), 0).getDate() : 31;
+  const to = ym + '-' + String(lastDay).padStart(2, '0');
+
+  try {
+    // 対象講師の担当授業（主担当∪追加担当）
+    const classes = (_reTeacherMap.byTeacher && _reTeacherMap.byTeacher[_reViewStaffId]) || [];
+    if (!classes.length) {
+      body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">この講師の担当授業がありません。</div>';
+      _reRows = []; reUpdateDirtyBar();
+      return;
+    }
+    const classById = {};
+    classes.forEach(c => { classById[c.id] = c; });
+    const classIds = classes.map(c => c.id);
+
+    // その月のセッション と 既存 class_reports を並行取得
+    const [sessions, reports] = await Promise.all([
+      sbGet('class_sessions',
+        'class_master_id=in.(' + classIds.join(',') + ')&session_date=gte.' + from + '&session_date=lte.' + to +
+        '&select=class_master_id,session_date,period,cycle_month,cycle_no&order=session_date,period') || [],
+      sbGet('class_reports',
+        'class_master_id=in.(' + classIds.join(',') + ')&session_date=gte.' + from + '&session_date=lte.' + to +
+        '&select=class_master_id,session_date,theme,content,student_notes,homework') || []
+    ]);
+
+    // 報告書を class|date で引けるように
+    const repByKey = {};
+    (reports || []).forEach(r => { repByKey[r.class_master_id + '|' + r.session_date] = r; });
+
+    // セッションを class|date|period で一意化して行に
+    const seen = new Set();
+    const rows = [];
+    (sessions || []).forEach(s => {
+      const uk = s.class_master_id + '|' + s.session_date + '|' + (s.period == null ? '' : s.period);
+      if (seen.has(uk)) return;
+      seen.add(uk);
+      const cm = classById[s.class_master_id] || {};
+      const rep = repByKey[s.class_master_id + '|' + s.session_date] || null;
+      let cycleLabel = '';
+      if (s.cycle_month != null && s.cycle_no != null) cycleLabel = s.cycle_month + '-' + s.cycle_no;
+      else if (s.cycle_no != null) cycleLabel = String(s.cycle_no);
+      rows.push({
+        classId: s.class_master_id,
+        className: cm.name || '授業',
+        date: s.session_date,
+        period: s.period,
+        cycleLabel: cycleLabel,
+        theme: rep && rep.theme ? rep.theme : '',
+        content: rep && rep.content ? rep.content : '',
+        notes: rep && rep.student_notes ? rep.student_notes : '',
+        homework: rep && rep.homework ? rep.homework : '',
+        hasRecord: !!(rep && ((rep.theme && rep.theme.trim()) || (rep.content && rep.content.trim()) || (rep.student_notes && rep.student_notes.trim()) || (rep.homework && rep.homework.trim())))
+      });
+    });
+    // 日付昇順・同日は限順
+    rows.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.period || 0) - (b.period || 0)));
+    _reRows = rows;
+
+    if (!rows.length) {
+      body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">' + ym.slice(0, 4) + '年' + Number(ym.slice(5, 7)) + '月に授業回がありません。</div>';
+      reUpdateDirtyBar();
+      return;
+    }
+    reRenderRows();
+  } catch (e) {
+    body.innerHTML = '<div style="font-size:12px;color:var(--red);padding:12px">読み込みに失敗しました<br><span style="font-size:10px;word-break:break-all">' + escapeHtml(String(e.message || e)).slice(0, 200) + '</span></div>';
+  }
+}
+
+function reWd(dateStr) {
+  const p = dateStr.split('-').map(Number);
+  const d = new Date(p[0], p[1] - 1, p[2]);
+  return ['日', '月', '火', '水', '木', '金', '土'][d.getDay()];
+}
+
+function reRenderRows() {
+  const body = document.getElementById('re-body');
+  if (!body) return;
+  const done = _reRows.filter(r => r.hasRecord).length;
+  let html = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">全 <b style="color:var(--text)">' + _reRows.length + '</b> 回 ／ 記入済 <b style="color:var(--green-d)">' + done + '</b> ・ 未記入 <b style="color:var(--red)">' + (_reRows.length - done) + '</b></div>';
+  _reRows.forEach((r, i) => {
+    const p = r.date.split('-').map(Number);
+    const dateLabel = p[1] + '/' + p[2] + '（' + reWd(r.date) + '）';
+    const periodLabel = r.period ? (r.period + '限') : '';
+    const cyc = r.cycleLabel ? ('<span style="font-size:10px;color:var(--muted);margin-left:6px">' + escapeHtml(r.cycleLabel) + '</span>') : '';
+    const statusChip = r.hasRecord
+      ? '<span id="re-status-' + i + '" style="font-size:10px;font-weight:700;color:#2E7D32;background:#EAF6EA;border:1px solid #BFE3BF;border-radius:20px;padding:1px 8px">記入済</span>'
+      : '<span id="re-status-' + i + '" style="font-size:10px;font-weight:700;color:#C0392B;background:#FCE9E7;border:1px solid #F3C6C0;border-radius:20px;padding:1px 8px">未記入</span>';
+    html += '<div class="re-row" data-idx="' + i + '" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:8px">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">' +
+        '<span style="font-size:13px;font-weight:800;color:var(--text)">' + escapeHtml(r.className) + '</span>' +
+        '<span style="font-size:12px;color:var(--orange-d);font-weight:700">' + dateLabel + (periodLabel ? ' ' + periodLabel : '') + '</span>' + cyc +
+        '<span style="flex:1"></span>' + statusChip +
+      '</div>' +
+      '<div style="display:flex;flex-direction:column;gap:6px">' +
+        '<input type="text" class="form-input" id="re-theme-' + i + '" placeholder="テーマ" value="' + escapeHtml(r.theme) + '" oninput="reMarkDirty(' + i + ')" style="font-size:13px;padding:8px 10px">' +
+        '<textarea class="form-input" id="re-content-' + i + '" placeholder="授業内容" oninput="reMarkDirty(' + i + ')" style="font-size:13px;padding:8px 10px;min-height:54px;resize:vertical">' + escapeHtml(r.content) + '</textarea>' +
+        '<textarea class="form-input" id="re-notes-' + i + '" placeholder="生徒への連絡" oninput="reMarkDirty(' + i + ')" style="font-size:13px;padding:8px 10px;min-height:40px;resize:vertical">' + escapeHtml(r.notes) + '</textarea>' +
+        '<input type="text" class="form-input" id="re-hw-' + i + '" placeholder="宿題" value="' + escapeHtml(r.homework) + '" oninput="reMarkDirty(' + i + ')" style="font-size:13px;padding:8px 10px">' +
+      '</div>' +
+      '<div style="display:flex;justify-content:flex-end;margin-top:8px">' +
+        '<button id="re-savebtn-' + i + '" onclick="reSaveRow(' + i + ')" style="padding:7px 16px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:#fff;color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">保存</button>' +
+      '</div>' +
+    '</div>';
+  });
+  body.innerHTML = html;
+  reUpdateDirtyBar();
+}
+
+function reMarkDirty(i) {
+  const r = _reRows[i];
+  if (!r) return;
+  _reDirty[reRowKey(r.classId, r.date, r.period)] = true;
+  // 保存ボタンを強調
+  const btn = document.getElementById('re-savebtn-' + i);
+  if (btn) { btn.style.background = 'var(--orange-l)'; btn.style.fontWeight = '800'; }
+  reUpdateDirtyBar();
+}
+
+// 1件の class_reports を upsert（既存パターンを踏襲）
+async function reUpsertOne(payload) {
+  const res = await fetch('https://bqdvmfskpnlshqljwhqz.supabase.co/rest/v1/class_reports?on_conflict=class_master_id,session_date', {
+    method: 'POST',
+    headers: {
+      'apikey': SB_KEY,
+      'Authorization': 'Bearer ' + SB_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'resolution=merge-duplicates'
+    },
+    body: JSON.stringify([payload])
+  });
+  return res;
+}
+
+// 画面の入力値を _reRows[i] に取り込む
+function reSyncRowFromInputs(i) {
+  const r = _reRows[i];
+  if (!r) return;
+  const g = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+  r.theme = g('re-theme-' + i);
+  r.content = g('re-content-' + i);
+  r.notes = g('re-notes-' + i);
+  r.homework = g('re-hw-' + i);
+  r.hasRecord = !!(r.theme || r.content || r.notes || r.homework);
+}
+
+function reRefreshRowStatus(i) {
+  const r = _reRows[i];
+  if (!r) return;
+  const chip = document.getElementById('re-status-' + i);
+  if (chip) {
+    if (r.hasRecord) {
+      chip.textContent = '記入済';
+      chip.setAttribute('style', 'font-size:10px;font-weight:700;color:#2E7D32;background:#EAF6EA;border:1px solid #BFE3BF;border-radius:20px;padding:1px 8px');
+    } else {
+      chip.textContent = '未記入';
+      chip.setAttribute('style', 'font-size:10px;font-weight:700;color:#C0392B;background:#FCE9E7;border:1px solid #F3C6C0;border-radius:20px;padding:1px 8px');
+    }
+  }
+  const btn = document.getElementById('re-savebtn-' + i);
+  if (btn) { btn.style.background = '#fff'; btn.style.fontWeight = '700'; }
+}
+
+async function reSaveRow(i) {
+  const r = _reRows[i];
+  if (!r) return;
+  reSyncRowFromInputs(i);
+  const staffId = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : null;
+  showLoading('保存中...');
+  try {
+    const res = await reUpsertOne({
+      class_master_id: r.classId,
+      session_date: r.date,
+      theme: r.theme || null,
+      content: r.content || null,
+      student_notes: r.notes || null,
+      homework: r.homework || null,
+      staff_id: staffId
+    });
+    hideLoading();
+    if (!res.ok) {
+      const txt = await res.text();
+      showToast('保存に失敗しました（' + res.status + '）', 'error');
+      console.error('reportedit保存エラー:', res.status, txt);
+      return;
+    }
+    delete _reDirty[reRowKey(r.classId, r.date, r.period)];
+    reRefreshRowStatus(i);
+    reUpdateDirtyBar();
+    showToast('✅ 保存しました', 'success');
+    if (typeof loadTodayTasks === 'function') { try { loadTodayTasks(); } catch (e) {} }
+  } catch (e) {
+    hideLoading();
+    showToast('エラー: ' + e.message, 'error');
+  }
+}
+
+async function reSaveAll() {
+  // 変更のある行だけ集める
+  const staffId = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : null;
+  const targets = [];
+  _reRows.forEach((r, i) => {
+    if (_reDirty[reRowKey(r.classId, r.date, r.period)]) {
+      reSyncRowFromInputs(i);
+      targets.push({ i, r });
+    }
+  });
+  if (!targets.length) { showToast('変更はありません', 'info'); return; }
+  if (!confirm(targets.length + ' 件の報告書を保存しますか？')) return;
+  showLoading('まとめて保存中...（' + targets.length + '件）');
+  let ok = 0, ng = 0;
+  for (const t of targets) {
+    const r = t.r;
+    try {
+      const res = await reUpsertOne({
+        class_master_id: r.classId,
+        session_date: r.date,
+        theme: r.theme || null,
+        content: r.content || null,
+        student_notes: r.notes || null,
+        homework: r.homework || null,
+        staff_id: staffId
+      });
+      if (res.ok) {
+        ok++;
+        delete _reDirty[reRowKey(r.classId, r.date, r.period)];
+        reRefreshRowStatus(t.i);
+      } else { ng++; }
+    } catch (e) { ng++; }
+  }
+  hideLoading();
+  reUpdateDirtyBar();
+  if (ng === 0) showToast('✅ ' + ok + '件を保存しました', 'success');
+  else showToast('保存 ' + ok + '件 / 失敗 ' + ng + '件', ok ? 'info' : 'error');
+  if (typeof loadTodayTasks === 'function') { try { loadTodayTasks(); } catch (e) {} }
+}
+
 async function initReportBatch() {
   const body = document.getElementById('rb-body');
   try {
@@ -37070,7 +37414,7 @@ async function openLineThread(contactId) {
   let studentOpts = '<option value="">（未紐付け）</option>';
   try {
     if (!window._lineStudentList) {
-      window._lineStudentList = sortStudentsJa(await sbGetTolerant('students', 'select=id,name,name_kana,school&is_active=eq.true&order=name', 'select=id,name,school&is_active=eq.true&order=name') || []);
+      window._lineStudentList = await sbGet('students', 'select=id,name,school&is_active=eq.true&order=name') || [];
     }
     studentOpts += window._lineStudentList.map(s =>
       '<option value="' + s.id + '"' + (c.student_id === s.id ? ' selected' : '') + '>' + escapeHtml((s.school ? s.school + ' ' : '') + s.name) + '</option>').join('');
@@ -37219,7 +37563,7 @@ function switchManageTab(tab, el) {
   // manage-* 系（授業管理など）
   const manageTabs = ['class-master','check-item','mission','quiz'];
   // smcontent-* 系（小メニューから統合したタブ）
-  const menuTabs = ['report','todo','line','teamtask','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','attoverview','attsheet','billcheck','reportbatch','komacount','supervision','namefix','basicedit','timetable','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','prospects','interview','examreq','shakei','studentreg','demo','revenue','tsushin','reghistory'];
+  const menuTabs = ['report','todo','line','teamtask','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','attoverview','attsheet','billcheck','reportbatch','reportedit','komacount','supervision','namefix','basicedit','timetable','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','prospects','interview','examreq','shakei','studentreg','demo','revenue','tsushin','reghistory'];
   manageTabs.forEach(t => {
     const el2 = document.getElementById('manage-' + t);
     if (el2) el2.style.display = 'none';
@@ -37273,6 +37617,7 @@ function switchManageTab(tab, el) {
   if (tab === 'attsheet') initAttSheet();
   if (tab === 'billcheck') initBillCheck();
   if (tab === 'reportbatch') initReportBatch();
+  if (tab === 'reportedit') initReportEdit();
   if (tab === 'komacount') initKomaCount();
   if (tab === 'reghistory') loadRegHistory();
   if (tab === 'supervision') initSupervision();
@@ -37323,11 +37668,9 @@ async function loadTeamTasks() {
 
   // スタッフ一覧（担当チェック欄＋名前解決）
   try {
-    const staff = await sbGet('staff', 'select=staff_id,name&order=staff_id') || [];
+    const staff = await sbGet('staff', 'select=staff_id,name&order=name.asc') || [];
     ttStaffMap = {}; ttStaffList = [];
-    // 名前解決マップは全員（fit001含む）で作る。表示リストは fit001 除外＋staff_id順。
-    staff.forEach(s => { if (s.staff_id) ttStaffMap[s.staff_id] = s.name; });
-    ttStaffList = sortStaffByCode(staff.filter(s => s.staff_id)).map(s => ({ staff_id: s.staff_id, name: s.name || s.staff_id }));
+    staff.forEach(s => { if (s.staff_id) { ttStaffMap[s.staff_id] = s.name; ttStaffList.push({ staff_id: s.staff_id, name: s.name || s.staff_id }); } });
     const box = document.getElementById('tt-assignee-checks');
     if (box) {
       box.innerHTML = ttStaffList.map(s =>
@@ -38662,7 +39005,7 @@ async function initProspects() {
   const so = document.getElementById('prospects-sort'); if (so) so.value = 'updated_desc';
   // 担当スタッフ名マップ（カード表示・担当別フィルタ用）。失敗しても続行。
   try {
-    const staff = await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=staff_id') || [];
+    const staff = await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=name') || [];
     prospectsStaffMap = {};
     staff.forEach(s => { if (s.staff_id) prospectsStaffMap[s.staff_id] = s.name; });
   } catch (e) { prospectsStaffMap = {}; }
@@ -38750,7 +39093,7 @@ function renderProspectsAssigneeFilter() {
     sup.forEach(sid => { if (ids.indexOf(sid) === -1) ids.push(sid); });
     if (!p.assigned_to && sup.length === 0) hasNone = true;
   });
-  ids.sort((a, b) => String(a || '').localeCompare(String(b || ''), 'en'));
+  ids.sort((a, b) => String(prospectsStaffMap[a] || a).localeCompare(String(prospectsStaffMap[b] || b), 'ja'));
   let h = '<option value="all">担当：すべて</option>';
   ids.forEach(id => {
     const nm = prospectsStaffMap[id] || id;
@@ -42944,8 +43287,8 @@ async function loadInterviewData() {
   ivTablesOk = true;
   // 在籍生徒（除外は対象外＝現役のみ）
   try {
-    const stu = await sbGetTolerant('students', 'is_active=eq.true&select=id,name,name_kana,school,grade,inactive_reason&order=school,grade,name', 'is_active=eq.true&select=id,name,school,grade,inactive_reason&order=school,grade,name') || [];
-    ivStudents = sortStudentsJa(stu.filter(s => s.inactive_reason !== '除外'));
+    const stu = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade,inactive_reason&order=school,grade,name') || [];
+    ivStudents = stu.filter(s => s.inactive_reason !== '除外');
   } catch (e) { ivStudents = []; }
   // 面談記録
   try {
@@ -43524,7 +43867,7 @@ async function openProspectModal(id) {
   if (sel) {
     sel.innerHTML = '<option value="">未設定</option>';
     try {
-      const staff = sortStaffByCode(await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=staff_id') || []);
+      const staff = await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=name') || [];
       staff.forEach(s => {
         const o = document.createElement('option');
         o.value = s.staff_id; o.textContent = s.name + '（' + s.staff_id + '）';
@@ -50934,7 +51277,7 @@ async function openSvTodo() {
   document.getElementById('svtodo-modal').style.display = 'flex';
   // スタッフ一覧
   let staff = [];
-  try { staff = sortStaffByCode(await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=staff_id') || []); } catch (e) {}
+  try { staff = await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=name') || []; } catch (e) {}
   box.innerHTML = staff.map(s =>
     '<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">' +
     '<input type="checkbox" class="svtodo-assignee" value="' + escapeAttr(s.staff_id) + '">' +
