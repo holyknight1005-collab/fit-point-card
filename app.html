@@ -6195,7 +6195,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm53';
+const APP_VERSION = '20260702dlm55';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32622,7 +32622,7 @@ async function reLoad() {
         '&select=class_master_id,session_date,period,cycle_month,cycle_no&order=session_date,period') || [],
       sbGet('class_reports',
         'class_master_id=in.(' + classIds.join(',') + ')&session_date=gte.' + from + '&session_date=lte.' + to +
-        '&select=class_master_id,session_date,theme,content,student_notes,homework') || []
+        '&select=class_master_id,session_date,theme,content,student_notes,homework,staff_id') || []
     ]);
 
     // 報告書を class|date で引けるように
@@ -32651,19 +32651,29 @@ async function reLoad() {
         content: rep && rep.content ? rep.content : '',
         notes: rep && rep.student_notes ? rep.student_notes : '',
         homework: rep && rep.homework ? rep.homework : '',
+        repStaffId: rep && rep.staff_id ? rep.staff_id : null,
         hasRecord: !!(rep && ((rep.theme && rep.theme.trim()) || (rep.content && rep.content.trim()) || (rep.student_notes && rep.student_notes.trim()) || (rep.homework && rep.homework.trim())))
       });
     });
+    // 案C：未記入は全部残す。記入済みは「表示中講師が書いた回」だけ残す。
+    // （staff_id が null の記入済みは書いた人不明のため残す＝誰の画面からも消えないよう安全側）
+    const staffById = (_reTeacherMap && _reTeacherMap.staffById) || {};
+    const viewCode = (staffById[_reViewStaffId] && staffById[_reViewStaffId].staff_id) || null;
+    const rowsFiltered = rows.filter(r => {
+      if (!r.hasRecord) return true;              // 未記入は全部出す
+      if (!r.repStaffId) return true;             // 書いた人不明は残す
+      return r.repStaffId === viewCode;           // 記入済みは自分が書いた回だけ
+    });
     // 授業ごとにまとめる：授業名→日付→限 の順
-    rows.sort((a, b) => {
+    rowsFiltered.sort((a, b) => {
       if (a.className !== b.className) return a.className < b.className ? -1 : 1;
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
       return (a.period || 0) - (b.period || 0);
     });
-    _reRows = rows;
+    _reRows = rowsFiltered;
 
-    if (!rows.length) {
-      body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">' + ym.slice(0, 4) + '年' + Number(ym.slice(5, 7)) + '月に授業回がありません。</div>';
+    if (!_reRows.length) {
+      body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">' + ym.slice(0, 4) + '年' + Number(ym.slice(5, 7)) + '月に、あなたの担当分の授業回がありません。<br><span style="font-size:11px">（他の講師が記入済みの回は表示されません）</span></div>';
       reUpdateDirtyBar();
       return;
     }
@@ -32720,7 +32730,7 @@ function reRenderRows() {
       '<div style="display:flex;flex-direction:column;gap:6px">' +
         '<input type="text" class="form-input" id="re-theme-' + i + '" placeholder="テーマ" value="' + escapeHtml(r.theme) + '" oninput="reMarkDirty(' + i + ')" style="font-size:13px;padding:8px 10px">' +
         '<textarea class="form-input" id="re-content-' + i + '" placeholder="授業内容" oninput="reMarkDirty(' + i + ')" style="font-size:13px;padding:8px 10px;min-height:54px;resize:vertical">' + escapeHtml(r.content) + '</textarea>' +
-        '<textarea class="form-input" id="re-notes-' + i + '" placeholder="生徒への連絡" oninput="reMarkDirty(' + i + ')" style="font-size:13px;padding:8px 10px;min-height:40px;resize:vertical">' + escapeHtml(r.notes) + '</textarea>' +
+        '<textarea class="form-input" id="re-notes-' + i + '" placeholder="生徒の様子、気になること、共有事項など" oninput="reMarkDirty(' + i + ')" style="font-size:13px;padding:8px 10px;min-height:40px;resize:vertical">' + escapeHtml(r.notes) + '</textarea>' +
         '<input type="text" class="form-input" id="re-hw-' + i + '" placeholder="宿題" value="' + escapeHtml(r.homework) + '" oninput="reMarkDirty(' + i + ')" style="font-size:13px;padding:8px 10px">' +
       '</div>' +
       '<div style="display:flex;justify-content:flex-end;margin-top:8px">' +
