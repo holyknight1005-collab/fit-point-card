@@ -6178,7 +6178,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm51';
+const APP_VERSION = '20260702dlm52';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6965,7 +6965,7 @@ async function openAppDeliveryModal() {
   try {
     // 授業・生徒一覧をロード（未取得ならまとめて）
     appDeliveryClasses = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject') || [];
-    appDeliveryStudents = await sbGet('students', 'is_active=eq.true&order=school,grade,name&select=id,name,school,grade') || [];
+    appDeliveryStudents = sortStudentsJa(await sbGetTolerant('students', 'is_active=eq.true&order=school,grade,name&select=id,name,name_kana,school,grade', 'is_active=eq.true&order=school,grade,name&select=id,name,school,grade') || []);
     hideLoading();
   } catch (e) {
     hideLoading();
@@ -10913,7 +10913,8 @@ function filterPointPicker(kind) {
       const schoolOK = school === '全員' || s.school === school;
       const kwOK = !kw || (s.name && s.name.toLowerCase().includes(kw));
       return activeOK && schoolOK && kwOK;
-    });
+    })
+    .sort((a, b) => studentSortKey(a.s).localeCompare(studentSortKey(b.s), 'ja'));
   sel.innerHTML = '<option value="">-- 選択してください（' + opts.length + '人）--</option>' +
     opts.map(({ s, i }) =>
       '<option value="' + i + '">' + s.name +
@@ -14654,7 +14655,7 @@ function closeStaffMenu() {
 
 
 async function loadMonitorStaffSelect() {
-  const staff = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=name');
+  const staff = sortStaffByCode(await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id'));
   const sel = document.getElementById('monitor-staff-select');
   sel.innerHTML = '<option value="">スタッフを選択</option>' +
     (staff||[]).map(s => '<option value="' + s.id + '">' + s.name + '（' + s.staff_id + '）</option>').join('');
@@ -16509,7 +16510,7 @@ async function openCalendarReg(presetDate, presetScope, presetSchool, presetStaf
     try { staffStudents = await sbGet('students', 'select=*&order=school,grade,name') || []; } catch(e) {}
   }
   if (!calRegStaffList.length) {
-    try { calRegStaffList = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=name') || []; } catch(e) {}
+    try { calRegStaffList = sortStaffByCode(await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id') || []); } catch(e) {}
   }
   // 担当スタッフを事前チェック
   if (wantStaffPreset) {
@@ -20609,6 +20610,17 @@ function sortStudentsJa(list) {
     studentSortKey(a).localeCompare(studentSortKey(b), 'ja')
   );
 }
+// スタッフ配列を staff_id 昇順（fit002, fit003, …）で並べ替える。
+// 既定で fit001（代表）を除外する。含めたい場合は sortStaffByCode(list, {includeRep:true}) を使う。
+function sortStaffByCode(list, opts) {
+  const includeRep = !!(opts && opts.includeRep);
+  return (list || [])
+    .filter(s => includeRep || String((s && s.staff_id) || '').toLowerCase() !== 'fit001')
+    .slice()
+    .sort((a, b) =>
+      String((a && a.staff_id) || '').localeCompare(String((b && b.staff_id) || ''), 'en')
+    );
+}
 // name_kana 未適用環境でも落ちないよう、列エラーなら fallback クエリで再取得する。
 async function sbGetTolerant(table, query, fallbackQuery) {
   try {
@@ -23755,7 +23767,7 @@ let cmBulkTeachers = null; // スタッフ一覧キャッシュ
 
 async function ensureCmBulkTeachers() {
   if (cmBulkTeachers) return cmBulkTeachers;
-  try { cmBulkTeachers = await sbGet('staff', 'is_active=eq.true&select=id,name&order=name') || []; }
+  try { cmBulkTeachers = sortStaffByCode(await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id') || []); }
   catch (e) { cmBulkTeachers = []; }
   return cmBulkTeachers;
 }
@@ -24444,7 +24456,7 @@ async function setClassTeacher(classId) {
   const cm = (classMasterList || []).find(c => c.id === classId);
   // スタッフ一覧
   try {
-    ctModalStaff = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=name') || [];
+    ctModalStaff = sortStaffByCode(await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id') || []);
   } catch (e) { showToast('スタッフ取得に失敗しました', 'error'); return; }
   // 部（staff_permissions.departments）を読み、「◯◯部をまとめて選ぶ」に使う
   ctModalDepts = {};
@@ -25468,8 +25480,8 @@ async function openIvAppt(presetStudentId, presetDate) {
   if (sel) {
     sel.innerHTML = '<option value="">読み込み中...</option>';
     try {
-      const stus = await excludeDemoRows(await sbGet('students',
-        'select=id,name,school,grade&order=name') || []);
+      const stus = sortStudentsJa(await excludeDemoRows(await sbGetTolerant('students',
+        'select=id,name,name_kana,school,grade&order=name', 'select=id,name,school,grade&order=name') || []));
       sel.innerHTML = '<option value="">生徒を選択</option>' + stus.map(s =>
         '<option value="' + s.id + '">' + escapeHtml(s.name) +
         (s.school ? '（' + escapeHtml(s.school) + (s.grade || '') + '）' : '') + '</option>').join('');
@@ -25480,7 +25492,7 @@ async function openIvAppt(presetStudentId, presetDate) {
   const stf = document.getElementById('iva-staff');
   if (stf) {
     try {
-      const list = await sbGet('staff', 'select=staff_id,name&order=name') || [];
+      const list = sortStaffByCode(await sbGet('staff', 'select=staff_id,name&order=staff_id') || []);
       stf.innerHTML = '<option value="">（未定）</option>' + list.map(s =>
         '<option value="' + escapeHtml(s.staff_id || '') + '">' + escapeHtml(s.name) + '</option>').join('');
       if (currentStaff && currentStaff.staff_id) stf.value = currentStaff.staff_id;
@@ -37058,7 +37070,7 @@ async function openLineThread(contactId) {
   let studentOpts = '<option value="">（未紐付け）</option>';
   try {
     if (!window._lineStudentList) {
-      window._lineStudentList = await sbGet('students', 'select=id,name,school&is_active=eq.true&order=name') || [];
+      window._lineStudentList = sortStudentsJa(await sbGetTolerant('students', 'select=id,name,name_kana,school&is_active=eq.true&order=name', 'select=id,name,school&is_active=eq.true&order=name') || []);
     }
     studentOpts += window._lineStudentList.map(s =>
       '<option value="' + s.id + '"' + (c.student_id === s.id ? ' selected' : '') + '>' + escapeHtml((s.school ? s.school + ' ' : '') + s.name) + '</option>').join('');
@@ -37311,9 +37323,11 @@ async function loadTeamTasks() {
 
   // スタッフ一覧（担当チェック欄＋名前解決）
   try {
-    const staff = await sbGet('staff', 'select=staff_id,name&order=name.asc') || [];
+    const staff = await sbGet('staff', 'select=staff_id,name&order=staff_id') || [];
     ttStaffMap = {}; ttStaffList = [];
-    staff.forEach(s => { if (s.staff_id) { ttStaffMap[s.staff_id] = s.name; ttStaffList.push({ staff_id: s.staff_id, name: s.name || s.staff_id }); } });
+    // 名前解決マップは全員（fit001含む）で作る。表示リストは fit001 除外＋staff_id順。
+    staff.forEach(s => { if (s.staff_id) ttStaffMap[s.staff_id] = s.name; });
+    ttStaffList = sortStaffByCode(staff.filter(s => s.staff_id)).map(s => ({ staff_id: s.staff_id, name: s.name || s.staff_id }));
     const box = document.getElementById('tt-assignee-checks');
     if (box) {
       box.innerHTML = ttStaffList.map(s =>
@@ -38648,7 +38662,7 @@ async function initProspects() {
   const so = document.getElementById('prospects-sort'); if (so) so.value = 'updated_desc';
   // 担当スタッフ名マップ（カード表示・担当別フィルタ用）。失敗しても続行。
   try {
-    const staff = await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=name') || [];
+    const staff = await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=staff_id') || [];
     prospectsStaffMap = {};
     staff.forEach(s => { if (s.staff_id) prospectsStaffMap[s.staff_id] = s.name; });
   } catch (e) { prospectsStaffMap = {}; }
@@ -38736,7 +38750,7 @@ function renderProspectsAssigneeFilter() {
     sup.forEach(sid => { if (ids.indexOf(sid) === -1) ids.push(sid); });
     if (!p.assigned_to && sup.length === 0) hasNone = true;
   });
-  ids.sort((a, b) => String(prospectsStaffMap[a] || a).localeCompare(String(prospectsStaffMap[b] || b), 'ja'));
+  ids.sort((a, b) => String(a || '').localeCompare(String(b || ''), 'en'));
   let h = '<option value="all">担当：すべて</option>';
   ids.forEach(id => {
     const nm = prospectsStaffMap[id] || id;
@@ -42930,8 +42944,8 @@ async function loadInterviewData() {
   ivTablesOk = true;
   // 在籍生徒（除外は対象外＝現役のみ）
   try {
-    const stu = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade,inactive_reason&order=school,grade,name') || [];
-    ivStudents = stu.filter(s => s.inactive_reason !== '除外');
+    const stu = await sbGetTolerant('students', 'is_active=eq.true&select=id,name,name_kana,school,grade,inactive_reason&order=school,grade,name', 'is_active=eq.true&select=id,name,school,grade,inactive_reason&order=school,grade,name') || [];
+    ivStudents = sortStudentsJa(stu.filter(s => s.inactive_reason !== '除外'));
   } catch (e) { ivStudents = []; }
   // 面談記録
   try {
@@ -43510,7 +43524,7 @@ async function openProspectModal(id) {
   if (sel) {
     sel.innerHTML = '<option value="">未設定</option>';
     try {
-      const staff = await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=name') || [];
+      const staff = sortStaffByCode(await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=staff_id') || []);
       staff.forEach(s => {
         const o = document.createElement('option');
         o.value = s.staff_id; o.textContent = s.name + '（' + s.staff_id + '）';
@@ -50920,7 +50934,7 @@ async function openSvTodo() {
   document.getElementById('svtodo-modal').style.display = 'flex';
   // スタッフ一覧
   let staff = [];
-  try { staff = await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=name') || []; } catch (e) {}
+  try { staff = sortStaffByCode(await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=staff_id') || []); } catch (e) {}
   box.innerHTML = staff.map(s =>
     '<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">' +
     '<input type="checkbox" class="svtodo-assignee" value="' + escapeAttr(s.staff_id) + '">' +
