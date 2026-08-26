@@ -6195,7 +6195,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm60';
+const APP_VERSION = '20260702dlm61';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -30998,7 +30998,22 @@ let _asMeta = {};            // student_id -> { id, confirmed, confirmed_by, on_
 let _asMyStuIds = null;      // 自分の担当授業を受講中の生徒IDセット（scope=mine 用）
 let _asPrinted = {};         // student_id -> true（この年月×種別で印刷済み・DB由来）
 let _asDirty = {};           // student_id -> { comment?, confirmed? } まとめて保存用のローカル変更バッファ
-let _asSummerComment = false; // 夏期シートでコメント欄を出すか（手動トグル。ONで全員にコメント欄・臨時入力可）
+
+// コメントの出力先（どのシートに印刷するか）。normal=通常のみ / summer=夏期のみ / both=両方。
+const AS_TARGET_LABEL = { normal: '通常のみ', summer: '夏期のみ', both: '両方' };
+function asTargetOf(meta) {
+  const v = meta && meta.sheet_target;
+  return (v === 'summer' || v === 'both') ? v : 'normal';
+}
+// 出力先セレクタの変更（ローカルのみ・保存は「まとめて保存」）
+function asOnTargetEdit(sid) {
+  const sel = document.getElementById('as-target-' + sid);
+  if (!sel) return;
+  const meta = _asMeta[sid] || (_asMeta[sid] = {});
+  meta.sheet_target = sel.value || 'normal';
+  (_asDirty[sid] || (_asDirty[sid] = {})).sheet_target = meta.sheet_target;
+  asUpdateSaveBar();
+}
 let _asPrintSel = {};        // student_id -> true（一括印刷の選択チェック・セッション内のみ）
 let _asImage = null;         // この年月×種別の季節イラスト { id, image_data } DB由来（全生徒共通1枚）
 
@@ -31028,12 +31043,6 @@ function initAttSheet() {
     msel.innerHTML = opts;
   }
   if (!_asLoaded) { _asLoaded = true; loadAttSheet(); }
-}
-
-// 夏期シートの「出席のみ ⇄ コメント付き」を手動で切り替える。
-function asToggleSummerComment() {
-  _asSummerComment = !_asSummerComment;
-  loadAttSheet();
 }
 
 async function loadAttSheet() {
@@ -31194,12 +31203,9 @@ async function loadAttSheet() {
     // コメントバー（通常のみ）
     if (cbar) cbar.style.display = isNormal ? 'flex' : 'none';
 
-    // 夏期シートで手動トグルがONなら、コメント欄を出す（臨時でコメントを入れたい子に入れられる）。
-    const asSummerCmtOn = isSummer && _asSummerComment;
-
-    // 通常種別、または夏期でコメントON → DBからこの月分のコメント・確認済/保留メタを読み込む。
-    // （選択肢A：生徒×年×月で1本共有。夏期でも同じレコードを使う）
-    if (isNormal || asSummerCmtOn) {
+    // 通常シート＝入力＋表示。夏期シート＝入力欄は出さないが、印刷で sheet_target が summer/both の
+    // コメントを載せるため、DBのコメントは読み込んでおく。
+    if (isNormal || isSummer) {
       await asLoadCommentsFromDb(y, mo, students);
     }
     // 印刷済み（全種別）をDBから読み込む
@@ -31214,19 +31220,7 @@ async function loadAttSheet() {
     // 一覧描画（学校ごとに見出し＋折りたたみ）
     let html = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' +
       escapeHtml(AS_CAT_LABEL[category] || category) + '・' + (isSummer ? '全期間' : (y + '年' + mo + '月')) + '　対象 ' + students.length + '名' +
-      (isNormal ? '（コメント欄あり）' : (asSummerCmtOn ? '（コメント欄あり・臨時）' : '（出欠のみ）')) + '</div>';
-
-    // 夏期シート：コメントの出し分けトグル（出席のみ ⇄ コメント付き）。手動で切り替える。
-    if (isSummer) {
-      html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 12px;border:1px solid ' + (asSummerCmtOn ? '#E8912E' : 'var(--border)') + ';border-radius:10px;background:' + (asSummerCmtOn ? '#FDF3E7' : 'var(--surface)') + '">' +
-        '<span style="font-size:12px;font-weight:700;color:var(--text)">☀️ 夏期の印刷</span>' +
-        '<button onclick="asToggleSummerComment()" style="padding:6px 14px;font-size:12px;font-weight:700;border:1px solid ' + (asSummerCmtOn ? '#E8912E' : 'var(--border)') + ';border-radius:8px;background:' + (asSummerCmtOn ? '#E8912E' : 'var(--surface)') + ';color:' + (asSummerCmtOn ? '#fff' : 'var(--text)') + ';cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' +
-          (asSummerCmtOn ? '📝 コメント付き（切替）' : '📋 出席のみ（切替）') + '</button>' +
-        '<span style="font-size:11px;color:var(--muted);line-height:1.5">' +
-          (asSummerCmtOn ? 'コメントを入れたい子だけ入力して保存・印刷できます。空欄の子は出欠のみで印刷されます。' : '通常は出欠のみ。臨時でコメントを付けたいときは切り替えてください。') +
-        '</span>' +
-      '</div>';
-    }
+      (isNormal ? '（コメント欄あり）' : '（出欠のみ・コメントは通常シートで指定）') + '</div>';
 
     // scope=mine：自分の担当授業を受講中の生徒だけに絞る（通常のみ）
     let viewStudents = students;
@@ -31300,10 +31294,9 @@ async function loadAttSheet() {
     };
 
     // 1生徒分のカード。コメント欄を出すのは「通常種別」または「夏期で通常授業なしの臨時対象」。
-    // それ以外（夏期の通常受講あり生徒など）は従来どおり出欠のみ。
+    // それ以外（夏期など）は従来どおり出欠のみ（コメントは通常シートで入力し、出力先で夏期に出す）。
     const cardHtml = (st, idx) => {
-      const showComment = isNormal || asSummerCmtOn;
-      if (!showComment) {
+      if (!isNormal) {
         return '<div id="as-card-' + st.id + '" style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:9px 12px;background:var(--surface);flex-wrap:wrap">' +
           '<div style="flex:1;min-width:0">' +
             '<div style="font-size:13px;font-weight:700;color:var(--text)"><span id="as-nm-' + st.id + '">' + escapeHtml(st.name) + '</span>' +
@@ -31318,8 +31311,6 @@ async function loadAttSheet() {
           nameEditor(st) +
           '</div>';
       }
-      // 夏期でコメントONのとき（asSummerCmtOn）は臨時コメント扱い。確認フローを介さず自由に印刷できる。
-      const asTempComment = asSummerCmtOn;
       const meta = _asMeta[st.id] || {};
       const cmt = _asComments[st.id] || '';
       const hasComment = !!cmt.trim();
@@ -31328,14 +31319,12 @@ async function loadAttSheet() {
       const canConf = asCanConfirm(); // 確認済／保留を触れる担当者か
       // ステータスバッジ
       let badge;
-      if (asTempComment && !hasComment) badge = '<span style="color:#B26A00;font-weight:700">☀️ 臨時コメント可（空欄なら出欠のみ）</span>';
-      else if (asTempComment) badge = '<span style="color:#B26A00;font-weight:700">📝 コメント入力済</span>';
-      else if (onHold) badge = '<span style="color:#7A5AA8;font-weight:700">⏸ 保留（遅延依頼）</span>';
+      if (onHold) badge = '<span style="color:#7A5AA8;font-weight:700">⏸ 保留（遅延依頼）</span>';
       else if (!hasComment) badge = '<span style="color:#B08A2A;font-weight:700">● コメント未</span>';
       else if (confirmed) badge = '<span style="color:var(--green-d);font-weight:700">✓ 確認済</span>';
       else badge = '<span style="color:#2D6CB6;font-weight:700">✎ 入力済（未確認）</span>';
       // 左端の帯色
-      const bar = asTempComment ? '#E8912E' : (onHold ? '#7A5AA8' : (!hasComment ? '#E5C158' : (confirmed ? '#3B9E5B' : '#2D6CB6')));
+      const bar = onHold ? '#7A5AA8' : (!hasComment ? '#E5C158' : (confirmed ? '#3B9E5B' : '#2D6CB6'));
 
       return '<div id="as-card-' + st.id + '" style="border:1px solid var(--border);border-radius:10px;padding:9px 12px;background:var(--surface);border-left:4px solid ' + bar + '">' +
         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
@@ -31346,7 +31335,7 @@ async function loadAttSheet() {
             '　<span id="as-badge-' + st.id + '" style="font-size:11px;font-weight:400">' + badge + '</span>　' + printedBadge(st.id) + '</div>' +
             '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade)) : '') + '　受講 ' + st.subjects.length + '科目</div>' +
           '</div>' +
-          printSelBox(st.id, confirmed || asTempComment) +
+          printSelBox(st.id, confirmed) +
           '<button onclick="openAttSheetDoc(' + idx + ')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨</button>' +
           '<button onclick="asExportPdf(' + idx + ')" style="padding:5px 10px;font-size:11px;font-weight:700;border:1px solid #C0392B;border-radius:8px;background:#FDEDEC;color:#922B21;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">📄</button>' +
         '</div>' +
@@ -31358,15 +31347,18 @@ async function loadAttSheet() {
             '<option value="">（未選択）</option>' +
             allStaffList.map(s => '<option value="' + escapeAttr(s.staff_id) + '"' + ((meta.comment_staff_id || '') === s.staff_id ? ' selected' : '') + '>' + escapeHtml(s.name || s.staff_id) + '</option>').join('') +
           '</select>' +
+          '<span style="font-size:11px;color:var(--muted);font-weight:700;margin-left:6px">出力先</span>' +
+          '<select id="as-target-' + st.id + '" onchange="asOnTargetEdit(\'' + st.id + '\')" title="このコメントをどのシートに印刷するか" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font-family:\'Noto Sans JP\',sans-serif">' +
+            ['normal', 'summer', 'both'].map(v =>
+              '<option value="' + v + '"' + (asTargetOf(meta) === v ? ' selected' : '') + '>' + AS_TARGET_LABEL[v] + '</option>').join('') +
+          '</select>' +
         '</div>' +
-        (asTempComment
-          ? '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.5">この子は今期は通常授業がないため、夏期の出席表に臨時でコメントを付けられます。コメントを入れて保存すると、印刷にも反映されます（空のままなら従来どおり出欠のみで印刷）。</div>'
-          : '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">' +
+        '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap">' +
           '<button id="as-confbtn-' + st.id + '" ' + (canConf ? 'onclick="asToggleConfirmed(\'' + st.id + '\')"' : 'disabled') + ' style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (confirmed ? '#3B9E5B' : '#CBD5CB') + ';border-radius:7px;background:' + (confirmed ? '#EAF6EA' : '#fff') + ';color:' + (confirmed ? '#2E7D32' : '#666') + ';cursor:' + (canConf ? 'pointer' : 'not-allowed') + ';opacity:' + (canConf ? '1' : '0.5') + ';font-family:\'Noto Sans JP\',sans-serif">' + (confirmed ? '✓ 確認済' : '□ 確認する') + '</button>' +
           '<button id="as-holdbtn-' + st.id + '" ' + (canConf ? 'onclick="asToggleHold(\'' + st.id + '\')"' : 'disabled') + ' style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid ' + (onHold ? '#7A5AA8' : '#CBD5CB') + ';border-radius:7px;background:' + (onHold ? '#F1EBF8' : '#fff') + ';color:' + (onHold ? '#5E3B8A' : '#666') + ';cursor:' + (canConf ? 'pointer' : 'not-allowed') + ';opacity:' + (canConf ? '1' : '0.5') + ';font-family:\'Noto Sans JP\',sans-serif">' + (onHold ? '⏸ 保留中' : '⏸ 保留') + '</button>' +
           (canConf ? '' : '<span style="font-size:10px;color:var(--muted)">（確認は担当者のみ）</span>') +
           (meta.confirmed_by ? '<span style="font-size:10px;color:var(--muted)">確認:' + escapeHtml(resolveStaffName(meta.confirmed_by)) + '</span>' : '') +
-        '</div>') +
+        '</div>' +
       '</div>';
     };
 
@@ -31378,7 +31370,7 @@ async function loadAttSheet() {
       '<button onclick="asExportPdfBulk()" style="margin-left:auto;padding:7px 14px;font-size:12px;font-weight:700;border:1px solid #C0392B;border-radius:8px;background:#FDEDEC;color:#922B21;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">📄 選択をPDF</button>' +
       '<button onclick="openAttSheetBulk()" style="padding:7px 16px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange);color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 選択した子を印刷</button>' +
       '</div>';
-    if (isNormal || asSummerCmtOn) {
+    if (isNormal) {
       html += '<div id="as-saveall-bar" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;padding:8px 12px;border:1px solid #2D6CB6;border-radius:10px;background:#EAF2FB">' +
         '<span id="as-saveall-count" style="font-size:12px;font-weight:700;color:#1E4276">すべて保存済み</span>' +
         '<button id="as-saveall-btn" onclick="asSaveAll()" disabled style="margin-left:auto;padding:7px 16px;font-size:12px;font-weight:700;border:none;border-radius:8px;background:#2D6CB6;color:#fff;opacity:0.5;cursor:default;font-family:\'Noto Sans JP\',sans-serif">💾 まとめて保存</button>' +
@@ -32089,8 +32081,14 @@ const AS_MARK_MAX = 8; // 横に並べる授業日の上限ガード（基本は
 function buildAttSheetDocHtml(st) {
   const isNormal = _asData.isNormal;
   const isSummer = _asData.isSummer;
-  // コメントを印刷に載せるか：通常種別、または夏期でコメントON（臨時）。
-  const asShowComment = isNormal || (isSummer && _asSummerComment);
+  // このシートにコメントを載せるか：コメントの出力先(sheet_target)で判定。
+  //   通常シート → normal または both を載せる
+  //   夏期シート → summer または both を載せる
+  //   その他の種別（冬期・春期など）は従来どおりコメントなし
+  const _asTgt = asTargetOf(_asMeta[st.id] || {});
+  const asShowComment =
+    (isNormal && (_asTgt === 'normal' || _asTgt === 'both')) ||
+    (isSummer && (_asTgt === 'summer' || _asTgt === 'both'));
   const y = _asData.y, mo = _asData.mo;
   const catLabel = AS_CAT_LABEL[_asData.category] || _asData.category;
   const catShort = AS_CAT_SHORT[_asData.category] || catLabel;
@@ -32142,7 +32140,7 @@ function buildAttSheetDocHtml(st) {
   const asStaffName = asStaffId ? resolveStaffName(asStaffId) : '';
   const hasImg = !!(_asImage && _asImage.image_data);
   // コメント本文ブロック（イラストがある時は右にイラスト用の余白を空けて横並び）。
-  // 夏期の臨時コメントで空欄の子は、コメント枠自体を出さず出欠のみで印刷する。
+  // 通常シートは常にコメント枠を出す（空欄は「未記入」）。夏期シートは空欄なら枠を出さず出欠のみで印刷。
   const asPrintComment = asShowComment && (isNormal || (comment && comment.trim()));
   const commentInner = asPrintComment ?
     ('<div style="flex:1;min-width:0;border:1px solid #bbb;border-radius:4px">' +
@@ -34315,14 +34313,15 @@ async function asLoadCommentsFromDb(year, month, students) {
     const rows = await sbGet('student_month_comments',
       'cmt_year=eq.' + year + '&cmt_month=eq.' + month +
       '&student_id=in.(' + ids.join(',') + ')' +
-      '&select=id,student_id,comment,confirmed,confirmed_by,confirmed_at,on_hold,hold_note,comment_staff_id') || [];
+      '&select=id,student_id,comment,confirmed,confirmed_by,confirmed_at,on_hold,hold_note,comment_staff_id,sheet_target') || [];
     rows.forEach(r => {
       if (r.comment != null) _asComments[r.student_id] = r.comment;
       _asMeta[r.student_id] = {
         id: r.id, confirmed: !!r.confirmed, confirmed_by: r.confirmed_by || '',
         confirmed_at: r.confirmed_at || null,
         on_hold: !!r.on_hold, hold_note: r.hold_note || '',
-        comment_staff_id: r.comment_staff_id || ''
+        comment_staff_id: r.comment_staff_id || '',
+        sheet_target: (r.sheet_target === 'summer' || r.sheet_target === 'both') ? r.sheet_target : 'normal'
       };
     });
   } catch (e) {
@@ -34687,20 +34686,11 @@ function asRefreshCardState(sid) {
   const confirmed = !!meta.confirmed;
   // 帯色
   const card = document.getElementById('as-card-' + sid);
-  if (card) {
-    const asTempBar = !!(_asData && _asData.isSummer && _asSummerComment);
-    card.style.borderLeftColor = asTempBar ? '#E8912E' : (onHold ? '#7A5AA8' : (!hasComment ? '#E5C158' : (confirmed ? '#3B9E5B' : '#2D6CB6')));
-  }
+  if (card) card.style.borderLeftColor = onHold ? '#7A5AA8' : (!hasComment ? '#E5C158' : (confirmed ? '#3B9E5B' : '#2D6CB6'));
   // バッジ
-  const asTempBadge = !!(_asData && _asData.isSummer && _asSummerComment);
   const badgeEl = document.getElementById('as-badge-' + sid);
   if (badgeEl) {
-    if (asTempBadge) {
-      badgeEl.innerHTML = hasComment
-        ? '<span style="color:#B26A00;font-weight:700">📝 コメント入力済</span>'
-        : '<span style="color:#B26A00;font-weight:700">☀️ 臨時コメント可（空欄なら出欠のみ）</span>';
-    }
-    else if (onHold) badgeEl.innerHTML = '<span style="color:#7A5AA8;font-weight:700">⏸ 保留（遅延依頼）</span>';
+    if (onHold) badgeEl.innerHTML = '<span style="color:#7A5AA8;font-weight:700">⏸ 保留（遅延依頼）</span>';
     else if (!hasComment) badgeEl.innerHTML = '<span style="color:#B08A2A;font-weight:700">● コメント未</span>';
     else if (confirmed) badgeEl.innerHTML = '<span style="color:var(--green-d);font-weight:700">✓ 確認済</span>';
     else badgeEl.innerHTML = '<span style="color:#2D6CB6;font-weight:700">✎ 入力済（未確認）</span>';
@@ -34721,11 +34711,10 @@ function asRefreshCardState(sid) {
     hbtn.style.color = onHold ? '#5E3B8A' : '#666';
     hbtn.textContent = onHold ? '⏸ 保留中' : '⏸ 保留';
   }
-  // 印刷選択チェック：通常は確認済みのみ選択可。夏期の臨時コメントモードは確認不要（常に選択可）。
-  const asTempMode = !!(_asData && _asData.isSummer && _asSummerComment);
+  // 印刷選択チェック：確認済みのみ選択可（未確認は無効化＝印刷不可）
   const pchk = document.getElementById('as-prtsel-' + sid);
   if (pchk) {
-    const allow = confirmed || asTempMode;
+    const allow = confirmed;
     pchk.disabled = !allow;
     if (!allow && pchk.checked) { pchk.checked = false; delete _asPrintSel[sid]; }
     const wrap = document.getElementById('as-prtselwrap-' + sid);
@@ -34868,6 +34857,8 @@ async function asSaveAll() {
     row.on_hold = ('on_hold' in d) ? !!d.on_hold : !!meta.on_hold;
     // comment_staff_id
     row.comment_staff_id = ('comment_staff_id' in d) ? (d.comment_staff_id || null) : (meta.comment_staff_id || null);
+    // sheet_target（出力先）。全行に含めてキー統一（PGRST102対策）。
+    row.sheet_target = ('sheet_target' in d) ? (d.sheet_target || 'normal') : asTargetOf(meta);
     return row;
   });
   const btn = document.getElementById('as-saveall-btn');
