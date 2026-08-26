@@ -5595,7 +5595,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <!-- 売上タブ（admin専用） -->
     <div id="smcontent-revenue" style="display:none">
       <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">
-        各生徒の受講科目数から月間売上を見積もります。科目数は受講科目のユニーク数（同じ科目の複数講座は1つ）で数えます。アプリ登録済みの生徒が対象です。
+        各生徒の受講科目数から月間売上を見積もります。科目数は受講科目のユニーク数（同じ科目の複数講座は1つ）で数えます。対象は経営サマリーと同じ在籍名簿（通常受講）で、通常授業がまだ未登録の子は「未受講・¥0」として一覧に含みます。
       </div>
       <div id="revenue-body"><div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div></div>
 
@@ -6210,7 +6210,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm63';
+const APP_VERSION = '20260702dlm64';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -55712,19 +55712,34 @@ async function loadRevenue() {
   const usingFallback = Object.keys(priceMap).length === 0;
   if (usingFallback) priceMap = Object.assign({}, REVENUE_FALLBACK_PRICES);
 
-  // アプリ登録の在籍生徒（除外は弾く。退塾確定で在籍最終日を過ぎた人も外す＝発効前は月謝継続で残す）
-  let students = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+  // 在籍生徒（除外は弾く。退塾確定で在籍最終日を過ぎた人も外す＝発効前は月謝継続で残す）
+  // 対象名簿は経営サマリーの「通常受講」と同一基準に統一する：
+  //   在籍(isEnrolledNow) かつ 除外でない かつ
+  //   「時期別のみ会員は除外」「通常会員 or 会員種別未設定 or 通常授業(normal)に在籍あり」を対象。
+  // これで経営サマリーの人数（高校227 等）と課金対象の分母が一致する。
+  let students = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade,membership_status,inactive_reason,withdraw_status,withdraw_effective_date') || [];
   students = students.filter(s => s.inactive_reason !== '除外');
   students = students.filter(s => isEnrolledNow(s));
 
   // 受講科目（通常授業＝category=normal のみ。講習・高卒生・体験は月謝に含めない）
   // ※画面の説明どおり「通常授業のみ」で数えるため、class_master.category も取得して normal に絞る。
-  const idSet = new Set(students.map(s => s.id));
-  let enrolls = [];
+  let allEnrolls = [];
   try {
-    enrolls = await sbGetActiveEnrollments('select=student_id,class_master(subject,category)');
-  } catch (e) { enrolls = []; }
-  enrolls = enrolls.filter(e => idSet.has(e.student_id));
+    allEnrolls = await sbGetActiveEnrollments('select=student_id,class_master(subject,category)');
+  } catch (e) { allEnrolls = []; }
+  // normal授業に在籍している生徒の集合（会員種別判定に使う）
+  const regularSet = new Set();
+  allEnrolls.forEach(e => {
+    if (e.class_master && e.class_master.category === 'normal') regularSet.add(e.student_id);
+  });
+  // 経営サマリーと同じ「通常受講」判定で対象名簿を絞る（時期別のみは除外）。
+  students = students.filter(s => {
+    if (s.membership_status === '時期別のみ') return false;
+    return regularSet.has(s.id) || s.membership_status == null || s.membership_status === '通常';
+  });
+
+  const idSet = new Set(students.map(s => s.id));
+  const enrolls = allEnrolls.filter(e => idSet.has(e.student_id));
   const subjOf = {};
   enrolls.forEach(e => {
     // 通常授業以外（夏期・冬期・春期・高卒・体験など）は月謝計算から除外
