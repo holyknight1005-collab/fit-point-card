@@ -6195,7 +6195,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm58';
+const APP_VERSION = '20260702dlm59';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -55421,12 +55421,188 @@ function revenueYen(n) {
 }
 
 // 売上の表示モードと、計算済みデータの保持（モード切替で再フェッチしない）
-let revViewMode = 'total';   // 'total' | 'school' | 'grade'
+let revViewMode = 'total';   // 'total' | 'school' | 'grade' | 'teacher' | 'koushu' | 'monthly'
 let revData = null;          // { perStudent, totalRevenue, payingN, zeroN, byCount, priceMap, usingFallback }
 
 function setRevView(mode) {
   revViewMode = mode;
   renderRevenueBody();
+}
+
+// ============================================================
+// 月別売上（年度をおっていくための仕組み・B-1 スナップショット方式）
+// 過去の在籍開始日が3割ほど欠けており遡及は正確に出せないため、
+// 「その時点の売上を毎月保存」して正確な推移を貯めていく。
+// - 当月：いま画面が計算した売上（revData）をそのまま当月値として表示・保存できる
+// - 過去月：monthly_revenue_snapshots に保存済みならそれを表示、無ければ「未保存」
+// ============================================================
+let revMonthlyYear = null;         // 表示中の会計年度（4月始まり）
+let revMonthlySnapshots = null;    // { 'FY|month': row } のマップ（normalカテゴリのみ表示に使用）
+
+// 会計年度の月の並び（4,5,…,12,1,2,3）と、その月が属する暦年
+function revFiscalMonths(fy) {
+  const arr = [];
+  for (let i = 0; i < 12; i++) {
+    const m = ((3 + i) % 12) + 1;        // 4,5,...,12,1,2,3
+    const calYear = (m >= 4) ? fy : fy + 1;
+    arr.push({ month: m, calYear: calYear });
+  }
+  return arr;
+}
+
+async function loadRevMonthlySnapshots() {
+  try {
+    const rows = await sbGet('monthly_revenue_snapshots',
+      'category=eq.normal&select=fiscal_year,month,total_revenue,paying_count,student_count,taken_at,taken_by&order=fiscal_year,month') || [];
+    const map = {};
+    rows.forEach(r => { map[r.fiscal_year + '|' + r.month] = r; });
+    revMonthlySnapshots = map;
+    return map;
+  } catch (e) {
+    // テーブル未作成
+    revMonthlySnapshots = null;
+    return null;
+  }
+}
+
+// いま画面が計算している売上（revData＝現在の在籍・通常授業のみ）を、指定した年度・月に保存する
+async function saveRevMonthlySnapshot(fy, month) {
+  if (!revData) { showToast('先に売上を読み込んでください', 'error'); return; }
+  const { totalRevenue, payingN, perStudent, byCount } = revData;
+  const existing = revMonthlySnapshots && revMonthlySnapshots[fy + '|' + month];
+  const verb = existing ? '上書き保存' : '保存';
+  if (!confirm(fy + '年度 ' + month + '月分の通常授業の売上として、いまの計算結果を' + verb + 'します。\n\n' +
+      '売上: ' + revenueYen(totalRevenue) + '\n課金対象: ' + payingN + '人\n\n' +
+      '※「その時点の在籍」を記録します。あとで在籍が変わっても、この月の値は固定されます。')) return;
+  showLoading('保存中...');
+  try {
+    const detail = {};
+    Object.keys(byCount || {}).forEach(k => { detail[k] = byCount[k]; });
+    const body = {
+      fiscal_year: fy,
+      month: month,
+      category: 'normal',
+      total_revenue: totalRevenue,
+      paying_count: payingN,
+      student_count: perStudent.length,
+      detail: detail,
+      taken_at: new Date().toISOString(),
+      taken_by: (typeof currentStaff !== 'undefined' && currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : null
+    };
+    // 年度×月×区分でUPSERT（一意制約 uq_mrs_fy_month_cat）。
+    // sbWrite は Prefer 固定のため、merge-duplicates が要るここだけ直接 fetch する。
+    const upsertUrl = SB_URL + '/rest/v1/monthly_revenue_snapshots?on_conflict=fiscal_year,month,category';
+    const upRes = await fetch(upsertUrl, {
+      method: 'POST',
+      headers: {
+        'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates,return=minimal'
+      },
+      body: JSON.stringify(body)
+    });
+    if (!upRes.ok) throw new Error(await upRes.text());
+    hideLoading();
+    showToast('💾 ' + fy + '年度' + month + '月分を保存しました', 'success');
+    await loadRevMonthlySnapshots();
+    renderRevenueBody();
+  } catch (e) {
+    hideLoading();
+    showToast('保存エラー: ' + (e && e.message ? e.message : e), 'error');
+  }
+}
+
+function setRevMonthlyYear(y) {
+  revMonthlyYear = parseInt(y, 10);
+  renderRevenueBody();
+}
+
+// 月別ビューの描画。revMonthlySnapshots を読んで表を作る。
+async function renderRevMonthly() {
+  const wrap = document.getElementById('rev-monthly-wrap');
+  if (!wrap) return;
+  if (revMonthlySnapshots === null) {
+    // まだ読んでいない or テーブル未作成 → 読みにいく
+    await loadRevMonthlySnapshots();
+  }
+  const curFy = getFiscalYearJST();
+  if (revMonthlyYear == null) revMonthlyYear = curFy;
+  const fy = revMonthlyYear;
+
+  if (revMonthlySnapshots === null) {
+    wrap.innerHTML = '<div style="font-size:12px;color:#C0392B;background:#FDECEA;border:1px solid #F5B7B1;border-radius:8px;padding:10px;line-height:1.6">'
+      + '⚠️ 月別売上のテーブル（monthly_revenue_snapshots）がまだありません。<br>'
+      + 'create_monthly_revenue_snapshots.sql を Supabase で実行すると、月ごとの保存・推移が使えるようになります。</div>';
+    return;
+  }
+
+  // 年度セレクタの選択肢（保存済み年度 ∪ 現年度、降順）
+  const yearsSet = {};
+  Object.keys(revMonthlySnapshots).forEach(k => { yearsSet[parseInt(k.split('|')[0], 10)] = true; });
+  yearsSet[curFy] = true;
+  const years = Object.keys(yearsSet).map(Number).sort((a, b) => b - a);
+
+  const todayStr = getTodayJST();
+  const [ty, tm] = todayStr.split('-').map(Number);
+  const curMonth = tm;
+
+  const months = revFiscalMonths(fy);
+  let yearTotal = 0;
+
+  let rows = '';
+  months.forEach(({ month, calYear }) => {
+    const snap = revMonthlySnapshots[fy + '|' + month];
+    const isCurrent = (fy === curFy && month === curMonth);
+    let cells;
+    if (snap) {
+      yearTotal += (snap.total_revenue || 0);
+      const takenLabel = snap.taken_at ? String(snap.taken_at).slice(0, 10).replace(/-/g, '/') : '';
+      cells =
+        '<td style="padding:6px 8px;text-align:right;font-weight:700">' + revenueYen(snap.total_revenue) + '</td>' +
+        '<td style="padding:6px 8px;text-align:right">' + (snap.paying_count != null ? snap.paying_count + '人' : '—') + '</td>' +
+        '<td style="padding:6px 8px;text-align:center;color:var(--muted);font-size:10px">保存済<br>' + takenLabel + '</td>';
+    } else {
+      cells =
+        '<td style="padding:6px 8px;text-align:right;color:var(--muted)">—</td>' +
+        '<td style="padding:6px 8px;text-align:right;color:var(--muted)">—</td>' +
+        '<td style="padding:6px 8px;text-align:center;color:var(--muted);font-size:10px">未保存</td>';
+    }
+    // 当月だけ「この月に保存」ボタン（いまの計算結果を記録）
+    const actionCell = isCurrent
+      ? '<td style="padding:6px 8px;text-align:center"><button onclick="saveRevMonthlySnapshot(' + fy + ',' + month + ')" style="font-size:10px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:6px;padding:4px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (snap ? '再保存' : '今月を保存') + '</button></td>'
+      : '<td style="padding:6px 8px"></td>';
+    rows +=
+      '<tr style="border-bottom:1px solid var(--border)' + (isCurrent ? ';background:var(--orange-l)' : '') + '">' +
+        '<td style="padding:6px 8px;white-space:nowrap">' + calYear + '年' + month + '月' + (isCurrent ? ' <span style="font-size:9px;color:var(--orange-d);font-weight:700">今月</span>' : '') + '</td>' +
+        cells +
+        actionCell +
+      '</tr>';
+  });
+
+  let html = '';
+  html += '<div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:12px">' +
+    '<div style="flex:0 0 140px"><div class="form-label">年度</div>' +
+      '<select class="form-select" onchange="setRevMonthlyYear(this.value)">' +
+        years.map(y => '<option value="' + y + '"' + (y === fy ? ' selected' : '') + '>' + y + '年度</option>').join('') +
+      '</select></div>' +
+    '<div style="flex:1;font-size:11px;color:var(--muted);line-height:1.5;padding-bottom:6px">「今月を保存」で、その時点の在籍から計算した通常授業の売上を記録します。翌月以降も毎月保存すると、正確な推移が貯まります。</div>' +
+  '</div>';
+  html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">' +
+    '<thead><tr style="background:var(--orange-l)">' +
+      '<th style="padding:6px 8px;text-align:left">月</th>' +
+      '<th style="padding:6px 8px;text-align:right">売上</th>' +
+      '<th style="padding:6px 8px;text-align:right">課金対象</th>' +
+      '<th style="padding:6px 8px;text-align:center">状態</th>' +
+      '<th style="padding:6px 8px"></th>' +
+    '</tr></thead><tbody>' + rows +
+    '<tr style="background:var(--orange-l);font-weight:700">' +
+      '<td style="padding:6px 8px">年度計（保存済み分）</td>' +
+      '<td style="padding:6px 8px;text-align:right">' + revenueYen(yearTotal) + '</td>' +
+      '<td colspan="3" style="padding:6px 8px"></td>' +
+    '</tr>' +
+    '</tbody></table></div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.6">※ 通常授業（月謝）のみの集計です。講習の売上は「講習」タブで年度・区分ごとに見られます。<br>※ 過去にさかのぼった月は、当時の在籍データが揃っていないと正確に出せないため、保存した月から順に貯めていく方式です。</div>';
+  wrap.innerHTML = html;
 }
 
 async function loadRevenue() {
@@ -55453,16 +55629,19 @@ async function loadRevenue() {
   students = students.filter(s => s.inactive_reason !== '除外');
   students = students.filter(s => isEnrolledNow(s));
 
-  // 受講科目
+  // 受講科目（通常授業＝category=normal のみ。講習・高卒生・体験は月謝に含めない）
+  // ※画面の説明どおり「通常授業のみ」で数えるため、class_master.category も取得して normal に絞る。
   const idSet = new Set(students.map(s => s.id));
   let enrolls = [];
   try {
-    enrolls = await sbGetActiveEnrollments('select=student_id,class_master(subject)');
+    enrolls = await sbGetActiveEnrollments('select=student_id,class_master(subject,category)');
   } catch (e) { enrolls = []; }
   enrolls = enrolls.filter(e => idSet.has(e.student_id));
   const subjOf = {};
   enrolls.forEach(e => {
-    const subj = e.class_master && e.class_master.subject ? e.class_master.subject : 'その他';
+    // 通常授業以外（夏期・冬期・春期・高卒・体験など）は月謝計算から除外
+    if (!e.class_master || e.class_master.category !== 'normal') return;
+    const subj = e.class_master.subject ? e.class_master.subject : 'その他';
     if (!subjOf[e.student_id]) subjOf[e.student_id] = new Set();
     subjOf[e.student_id].add(subj);
   });
@@ -55515,12 +55694,13 @@ function renderRevenueBody() {
         ? 'background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;border-color:var(--orange-d)'
         : 'background:var(--surface);color:var(--muted)')
     + '">' + label + '</button>';
-  html += '<div style="display:flex;gap:0;border-radius:8px;overflow:hidden;margin-bottom:16px;border:1px solid var(--border)">'
+  html += '<div style="display:flex;gap:0;border-radius:8px;overflow:hidden;margin-bottom:16px;border:1px solid var(--border);flex-wrap:wrap">'
     + tabBtn('total', '全体')
     + tabBtn('school', '学校別')
     + tabBtn('grade', '学年別')
     + tabBtn('teacher', '講師・科目部')
     + tabBtn('koushu', '講習')
+    + tabBtn('monthly', '月別')
     + '</div>';
 
   // 講師・科目部別（担当生徒数・授業数）。dhv。enrollment/担当データを別途引くので専用ビューに委譲。
@@ -55536,6 +55716,14 @@ function renderRevenueBody() {
     html += '<div id="rev-ksh-wrap"></div>';
     body.innerHTML = html;
     renderRevKoushu();
+    return;
+  }
+
+  // 月別売上（年度をおう・スナップショット方式）。専用ビューに委譲。
+  if (revViewMode === 'monthly') {
+    html += '<div id="rev-monthly-wrap"><div style="text-align:center;color:var(--muted);padding:24px;font-size:13px">読み込み中…</div></div>';
+    body.innerHTML = html;
+    renderRevMonthly();
     return;
   }
 
