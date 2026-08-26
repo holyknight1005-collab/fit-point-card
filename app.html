@@ -3654,6 +3654,21 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div class="form-label">期限（任意）</div>
     <input class="form-input-sm" id="todo-due" type="date">
   </div>
+  <div>
+    <div class="form-label">ショートカット先（任意）</div>
+    <select class="form-input-sm" id="todo-link-target" style="width:100%">
+      <option value="">なし（通常のToDo）</option>
+      <option value="supervision">🪑 自習監督（シフト希望）</option>
+      <option value="attsheet">🖨 出席表</option>
+      <option value="attendance">📋 授業出欠</option>
+      <option value="reportedit">✏️ 報告書入力</option>
+      <option value="announce">📢 お知らせ</option>
+      <option value="check-item">📌 ノルマ</option>
+      <option value="interview">🗣 面談</option>
+      <option value="prospects">🚪 入来塾管理</option>
+    </select>
+    <div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.5">選ぶと、このToDoに「▶ 開く」ボタンが付き、押すとその編集ページへ直接飛べます。</div>
+  </div>
   <label id="todo-approval-row" style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;padding:9px 11px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm)">
     <input type="checkbox" id="todo-needs-approval" style="width:15px;height:15px;cursor:pointer;flex-shrink:0;margin-top:1px">
     <span style="font-size:12px;color:var(--text);line-height:1.5">🔍 完了時に自分の承認を必要にする<br><span style="font-size:10px;color:var(--muted)">担当者が完了しても承認待ちになり、承認するまでポイントは付きません</span></span>
@@ -6195,7 +6210,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm61';
+const APP_VERSION = '20260702dlm62';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -9406,6 +9421,24 @@ async function loadHomeApprovals() {
   }
 }
 
+// ToDoのショートカット先ラベル（openHomeFeature のタブ名 → 表示名）
+const TODO_LINK_LABEL = {
+  supervision: '🪑 自習監督を開く',
+  attsheet: '🖨 出席表を開く',
+  attendance: '📋 授業出欠を開く',
+  reportedit: '✏️ 報告書入力を開く',
+  announce: '📢 お知らせを開く',
+  'check-item': '📌 ノルマを開く',
+  interview: '🗣 面談を開く',
+  prospects: '🚪 入来塾管理を開く'
+};
+// ToDoにショートカット先があれば「▶ 開く」ボタンHTMLを返す（無ければ空文字）
+function todoLinkBtnHtml(t) {
+  const tgt = t && t.link_target;
+  if (!tgt || !TODO_LINK_LABEL[tgt]) return '';
+  return '<button onclick="openHomeFeature(\'' + escapeAttr(tgt) + '\')" style="margin-top:6px;padding:6px 14px;background:linear-gradient(135deg,#2D6CB6,#1E4D8C);border:none;border-radius:8px;font-size:12px;font-weight:700;color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">▶ ' + TODO_LINK_LABEL[tgt] + '</button>';
+}
+
 // ホームのToDo1行分。完了ボタン＋（電話ToDoなら）架電記録ボタン。
 function homeTodoRowHtml(t, today) {
   const waiting = isTodoAwaitingApproval(t);
@@ -9443,6 +9476,7 @@ function homeTodoRowHtml(t, today) {
         dueLabel +
       '</div>' +
       (t.detail ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">' + escapeHtml(t.detail) + '</div>' : '') +
+      todoLinkBtnHtml(t) +
       (!t.is_done && t.rejected_at ? '<div style="font-size:11px;color:#B06A3A;margin-top:5px;background:#FBF0E6;border-radius:6px;padding:5px 8px">🔙 差し戻されました' + (t.reject_note ? '：' + escapeHtml(t.reject_note) : '') + '</div>' : '') +
       ((callBtn || todoCallSummaryHtml(t.id))
         ? '<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:6px">' + callBtn + todoCallSummaryHtml(t.id) + '</div>'
@@ -17533,6 +17567,7 @@ async function createStaffTodo() {
   // 一斉依頼をまとめる真のID。1名でも付けておく（あとから人を足せるように）
   const groupId = newTodoGroupId();
   const isPrivate = !!document.getElementById('todo-is-private')?.checked;
+  const linkTarget = (document.getElementById('todo-link-target') || {}).value || null;
   showLoading('作成中...');
   try {
     for (const toId of recipients) {
@@ -17544,7 +17579,8 @@ async function createStaffTodo() {
         todo_kind: newTodoKind,
         group_id: groupId,
         completion_mode: cmode,
-        is_private: isPrivate
+        is_private: isPrivate,
+        link_target: linkTarget
       }).catch(async (err) => {
         // todo_kind / group_id / completion_mode 列が未適用の環境 → 最小構成で登録
         if (/column|PGRST|400/i.test(String(err && err.message || err))) {
@@ -17566,6 +17602,7 @@ async function createStaffTodo() {
     const naEl = document.getElementById('todo-needs-approval'); if (naEl) naEl.checked = false;
     const pvEl = document.getElementById('todo-is-private'); if (pvEl) pvEl.checked = false;
     const crEl = document.getElementById('todo-count-in-rate'); if (crEl) crEl.checked = false;
+    const ltEl = document.getElementById('todo-link-target'); if (ltEl) ltEl.value = '';
     setTodoKind('normal');
     setTodoCompletionMode('each');
     closeTodoCreate();
@@ -17584,6 +17621,7 @@ async function createMyTodo() {
   if (!title) { showToast('タイトルを入力してください', 'error'); return; }
   // 締切遵守率に入れるのは「期限つき」のときだけ意味がある
   const countInRate = !!document.getElementById('todo-count-in-rate')?.checked && !!due;
+  const linkTarget = (document.getElementById('todo-link-target') || {}).value || null;
   showLoading('追加中...');
   try {
     await sbPost('staff_todos', {
@@ -17591,7 +17629,8 @@ async function createMyTodo() {
       to_staff_id: currentStaff.id,
       title, detail, due_date: due || null,
       todo_kind: newTodoKind,
-      count_in_rate: countInRate
+      count_in_rate: countInRate,
+      link_target: linkTarget
     }).catch(async (err) => {
       if (/column|PGRST|400/i.test(String(err && err.message || err))) {
         await sbPost('staff_todos', {
@@ -17607,6 +17646,7 @@ async function createMyTodo() {
     document.getElementById('todo-due').value = '';
     const pvEl2 = document.getElementById('todo-is-private'); if (pvEl2) pvEl2.checked = false;
     const crEl2 = document.getElementById('todo-count-in-rate'); if (crEl2) crEl2.checked = false;
+    const ltEl2 = document.getElementById('todo-link-target'); if (ltEl2) ltEl2.value = '';
     setTodoKind('normal');
     setTodoTargetType('person');
     setTodoCompletionMode('each');
