@@ -2240,6 +2240,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="division-toggle-bar" style="display:flex;gap:3px;background:rgba(255,255,255,0.2);border-radius:8px;padding:3px;margin-left:8px">
       <button id="division-btn-高校部" onclick="setDivision('高校部')" style="padding:5px 9px;border:none;border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;white-space:nowrap">🎓高</button>
       <button id="division-btn-中学部" onclick="setDivision('中学部')" style="padding:5px 9px;border:none;border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;white-space:nowrap">📗中</button>
+      <button id="division-btn-代表" onclick="enterExecMode()" style="display:none;padding:5px 9px;border:none;border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;font-family:inherit;white-space:nowrap">👑代表</button>
     </div>
     <button class="back-btn" onclick="forceReloadLatest()">🔄 更新</button>
     <div style="display:flex;gap:6px">
@@ -2248,6 +2249,14 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     </div>
   </div>
   <div class="staff-content">
+    <!-- 代表モード（fit001のみ・経営サマリーを1画面に集約） -->
+    <div id="exec-mode-overlay" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="font-size:17px;font-weight:800;color:var(--orange-d)">👑 代表モード</div>
+        <button onclick="exitExecMode()" style="font-size:12px;font-weight:700;color:#2C5FA8;background:#E4EEFB;border:1px solid #4A7FC0;border-radius:20px;padding:6px 16px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">通常表示に戻る</button>
+      </div>
+      <div id="exec-mode-body"></div>
+    </div>
     <!-- 経営サマリー（admin/dashboard権限のみ・JSで表示制御） -->
     <div id="exec-dashboard-section" style="display:none"></div>
     <div id="home-left-col">
@@ -6210,7 +6219,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm64';
+const APP_VERSION = '20260702dlm65';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -8864,6 +8873,9 @@ async function initStaff() {
     updateScienceAppsCard();
     renderFavMenu();
     renderHomeShortcuts();
+    // dlm65: 代表(fit001)は👑代表ボタンを表示し、初回は代表モードで開く。
+    applyExecModeButton();
+    if (isRepresentativeStaff() && !execModeOn) { try { enterExecMode(); } catch (e) {} }
   } catch(e) { hideLoading(); showToast('データ取得エラー: ' + e.message, 'error'); }
 }
 
@@ -52390,6 +52402,48 @@ function trendBarSvg(d) {
   return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;min-width:560px;height:auto" role="img">' + g + '</svg>';
 }
 
+
+// ===== 代表モード（fit001のみ・経営サマリーを1画面に集約）=====
+// dlm65: 代表(fit001)がログインすると最初に代表モードで開く。ヘッダの👑代表で切替、
+// 「通常表示に戻る」で通常のホーム（高校/中学）へ戻る。中身は既存の経営サマリーを流用。
+let execModeOn = false;
+
+// fit001 かどうか（代表ボタン・自動起動の判定）。
+function isRepresentativeStaff() {
+  return !!currentStaff && String(currentStaff.staff_id || '').toLowerCase() === 'fit001';
+}
+
+// 代表ボタンの表示可否をヘッダに反映（fit001のみ表示）。
+function applyExecModeButton() {
+  const b = document.getElementById('division-btn-代表');
+  if (b) b.style.display = isRepresentativeStaff() ? '' : 'none';
+}
+
+async function enterExecMode() {
+  if (!isRepresentativeStaff()) return;
+  execModeOn = true;
+  const overlay = document.getElementById('exec-mode-overlay');
+  const leftCol = document.getElementById('home-left-col');
+  const body = document.getElementById('exec-mode-body');
+  if (overlay) overlay.style.display = 'block';
+  if (leftCol) leftCol.style.display = 'none';
+  // 既存の経営サマリーを集計してオーバーレイへ移す
+  if (body) body.innerHTML = '<div style="background:#F7FAFD;border:1px solid #D6E4F0;border-radius:12px;padding:14px"><div style="text-align:center;color:var(--muted);font-size:12px">経営サマリーを集計中…</div></div>';
+  try { await loadExecDashboard(); } catch (e) {}
+  const src = document.getElementById('exec-dashboard-section');
+  if (body && src) { body.innerHTML = src.innerHTML; src.style.display = 'none'; }
+  try { window.scrollTo(0, 0); } catch (e) {}
+}
+
+function exitExecMode() {
+  execModeOn = false;
+  const overlay = document.getElementById('exec-mode-overlay');
+  const leftCol = document.getElementById('home-left-col');
+  if (overlay) overlay.style.display = 'none';
+  if (leftCol) leftCol.style.display = '';
+  // 通常ホームの経営サマリーを再描画（表示を戻す）
+  try { loadExecDashboard(); } catch (e) {}
+}
 
 // ===== 経営サマリー（ホーム上部・admin/dashboard権限）=====
 // 在籍人数（前月比・昨年同月比）／今月の新規入塾・退塾／本日の来塾。
