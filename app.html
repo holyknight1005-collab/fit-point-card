@@ -6210,7 +6210,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm62';
+const APP_VERSION = '20260702dlm63';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -31186,7 +31186,11 @@ async function loadAttSheet() {
         });
         subjects.push({ name: m.name, days: days });
       });
-      if (!subjects.length) return; // 当月授業日ゼロの生徒は出さない
+      // 当月授業日がゼロの生徒の扱い：
+      //   通常シート → 通常授業(normal)に在籍していれば、授業日がなくても名前を出す（8月休講・9月開始などでコメントを入れるため）。
+      //   夏期など通常以外 → 従来どおり授業日ゼロの子は出さない。
+      const isNormalSheet = (category === 'normal');
+      if (!subjects.length && !isNormalSheet) return;
       students.push({
         id: sid,
         name: stu.name || '(氏名未登録)',
@@ -31194,7 +31198,8 @@ async function loadAttSheet() {
         num: (stu.student_no != null ? stu.student_no : ''),
         grade: stu.grade || '',
         school: stu.school || '',
-        subjects: subjects
+        subjects: subjects,
+        noSessions: (subjects.length === 0)   // 当月の授業日ゼロ（通常シートで表示・コメントのみ）
       });
     });
     // 並び替え（as-sort-select）：school=学校別 / grade=学年順 / kana=五十音順（氏名）
@@ -31373,7 +31378,8 @@ async function loadAttSheet() {
             (st.num !== '' ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">No.' + escapeHtml(String(st.num)) + '</span>' : '') +
             ' <button onclick="asEditName(\'' + st.id + '\')" title="氏名・フリガナを編集" style="font-size:11px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--muted);cursor:pointer;padding:1px 6px;font-family:\'Noto Sans JP\',sans-serif">✏️</button>' +
             '　<span id="as-badge-' + st.id + '" style="font-size:11px;font-weight:400">' + badge + '</span>　' + printedBadge(st.id) + '</div>' +
-            '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade)) : '') + '　受講 ' + st.subjects.length + '科目</div>' +
+            '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade)) : '') + '　受講 ' + st.subjects.length + '科目' +
+              (st.noSessions ? ' <span style="font-size:10px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:10px;padding:0 6px">今月の授業日なし</span>' : '') + '</div>' +
           '</div>' +
           printSelBox(st.id, confirmed) +
           '<button onclick="openAttSheetDoc(' + idx + ')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨</button>' +
@@ -32198,6 +32204,13 @@ function buildAttSheetDocHtml(st) {
   const commentArea = (asPrintComment || (isNormal && hasImg)) ?
     ('<div style="display:flex;gap:12px;align-items:stretch;margin-top:14px">' + commentInner + imgInner + '</div>') : '';
 
+  // 当月の授業日がゼロの子（通常シートで在籍のみ表示）は、出欠テーブルの代わりに案内文を出す。
+  const asNoSessions = (st.subjects.length === 0);
+  const tableBlock = asNoSessions
+    ? '<div style="border:1px dashed #bbb;border-radius:6px;padding:14px;text-align:center;color:#777;font-size:10.5pt;margin-bottom:4px">' + escapeHtml(periodLabel) + 'の通常授業はありません</div>'
+    : '<table style="border-collapse:collapse;width:100%;table-layout:fixed">' + colGroup + '<tr><th style="border:1px solid #bbb;background:#f1ede3;padding:4px 6px;font-size:9pt;white-space:nowrap">受講科目 ＼ 回</th>' + colHead.join('') + '</tr>' + rows + '</table>' +
+      '<div style="font-size:9pt;color:#555;margin-top:8px">◯ 出席　／　欠 欠席　／　ビデオ補習　　※授業出席は、出席カードに基づいて記載しております。</div>';
+
   const doc =
     '<div style="font-family:\'Noto Sans JP\',sans-serif;color:#222;max-width:680px;margin:0 auto;padding:8px 16px">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #333;padding-bottom:6px;margin-bottom:12px">' +
@@ -32205,8 +32218,7 @@ function buildAttSheetDocHtml(st) {
         '<div style="font-size:10pt;color:#555;margin-top:2px">' + escapeHtml(periodLabel) + '</div></div>' +
         '<div style="font-size:14pt;font-weight:700;text-align:right">' + escapeHtml(st.name) + '　様</div>' +
       '</div>' +
-      '<table style="border-collapse:collapse;width:100%;table-layout:fixed">' + colGroup + '<tr><th style="border:1px solid #bbb;background:#f1ede3;padding:4px 6px;font-size:9pt;white-space:nowrap">受講科目 ＼ 回</th>' + colHead.join('') + '</tr>' + rows + '</table>' +
-      '<div style="font-size:9pt;color:#555;margin-top:8px">◯ 出席　／　欠 欠席　／　ビデオ補習　　※授業出席は、出席カードに基づいて記載しております。</div>' +
+      tableBlock +
       commentArea +
       '<div style="text-align:right;margin-top:18px;font-size:11pt;font-weight:700">総合学習塾 fit</div>' +
     '</div>';
