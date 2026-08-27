@@ -5619,16 +5619,18 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
       <div id="revenue-body"><div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div></div>
 
-      <!-- データバックアップ（admin専用・20260702bu） -->
-      <div class="section-title" style="margin-top:20px">💾 データバックアップ</div>
-      <div class="card-box" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px">
-        <div style="font-size:12px;color:var(--muted);line-height:1.6">
-          アプリの全データを一括ダウンロードします。万一に備えた定期バックアップ用です。<br>
-          ・<b>JSON</b>（復旧用の原本）と <b>ZIP</b>（テーブルごとのCSV・閲覧用）の2ファイルが保存されます。<br>
-          ・件数が多いと数分かかることがあります。完了までこの画面を閉じないでください。
+      <!-- データバックアップ（admin専用・20260702bu）※代表モードでは非表示 dlm73 -->
+      <div id="backup-wrap">
+        <div class="section-title" style="margin-top:20px">💾 データバックアップ</div>
+        <div class="card-box" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px">
+          <div style="font-size:12px;color:var(--muted);line-height:1.6">
+            アプリの全データを一括ダウンロードします。万一に備えた定期バックアップ用です。<br>
+            ・<b>JSON</b>（復旧用の原本）と <b>ZIP</b>（テーブルごとのCSV・閲覧用）の2ファイルが保存されます。<br>
+            ・件数が多いと数分かかることがあります。完了までこの画面を閉じないでください。
+          </div>
+          <button id="backup-btn" onclick="runFullBackup()" style="width:100%;padding:12px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:var(--radius-sm);color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📦 全データをダウンロード</button>
+          <div id="backup-progress" style="display:none;font-size:12px;color:var(--text);line-height:1.7;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:220px;overflow-y:auto"></div>
         </div>
-        <button id="backup-btn" onclick="runFullBackup()" style="width:100%;padding:12px;background:linear-gradient(135deg,#2D5FA6,#1E4276);border:none;border-radius:var(--radius-sm);color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📦 全データをダウンロード</button>
-        <div id="backup-progress" style="display:none;font-size:12px;color:var(--text);line-height:1.7;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px;max-height:220px;overflow-y:auto"></div>
       </div>
     </div>
 
@@ -6230,7 +6232,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm72';
+const APP_VERSION = '20260702dlm73';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -22166,9 +22168,10 @@ async function renderRevTeacher() {
   } catch (e) { /* class_teachers 未作成：主担当のみ */ }
 
   // 在籍生徒（除外を弾く。退塾確定で在籍最終日を過ぎた人も外す＝発効前は残す）
+  // dlm73: 売上は高校部のみ対象（中学は別建て）。
   let students = [];
-  try { students = await sbGet('students', 'is_active=eq.true&select=id,inactive_reason,withdraw_status,withdraw_effective_date') || []; } catch (e) {}
-  students = students.filter(s => s.inactive_reason !== '除外' && isEnrolledNow(s));
+  try { students = await sbGet('students', 'is_active=eq.true&division=eq.' + encodeURIComponent('高校部') + '&select=id,inactive_reason,withdraw_status,withdraw_effective_date,division') || []; } catch (e) {}
+  students = students.filter(s => (s.division || '高校部') === '高校部' && s.inactive_reason !== '除外' && isEnrolledNow(s));
   const validStu = new Set(students.map(s => s.id));
 
   // 通常授業の受講のみ
@@ -52533,6 +52536,8 @@ async function enterExecMode() {
   execMountBlock('exec-dashboard-section', 'exec-summary-holder');
   execMountBlock('smcontent-studentanalysis', 'exec-analysis-holder');
   execMountBlock('smcontent-revenue', 'exec-revenue-holder');
+  // dlm73: 代表モードではデータバックアップUIを隠す（売上タブ本体には残す）
+  try { const bw = document.getElementById('backup-wrap'); if (bw) bw.style.display = 'none'; } catch (e) {}
   await execRenderAll();
 }
 
@@ -52541,6 +52546,8 @@ function exitExecMode() {
   const overlay = document.getElementById('exec-mode-overlay');
   const leftCol = document.getElementById('home-left-col');
   execUnmountAll();
+  // dlm73: 隠していたバックアップUIを元に戻す
+  try { const bw = document.getElementById('backup-wrap'); if (bw) bw.style.display = ''; } catch (e) {}
   if (overlay) overlay.style.display = 'none';
   if (leftCol) leftCol.style.display = '';
   // 通常ホームの経営サマリーを元の場所で再描画
@@ -55925,7 +55932,9 @@ async function loadRevenue() {
   //   在籍(isEnrolledNow) かつ 除外でない かつ
   //   「時期別のみ会員は除外」「通常会員 or 会員種別未設定 or 通常授業(normal)に在籍あり」を対象。
   // これで経営サマリーの人数（高校227 等）と課金対象の分母が一致する。
-  let students = await sbGet('students', 'is_active=eq.true&select=id,name,school,grade,membership_status,inactive_reason,withdraw_status,withdraw_effective_date') || [];
+  // dlm73: 売上は高校部のみを対象にする（中学の売上体系は別建てのため除外）。
+  let students = await sbGet('students', 'is_active=eq.true&division=eq.' + encodeURIComponent('高校部') + '&select=id,name,school,grade,membership_status,inactive_reason,withdraw_status,withdraw_effective_date,division') || [];
+  students = students.filter(s => (s.division || '高校部') === '高校部');
   students = students.filter(s => s.inactive_reason !== '除外');
   students = students.filter(s => isEnrolledNow(s));
 
