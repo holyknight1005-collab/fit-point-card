@@ -6232,7 +6232,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm73';
+const APP_VERSION = '20260702dlm74';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -27771,11 +27771,41 @@ let courseDateTimes = {};
 let courseBulkTime = { period: 6, start: PERIODS[6][0], end: PERIODS[6][1] };
 
 // 一括登録の授業しぼり込み（80件から選ぶので絞れるようにする）
-let courseFilter = { cat: 'all', subj: 'all', grade: 'all' };
+let courseFilter = { cat: 'normal', subj: 'all', grade: 'all' };
 let courseClassPool = [];   // 絞り込み対象の全授業
 
+// 自分の担当授業ID集合（主担当 teacher_staff_id ∪ 追加担当 class_teachers）。dlm74
+// 一括登録の講座リストを自分の担当だけに絞るために使う。切替なし・全員適用。
+async function getMyTeachingClassIdSet() {
+  const set = new Set();
+  if (!currentStaff || !currentStaff.id) return set;
+  try {
+    const myMain = await sbGet('class_master', 'teacher_staff_id=eq.' + currentStaff.id + '&select=id') || [];
+    myMain.forEach(c => { if (c.id) set.add(String(c.id)); });
+  } catch (e) { /* 取得失敗時は空 */ }
+  try {
+    const myCt = await sbGet('class_teachers', 'staff_id=eq.' + currentStaff.id + '&select=class_master_id') || [];
+    myCt.forEach(r => { if (r.class_master_id) set.add(String(r.class_master_id)); });
+  } catch (e) { /* class_teachers 未作成なら主担当のみ */ }
+  return set;
+}
+
+// 講習グループ（第1階層の「講習▼」で束ねる区分）。通常・高卒生以外はすべて講習扱い。dlm74
+const COURSE_LESSON_GROUP_KEYS = ['summer','winter','spring','common_test','regular_test','trial','free_open','other'];
+let courseFilterLessonOpen = false;  // 「講習▼」を開いているか
+
 function setCourseFilter(kind, value) {
+  // 「講習▼」トグル：第2階層の開閉だけを切り替える（区分の絞り込みは変えない）。dlm74
+  if (kind === 'cat' && value === '__lesson_toggle__') {
+    courseFilterLessonOpen = !courseFilterLessonOpen;
+    renderCourseFilters();
+    return;
+  }
   courseFilter[kind] = value;
+  // 通常・高卒生を選んだら講習グループは閉じる（講習系を選んだ時だけ開いたまま）
+  if (kind === 'cat') {
+    courseFilterLessonOpen = (COURSE_LESSON_GROUP_KEYS.indexOf(value) >= 0);
+  }
   renderCourseFilters();
   applyCourseFilter();
 }
@@ -27790,6 +27820,8 @@ function courseFilterChip(label, active, kind, value) {
 
 function renderCourseFilters() {
   // 区分：実際に存在するものだけ出す。null は '通常' 扱い（既存表示ロジックに合わせる）
+  // 案A：第1階層＝通常/高卒生/講習▼。講習系（夏期・冬期・春期・共通・定期・体験・無料・その他）は
+  // 「講習▼」タップで、データが存在するものだけ第2階層に展開する。dlm74
   const cats = [];
   courseClassPool.forEach(c => {
     const k = c.category || 'normal';
@@ -27797,12 +27829,35 @@ function renderCourseFilters() {
   });
   const catOrder = CLASS_CATEGORIES.map(c => c.key);
   cats.sort((a, b) => catOrder.indexOf(a) - catOrder.indexOf(b));
+  // 講習グループに属する区分のうち、実データに存在するものだけ
+  const lessonCats = cats.filter(k => COURSE_LESSON_GROUP_KEYS.indexOf(k) >= 0);
+  const lessonSelected = COURSE_LESSON_GROUP_KEYS.indexOf(courseFilter.cat) >= 0;
   const catEl = document.getElementById('course-filter-cat');
-  if (catEl) catEl.innerHTML = courseFilterChip('すべて', courseFilter.cat === 'all', 'cat', 'all')
-    + cats.map(k => {
-      const m = classCategoryMeta(k);
-      return courseFilterChip(m.icon + ' ' + m.label, courseFilter.cat === k, 'cat', k);
-    }).join('');
+  if (catEl) {
+    let html = '';
+    // 第1階層：通常（データ有無に関わらず常時）、高卒生（存在時のみ）
+    html += courseFilterChip('📘 通常', courseFilter.cat === 'normal', 'cat', 'normal');
+    if (cats.indexOf('kosotsu') >= 0) {
+      html += courseFilterChip('🎓 高卒生', courseFilter.cat === 'kosotsu', 'cat', 'kosotsu');
+    }
+    // 「講習▼」ボタン：講習系データがある時だけ出す
+    if (lessonCats.length) {
+      const arrow = (courseFilterLessonOpen || lessonSelected) ? '▲' : '▼';
+      const active = lessonSelected;
+      html += courseFilterChip('📚 講習 ' + arrow, active, 'cat', '__lesson_toggle__');
+    }
+    // 第2階層：講習グループ（開いている or 講習系が選択中のとき）
+    if ((courseFilterLessonOpen || lessonSelected) && lessonCats.length) {
+      html += '<div style="flex-basis:100%;height:0"></div>';
+      html += '<div style="display:flex;flex-wrap:wrap;gap:4px;padding:5px 6px;margin-top:2px;background:var(--surface);border:1px dashed var(--border);border-radius:8px">';
+      html += lessonCats.map(k => {
+        const m = classCategoryMeta(k);
+        return courseFilterChip(m.icon + ' ' + m.label, courseFilter.cat === k, 'cat', k);
+      }).join('');
+      html += '</div>';
+    }
+    catEl.innerHTML = html;
+  }
 
   // 教科
   const subjs = [];
@@ -27860,13 +27915,24 @@ function openCourseSessionModal() {
   if (!courseSelectedDates.size) { showToast('日付を1日以上選んでください', 'error'); return; }
   // 授業マスタをセレクトに詰める
   const sel = document.getElementById('course-class-select');
-  courseFilter = { cat: 'all', subj: 'all', grade: 'all' };
-  const fill = (list) => {
+  courseFilter = { cat: 'normal', subj: 'all', grade: 'all' };
+  courseFilterLessonOpen = false;
+  const fill = async (list) => {
     // 二重の安全策：無効化した授業は必ず除外
     if (list && list.length && ('is_active' in list[0])) list = list.filter(c => c.is_active !== false);
+    // 要望1(dlm74)：自分の担当授業（主担当∪追加担当）だけに絞る。切替なし・全員適用。
+    try {
+      const mySet = await getMyTeachingClassIdSet();
+      if (mySet && mySet.size) {
+        list = (list || []).filter(c => mySet.has(String(c.id)));
+      } else {
+        // 担当が1件も取れないときは空表示（他人の授業をダラダラ出さない）
+        list = [];
+      }
+    } catch (e) { /* 取得失敗時はそのまま（フォールバック） */ }
     if (!list || !list.length) {
       courseClassPool = [];
-      sel.innerHTML = '<option value="">（授業がありません。先に授業マスター管理で作成）</option>';
+      sel.innerHTML = '<option value="">（あなたの担当授業がありません。授業マスターで担当を設定してください）</option>';
       renderCourseFilters();
       return;
     }
@@ -27877,10 +27943,10 @@ function openCourseSessionModal() {
   // 絞り込みに subject / grade_level が要るので、揃っているときだけ再利用する
   // is_active=true のものだけ対象にする（無効化した授業がプルダウンに残るバグ対策）
   const cached = (typeof classMasterList !== 'undefined' && classMasterList && classMasterList.length) ? classMasterList : null;
+  sel.innerHTML = '<option value="">読み込み中...</option>';
   if (cached && cached[0] && ('subject' in cached[0]) && ('grade_level' in cached[0]) && ('is_active' in cached[0])) {
     fill(cached.filter(c => c.is_active !== false));
   } else {
-    sel.innerHTML = '<option value="">読み込み中...</option>';
     sbGet('class_master', 'is_active=eq.true&select=id,name,category,school_year,subject,grade_level,is_active&order=school_year.desc,name').then(fill).catch(() => fill([]));
   }
   // 各日の時間を初期化（未設定日はデフォルト=一括時間）
