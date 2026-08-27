@@ -5832,6 +5832,21 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <!-- 授業マスター管理 -->
     <div id="manage-class-master" style="display:none;flex-direction:column;gap:10px">
       <div class="section-title">登録済み授業</div>
+      <!-- 表示年度パネル（手動切替のみ・自動切替はしない）dlm75 -->
+      <div id="fy-panel" style="background:var(--surface);border:1.5px solid #2D6DB5;border-radius:10px;padding:12px;margin-bottom:10px">
+        <div style="font-size:13px;font-weight:800;color:#1E4276;margin-bottom:4px">🗓️ 表示年度（講習の切替）</div>
+        <div style="font-size:10px;color:var(--muted);line-height:1.6;margin-bottom:8px">講習（夏期・冬期・春期など）は、ここで選んだ年度のものだけが一括登録などに出ます。通常授業は年度に関係なく表示されます。<b>自動では切り替わりません。</b>新年度の準備ができたらボタンで切り替えてください。過去年度のデータは消えません。</div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+          <span style="font-size:12px;color:var(--muted)">現在の表示年度：</span>
+          <span id="fy-current" style="font-size:15px;font-weight:800;color:#1E4276">—</span>
+          <span id="fy-auto-hint" style="font-size:10px;color:var(--muted);margin-left:auto"></span>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button onclick="fyShiftDisplayYear(-1)" style="flex:1;padding:8px;border:1px solid var(--border);background:var(--surface);border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;font-family:'Noto Sans JP',sans-serif">‹ 前年度を見る</button>
+          <button onclick="fyResetToAuto()" style="flex:1;padding:8px;border:1px solid var(--border);background:var(--surface);border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;font-family:'Noto Sans JP',sans-serif">今の年度に戻す</button>
+          <button onclick="fyShiftDisplayYear(1)" style="flex:1;padding:8px;border:none;background:linear-gradient(135deg,#2D6DB5,#184A86);color:#fff;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;font-family:'Noto Sans JP',sans-serif">新年度に切替 ›</button>
+        </div>
+      </div>
       <!-- 通常講座の回数不足・はみ出しチェック（dkm） -->
       <div style="background:var(--surface);border:1.5px solid var(--orange);border-radius:10px;padding:12px;margin-bottom:10px">
         <div style="font-size:13px;font-weight:800;color:var(--orange-d);margin-bottom:4px">📊 通常講座の回数チェック</div>
@@ -5848,6 +5863,8 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="cm-dup-result" style="display:none;margin-bottom:10px"></div>
       <button onclick="cleanupOrphanSessions()" style="width:100%;margin-bottom:8px;padding:9px;background:var(--surface);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🧹 無効クラスの残骸授業を掃除</button>
       <div id="cm-orphan-result" style="display:none;margin-bottom:10px"></div>
+      <button onclick="scanMissingCycles()" style="width:100%;margin-bottom:8px;padding:9px;background:var(--surface);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🗓️ 回数（周回）未設定の通常授業を点検</button>
+      <div id="cm-cycle-result" style="display:none;margin-bottom:10px"></div>
       <div id="cm-filter-bar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
       <div id="cm-list" style="display:flex;flex-direction:column;gap:8px"></div>
     <!-- ↓ 登録・編集系（普段は使わない） -->
@@ -6232,7 +6249,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm74';
+const APP_VERSION = '20260702dlm75';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -21737,6 +21754,58 @@ function fiscalMonthOrder(m) {
   if (m == null) return 0;              // 講習（month なし）は 0 のまま通し番号で比較
   return m >= 4 ? m - 3 : m + 9;        // 4月→1, 5月→2, …, 12月→9, 1月→10, 2月→11, 3月→12
 }
+
+// ===== 年度（fiscal year）管理 dlm75 =====
+// 年度は4月始まり。fiscalYearOf('2026-04-09') = 2026、fiscalYearOf('2027-03-31') = 2026。
+// 「表示年度」は手動切替（自動切替はしない）。設定は localStorage に保存し、未設定なら
+// 今日の日付から自動算出した年度を初期値にする。切替は明示ボタンでのみ行う。
+const FIT_DISPLAY_YEAR_KEY = 'fit_display_fiscal_year';
+
+// 'YYYY-MM-DD' またはDateから年度（4月始まり）を返す
+function fiscalYearOf(dateStr) {
+  if (!dateStr) return null;
+  let y, m;
+  if (dateStr instanceof Date) { y = dateStr.getFullYear(); m = dateStr.getMonth() + 1; }
+  else {
+    const p = String(dateStr).split('-');
+    y = parseInt(p[0], 10); m = parseInt(p[1], 10);
+  }
+  if (!y || !m) return null;
+  return m >= 4 ? y : y - 1;   // 1〜3月は前年度
+}
+
+// 今日の日付から自動算出した現年度（4/1基準）
+function autoFiscalYear() {
+  const t = getTodayJST();          // 'YYYY-MM-DD'（JST）
+  return fiscalYearOf(t);
+}
+
+// 表示年度（手動設定があればそれ、なければ自動）
+function getDisplayFiscalYear() {
+  try {
+    const v = localStorage.getItem(FIT_DISPLAY_YEAR_KEY);
+    if (v != null && v !== '' && !isNaN(parseInt(v, 10))) return parseInt(v, 10);
+  } catch (e) {}
+  return autoFiscalYear();
+}
+
+// 表示年度を手動で設定（新年度への切替ボタン等から呼ぶ）
+function setDisplayFiscalYear(year) {
+  try { localStorage.setItem(FIT_DISPLAY_YEAR_KEY, String(year)); } catch (e) {}
+}
+
+// セッションの年度を cycle_year を正として判定する（3月4回目が4月に食い込む問題への対応）。
+// cycle_year があればそれを、無ければ session_date から算出する。dlm75
+function sessionFiscalYear(sess) {
+  if (!sess) return null;
+  if (sess.cycle_year != null) {
+    let cy = sess.cycle_year;
+    if (cy < 100) cy += 2000;      // 2桁年度の正規化
+    return cy;
+  }
+  return fiscalYearOf(sess.session_date);
+}
+
 function countLapFrom(sessions, cyc) {
   if (!cyc || cyc.no == null || cyc.year == null) return null;
   const key = (c) => (c.year || 0) * 10000 + (fiscalMonthOrder(c.month) * 100) + (c.no || 0);
@@ -24093,6 +24162,96 @@ async function deleteClassMaster(id) {
   } catch (e) {
     hideLoading();
     showToast('処理に失敗しました: ' + (e.message || e), 'error');
+  }
+}
+
+// ===== 表示年度パネルの制御 dlm75 =====
+function renderFyPanel() {
+  const cur = document.getElementById('fy-current');
+  const hint = document.getElementById('fy-auto-hint');
+  if (!cur) return;
+  const dy = getDisplayFiscalYear();
+  const auto = autoFiscalYear();
+  cur.textContent = dy + '年度';
+  if (hint) {
+    if (dy === auto) hint.textContent = '（今の年度）';
+    else if (dy < auto) hint.textContent = '（過去年度を表示中）';
+    else hint.textContent = '（先の年度を表示中）';
+  }
+}
+function fyShiftDisplayYear(delta) {
+  const dy = getDisplayFiscalYear();
+  const next = dy + delta;
+  const auto = autoFiscalYear();
+  // 新年度へ進めるときは確認（見え方が変わるため）
+  if (delta > 0) {
+    if (!confirm('表示年度を ' + next + '年度 に切り替えます。\n講習の一覧が ' + next + '年度のものに変わります（通常授業は変わりません／過去のデータは消えません）。よろしいですか？')) return;
+  }
+  setDisplayFiscalYear(next);
+  renderFyPanel();
+  showToast('表示年度を ' + next + '年度 にしました', 'success');
+}
+function fyResetToAuto() {
+  try { localStorage.removeItem(FIT_DISPLAY_YEAR_KEY); } catch (e) {}
+  renderFyPanel();
+  showToast('今の年度（' + autoFiscalYear() + '年度）に戻しました', 'info');
+}
+
+// ===== 回数（周回）未設定の通常授業セッション点検 dlm75 =====
+// 年度判定は cycle_year を正とするため、通常授業のセッションには cycle が振られている必要がある。
+// cycle_year が未設定の通常授業セッションを一覧化し、記録漏れを可視化する（読み取り専用・削除なし）。
+async function scanMissingCycles() {
+  const box = document.getElementById('cm-cycle-result');
+  if (!box) return;
+  box.style.display = 'block';
+  box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">点検中...</div>';
+  try {
+    // 通常授業（category が normal / 空）のマスターを集める
+    const masters = await sbGet('class_master', 'is_active=eq.true&select=id,name,category,division') || [];
+    const normalMasters = masters.filter(m => !m.category || m.category === 'normal');
+    const nameById = {}; normalMasters.forEach(m => { nameById[m.id] = m.name; });
+    const ids = normalMasters.map(m => m.id);
+    if (!ids.length) {
+      box.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px">通常授業がありません。</div>';
+      return;
+    }
+    // それらのセッションで cycle_year が null のものを取得（1000件超に備え sbGetAll）
+    const getter = (typeof sbGetAll === 'function') ? sbGetAll : sbGet;
+    let missing = [];
+    // in句が長くなりすぎないよう分割
+    const chunk = 50;
+    for (let i = 0; i < ids.length; i += chunk) {
+      const part = ids.slice(i, i + chunk);
+      const rows = await getter('class_sessions',
+        'class_master_id=in.(' + part.join(',') + ')&cycle_year=is.null' +
+        '&select=id,class_master_id,session_date,period&order=session_date') || [];
+      missing = missing.concat(rows);
+    }
+    if (!missing.length) {
+      box.innerHTML = '<div style="font-size:12px;color:#1a7a3a;padding:8px;background:#e8f7ee;border-radius:8px">✅ 回数未設定の通常授業セッションはありません。</div>';
+      return;
+    }
+    // 授業ごとに件数と日付範囲をまとめる
+    const byClass = {};
+    missing.forEach(s => {
+      const k = s.class_master_id;
+      if (!byClass[k]) byClass[k] = [];
+      byClass[k].push(s.session_date);
+    });
+    let html = '<div style="font-size:12px;color:var(--text);margin-bottom:8px;padding:8px;background:#fff6e5;border:1px solid #f0c674;border-radius:8px">';
+    html += '⚠️ 回数（周回）が未設定の通常授業セッションが <b>' + missing.length + '</b> 件あります。';
+    html += '<br><span style="font-size:11px;color:var(--muted)">年度切替は回数（cycle_year）を基準にするため、通常授業は「授業日登録」の回数カウントを設定しておくと年度判定が正確になります。</span></div>';
+    const keys = Object.keys(byClass).sort((a, b) => (nameById[a] || '').localeCompare(nameById[b] || '', 'ja'));
+    keys.forEach(k => {
+      const dates = byClass[k].slice().sort();
+      const range = dates.length > 1 ? (dates[0] + ' 〜 ' + dates[dates.length - 1]) : dates[0];
+      html += '<div style="font-size:12px;color:var(--text);padding:6px 8px;border-bottom:1px solid var(--border)">'
+        + '<b>' + escapeHtml(nameById[k] || '(不明な授業)') + '</b>'
+        + ' <span style="color:var(--muted);font-size:11px">' + byClass[k].length + '件（' + escapeHtml(range) + '）</span></div>';
+    });
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = '<div style="font-size:12px;color:#b00;padding:8px">点検に失敗しました: ' + escapeHtml(String(e && e.message || e)) + '</div>';
   }
 }
 
@@ -27930,6 +28089,18 @@ function openCourseSessionModal() {
         list = [];
       }
     } catch (e) { /* 取得失敗時はそのまま（フォールバック） */ }
+    // 講習の年度切替(dlm75)：講習系（夏期・冬期・春期・共通テスト等）は現在の表示年度のものだけ出す。
+    // 通常・高卒生は年度をまたいで継続するので年度で絞らない。school_year 未設定の講習は
+    // 誤って隠さないよう安全側で残す（記録漏れ時のフォールバック）。
+    try {
+      const dy = getDisplayFiscalYear();
+      list = (list || []).filter(c => {
+        const cat = c.category || 'normal';
+        if (COURSE_LESSON_GROUP_KEYS.indexOf(cat) < 0) return true;  // 通常・高卒生は常に残す
+        if (c.school_year == null) return true;                     // 年度未設定の講習は残す
+        return Number(c.school_year) === Number(dy);                // 講習は現表示年度のみ
+      });
+    } catch (e) { /* フィルタ失敗時はそのまま */ }
     if (!list || !list.length) {
       courseClassPool = [];
       sel.innerHTML = '<option value="">（あなたの担当授業がありません。授業マスターで担当を設定してください）</option>';
@@ -37847,6 +38018,7 @@ function switchManageTab(tab, el) {
   if (manageTabs.includes(tab)) {
     const target = document.getElementById('manage-' + tab);
     if (target) target.style.display = 'flex';
+    if (tab === 'class-master') { try { renderFyPanel(); } catch (e) {} }  // 表示年度パネル更新 dlm75
   } else {
     const target = document.getElementById('smcontent-' + tab);
     if (target) target.style.display = 'block';
