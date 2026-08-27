@@ -6249,7 +6249,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm76';
+const APP_VERSION = '20260702dlm78';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -56031,6 +56031,20 @@ function revenueYen(n) {
 // 売上の表示モードと、計算済みデータの保持（モード切替で再フェッチしない）
 let revViewMode = 'total';   // 'total' | 'school' | 'grade' | 'teacher' | 'koushu' | 'monthly'
 let revData = null;          // { perStudent, totalRevenue, payingN, zeroN, byCount, priceMap, usingFallback }
+let revDivMode = '高校';     // '高校' | '中学'  売上の大区分（dlm77）
+let revJhsData = null;       // 中学売上の集計結果
+let revJhsView = 'total';    // 中学ビュー: 'total' | 'campus' | 'grade' | 'prices'
+
+// 高校/中学の大区分を切り替える（dlm77）
+function setRevDiv(div) {
+  revDivMode = div;
+  loadRevenue();
+}
+// 中学ビューの切替（dlm77）
+function setRevJhsView(v) {
+  revJhsView = v;
+  renderRevenueJhsBody();
+}
 
 function setRevView(mode) {
   revViewMode = mode;
@@ -56223,6 +56237,9 @@ async function loadRevenue() {
   }
   body.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px;font-size:13px">読み込み中…</div>';
 
+  // 中学モードなら中学売上の集計へ委譲（dlm77）
+  if (revDivMode === '中学') { await loadRevenueJhs(); return; }
+
   // 料金表
   let priceMap = {};
   try {
@@ -56292,6 +56309,304 @@ async function loadRevenue() {
   renderRevenueBody();
 }
 
+// ===== 高校/中学 大区分トグル（dlm77）=====
+function revDivToggleHtml() {
+  const btn = (div, label) =>
+    '<button onclick="setRevDiv(\'' + div + '\')" style="flex:1;padding:9px 4px;font-size:13px;font-weight:800;border:1px solid var(--border);cursor:pointer;font-family:inherit;'
+    + (revDivMode === div
+        ? 'background:linear-gradient(135deg,#2D6DB5,#184A86);color:#fff;border-color:#184A86'
+        : 'background:var(--surface);color:var(--muted)')
+    + '">' + label + '</button>';
+  return '<div style="display:flex;gap:0;border-radius:8px;overflow:hidden;margin-bottom:14px;border:1px solid var(--border)">'
+    + btn('高校', '🎓 高校部')
+    + btn('中学', '📗 中学部')
+    + '</div>';
+}
+
+// ===== 中学売上の集計（dlm77）=====
+// 高校の loadRevenue と同型：通常受講(normal)の科目数×中学料金表。
+// 校舎(campus)で単価は同じだが、集計は「全体／校舎別／学年別」で見られる。
+async function loadRevenueJhs() {
+  const body = document.getElementById('revenue-body');
+  if (!body) return;
+
+  // 中学料金表
+  let priceMap = {};
+  let usingFallback = false;
+  try {
+    const rows = await sbGet('subject_prices_jhs', 'select=subject_count,price&order=subject_count') || [];
+    rows.forEach(r => { priceMap[r.subject_count] = r.price; });
+  } catch (e) { priceMap = {}; }
+  if (Object.keys(priceMap).length === 0) {
+    usingFallback = true;
+    priceMap = { 1: 13000, 2: 20000, 3: 25000, 4: 32000, 5: 35000 };
+  }
+
+  // 中学部 在籍生徒（除外を弾く。退塾発効前は継続で残す）
+  let students = await sbGet('students', 'is_active=eq.true&division=eq.' + encodeURIComponent('中学部') + '&select=id,name,school,grade,campus,membership_status,inactive_reason,withdraw_status,withdraw_effective_date,division') || [];
+  students = students.filter(s => (s.division || '中学部') === '中学部');
+  students = students.filter(s => s.inactive_reason !== '除外');
+  students = students.filter(s => isEnrolledNow(s));
+
+  // 受講科目（通常授業＝category=normal のみ）
+  let allEnrolls = [];
+  try {
+    allEnrolls = await sbGetActiveEnrollments('select=student_id,class_master(subject,category,division)');
+  } catch (e) { allEnrolls = []; }
+  const regularSet = new Set();
+  allEnrolls.forEach(e => {
+    if (e.class_master && e.class_master.category === 'normal') regularSet.add(e.student_id);
+  });
+  // 経営サマリーと同じ「通常受講」判定（時期別のみは除外）
+  students = students.filter(s => {
+    if (s.membership_status === '時期別のみ') return false;
+    return regularSet.has(s.id) || s.membership_status == null || s.membership_status === '通常';
+  });
+
+  const idSet = new Set(students.map(s => s.id));
+  const enrolls = allEnrolls.filter(e => idSet.has(e.student_id));
+  const subjOf = {};
+  enrolls.forEach(e => {
+    if (!e.class_master || e.class_master.category !== 'normal') return;
+    // 中学部の授業のみ数える（他部門の授業に相乗りしていても中学料金には含めない）
+    if (e.class_master.division && e.class_master.division !== '中学部') return;
+    const subj = e.class_master.subject ? e.class_master.subject : 'その他';
+    if (!subjOf[e.student_id]) subjOf[e.student_id] = new Set();
+    subjOf[e.student_id].add(subj);
+  });
+
+  const perStudent = students.map(s => {
+    const cnt = subjOf[s.id] ? subjOf[s.id].size : 0;
+    return {
+      name: s.name, school: s.school || '', grade: s.grade || '',
+      campus: s.campus || '未設定', count: cnt, price: revenuePriceFor(cnt, priceMap)
+    };
+  });
+  const totalRevenue = perStudent.reduce((a, p) => a + p.price, 0);
+  const payingN = perStudent.filter(p => p.count > 0).length;
+  const zeroN = perStudent.length - payingN;
+
+  const byCount = {};
+  perStudent.forEach(p => {
+    if (!byCount[p.count]) byCount[p.count] = { n: 0, sum: 0 };
+    byCount[p.count].n++; byCount[p.count].sum += p.price;
+  });
+
+  revJhsData = { perStudent, totalRevenue, payingN, zeroN, byCount, priceMap, usingFallback };
+  renderRevenueJhsBody();
+}
+
+// 中学売上の描画（dlm77）
+function renderRevenueJhsBody() {
+  const body = document.getElementById('revenue-body');
+  if (!body || !revJhsData) return;
+  const { perStudent, totalRevenue, payingN, zeroN, byCount, priceMap, usingFallback } = revJhsData;
+
+  let html = '';
+  html += revDivToggleHtml();
+
+  // サマリー
+  html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">'
+    + saSummaryCard('月間売上見込み', revenueYen(totalRevenue), 'var(--orange-d)')
+    + saSummaryCard('課金対象', payingN + '人', '#3B6D11')
+    + saSummaryCard('未受講', zeroN + '人', zeroN ? '#C77F2E' : '#3B6D11')
+    + '</div>';
+
+  if (usingFallback) {
+    html += '<div style="font-size:11px;color:#C0392B;background:#FDECEA;border:1px solid #F5B7B1;border-radius:8px;padding:8px 10px;margin-bottom:14px">'
+      + '⚠️ 中学料金表（subject_prices_jhs）が読めません。create_subject_prices_jhs.sql を実行してください。今は暫定の初期料金で計算しています。</div>';
+  }
+
+  // 中学ビュー切替
+  const tabBtn = (mode, label) =>
+    '<button onclick="setRevJhsView(\'' + mode + '\')" style="flex:1;padding:8px 4px;font-size:12px;font-weight:700;border:1px solid var(--border);cursor:pointer;font-family:inherit;'
+    + (revJhsView === mode
+        ? 'background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;border-color:var(--orange-d)'
+        : 'background:var(--surface);color:var(--muted)')
+    + '">' + label + '</button>';
+  html += '<div style="display:flex;gap:0;border-radius:8px;overflow:hidden;margin-bottom:16px;border:1px solid var(--border);flex-wrap:wrap">'
+    + tabBtn('total', '全体')
+    + tabBtn('campus', '校舎別')
+    + tabBtn('grade', '学年別')
+    + tabBtn('prices', '料金表')
+    + '</div>';
+
+  if (revJhsView === 'prices') {
+    html += renderRevJhsPrices(priceMap);
+    body.innerHTML = html;
+    return;
+  }
+
+  const yen = (n) => revenueYen(n);
+
+  if (revJhsView === 'total') {
+    // 科目数ごとの内訳
+    html += '<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="border-bottom:2px solid var(--border)">'
+      + '<th style="text-align:left;padding:8px">科目数</th><th style="text-align:right;padding:8px">人数</th><th style="text-align:right;padding:8px">単価</th><th style="text-align:right;padding:8px">小計</th></tr></thead><tbody>';
+    Object.keys(byCount).map(Number).sort((a, b) => a - b).forEach(cnt => {
+      const b2 = byCount[cnt];
+      const unit = cnt > 0 ? revenuePriceFor(cnt, priceMap) : 0;
+      html += '<tr style="border-bottom:1px solid var(--border)">'
+        + '<td style="padding:8px">' + (cnt === 0 ? '未受講' : cnt + '科目') + '</td>'
+        + '<td style="text-align:right;padding:8px">' + b2.n + '</td>'
+        + '<td style="text-align:right;padding:8px;color:var(--muted)">' + (cnt === 0 ? '—' : yen(unit)) + '</td>'
+        + '<td style="text-align:right;padding:8px;font-weight:700">' + yen(b2.sum) + '</td></tr>';
+    });
+    html += '<tr style="border-top:2px solid var(--border)"><td style="padding:8px;font-weight:800">合計</td>'
+      + '<td style="text-align:right;padding:8px;font-weight:800">' + perStudent.length + '</td><td></td>'
+      + '<td style="text-align:right;padding:8px;font-weight:800;color:var(--orange-d)">' + yen(totalRevenue) + '</td></tr>';
+    html += '</tbody></table>';
+  } else if (revJhsView === 'campus') {
+    // 校舎別（大街道／石井／未設定）
+    const byCampus = {};
+    perStudent.forEach(p => {
+      const k = p.campus || '未設定';
+      if (!byCampus[k]) byCampus[k] = { n: 0, paying: 0, sum: 0 };
+      byCampus[k].n++; if (p.count > 0) byCampus[k].paying++; byCampus[k].sum += p.price;
+    });
+    const order = ['大街道', '石井', '未設定'];
+    const keys = Object.keys(byCampus).sort((a, b) => {
+      const ia = order.indexOf(a), ib = order.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    html += '<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="border-bottom:2px solid var(--border)">'
+      + '<th style="text-align:left;padding:8px">校舎</th><th style="text-align:right;padding:8px">在籍</th><th style="text-align:right;padding:8px">課金</th><th style="text-align:right;padding:8px">売上</th></tr></thead><tbody>';
+    keys.forEach(k => {
+      const c = byCampus[k];
+      html += '<tr style="border-bottom:1px solid var(--border)">'
+        + '<td style="padding:8px;font-weight:700">' + escapeHtml(k) + '</td>'
+        + '<td style="text-align:right;padding:8px">' + c.n + '</td>'
+        + '<td style="text-align:right;padding:8px">' + c.paying + '</td>'
+        + '<td style="text-align:right;padding:8px;font-weight:700">' + yen(c.sum) + '</td></tr>';
+    });
+    html += '<tr style="border-top:2px solid var(--border)"><td style="padding:8px;font-weight:800">合計</td>'
+      + '<td style="text-align:right;padding:8px;font-weight:800">' + perStudent.length + '</td>'
+      + '<td style="text-align:right;padding:8px;font-weight:800">' + payingN + '</td>'
+      + '<td style="text-align:right;padding:8px;font-weight:800;color:var(--orange-d)">' + yen(totalRevenue) + '</td></tr>';
+    html += '</tbody></table>';
+  } else if (revJhsView === 'grade') {
+    // 学年別
+    const byGrade = {};
+    perStudent.forEach(p => {
+      const k = p.grade || '未設定';
+      if (!byGrade[k]) byGrade[k] = { n: 0, paying: 0, sum: 0 };
+      byGrade[k].n++; if (p.count > 0) byGrade[k].paying++; byGrade[k].sum += p.price;
+    });
+    const gOrder = ['中1', '中2', '中3'];
+    const keys = Object.keys(byGrade).sort((a, b) => {
+      const ia = gOrder.indexOf(a), ib = gOrder.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    html += '<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="border-bottom:2px solid var(--border)">'
+      + '<th style="text-align:left;padding:8px">学年</th><th style="text-align:right;padding:8px">在籍</th><th style="text-align:right;padding:8px">課金</th><th style="text-align:right;padding:8px">売上</th></tr></thead><tbody>';
+    keys.forEach(k => {
+      const c = byGrade[k];
+      html += '<tr style="border-bottom:1px solid var(--border)">'
+        + '<td style="padding:8px;font-weight:700">' + escapeHtml(k) + '</td>'
+        + '<td style="text-align:right;padding:8px">' + c.n + '</td>'
+        + '<td style="text-align:right;padding:8px">' + c.paying + '</td>'
+        + '<td style="text-align:right;padding:8px;font-weight:700">' + yen(c.sum) + '</td></tr>';
+    });
+    html += '<tr style="border-top:2px solid var(--border)"><td style="padding:8px;font-weight:800">合計</td>'
+      + '<td style="text-align:right;padding:8px;font-weight:800">' + perStudent.length + '</td>'
+      + '<td style="text-align:right;padding:8px;font-weight:800">' + payingN + '</td>'
+      + '<td style="text-align:right;padding:8px;font-weight:800;color:var(--orange-d)">' + yen(totalRevenue) + '</td></tr>';
+    html += '</tbody></table>';
+  }
+
+  body.innerHTML = html;
+}
+
+// 中学料金表の編集UI（dlm77）
+function renderRevJhsPrices(priceMap) {
+  let html = '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">科目数ごとの月額料金（税込）です。変更したら「保存」を押してください。校舎（大街道・石井）で単価は共通です。</div>';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="border-bottom:2px solid var(--border)">'
+    + '<th style="text-align:left;padding:8px">科目数</th><th style="text-align:right;padding:8px">月額料金（円）</th></tr></thead><tbody>';
+  for (let cnt = 1; cnt <= 5; cnt++) {
+    const v = priceMap[cnt] != null ? priceMap[cnt] : '';
+    html += '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td style="padding:8px;font-weight:700">' + cnt + '科目</td>'
+      + '<td style="text-align:right;padding:8px"><input type="number" id="rev-jhs-price-' + cnt + '" value="' + v + '" min="0" step="1000" style="width:120px;text-align:right;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit"></td></tr>';
+  }
+  html += '</tbody></table>';
+  html += '<button onclick="saveRevJhsPrices()" style="margin-top:12px;width:100%;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit">💾 料金表を保存</button>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">6科目以上は「5科目の料金＋超過分×（4→5科目の差額）」で自動計算されます。</div>';
+  return html;
+}
+
+// 中学料金表を保存（dlm77）
+async function saveRevJhsPrices() {
+  const rows = [];
+  for (let cnt = 1; cnt <= 5; cnt++) {
+    const el = document.getElementById('rev-jhs-price-' + cnt);
+    if (!el) continue;
+    const v = parseInt(el.value, 10);
+    if (isNaN(v) || v < 0) { showToast(cnt + '科目の料金が不正です', 'error'); return; }
+    rows.push({ subject_count: cnt, price: v });
+  }
+  try {
+    // upsert（主キー subject_count で衝突時更新）
+    for (const r of rows) {
+      const exist = await sbGet('subject_prices_jhs', 'subject_count=eq.' + r.subject_count + '&select=subject_count') || [];
+      if (exist.length) {
+        await sbPatch('subject_prices_jhs', 'subject_count=eq.' + r.subject_count, { price: r.price, updated_at: new Date().toISOString() });
+      } else {
+        await sbPost('subject_prices_jhs', { subject_count: r.subject_count, price: r.price });
+      }
+    }
+    showToast('中学料金表を保存しました', 'success');
+    await loadRevenueJhs();  // 再集計して反映
+  } catch (e) {
+    showToast('保存に失敗しました: ' + (e && e.message || e), 'error');
+  }
+}
+
+// ===== 高校料金表の編集UI・保存（dlm78）=====
+function renderRevHsPrices(priceMap) {
+  const keys = Object.keys(priceMap).map(Number).filter(n => n < 90).sort((a, b) => a - b);
+  const maxCnt = Math.max(5, keys.length ? keys[keys.length - 1] : 5);
+  let html = '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">高校部の科目数ごとの月額料金（税込）です。変更したら「保存」を押してください。</div>';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="border-bottom:2px solid var(--border)">'
+    + '<th style="text-align:left;padding:8px">科目数</th><th style="text-align:right;padding:8px">月額料金（円）</th></tr></thead><tbody>';
+  for (let cnt = 1; cnt <= maxCnt; cnt++) {
+    const v = priceMap[cnt] != null ? priceMap[cnt] : '';
+    html += '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td style="padding:8px;font-weight:700">' + cnt + '科目</td>'
+      + '<td style="text-align:right;padding:8px"><input type="number" id="rev-hs-price-' + cnt + '" value="' + v + '" min="0" step="1000" style="width:120px;text-align:right;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit"></td></tr>';
+  }
+  html += '</tbody></table>';
+  html += '<button onclick="saveRevHsPrices(' + maxCnt + ')" style="margin-top:12px;width:100%;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit">💾 料金表を保存</button>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">表に無い科目数は「最大科目数の料金＋超過分×（最後の刻み幅）」で自動計算されます。</div>';
+  return html;
+}
+
+async function saveRevHsPrices(maxCnt) {
+  const rows = [];
+  for (let cnt = 1; cnt <= maxCnt; cnt++) {
+    const el = document.getElementById('rev-hs-price-' + cnt);
+    if (!el) continue;
+    const raw = el.value;
+    if (raw === '' || raw == null) continue;  // 空欄はスキップ
+    const v = parseInt(raw, 10);
+    if (isNaN(v) || v < 0) { showToast(cnt + '科目の料金が不正です', 'error'); return; }
+    rows.push({ subject_count: cnt, price: v });
+  }
+  try {
+    for (const r of rows) {
+      const exist = await sbGet('subject_prices', 'subject_count=eq.' + r.subject_count + '&select=subject_count') || [];
+      if (exist.length) {
+        await sbPatch('subject_prices', 'subject_count=eq.' + r.subject_count, { price: r.price, updated_at: new Date().toISOString() });
+      } else {
+        await sbPost('subject_prices', { subject_count: r.subject_count, price: r.price });
+      }
+    }
+    showToast('高校料金表を保存しました', 'success');
+    await loadRevenue();  // 再集計して反映
+  } catch (e) {
+    showToast('保存に失敗しました: ' + (e && e.message || e), 'error');
+  }
+}
+
 // 売上本体の描画（モード切替で再利用）。revData を使う。
 function renderRevenueBody() {
   const body = document.getElementById('revenue-body');
@@ -56299,6 +56614,9 @@ function renderRevenueBody() {
   const { perStudent, totalRevenue, payingN, zeroN, byCount, priceMap, usingFallback } = revData;
 
   let html = '';
+
+  // 高校/中学 大区分トグル（dlm77）
+  html += revDivToggleHtml();
 
   // サマリー
   html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">'
@@ -56326,7 +56644,15 @@ function renderRevenueBody() {
     + tabBtn('teacher', '講師・科目部')
     + tabBtn('koushu', '講習')
     + tabBtn('monthly', '月別')
+    + tabBtn('prices', '料金表')
     + '</div>';
+
+  // 料金表の編集（高校）dlm78
+  if (revViewMode === 'prices') {
+    html += renderRevHsPrices(priceMap);
+    body.innerHTML = html;
+    return;
+  }
 
   // 講師・科目部別（担当生徒数・授業数）。dhv。enrollment/担当データを別途引くので専用ビューに委譲。
   if (revViewMode === 'teacher') {
@@ -56374,7 +56700,7 @@ function renderRevenueBody() {
       + '</tr>';
   });
   html += '</tbody></table></div>';
-  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">※料金表に無い科目数は、最後の刻み幅で外挿して計算します。料金の編集機能は次のバージョンで追加予定です。</div>';
+  html += '<div style="font-size:10px;color:var(--muted);margin-bottom:8px">※料金表に無い科目数は、最後の刻み幅で外挿して計算します。料金を変更するには上部の「料金表」タブから編集できます。</div>';
 
   body.innerHTML = html;
 }
