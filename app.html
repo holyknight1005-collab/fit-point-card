@@ -6249,7 +6249,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm75';
+const APP_VERSION = '20260702dlm76';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -20927,11 +20927,26 @@ function renderCmList() {
   }
 
   // --- フィルタ適用 ---
-  const filtered = (cmCategoryFilter === 'all')
+  const catFiltered = (cmCategoryFilter === 'all')
     ? classMasterList
     : classMasterList.filter(c => (c.category || 'normal') === cmCategoryFilter);
 
-  if (!filtered.length) {
+  // --- 年度でメイン／アーカイブに振り分け（dlm76）---
+  // メイン：通常・高卒生（年度またぎ継続）＋ 現表示年度の講習 ＋ 年度未設定の講習（記録漏れ救済）
+  // アーカイブ：過去年度の講習（school_year < 現表示年度）
+  const dispYear = getDisplayFiscalYear();
+  const isLessonCat = (c) => COURSE_LESSON_GROUP_KEYS.indexOf(c.category || 'normal') >= 0;
+  const filtered = [];
+  const archived = [];
+  catFiltered.forEach(c => {
+    if (isLessonCat(c) && c.school_year != null && Number(c.school_year) < Number(dispYear)) {
+      archived.push(c);
+    } else {
+      filtered.push(c);
+    }
+  });
+
+  if (!filtered.length && !archived.length) {
     el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">この区分の授業はありません</div>';
     return;
   }
@@ -20941,7 +20956,7 @@ function renderCmList() {
     if (!subjGroups[c.subject]) subjGroups[c.subject] = [];
     subjGroups[c.subject].push(c);
   });
-  el.innerHTML = subjectGroupsSorted(subjGroups).map(([subj, list]) =>
+  const mainHtml = subjectGroupsSorted(subjGroups).map(([subj, list]) =>
     '<div style="margin-bottom:8px">' +
     '<div style="font-size:11px;font-weight:700;color:' + (SUBJ_COLORS[subj]||'#5A5A5A') + ';padding:4px 0;border-bottom:1px solid var(--border);margin-bottom:4px">' + subj + '</div>' +
     list.map(c => {
@@ -20984,6 +20999,58 @@ function renderCmList() {
     }).join('') +
     '</div>'
   ).join('');
+
+  // --- アーカイブセクション（過去年度の講習）dlm76 ---
+  // データは消さず、折りたたみで閲覧できるようにする。年度ごとにグループ化。
+  let archiveHtml = '';
+  if (archived.length) {
+    const byYear = {};
+    archived.forEach(c => { const y = c.school_year; (byYear[y] || (byYear[y] = [])).push(c); });
+    const years = Object.keys(byYear).map(Number).sort((a, b) => b - a); // 新しい年度が上
+    let inner = '';
+    years.forEach(y => {
+      const list = byYear[y];
+      const grp = {};
+      list.forEach(c => { (grp[c.subject] || (grp[c.subject] = [])).push(c); });
+      inner += '<div style="margin:8px 0 4px;font-size:12px;font-weight:800;color:var(--muted)">' + y + '年度（' + list.length + '講座）</div>';
+      inner += subjectGroupsSorted(grp).map(([subj, l]) =>
+        '<div style="margin-bottom:6px">' +
+        '<div style="font-size:10px;font-weight:700;color:' + (SUBJ_COLORS[subj] || '#5A5A5A') + ';padding:2px 0">' + escapeHtml(subj) + '</div>' +
+        l.map(c => {
+          const gb = (c.grade_level && c.grade_level.trim())
+            ? '<span style="font-size:9px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);padding:1px 6px;border-radius:9px;margin-left:6px">' + escapeHtml(c.grade_level) + '</span>' : '';
+          const m = classCategoryMeta(c.category || 'normal');
+          return '<div style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:3px;opacity:.85">' +
+            '<span style="font-size:11px">' + m.icon + '</span>' +
+            '<span style="font-size:12px;color:var(--text)">' + escapeHtml(c.name) + '</span>' + gb +
+            '<button onclick="openClassKarte(\'' + c.id + '\')" style="margin-left:auto;padding:3px 10px;font-size:10px;border:1px solid var(--border);background:var(--surface2);border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;color:var(--muted)">閲覧</button>' +
+            '</div>';
+        }).join('') +
+        '</div>'
+      ).join('');
+    });
+    archiveHtml =
+      '<div style="margin-top:16px;border-top:2px dashed var(--border);padding-top:12px">' +
+      '<button id="cm-archive-toggle" onclick="toggleCmArchive()" style="width:100%;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;color:var(--text);font-family:\'Noto Sans JP\',sans-serif;text-align:left">📦 過去年度の講習（アーカイブ・' + archived.length + '講座）　<span style="color:var(--muted);font-weight:400">▼ タップで表示</span></button>' +
+      '<div id="cm-archive-body" style="display:none;margin-top:8px">' +
+      '<div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.6">過去年度の講習です。出欠・報告書などのデータは残っています。「閲覧」から確認できます。</div>' +
+      inner +
+      '</div></div>';
+  }
+  el.innerHTML = mainHtml + archiveHtml;
+}
+
+// アーカイブ（過去年度講習）の開閉 dlm76
+function toggleCmArchive() {
+  const body = document.getElementById('cm-archive-body');
+  const btn = document.getElementById('cm-archive-toggle');
+  if (!body) return;
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'block';
+  if (btn) {
+    const label = btn.querySelector('span');
+    if (label) label.textContent = open ? '▼ タップで表示' : '▲ タップで隠す';
+  }
 }
 
 // ===== 授業から受講生を一括登録 =====
