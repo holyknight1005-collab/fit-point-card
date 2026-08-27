@@ -6219,7 +6219,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm69';
+const APP_VERSION = '20260702dlm70';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -52424,76 +52424,84 @@ function applyExecModeButton() {
   if (b) b.style.display = canUseExecMode() ? '' : 'none';
 }
 
-// dlm69: 代表モードは「生徒分析」画面を丸ごと表示する。
-// 生徒分析タブの本体(#smcontent-studentanalysis)を代表モードのオーバーレイへ移植し、
-// loadStudentAnalysis() を呼ぶ。exit 時は元の位置（アンカー）へ戻す。高校/中学は切替。
-let _execAnchorParent = null;   // 生徒分析ブロックの元の親
-let _execAnchorNext = null;     // 元の次兄弟（戻す位置の目印）
+// dlm70: 代表モードは経営サマリー→生徒分析→売上を縦に並べてスクロール表示する。
+// 既存ブロック(#exec-dashboard-section / #smcontent-studentanalysis / #smcontent-revenue)を
+// 代表モードのオーバーレイへ移植し、exit 時に元の位置へ戻す。高校/中学は切替。
+// _execMounts: [{id, parent, next}] で各ブロックの元位置を記憶。
+let _execMounts = [];
+
+// 1ブロックをホルダーへ移植し、元位置を記憶する。
+function execMountBlock(blockId, holderId) {
+  const block = document.getElementById(blockId);
+  const holder = document.getElementById(holderId);
+  if (!block || !holder) return;
+  if (!_execMounts.some(m => m.id === blockId)) {
+    _execMounts.push({ id: blockId, parent: block.parentNode, next: block.nextSibling });
+  }
+  block.style.display = 'block';
+  holder.appendChild(block);
+}
+
+// 記憶した全ブロックを元位置へ戻す（後入れ→先の順で戻す）。
+function execUnmountAll() {
+  for (let i = _execMounts.length - 1; i >= 0; i--) {
+    const m = _execMounts[i];
+    const block = document.getElementById(m.id);
+    if (!block) continue;
+    if (m.next && m.next.parentNode === m.parent) m.parent.insertBefore(block, m.next);
+    else if (m.parent) m.parent.appendChild(block);
+    // 生徒分析・売上はタブ側で表示制御されるため既定は隠す。経営サマリーは自前でdisplay管理。
+    if (m.id !== 'exec-dashboard-section') block.style.display = 'none';
+  }
+  _execMounts = [];
+}
 
 async function enterExecMode() {
   if (!canUseExecMode()) return;
   execModeOn = true;
   const overlay = document.getElementById('exec-mode-overlay');
   const leftCol = document.getElementById('home-left-col');
-  const src = document.getElementById('exec-dashboard-section');
   if (overlay) overlay.style.display = 'block';
   if (leftCol) leftCol.style.display = 'none';
-  if (src) src.style.display = 'none';
   try { window.scrollTo(0, 0); } catch (e) {}
 
-  // 部門切替バー＋生徒分析ホルダー
+  // 部門切替バー＋各ブロックのホルダー（並び順＝サマリー→生徒分析→売上）
   const body = document.getElementById('exec-mode-body');
   if (body) {
     body.innerHTML =
       '<div id="exec-div-switch" style="display:flex;gap:6px;margin-bottom:12px"></div>'
-      + '<div id="exec-analysis-holder"></div>';
+      + '<div id="exec-summary-holder" style="margin-bottom:6px"></div>'
+      + '<div id="exec-analysis-holder" style="margin-bottom:6px"></div>'
+      + '<div id="exec-revenue-holder"></div>';
   }
   renderExecDivSwitch();
 
-  // 生徒分析ブロックを holder へ移植（初期は現在の部門のまま）
-  mountExecAnalysis();
-  try { await loadStudentAnalysis(); } catch (e) {}
+  // ①経営サマリー ②生徒分析 ③売上 を移植して描画
+  execMountBlock('exec-dashboard-section', 'exec-summary-holder');
+  execMountBlock('smcontent-studentanalysis', 'exec-analysis-holder');
+  execMountBlock('smcontent-revenue', 'exec-revenue-holder');
+  await execRenderAll();
 }
 
 function exitExecMode() {
   execModeOn = false;
   const overlay = document.getElementById('exec-mode-overlay');
   const leftCol = document.getElementById('home-left-col');
-  // 生徒分析ブロックを元の位置へ戻す
-  unmountExecAnalysis();
+  execUnmountAll();
   if (overlay) overlay.style.display = 'none';
   if (leftCol) leftCol.style.display = '';
+  // 通常ホームの経営サマリーを元の場所で再描画
   try { loadExecDashboard(); } catch (e) {}
 }
 
-// 生徒分析ブロックを代表モード内へ移動（元の位置を記憶）。
-function mountExecAnalysis() {
-  const block = document.getElementById('smcontent-studentanalysis');
-  const holder = document.getElementById('exec-analysis-holder');
-  if (!block || !holder) return;
-  if (_execAnchorParent == null) {
-    _execAnchorParent = block.parentNode;
-    _execAnchorNext = block.nextSibling;
-  }
-  block.style.display = 'block';
-  holder.appendChild(block);
+// 代表モード内の3ブロックを描画（経営サマリーは部門非依存で両方表示）。
+async function execRenderAll() {
+  try { await loadExecDashboard(); } catch (e) {}
+  try { await loadStudentAnalysis(); } catch (e) {}
+  try { await loadRevenue(); } catch (e) {}
 }
 
-// 生徒分析ブロックを元の位置へ戻し、タブ表示状態に合わせて非表示化。
-function unmountExecAnalysis() {
-  const block = document.getElementById('smcontent-studentanalysis');
-  if (!block || _execAnchorParent == null) return;
-  if (_execAnchorNext && _execAnchorNext.parentNode === _execAnchorParent) {
-    _execAnchorParent.insertBefore(block, _execAnchorNext);
-  } else {
-    _execAnchorParent.appendChild(block);
-  }
-  block.style.display = 'none'; // 通常はタブ側で表示制御されるため既定は隠す
-  _execAnchorParent = null;
-  _execAnchorNext = null;
-}
-
-// 代表モード内の部門切替（高校/中学）。currentDivision を切り替えて生徒分析を再描画。
+// 代表モード内の部門切替（高校/中学）。currentDivision を切り替えて再描画。
 function renderExecDivSwitch() {
   const wrap = document.getElementById('exec-div-switch');
   if (!wrap) return;
@@ -52508,7 +52516,7 @@ function renderExecDivSwitch() {
 async function execSetAnalysisDivision(div) {
   try { if (typeof setDivision === 'function') setDivision(div); } catch (e) {}
   renderExecDivSwitch();
-  try { await loadStudentAnalysis(); } catch (e) {}
+  await execRenderAll();
   try { window.scrollTo(0, 0); } catch (e) {}
 }
 
