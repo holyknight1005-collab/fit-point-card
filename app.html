@@ -5269,6 +5269,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         </label>
       </div>
       <div id="sa-flow-report"></div>
+      <div id="sa-unregistered"></div>
       <div id="sa-trend-report"></div>
       <div id="sa-annual-input" style="display:none"></div>
       <div id="sa-item-tabs" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
@@ -6229,7 +6230,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm71';
+const APP_VERSION = '20260702dlm72';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -44996,6 +44997,7 @@ function saBarPctExtra(label, count, total, color, extra) {
 
 let saViewMode = 'bar';
 let saData = null;
+let saUnregisteredList = []; // dlm72: students未登録だが在籍中の名簿生（登録/除外の処理待ち）
 let saItem = null;        // 現在選択中の分析項目key（gender/school_grade/...）
 let saChartType = 'bar';  // 全体内訳の表示形式（'bar'|'pie'）
 let saAspirationData = {}; // 受験科目の展開用：rowId -> 生徒名リスト
@@ -47656,7 +47658,33 @@ function toggleFlowSection(id) {
   if (caret) caret.style.transform = 'rotate(' + (open ? '0' : '90') + 'deg)';
 }
 
-// dlm71: 退塾分析・入塾分析の開閉（初回展開時に描画）。
+// dlm72: students未登録だが在籍中の名簿生を「未登録の子がいます」バナーで表示。
+// 登録/除外の処理はあとで行えるよう、氏名・学校・学年を明示し、折りたたみで一覧を出す。
+function renderSaUnregistered() {
+  const wrap = document.getElementById('sa-unregistered');
+  if (!wrap) return;
+  const list = saUnregisteredList || [];
+  if (!list.length) { wrap.innerHTML = ''; return; }
+  const rows = list.map(u =>
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #EAD9B8;font-size:12px">'
+    + '<span style="font-weight:700;color:var(--text)">' + escapeHtml(u.name || '(氏名なし)') + '</span>'
+    + '<span style="color:var(--muted);font-size:11px">' + escapeHtml(u.school || '学校未設定') + (u.grade ? ' ' + escapeHtml(fmtGrade(u.grade)) : '') + '</span>'
+    + '</div>'
+  ).join('');
+  wrap.innerHTML =
+    '<div style="border:1px solid #E8C97A;background:#FEF8EA;border-radius:10px;margin-bottom:14px;overflow:hidden">'
+    + '<div onclick="toggleFlowSection(\'sa-unreg\')" style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;cursor:pointer">'
+    +   '<div style="font-size:12px;font-weight:800;color:#B9741A">⚠️ アプリ未登録の在籍生が ' + list.length + ' 名います</div>'
+    +   '<div id="sa-unreg-caret" style="font-size:11px;color:#B9741A;transform:rotate(0deg);transition:transform .15s">▶</div>'
+    + '</div>'
+    + '<div id="sa-unreg-body" style="display:none;padding:2px 12px 10px">'
+    +   '<div style="font-size:10px;color:#8A6A2A;line-height:1.5;margin-bottom:6px">名簿台帳にはいますがアプリ未登録の子です。この人数は分析の母数に含めています。あとで「登録」または名簿から「除外」の処理ができます。</div>'
+    +   rows
+    + '</div>'
+    + '</div>';
+}
+
+// dlm72: 退塾分析・入塾分析の開閉（初回展開時に描画）。
 function toggleAnaSection(wrapId) {
   const wrap = document.getElementById(wrapId);
   const caret = document.getElementById(wrapId + '-caret');
@@ -52994,20 +53022,45 @@ async function loadStudentAnalysis() {
   }
   const appKeySet = new Set();
   const appNameSet = new Set();
+  const appKanaSet = new Set(); // dlm72: 表記ゆれ吸収の照合キー集合
+  // カタカナ→ひらがな変換。空白・記号を除去して比較用キー化。
+  const toHiraKey = (s) => {
+    if (!s) return '';
+    let k = String(s).replace(/[\u30A1-\u30F6]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x60));
+    return k.replace(/[\s　・,、。]/g, '').toLowerCase();
+  };
+  // students から複数の照合キーを作る（roster は漢字姓＋ひらがな名などの表記ゆれがあるため）。
+  //  ① 氏名かな全体（ひらがな化）
+  //  ② 姓（漢字）＋ 名かな（ひらがな化）  … 例「保坂」＋「ココミ」→「保坂ここみ」= rosterの氏名と一致
+  const stuKanaKeys = (s) => {
+    const keys = [];
+    const full = s.name_kana || ((s.family_kana || '') + (s.given_kana || ''));
+    const fh = toHiraKey(full); if (fh) keys.push(fh);
+    // 姓の漢字（name の空白前）＋ 名かな
+    const nm = (s.name || '').replace(/[　\s]+/g, ' ').trim();
+    const famKanji = nm.includes(' ') ? nm.split(' ')[0] : '';
+    const givKana = s.given_kana || '';
+    if (famKanji && givKana) {
+      const k2 = toHiraKey(famKanji + givKana); if (k2) keys.push(k2);
+    }
+    return keys;
+  };
   // 重複除去キーは「絞り込み後の studentsRaw」ではなく students 全件（退塾済み・時期別含む・除外含む全員）で作る。
   // 絞り込み後で作ると、退塾済みや時期別のみで studentsRaw から外れた生徒と同名の roster 生が
   // 「未登録」と誤判定されて母数に二重計上される（人数表が実数より多く出る原因）。
   try {
-    const allStuForKeys = await sbGet('students', 'select=name,school&division=eq.' + encodeURIComponent(currentDivision)) || [];
+    const allStuForKeys = await sbGet('students', 'select=name,school,name_kana,family_kana,given_kana&division=eq.' + encodeURIComponent(currentDivision)) || [];
     allStuForKeys.forEach(s => {
       appKeySet.add(rosterKey(s.name, s.school));
       appNameSet.add(normalizeName(s.name));
+      stuKanaKeys(s).forEach(k => appKanaSet.add(k));
     });
   } catch (e) {
     // 取得失敗時は少なくとも絞り込み後 studentsRaw で作る（従来動作）
     studentsRaw.forEach(s => {
       appKeySet.add(rosterKey(s.name, s.school));
       appNameSet.add(normalizeName(s.name));
+      stuKanaKeys(s).forEach(k => appKanaSet.add(k));
     });
   }
 
@@ -53024,9 +53077,13 @@ async function loadStudentAnalysis() {
   // 統合母数を作る。students は本人入力（正）、roster未登録分は暫定値
   const students = studentsRaw.map(s => Object.assign({}, s, { _src: 'app' }));
   let rosterOnlyN = 0;
+  const saUnregistered = []; // dlm72: students未登録だが在籍中の名簿生（あとで登録/除外の処理対象）
   rosterRows.forEach(r => {
-    // 氏名＋学校一致＝登録済み。氏名のみ一致も「登録済みの可能性高い」として母数二重計上を避けスキップ
-    if (appKeySet.has(rosterKey(r.name, r.school)) || appNameSet.has(normalizeName(r.name))) return;
+    // 氏名＋学校一致／氏名一致／かな一致（漢字・ひらがな表記ゆれ吸収）＝登録済みとみなしスキップ。
+    const rk = toHiraKey(r.name);
+    if (appKeySet.has(rosterKey(r.name, r.school))
+        || appNameSet.has(normalizeName(r.name))
+        || (rk && appKanaSet.has(rk))) return;
     // 「卒業・退塾も含む」OFF のときは、退塾発効日を過ぎた名簿のみ生を母数から外す
     if (!includeInactive && !rosterEnrolledNow(r)) return;
     // 「通常のみ」モードでは時期別のみの名簿生を除外
@@ -53037,8 +53094,13 @@ async function loadStudentAnalysis() {
       course_track: r.course_track || '', univ1: '', univ2: '', univ3: '', desired_subjects: '',
       is_active: true, _src: 'roster'
     });
+    // 在籍扱いの未登録生だけ記録（退塾済みは対象外＝rosterEnrolledNow を通過した子のみ）
+    if (rosterEnrolledNow(r)) {
+      saUnregistered.push({ name: r.name, school: r.school || '', grade: r.grade || '' });
+    }
     rosterOnlyN++;
   });
+  saUnregisteredList = saUnregistered; // 描画で使う（module変数）
 
   const total = students.length;
   if (!total) {
@@ -53065,6 +53127,7 @@ async function loadStudentAnalysis() {
 
   saData = { students: students, total: total, studentSubjects: studentSubjects, appN: studentsRaw.length, rosterOnlyN: rosterOnlyN, enrolls: enrolls, teacherMap: teacherMap, scopeSchools: scopeSchools };
   saRender();
+  renderSaUnregistered(); // dlm72: 未登録の在籍生バナー
   // dlm71: 入塾/退塾分析はセレクタだけ用意し、描画は初回展開時（toggleAnaSection）に行う。
   populateAnaWithdrawSchools();
   populateAnaFunnelSchools();
