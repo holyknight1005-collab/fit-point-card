@@ -6219,7 +6219,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm68';
+const APP_VERSION = '20260702dlm69';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -52424,165 +52424,92 @@ function applyExecModeButton() {
   if (b) b.style.display = canUseExecMode() ? '' : 'none';
 }
 
+// dlm69: 代表モードは「生徒分析」画面を丸ごと表示する。
+// 生徒分析タブの本体(#smcontent-studentanalysis)を代表モードのオーバーレイへ移植し、
+// loadStudentAnalysis() を呼ぶ。exit 時は元の位置（アンカー）へ戻す。高校/中学は切替。
+let _execAnchorParent = null;   // 生徒分析ブロックの元の親
+let _execAnchorNext = null;     // 元の次兄弟（戻す位置の目印）
+
 async function enterExecMode() {
   if (!canUseExecMode()) return;
   execModeOn = true;
   const overlay = document.getElementById('exec-mode-overlay');
   const leftCol = document.getElementById('home-left-col');
-  const body = document.getElementById('exec-mode-body');
   const src = document.getElementById('exec-dashboard-section');
   if (overlay) overlay.style.display = 'block';
   if (leftCol) leftCol.style.display = 'none';
   if (src) src.style.display = 'none';
-  if (body) body.innerHTML = '<div style="background:#F7FAFD;border:1px solid #D6E4F0;border-radius:12px;padding:24px"><div style="text-align:center;color:var(--muted);font-size:12px">経営数字を集計中…</div></div>';
   try { window.scrollTo(0, 0); } catch (e) {}
-  // 人数KPI＋売上＋高校の学校別を集計してコンパクトに1画面へ。
-  let data = null;
-  try { data = await computeExecOverview(); } catch (e) { data = { error: (e && e.message) || '集計エラー' }; }
-  renderExecModeBody(data);
+
+  // 部門切替バー＋生徒分析ホルダー
+  const body = document.getElementById('exec-mode-body');
+  if (body) {
+    body.innerHTML =
+      '<div id="exec-div-switch" style="display:flex;gap:6px;margin-bottom:12px"></div>'
+      + '<div id="exec-analysis-holder"></div>';
+  }
+  renderExecDivSwitch();
+
+  // 生徒分析ブロックを holder へ移植（初期は現在の部門のまま）
+  mountExecAnalysis();
+  try { await loadStudentAnalysis(); } catch (e) {}
 }
 
 function exitExecMode() {
   execModeOn = false;
   const overlay = document.getElementById('exec-mode-overlay');
   const leftCol = document.getElementById('home-left-col');
+  // 生徒分析ブロックを元の位置へ戻す
+  unmountExecAnalysis();
   if (overlay) overlay.style.display = 'none';
   if (leftCol) leftCol.style.display = '';
-  // 通常ホームの経営サマリーを再描画（表示を戻す）
   try { loadExecDashboard(); } catch (e) {}
 }
 
-// dlm66: 代表モードの1画面ぶんを集計する。
-// 人数KPI（高/中）＋本日来塾＋売上サマリー＋高校の学校別在籍人数。
-// 既存の loadRevenue（revenue-body描画）には手を付けず、独立に軽く集計する。
-async function computeExecOverview() {
-  // --- 受講中の通常講座を持つ生徒ID集合（部門共通） ---
-  let regularSet = new Set();
-  try {
-    const ae = await sbGetActiveEnrollments('select=student_id,class_master(subject,category)');
-    ae.forEach(e => {
-      const cat = (e.class_master && e.class_master.category) || 'normal';
-      if (cat === 'normal') regularSet.add(e.student_id);
-    });
-  } catch (e) { regularSet = new Set(); }
-
-  // --- students を1回取得（人数KPI・学校別の共通ソース） ---
-  let stuAll = [];
-  try {
-    stuAll = await sbGet('students', 'select=id,name,enroll_date,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,division,school,grade') || [];
-  } catch (e) { stuAll = []; }
-
-  const hs = computeExecStats(stuAll, regularSet, '高校部');
-  const jhs = computeExecStats(stuAll, regularSet, '中学部');
-
-  // --- 高校の在籍ベース（除外でない・退塾発効前）---
-  const hsBase = stuAll.filter(s =>
-    (s.division || '高校部') === '高校部' &&
-    s.is_active && s.inactive_reason !== '除外' && isEnrolledNow(s)
-  );
-
-  // 通常受講：時期別のみを除外／通常 or 未設定 or normal在籍
-  const isRegularMember = (s) =>
-    s.membership_status !== '時期別のみ' &&
-    (regularSet.has(s.id) || s.membership_status == null || s.membership_status === '通常');
-  // 時期別のみ：membership_status が「時期別のみ」
-  const isSeasonalOnly = (s) => s.membership_status === '時期別のみ';
-
-  const bySchool = (filterFn) => {
-    const m = {};
-    hsBase.filter(filterFn).forEach(s => {
-      const sc = ((s.school || '').trim()) || '(未設定)';
-      m[sc] = (m[sc] || 0) + 1;
-    });
-    return Object.keys(m).map(k => ({ school: k, n: m[k] })).sort((a, b) => b.n - a.n);
-  };
-
-  return {
-    hs, jhs,
-    schoolRegular: bySchool(isRegularMember),
-    schoolSeasonal: bySchool(isSeasonalOnly),
-  };
-}
-
-// dlm68: 代表モードの1画面（人数KPI＋高校の学校別。学校別は通常/時期別のみを切替）。
-let _execSchoolTab = 'regular'; // 'regular' | 'seasonal'
-let _execData = null;
-
-function renderExecModeBody(data) {
-  const body = document.getElementById('exec-mode-body');
-  if (!body) return;
-  if (!data || data.error) {
-    body.innerHTML = '<div style="background:#FDF2F2;border:1px solid #E8B4B4;border-radius:12px;padding:14px;color:#A04040;font-size:12px">集計に失敗しました' + (data && data.error ? '（' + escapeHtml(data.error) + '）' : '') + '</div>';
-    return;
+// 生徒分析ブロックを代表モード内へ移動（元の位置を記憶）。
+function mountExecAnalysis() {
+  const block = document.getElementById('smcontent-studentanalysis');
+  const holder = document.getElementById('exec-analysis-holder');
+  if (!block || !holder) return;
+  if (_execAnchorParent == null) {
+    _execAnchorParent = block.parentNode;
+    _execAnchorNext = block.nextSibling;
   }
-  _execData = data;
-  const { hs, jhs } = data;
-  const num = (n) => (n == null ? '—' : n);
-
-  // KPI小カード
-  const kpi = (label, value, unit, accent) =>
-    '<div style="flex:1 1 84px;min-width:84px;background:#fff;border:1px solid #D6E4F0;border-radius:10px;padding:8px 10px">'
-    + '<div style="font-size:10px;color:var(--muted);margin-bottom:2px">' + label + '</div>'
-    + '<div style="font-size:20px;font-weight:800;color:' + accent + ';line-height:1.1">' + value
-    + (unit ? '<span style="font-size:11px;color:var(--muted)">' + unit + '</span>' : '') + '</div>'
-    + '</div>';
-
-  // 1部門ぶんのKPI行
-  const divBlock = (d, icon, badgeBg, badgeBd, badgeCol) =>
-    '<div style="background:linear-gradient(135deg,#F4F8FD,#FFFFFF);border:1px solid ' + badgeBd + ';border-radius:12px;padding:10px 12px;margin-bottom:10px">'
-    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
-    +   '<span style="font-size:12px;font-weight:800;color:' + badgeCol + ';background:' + badgeBg + ';border:1px solid ' + badgeBd + ';padding:2px 10px;border-radius:20px">' + icon + ' ' + d.division + '</span>'
-    +   '<button onclick="execGoAnalysis(\'' + (d.division === '高校部' ? 'hs' : 'jhs') + '\')" style="font-size:11px;font-weight:700;color:' + badgeCol + ';background:#fff;border:1px solid ' + badgeBd + ';padding:3px 12px;border-radius:16px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">生徒分析 ›</button>'
-    + '</div>'
-    + '<div style="display:flex;flex-wrap:wrap;gap:8px">'
-    +   kpi('通常受講', num(d.regularCount), '名', '#2D6CB6')
-    +   kpi('在籍(時期別含)', num(d.currentEnrolled), '名', '#1A6E8E')
-    +   kpi('今月入塾', num(d.joinedNow), '名', '#5A9E3C')
-    +   kpi('今月退塾', num(d.leftNow), '名', '#C0392B')
-    + '</div>'
-    + '</div>';
-
-  body.innerHTML =
-      divBlock(hs, '🎓', '#DCEBFA', '#9CC0E8', '#1A4D80')
-    + divBlock(jhs, '📗', '#E7F3E2', '#A9CF9A', '#2E6B1F')
-    + '<div id="exec-school-block"></div>';
-  renderExecSchoolBlock();
+  block.style.display = 'block';
+  holder.appendChild(block);
 }
 
-// dlm68: 高校の学校別在籍（通常受講 / 時期別のみ を切替）。
-function setExecSchoolTab(tab) {
-  _execSchoolTab = (tab === 'seasonal') ? 'seasonal' : 'regular';
-  renderExecSchoolBlock();
+// 生徒分析ブロックを元の位置へ戻し、タブ表示状態に合わせて非表示化。
+function unmountExecAnalysis() {
+  const block = document.getElementById('smcontent-studentanalysis');
+  if (!block || _execAnchorParent == null) return;
+  if (_execAnchorNext && _execAnchorNext.parentNode === _execAnchorParent) {
+    _execAnchorParent.insertBefore(block, _execAnchorNext);
+  } else {
+    _execAnchorParent.appendChild(block);
+  }
+  block.style.display = 'none'; // 通常はタブ側で表示制御されるため既定は隠す
+  _execAnchorParent = null;
+  _execAnchorNext = null;
 }
 
-function renderExecSchoolBlock() {
-  const wrap = document.getElementById('exec-school-block');
-  if (!wrap || !_execData) return;
-  const rows = (_execSchoolTab === 'seasonal') ? _execData.schoolSeasonal : _execData.schoolRegular;
-  const total = rows.reduce((a, r) => a + r.n, 0);
-  const maxN = rows.reduce((a, r) => Math.max(a, r.n), 0) || 1;
-
-  const tabBtn = (tab, label) => {
-    const on = (_execSchoolTab === tab);
-    return '<button onclick="setExecSchoolTab(\'' + tab + '\')" style="flex:1;padding:6px 10px;border:1px solid ' + (on ? '#2D6CB6' : '#C9D9EA') + ';background:' + (on ? '#2D6CB6' : '#fff') + ';color:' + (on ? '#fff' : '#2D6CB6') + ';font-size:12px;font-weight:800;border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + label + '</button>';
+// 代表モード内の部門切替（高校/中学）。currentDivision を切り替えて生徒分析を再描画。
+function renderExecDivSwitch() {
+  const wrap = document.getElementById('exec-div-switch');
+  if (!wrap) return;
+  const cur = currentDivision;
+  const btn = (val, label, onCol) => {
+    const on = (cur === val);
+    return '<button onclick="execSetAnalysisDivision(\'' + val + '\')" style="flex:1;padding:8px 10px;border:1px solid ' + (on ? onCol : '#C9D9EA') + ';background:' + (on ? onCol : '#fff') + ';color:' + (on ? '#fff' : onCol) + ';font-size:13px;font-weight:800;border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + label + '</button>';
   };
+  wrap.innerHTML = btn('高校部', '🎓 高校部', '#2D6CB6') + btn('中学部', '📗 中学部', '#2E6B1F');
+}
 
-  const list = rows.map(r => {
-    const pct = Math.round((r.n / maxN) * 100);
-    const barCol = (_execSchoolTab === 'seasonal') ? 'linear-gradient(90deg,#B9741A,#E0A85A)' : 'linear-gradient(90deg,#2D6CB6,#5A9BE0)';
-    const numCol = (_execSchoolTab === 'seasonal') ? '#8A5410' : '#1A4D80';
-    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">'
-      + '<div style="width:88px;font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(r.school) + '</div>'
-      + '<div style="flex:1;background:#EAF1F9;border-radius:6px;height:14px;overflow:hidden"><div style="width:' + pct + '%;height:100%;background:' + barCol + '"></div></div>'
-      + '<div style="width:40px;text-align:right;font-size:12px;font-weight:800;color:' + numCol + '">' + r.n + '</div>'
-      + '</div>';
-  }).join('');
-
-  wrap.innerHTML = '<div style="background:#fff;border:1px solid #D6E4F0;border-radius:12px;padding:10px 12px">'
-    + '<div style="font-size:12px;font-weight:800;color:#1A4D80;margin-bottom:8px">🏫 高校の学校別在籍 <span style="font-size:10px;font-weight:600;color:var(--muted)">（計 ' + total + ' 名）</span></div>'
-    + '<div style="display:flex;gap:6px;margin-bottom:10px">' + tabBtn('regular', '通常受講') + tabBtn('seasonal', '時期別のみ') + '</div>'
-    + (list || '<div style="font-size:11px;color:var(--muted)">データがありません</div>')
-    + '</div>';
+async function execSetAnalysisDivision(div) {
+  try { if (typeof setDivision === 'function') setDivision(div); } catch (e) {}
+  renderExecDivSwitch();
+  try { await loadStudentAnalysis(); } catch (e) {}
+  try { window.scrollTo(0, 0); } catch (e) {}
 }
 
 // ===== 経営サマリー（ホーム上部・admin/dashboard権限）=====
