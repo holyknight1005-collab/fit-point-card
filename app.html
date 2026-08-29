@@ -18474,6 +18474,13 @@ async function loadRecurringTodos() {
 // 高卒生区分は浪人生が未実装のため対象外。fit001（代表）は配布対象にしない。
 const TEACHER_CHECK_EXCLUDE_CODES = ['fit001'];
 
+// dlm101: 英語授業の「メイン講師」コード。英語授業は多数のスタッフに編集権限のため追加担当登録されているが、
+// 実際に授業を行うのはこのメイン講師のみ。メイン講師の英語授業だけ監督ロック＆コマ数計上し、
+// それ以外（編集権限のための追加担当）は監督に入れられるようにする。
+// 仙波=fit006 / 石丸=fit008。
+// ※将来的には class_teachers に役割タグ（メイン/サポート）を持たせてデータで判定する予定。それまでの暫定リスト。
+const ENGLISH_MAIN_TEACHER_CODES = ['fit006', 'fit008'];
+
 // 講師 → 担当授業 の対応を作る
 // 戻り値: { byTeacher: { staffUuid: [{id,name,subject}] }, excludedCodes: [...] }
 async function loadTeacherClassMap(opts) {
@@ -18481,6 +18488,8 @@ async function loadTeacherClassMap(opts) {
   // 既定(false)は従来通り除外（報告書催促・出席チェック等はこちら）。
   // 自習監督の希望グリッドだけ includeKosotsu:true で呼ぶ（浪人生講座も授業として表示するため）。
   const includeKosotsu = !!(opts && opts.includeKosotsu);
+  // excludeEnglishExtra: 英語授業を追加担当としてのみ持つ人を除外（コマ数集計用）。
+  const excludeEnglishExtra = !!(opts && opts.excludeEnglishExtra);
   let cm = [], ct = [], staffRows = [];
   try {
     cm = await sbGet('class_master', 'is_active=eq.true&select=id,name,subject,category,grade_level,teacher_staff_id') || [];
@@ -18500,13 +18509,24 @@ async function loadTeacherClassMap(opts) {
   cm.forEach(c => { if (includeKosotsu || (c.category || 'normal') !== 'kosotsu') classById[c.id] = c; });
 
   const byTeacher = {};
+  // dlm101: 英語メイン講師のUUIDセット（excludeEnglishExtra 用）
+  const englishMainUuids = new Set();
+  if (excludeEnglishExtra) {
+    staffRows.forEach(s => {
+      if (ENGLISH_MAIN_TEACHER_CODES.indexOf(String(s.staff_id || '').toLowerCase()) >= 0) englishMainUuids.add(s.id);
+    });
+  }
   const add = (sid, cls) => {
     if (!sid || !cls || excludeUuids.has(sid)) return;
+    // 英語授業は「メイン講師」だけを担当(=ロック対象)として載せる。
+    // それ以外は編集権限のための登録なので載せない（監督に入れられるようにする）。
+    if (excludeEnglishExtra && cls.subject === '英語' && !englishMainUuids.has(sid)) return;
     if (!byTeacher[sid]) byTeacher[sid] = [];
     if (!byTeacher[sid].some(x => x.id === cls.id)) byTeacher[sid].push(cls);
   };
+  // 主担当・追加担当ともに add で英語メイン講師判定を通す
   Object.values(classById).forEach(c => add(c.teacher_staff_id, c));
-  ct.forEach(r => add(r.staff_id, classById[r.class_master_id]));
+  ct.forEach(r => { add(r.staff_id, classById[r.class_master_id]); });
   return { byTeacher, classById, staffById };
 }
 
@@ -34246,7 +34266,7 @@ async function loadKomaCount() {
       sbGetAll('class_reports', 'session_date=gte.' + from + '&session_date=lte.' + to + '&select=staff_id,class_master_id,session_date,theme,content,student_notes,homework').catch(() => []),
       sbGetAll('class_sessions', 'session_date=gte.' + from + '&session_date=lte.' + to + '&select=class_master_id,session_date,period').catch(() => []),
       sbGet('class_master', 'select=id,name,category,division').catch(() => []),
-      loadTeacherClassMap({ includeKosotsu: true }).catch(() => ({ byTeacher: {}, staffById: {} })),
+      loadTeacherClassMap({ includeKosotsu: true, excludeEnglishExtra: true }).catch(() => ({ byTeacher: {}, staffById: {} })),
       // dlm37: 自習監督の決定済みシフト（cancelled=false）。report_text 空 = 監督報告未記入。テーブル未作成でも落とさない。
       sbGet('supervision_assignments', 'sv_date=gte.' + from + '&sv_date=lte.' + to + '&cancelled=eq.false&select=sv_date,period,staff_id,staff_name,report_text').catch(() => [])
     ]);
@@ -34971,8 +34991,9 @@ async function svRenderWeek() {
   _svMyClassCells = {};
 
   try {
-    // 自分の担当授業（主担当∪追加担当）。浪人生講座も監督グリッドには授業として表示する。
-    const tmap = await loadTeacherClassMap({ includeKosotsu: true });
+    // 自分の担当授業。浪人生講座も監督グリッドには授業として表示する。
+    // 英語授業を追加担当としてのみ持つ人（＝編集権限のための登録）はロックしない＝授業セルにしない。
+    const tmap = await loadTeacherClassMap({ includeKosotsu: true, excludeEnglishExtra: true });
     let myUuid = null;
     const sById = (tmap && tmap.staffById) || {};
     Object.keys(sById).forEach(uuid => { if (String(sById[uuid].staff_id) === String(sid)) myUuid = uuid; });
@@ -35248,16 +35269,29 @@ async function svComputeLoadStats(staffCodes, weekFromIso, weekToIso, monthFromI
     staffCodes.forEach(c => { stats[c].emp = empByCode[c] || null; });
 
     const targetUuids = staffCodes.map(c => uuidByCode[c]).filter(Boolean);
+    // dlm101: 英語メイン講師のUUIDセット（仙波・石丸）。英語授業はメイン講師のみコマ計上。
+    const englishMainUuids = new Set(
+      staffCodes.filter(c => ENGLISH_MAIN_TEACHER_CODES.indexOf(String(c).toLowerCase()) >= 0)
+                .map(c => uuidByCode[c]).filter(Boolean)
+    );
     // 授業側：担当クラス（メイン＋class_teachers）を UUID ごとに集める
     const classesByUuid = {}; // uuid -> Set(class_master_id)
     targetUuids.forEach(u => { classesByUuid[u] = new Set(); });
     if (targetUuids.length) {
-      const [mains, cts] = await Promise.all([
+      const [mains, cts, engClasses] = await Promise.all([
         sbGet('class_master', 'teacher_staff_id=in.(' + targetUuids.map(u => '"' + u + '"').join(',') + ')&select=id,teacher_staff_id').catch(() => []),
-        sbGet('class_teachers', 'staff_id=in.(' + targetUuids.map(u => '"' + u + '"').join(',') + ')&select=class_master_id,staff_id').catch(() => [])
+        sbGet('class_teachers', 'staff_id=in.(' + targetUuids.map(u => '"' + u + '"').join(',') + ')&select=class_master_id,staff_id').catch(() => []),
+        // dlm101: 英語授業のIDセット
+        sbGet('class_master', 'subject=eq.' + encodeURIComponent('英語') + '&select=id').catch(() => [])
       ]);
-      (mains || []).forEach(cm => { if (classesByUuid[cm.teacher_staff_id]) classesByUuid[cm.teacher_staff_id].add(cm.id); });
-      (cts || []).forEach(ct => { if (classesByUuid[ct.staff_id]) classesByUuid[ct.staff_id].add(ct.class_master_id); });
+      const englishIds = new Set((engClasses || []).map(c => c.id));
+      // 英語授業は「英語メイン講師」だけコマ計上。他科目は主担当・追加担当ともコマ計上。
+      const canCount = (uuid, cid) => {
+        if (englishIds.has(cid) && !englishMainUuids.has(uuid)) return false; // 英語×非メイン講師は数えない
+        return true;
+      };
+      (mains || []).forEach(cm => { if (classesByUuid[cm.teacher_staff_id] && canCount(cm.teacher_staff_id, cm.id)) classesByUuid[cm.teacher_staff_id].add(cm.id); });
+      (cts || []).forEach(ct => { if (classesByUuid[ct.staff_id] && canCount(ct.staff_id, ct.class_master_id)) classesByUuid[ct.staff_id].add(ct.class_master_id); });
     }
     // 全対象クラスのセッションを月範囲で一括取得（週は月の部分集合）
     const allClassIds = new Set();
