@@ -6312,7 +6312,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm92';
+const APP_VERSION = '20260702dlm94';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -9606,7 +9606,9 @@ async function loadTodayTasks() {
   const limitISO = limitDate.getFullYear() + '-' + String(limitDate.getMonth()+1).padStart(2,'0') + '-' + String(limitDate.getDate()).padStart(2,'0');
   try {
     // 自分の担当授業ID（class_master.teacher_staff_id=自分）
-    const myClasses = await sbGet('class_master', 'teacher_staff_id=eq.' + currentStaff.id + '&select=id,name') || [];
+    let myClasses = await sbGet('class_master', 'teacher_staff_id=eq.' + currentStaff.id + '&select=id,name,category') || [];
+    // dlm94: 浪人生授業（category='kosotsu'）は報告書の催促対象外（授業登録のみ）
+    myClasses = myClasses.filter(c => c.category !== 'kosotsu');
     const myClassIds = myClasses.map(c => c.id);
     const myClassNameMap = {};
     myClasses.forEach(c => { myClassNameMap[c.id] = c.name; });
@@ -35071,6 +35073,89 @@ function svDecideJumpToMonth(ym) {
   svLoadDecide();
 }
 
+// dlm93: 決定側で各希望者の「授業コマ数・監督コマ数」を内訳表示するための集計。
+// 対象 staffCodes（fitNNN）について、指定週/月の 授業コマ数・監督コマ数・区分 を返す。
+// 授業＝class_master.teacher_staff_id ∪ class_teachers.staff_id で担当するクラスの class_sessions を期間内で計数（UUID基準）。
+// 監督＝supervision_assignments(cancelled=false) を期間内で計数（staff_id はコード基準）。
+async function svComputeLoadStats(staffCodes, weekFromIso, weekToIso, monthFromIso, monthToIso) {
+  const stats = {};
+  staffCodes.forEach(c => { stats[c] = { emp: null, wLesson: 0, wSuper: 0, mLesson: 0, mSuper: 0 }; });
+  if (!staffCodes.length) return stats;
+  try {
+    // code -> UUID、区分
+    const [staffRows, perms] = await Promise.all([
+      sbGet('staff', 'select=id,staff_id').catch(() => []),
+      sbGet('staff_permissions', 'select=staff_id,employment_type').catch(() => [])
+    ]);
+    const uuidByCode = {}, codeByUuid = {};
+    (staffRows || []).forEach(s => { uuidByCode[s.staff_id] = s.id; codeByUuid[s.id] = s.staff_id; });
+    const empByCode = {};
+    (perms || []).forEach(p => { empByCode[p.staff_id] = p.employment_type || null; });
+    staffCodes.forEach(c => { stats[c].emp = empByCode[c] || null; });
+
+    const targetUuids = staffCodes.map(c => uuidByCode[c]).filter(Boolean);
+    // 授業側：担当クラス（メイン＋class_teachers）を UUID ごとに集める
+    const classesByUuid = {}; // uuid -> Set(class_master_id)
+    targetUuids.forEach(u => { classesByUuid[u] = new Set(); });
+    if (targetUuids.length) {
+      const [mains, cts] = await Promise.all([
+        sbGet('class_master', 'teacher_staff_id=in.(' + targetUuids.map(u => '"' + u + '"').join(',') + ')&select=id,teacher_staff_id').catch(() => []),
+        sbGet('class_teachers', 'staff_id=in.(' + targetUuids.map(u => '"' + u + '"').join(',') + ')&select=class_master_id,staff_id').catch(() => [])
+      ]);
+      (mains || []).forEach(cm => { if (classesByUuid[cm.teacher_staff_id]) classesByUuid[cm.teacher_staff_id].add(cm.id); });
+      (cts || []).forEach(ct => { if (classesByUuid[ct.staff_id]) classesByUuid[ct.staff_id].add(ct.class_master_id); });
+    }
+    // 全対象クラスのセッションを月範囲で一括取得（週は月の部分集合）
+    const allClassIds = new Set();
+    Object.values(classesByUuid).forEach(set => set.forEach(id => allClassIds.add(id)));
+    let monthSessions = [];
+    if (allClassIds.size) {
+      monthSessions = await sbGet('class_sessions',
+        'class_master_id=in.(' + [...allClassIds].map(id => '"' + id + '"').join(',') +
+        ')&session_date=gte.' + monthFromIso + '&session_date=lte.' + monthToIso +
+        '&select=class_master_id,session_date').catch(() => []) || [];
+    }
+    // class -> それを担当する UUID 群（逆引き）
+    const uuidsByClass = {};
+    Object.keys(classesByUuid).forEach(u => { classesByUuid[u].forEach(cid => { (uuidsByClass[cid] || (uuidsByClass[cid] = [])).push(u); }); });
+    monthSessions.forEach(s => {
+      const owners = uuidsByClass[s.class_master_id] || [];
+      const inWeek = (s.session_date >= weekFromIso && s.session_date <= weekToIso);
+      owners.forEach(u => {
+        const code = codeByUuid[u];
+        if (!code || !stats[code]) return;
+        stats[code].mLesson++;
+        if (inWeek) stats[code].wLesson++;
+      });
+    });
+    // 監督側：月範囲で一括取得しコードで計数
+    const svRows = await sbGet('supervision_assignments',
+      'sv_date=gte.' + monthFromIso + '&sv_date=lte.' + monthToIso +
+      '&cancelled=eq.false&select=sv_date,staff_id').catch(() => []) || [];
+    svRows.forEach(r => {
+      const code = String(r.staff_id);
+      if (!stats[code]) return;
+      const inWeek = (r.sv_date >= weekFromIso && r.sv_date <= weekToIso);
+      stats[code].mSuper++;
+      if (inWeek) stats[code].wSuper++;
+    });
+  } catch (e) { /* 集計失敗時は 0 のまま返す（決定操作は妨げない） */ }
+  return stats;
+}
+
+// dlm93: 区分ラベル（決定側バッジ用）
+function svEmpLabel(emp) {
+  return emp === 'shakaijin' ? '社会人' : emp === 'daigakusei' ? '大学生' : emp === 'excluded' ? '対象外' : '未設定';
+}
+// dlm93: 統計バッジのHTML（週主軸＋月併記）
+function svStatBadge(st) {
+  if (!st) return '';
+  const emp = svEmpLabel(st.emp);
+  return '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' +
+    '[' + escapeHtml(emp) + '] 週 授業' + st.wLesson + '/監督' + st.wSuper +
+    '（月 授業' + st.mLesson + '/監督' + st.mSuper + '）</span>';
+}
+
 async function svLoadDecide() {
   if (!canDecideSupervision()) return;
   const box = document.getElementById('sv-decide-body');
@@ -35101,6 +35186,16 @@ async function svLoadDecide() {
     return;
   }
   wishes = wishes || []; assigns = assigns || [];
+
+  // dlm93: 各希望者/確定者の負荷（授業/監督コマ数）を集計。基準月は「週の月曜が属する月」。
+  const mFrom = monday.getFullYear() + '-' + String(monday.getMonth() + 1).padStart(2, '0') + '-01';
+  const mLast = new Date(monday.getFullYear(), monday.getMonth() + 1, 0).getDate();
+  const mTo = monday.getFullYear() + '-' + String(monday.getMonth() + 1).padStart(2, '0') + '-' + String(mLast).padStart(2, '0');
+  const codeSet = new Set();
+  wishes.forEach(w => { if (w.staff_id) codeSet.add(String(w.staff_id)); });
+  assigns.forEach(a => { if (a.staff_id) codeSet.add(String(a.staff_id)); });
+  let _svStats = {};
+  try { _svStats = await svComputeLoadStats([...codeSet], fromIso, toIso, mFrom, mTo); } catch (e) { _svStats = {}; }
 
   // date|period ごとにまとめる
   const bySlot = {};
@@ -35133,7 +35228,9 @@ async function svLoadDecide() {
         slot.assigns.forEach(a => {
           h += '<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:#EAF7EE;border:1px solid #A6D5B5;border-radius:7px;margin-bottom:4px">' +
             '<span style="font-size:11px;color:#1A7340;font-weight:700">✅ 確定</span>' +
-            '<span style="font-size:13px;font-weight:700;flex:1">' + escapeHtml(a.staff_name || resolveStaffName(a.staff_id) || a.staff_id) + '</span>' +
+            '<span style="font-size:13px;font-weight:700">' + escapeHtml(a.staff_name || resolveStaffName(a.staff_id) || a.staff_id) + '</span>' +
+            svStatBadge(_svStats[String(a.staff_id)]) +
+            '<span style="flex:1"></span>' +
             '<button onclick="svCancelAssign(' + a.id + ')" style="font-size:11px;font-weight:700;color:#C0392B;background:#fff;border:1px solid #E0A0A0;border-radius:6px;padding:3px 10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">取消</button>' +
             '</div>';
         });
@@ -35158,6 +35255,7 @@ async function svLoadDecide() {
             mark +
             '<span style="font-size:13px;font-weight:700">' + escapeHtml(w.staff_name || resolveStaffName(w.staff_id) || w.staff_id) + '</span>' +
             (isTri ? '<span style="font-size:10px;color:#9A7A15;font-weight:700">避けたい</span>' : '') +
+            svStatBadge(_svStats[String(w.staff_id)]) +
             (w.note ? '<span style="font-size:11px;color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(w.note) + '</span>' : '<span style="flex:1"></span>') +
             (already
               ? '<span style="font-size:11px;color:#1A7340;font-weight:700">確定済</span>'
@@ -36162,7 +36260,9 @@ async function initAttendanceTab() {
   document.getElementById('att-save-btn').style.display = 'none';
   const sel = document.getElementById('att-class-select');
   if (attAllMasters.length) return; // 既に構築済みなら再構築しない
-  attAllMasters = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject,grade_level') || [];
+  attAllMasters = await sbGet('class_master', 'is_active=eq.true&order=subject,name&select=id,name,subject,grade_level,category') || [];
+  // dlm94: 浪人生授業（category='kosotsu'）は出席入力の対象外（授業登録のみ・出席不要）
+  attAllMasters = attAllMasters.filter(m => m.category !== 'kosotsu');
   renderAttSubjectOptions();
   renderAttGradeOptions();
   renderAttClassOptions();
