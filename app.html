@@ -815,6 +815,22 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="emx-info" style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:700"></div>
     <div id="emx-grid"></div>
     <div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※ 解除は受講終了（ended_on）として記録されます。履歴は残ります。</div>
+    <!-- dlm95: 退塾に伴う受講終了（この月の最終回で締める）。生徒を選び、年月を指定して受講中の講座をまとめて終了。 -->
+    <div style="margin-top:12px;border:1px solid #E0A0A0;border-radius:8px;padding:10px 12px;background:#FDF4F4">
+      <div style="font-size:12px;font-weight:800;color:#B03A3A;margin-bottom:6px">🚪 退塾に伴う受講終了</div>
+      <div style="font-size:10px;color:#8A5A5A;line-height:1.6;margin-bottom:8px">退塾する生徒を選び、終了する月を指定して「この月で終了」を押すと、その生徒が受講中の通常講座を<b>その月の最終回</b>で終了扱いにします（履歴は残ります）。確認ダイアログが出ます。</div>
+      <div style="display:flex;gap:6px;align-items:flex-end;flex-wrap:wrap">
+        <div style="flex:1 1 180px"><div class="form-label">生徒</div>
+          <select class="form-select" id="emx-end-student" style="width:100%;font-size:12px"><option value="">生徒を選択</option></select></div>
+        <div style="flex:0 0 auto"><div class="form-label">終了する月</div>
+          <div style="display:flex;gap:4px;align-items:center">
+            <input class="form-input-sm" type="number" id="emx-end-y" value="2026" style="width:66px"><span style="font-size:11px;color:var(--muted)">年</span>
+            <input class="form-input-sm" type="number" id="emx-end-m" min="1" max="12" placeholder="月" style="width:52px"><span style="font-size:11px;color:var(--muted)">月</span>
+          </div></div>
+        <button onclick="emxEndAtMonth()" style="padding:9px 16px;font-size:12px;font-weight:800;border-radius:8px;border:none;background:#B03A3A;color:#fff;cursor:pointer;font-family:'Noto Sans JP',sans-serif">この月で終了</button>
+      </div>
+      <div id="emx-end-status" style="font-size:11px;color:#8A5A5A;margin-top:6px;line-height:1.5"></div>
+    </div>
   </div>
 </div>
 
@@ -6312,7 +6328,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm94';
+const APP_VERSION = '20260702dlm95';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -23796,6 +23812,7 @@ function renderEnrollMatrix() {
   });
   h += '</div></div>';
   grid.innerHTML = h;
+  if (typeof emxFillEndStudentSelect === 'function') emxFillEndStudentSelect();
 }
 
 async function toggleEmxCell(studentId, classId) {
@@ -23860,6 +23877,101 @@ async function toggleEmxCell(studentId, classId) {
     showToast('更新に失敗しました: ' + (e && e.message ? e.message : e), 'error');
   }
   emxBusy[key] = false;
+}
+
+// dlm95: 退塾に伴う受講終了の生徒プルダウンを充填（現在マトリクスに出ている生徒）。
+function emxFillEndStudentSelect() {
+  const sel = document.getElementById('emx-end-student');
+  if (!sel) return;
+  const prev = sel.value;
+  const stus = (typeof emxVisibleStudents === 'function') ? emxVisibleStudents() : [];
+  sel.innerHTML = '<option value="">生徒を選択</option>' +
+    stus.map(s => '<option value="' + escapeAttr(s.id) + '">' + escapeHtml(s.name) +
+      ((s.school || s.grade) ? '（' + escapeHtml((s.school || '') + ' ' + (s.grade || '')).trim() + '）' : '') +
+      '</option>').join('');
+  if (prev && stus.some(s => String(s.id) === String(prev))) sel.value = prev;
+}
+
+// dlm95: 指定した生徒の「受講中（ended_on IS NULL）」の通常講座を、指定 year/month サイクルの
+// 最終回（cycle_no 最大の session_date）で終了扱いにする。ワンタップ＋確認ダイアログ。
+async function emxEndAtMonth() {
+  const sid = (document.getElementById('emx-end-student') || {}).value || '';
+  const y = parseInt((document.getElementById('emx-end-y') || {}).value, 10);
+  const m = parseInt((document.getElementById('emx-end-m') || {}).value, 10);
+  const statusEl = document.getElementById('emx-end-status');
+  const setStatus = (t, color) => { if (statusEl) { statusEl.textContent = t; statusEl.style.color = color || '#8A5A5A'; } };
+  if (!sid) { setStatus('生徒を選択してください。', '#B03A3A'); return; }
+  if (!y || !m || m < 1 || m > 12) { setStatus('終了する年・月を正しく入力してください。', '#B03A3A'); return; }
+
+  // 生徒名（確認文用）
+  const stus = (typeof emxVisibleStudents === 'function') ? emxVisibleStudents() : [];
+  const stu = stus.find(s => String(s.id) === String(sid));
+  const stuName = stu ? stu.name : '(生徒)';
+
+  setStatus('対象講座を確認中…');
+  // 受講中の講座（ended_on IS NULL）
+  let active = [];
+  try {
+    active = await sbGetActiveEnrollments('student_id=eq.' + encodeURIComponent(sid) +
+      '&select=id,class_master_id') || [];
+  } catch (e) { setStatus('受講情報の取得に失敗しました。', '#B03A3A'); return; }
+  if (!active.length) { setStatus('この生徒に受講中の講座がありません。', '#B03A3A'); return; }
+
+  // 各講座について、指定サイクルの最終回 session_date を解決
+  const plan = []; // {enrollId, classId, className, endedOn, cycNo}
+  const skipped = [];
+  for (const e of active) {
+    const cid = e.class_master_id;
+    const cls = (emxClasses || []).find(c => String(c.id) === String(cid));
+    const cname = cls ? cls.name : cid;
+    let sessions = emxSessCache[cid];
+    if (!sessions) {
+      sessions = await sbGet('class_sessions',
+        'class_master_id=eq.' + cid + '&select=session_date,cycle_year,cycle_month,cycle_no&order=session_date').catch(() => []) || [];
+      emxSessCache[cid] = sessions;
+    }
+    const inCyc = sessions.filter(s => s.cycle_no != null &&
+      String(s.cycle_year) === String(y) && String(s.cycle_month) === String(m));
+    if (!inCyc.length) { skipped.push(cname); continue; }
+    const maxNo = Math.max(...inCyc.map(s => s.cycle_no));
+    const lastOfCyc = inCyc.filter(s => s.cycle_no === maxNo).sort((a, b) => a.session_date < b.session_date ? -1 : 1).pop();
+    plan.push({ enrollId: e.id, classId: cid, className: cname, endedOn: lastOfCyc.session_date, cycYear: y, cycMonth: m, cycNo: maxNo });
+  }
+
+  if (!plan.length) {
+    setStatus('指定した ' + y + '年' + m + '月 のサイクルに授業がある受講中講座が見つかりませんでした（' +
+      (skipped.length ? '対象外：' + skipped.join('・') : '') + '）。', '#B03A3A');
+    return;
+  }
+
+  // 確認ダイアログ
+  const lines = plan.map(p => '・' + p.className + '（' + p.endedOn + ' ＝ ' + p.cycMonth + '月' + p.cycNo + '回目）').join('\n');
+  const skipNote = skipped.length ? '\n\n（' + m + '月に授業がなく対象外：' + skipped.join('・') + '）' : '';
+  const ok = confirm(stuName + ' さんの以下の受講を、この月の最終回で終了にしていいですか？\n\n' + lines + skipNote);
+  if (!ok) { setStatus('キャンセルしました。'); return; }
+
+  setStatus('終了処理中…');
+  let done = 0, failed = 0;
+  for (const p of plan) {
+    try {
+      await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(p.enrollId), {
+        ended_on: p.endedOn,
+        end_cycle_year: p.cycYear,
+        end_cycle_month: p.cycMonth,
+        end_cycle_no: p.cycNo,
+        end_reason: '退塾'
+      });
+      done++;
+      // マトリクス表示中セルを即時反映
+      const key = sid + '|' + p.classId;
+      delete emxEnrolled[key];
+      const cellEl = document.getElementById('emxcell-' + key);
+      if (cellEl) { cellEl.style.background = 'transparent'; cellEl.style.boxShadow = ''; const inr = cellEl.querySelector('div'); if (inr) inr.textContent = ''; }
+    } catch (e) { failed++; }
+  }
+  setStatus('✅ ' + done + '件を ' + m + '月最終回で終了しました' + (failed ? '（' + failed + '件失敗）' : '') +
+    (skipped.length ? ' ／ 対象外 ' + skipped.length + '件' : ''), failed ? '#B03A3A' : '#1A7340');
+  showToast(stuName + ' さんの受講 ' + done + '件を終了しました', failed ? 'error' : 'success');
 }
 
 // 表示中のマトリクスをCSVで出力（紙面チェック用）
