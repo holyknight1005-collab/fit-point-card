@@ -5157,6 +5157,17 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="sv-decide-section" style="display:none;background:linear-gradient(135deg,#EAF2FB,#FFFFFF);border:1.5px solid #9CC0E8;border-radius:var(--radius);padding:14px 16px;margin-bottom:16px">
         <div style="font-size:14px;font-weight:700;color:#2D5FA6;margin-bottom:8px">🗓 担当を決定する（管理者）</div>
         <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">1週間分をまとめて確認できます。各コマの希望者から「決定」を押すと確定します。緑＝確定済み。</div>
+        <!-- dlm91: 希望入力の依頼をまとめて送る -->
+        <div style="background:#F3F8FF;border:1px solid #BBD3EF;border-radius:10px;padding:10px 12px;margin-bottom:12px">
+          <div style="font-size:12px;font-weight:700;color:#2D5FA6;margin-bottom:6px">📨 シフト希望の入力を依頼する</div>
+          <div style="font-size:10.5px;color:var(--muted);line-height:1.6;margin-bottom:8px">監督に入りうる社会人・大学生（対象外を除く）全員のToDoに「希望を入力してください」を送ります。ToDoから希望入力画面に直接飛べます。</div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+            <span style="font-size:11px;color:var(--muted);white-space:nowrap">締切</span>
+            <input type="date" id="sv-req-due" class="form-input" style="font-size:12px;padding:5px 8px;width:auto">
+            <input type="text" id="sv-req-note" class="form-input" placeholder="補足（任意・例：来週分をお願いします）" style="font-size:12px;padding:5px 8px;flex:1;min-width:160px">
+          </div>
+          <button onclick="svSendWishRequest()" style="font-size:12px;font-weight:700;background:#2D6CB6;color:#fff;border:none;border-radius:8px;padding:7px 16px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">依頼を送信</button>
+        </div>
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
           <button onclick="svDecideWeekShift(-1)" style="font-size:12px;font-weight:700;border:1px solid var(--line);border-radius:8px;background:#fff;padding:6px 12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">‹ 前の週</button>
           <span id="sv-decide-week-label" style="flex:1;text-align:center;font-size:13px;font-weight:700;color:var(--fg);min-width:120px">—</span>
@@ -6294,7 +6305,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm90';
+const APP_VERSION = '20260702dlm91';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -35037,6 +35048,64 @@ async function svLoadDecide() {
   h += '</div>';
   if (!anyDay) h = '<div style="font-size:12px;color:var(--muted)">この週は希望も担当もありません。</div>';
   box.innerHTML = h;
+}
+
+// ============================================================
+// dlm91: 希望入力依頼 ToDo の一括送信（決定権限者）
+// 対象外を除く社会人・大学生（fit001除く）に「シフト希望を入力してください」ToDoを投げる。
+// ToDo には link_target='supervision' を付け、ワンタップで希望入力へ飛べるようにする。
+// ============================================================
+async function svSendWishRequest() {
+  if (!canDecideSupervision()) { showToast('送信権限がありません', 'error'); return; }
+  const dueEl = document.getElementById('sv-req-due');
+  const due = (dueEl && dueEl.value) ? dueEl.value : null;
+  const noteEl = document.getElementById('sv-req-note');
+  const extra = (noteEl && noteEl.value) ? noteEl.value.trim() : '';
+  try {
+    // 対象者：区分が社会人 or 大学生（対象外・未設定は除く）、fit001除く
+    const perms = await sbGet('staff_permissions', 'select=staff_id,employment_type') || [];
+    const targetCodes = perms
+      .filter(p => (p.employment_type === 'shakaijin' || p.employment_type === 'daigakusei'))
+      .map(p => p.staff_id)
+      .filter(code => String(code).toLowerCase() !== 'fit001');
+    if (!targetCodes.length) { showToast('対象スタッフがいません（区分を設定してください）', 'info'); return; }
+    // staff_id(コード) → id(UUID) 解決
+    const staffRows = await sbGet('staff', 'is_active=eq.true&select=id,staff_id') || [];
+    const uuidByCode = {}; staffRows.forEach(s => { uuidByCode[s.staff_id] = s.id; });
+    const recipients = targetCodes.map(c => uuidByCode[c]).filter(Boolean);
+    if (!recipients.length) { showToast('対象スタッフのアカウントが見つかりません', 'error'); return; }
+
+    if (!confirm(recipients.length + '名に「自習監督のシフト希望を入力」ToDoを送りますか？' + (due ? '\n締切：' + due : '\n締切：なし'))) return;
+
+    const title = '自習監督のシフト希望を入力';
+    const detail = '来週以降の自習監督のシフト希望（○入れる／△できたら避けたい／×入れない）を入力してください。' + (extra ? '\n' + extra : '');
+    showLoading('送信中...');
+    let ok = 0;
+    for (const toId of recipients) {
+      try {
+        await sbPost('staff_todos', {
+          from_staff_id: currentStaff.id,
+          to_staff_id: toId,
+          title: title, detail: detail,
+          due_date: due,
+          link_target: 'supervision'
+        });
+        ok++;
+      } catch (err) {
+        // link_target 未対応環境は最小構成で再送
+        if (/column|PGRST|400/i.test(String(err && err.message || err))) {
+          await sbPost('staff_todos', { from_staff_id: currentStaff.id, to_staff_id: toId, title: title, detail: detail, due_date: due });
+          ok++;
+        }
+      }
+    }
+    hideLoading();
+    showToast('📨 ' + ok + '名に希望入力の依頼を送りました', 'success');
+  } catch (e) {
+    hideLoading();
+    console.warn('svSendWishRequest失敗', e);
+    showToast('送信に失敗しました', 'error');
+  }
 }
 
 // ============================================================
