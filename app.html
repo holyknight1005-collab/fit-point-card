@@ -1324,6 +1324,17 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
   </div>
 </div>
 
+<div id="unfilled-sv-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="font-size:16px;font-weight:700;color:var(--orange-d)">🪑 未記入の監督報告</div>
+      <button onclick="closeUnfilledSupervision()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">今日を含む過去のあなたの担当監督コマのうち、報告が未記入のものです。この場で入力して保存できます。</div>
+    <div id="unfilled-sv-list" style="max-height:60vh;overflow-y:auto"></div>
+  </div>
+</div>
+
 <div id="time-picker-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:670;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--bg);border-radius:16px;padding:20px;max-width:340px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,0.25)">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -6265,7 +6276,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm84';
+const APP_VERSION = '20260702dlm86';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -9568,7 +9579,7 @@ async function loadTodayTasks() {
     //           自分の担当授業の過去〜今日のセッション / 既存の class_reports
     // 報告書タスクの起点日：この日より前の未記入セッションはカウントしない（7月本格運用の線引き）
     const REPORT_TASK_SINCE = '2026-07-01';
-    const [myTodos, todaySessions, staffList, mySessionsAll, myReportsAll] = await Promise.all([
+    const [myTodos, todaySessions, staffList, mySessionsAll, myReportsAll, mySvAll] = await Promise.all([
       sbGet('staff_todos', 'to_staff_id=eq.' + currentStaff.id + '&is_done=eq.false&select=id,due_date'),
       sbGet('class_sessions', 'session_date=eq.' + today + '&select=class_master_id,period,start_time,end_time&order=period'),
       sbGet('staff', 'select=id,name'),
@@ -9577,7 +9588,12 @@ async function loadTodayTasks() {
         : Promise.resolve([]),
       myClassIds.length
         ? sbGet('class_reports', 'class_master_id=in.(' + myClassIds.join(',') + ')&session_date=gte.' + REPORT_TASK_SINCE + '&session_date=lte.' + reportUpTo + '&select=class_master_id,session_date,theme,content,student_notes')
-        : Promise.resolve([])
+        : Promise.resolve([]),
+      // dlm86: 監督報告タスク。自分の確定監督コマ（今日を含む過去）で report_text 未記入のもの。
+      // 監督は当日夜に報告を書くため上限は「今日」まで含める（授業報告書と異なり昨日までにしない）。
+      sbGet('supervision_assignments',
+        'staff_id=eq.' + encodeURIComponent(svMyStaffId()) + '&cancelled=eq.false&sv_date=gte.' + REPORT_TASK_SINCE + '&sv_date=lte.' + today + '&select=id,sv_date,period,report_text,handover_text&order=sv_date.desc,period')
+        .catch(() => [])
     ]);
 
     // 記入済み report の Set（'classId|date'）
@@ -9662,6 +9678,20 @@ async function loadTodayTasks() {
       items.push(taskRow('📝', '報告書', '未記入 ' + unfilledReportCount + '件', false, "openUnfilledReports()", unfilledReportCount > 0));
     }
 
+    // dlm86: 監督報告タスク（今日を含む過去の確定監督コマで report_text 未記入）。
+    // 確定コマが1つも無いスタッフには行自体を出さない（自習監督に関与しない人のノイズ回避）。
+    const svAll = mySvAll || [];
+    const unfilledSv = svAll.filter(a => !(a.report_text && a.report_text.trim()));
+    window._unfilledSupervision = unfilledSv;
+    const unfilledSvCount = unfilledSv.length;
+    if (svAll.length > 0) {
+      if (unfilledSvCount === 0) {
+        items.push(taskRow('🪑', '監督報告', '未記入なし', true, "openHomeFeature('supervision')"));
+      } else {
+        items.push(taskRow('🪑', '監督報告', '未記入 ' + unfilledSvCount + '件', false, "openUnfilledSupervision()", unfilledSvCount > 0));
+      }
+    }
+
     // ToDoはカレンダー上部の「📬 自分へのToDo」バーに集約したため、ここには出さない
 
     // ===== 授業の復習の承認（自分の担当授業ぶん）=====
@@ -9700,6 +9730,7 @@ async function loadTodayTasks() {
       const parts = [];
       if (sessions.length > 0) parts.push('授業' + sessions.length + '件');
       if (unfilledReportCount > 0) parts.push('報告書' + unfilledReportCount + '件');
+      if (unfilledSvCount > 0) parts.push('監督報告' + unfilledSvCount + '件');
       if (myReviewPending > 0) parts.push('承認' + myReviewPending + '件');
       countEl.textContent = parts.length ? parts.join('・') : 'なし';
       // 期限切れToDoがあれば赤く強調（ToDo自体はカレンダー上部バーに表示）
@@ -9714,8 +9745,8 @@ async function loadTodayTasks() {
       }
     }
 
-    // すべて完了か（報告書未記入なし＆承認待ちなし。ToDoはカレンダー上部バー側で管理）
-    if (unfilledReportCount === 0 && myReviewPending === 0) {
+    // すべて完了か（報告書未記入なし＆承認待ちなし＆監督報告未記入なし。ToDoはカレンダー上部バー側で管理）
+    if (unfilledReportCount === 0 && myReviewPending === 0 && unfilledSvCount === 0) {
       doneTag.style.display = 'inline-block';
     } else {
       doneTag.style.display = 'none';
@@ -10792,6 +10823,68 @@ function openUnfilledReports() {
 function closeUnfilledReports() {
   const m = document.getElementById('unfilled-report-modal');
   if (m) m.style.display = 'none';
+}
+
+// ===== dlm86: 未記入監督報告モーダル（カレンダー内で直接記入） =====
+// loadTodayTasks が window._unfilledSupervision に積んだ未記入コマを、
+// その場で「自習の様子」「引き継ぎ」を入力・保存できる形で並べる。
+function svRepDateLabel(ds) {
+  // 'YYYY-MM-DD' → 'M/D'
+  if (!ds) return '';
+  const p = ds.split('-');
+  return p.length === 3 ? (Number(p[1]) + '/' + Number(p[2])) : ds;
+}
+function openUnfilledSupervision() {
+  const list = window._unfilledSupervision || [];
+  const el = document.getElementById('unfilled-sv-list');
+  if (el) {
+    if (!list.length) {
+      el.innerHTML = '<div style="font-size:13px;color:var(--muted);text-align:center;padding:16px">未記入の監督報告はありません 🎉</div>';
+    } else {
+      el.innerHTML = list.map(a => {
+        const periodLabel = a.period ? (a.period + '限') : '';
+        const dateLabel = svRepDateLabel(a.sv_date);
+        return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px">' +
+          '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
+            '<span style="font-size:12px;font-weight:700;color:var(--orange-d)">' + dateLabel + '</span>' +
+            (periodLabel ? '<span style="font-size:11px;color:var(--muted)">' + periodLabel + '</span>' : '') +
+          '</div>' +
+          '<textarea id="usv-rep-' + a.id + '" placeholder="自習の様子" style="width:100%;box-sizing:border-box;min-height:56px;font-size:13px;padding:8px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px">' + escapeHtml(a.report_text || '') + '</textarea>' +
+          '<textarea id="usv-hand-' + a.id + '" placeholder="次の監督者への引き継ぎ（任意）" style="width:100%;box-sizing:border-box;min-height:44px;font-size:13px;padding:8px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px">' + escapeHtml(a.handover_text || '') + '</textarea>' +
+          '<button onclick="svSaveReportFromModal(\'' + a.id + '\')" style="width:100%;padding:8px;font-size:13px;font-weight:700;background:var(--orange);color:#fff;border:1px solid var(--orange);border-radius:var(--radius-sm);cursor:pointer">保存</button>' +
+        '</div>';
+      }).join('');
+    }
+  }
+  const m = document.getElementById('unfilled-sv-modal');
+  if (m) m.style.display = 'flex';
+}
+function closeUnfilledSupervision() {
+  const m = document.getElementById('unfilled-sv-modal');
+  if (m) m.style.display = 'none';
+}
+// モーダル内の保存。成功したらその行を未記入リストから外し、今日の予定を再集計。
+async function svSaveReportFromModal(id) {
+  const ta = document.getElementById('usv-rep-' + id);
+  const ha = document.getElementById('usv-hand-' + id);
+  const text = ta ? ta.value.trim() : '';
+  const handover = ha ? ha.value.trim() : '';
+  if (!text && !handover) { showToast('自習の様子か引き継ぎを入力してください', 'info'); return; }
+  try {
+    await sbPatch('supervision_assignments', 'id=eq.' + id,
+      { report_text: text, handover_text: handover, reported_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    showToast('監督報告を保存しました', 'success');
+    // 今日の予定を再集計（loadTodayTasks が _unfilledSupervision を最新化する）。
+    if (typeof loadTodayTasks === 'function') { try { await loadTodayTasks(); } catch (e) {} }
+    if (!(window._unfilledSupervision || []).length) {
+      closeUnfilledSupervision();
+    } else {
+      openUnfilledSupervision();
+    }
+  } catch (e) {
+    console.warn('svSaveReportFromModal失敗', e);
+    showToast('保存に失敗しました', 'error');
+  }
 }
 
 // ===== ショートカット（スタッフ各自・Supabase保存）=====
@@ -40990,6 +41083,13 @@ async function openInterviewKarte(studentId, backTo) {
     if (el) el.innerHTML = karteSecShell(sec.label, '<div style="font-size:12px;color:var(--muted);padding:8px">読み込み中…</div>');
   });
   showScreen('screen-interview-karte');
+  // dlm85: ブラウザ「戻る」でカルテを閉じられるよう履歴を1つ積む。
+  // 二重積み防止：既にカルテ用の履歴状態なら積み直さない。
+  try {
+    if (!(history.state && history.state.karteOpen)) {
+      history.pushState({ karteOpen: true }, '', location.pathname + location.search + '#karte');
+    }
+  } catch (e) { /* history 非対応環境は無視 */ }
   // 非同期で各セクションをロード（順次・失敗は握りつぶし）
   karteLoadProfile(s);
   karteLoadParent(s);
@@ -41005,7 +41105,8 @@ async function openInterviewKarte(studentId, backTo) {
   karteLoadAppUsage(studentId);
 }
 
-function backFromKarte() {
+// dlm85: 実際にカルテを閉じて戻り先画面を出す処理（popstate から呼ぶ）。
+function _doBackFromKarte() {
   if (karteBackTo === 'detail') {
     showScreen('screen-staff-detail');
   } else if (karteBackTo === 'school') {
@@ -41018,6 +41119,26 @@ function backFromKarte() {
     showScreen('screen-staff-manage');
   }
 }
+
+// dlm85: 戻るボタンの入口。ブラウザ履歴を1つ戻す（popstate 経由で _doBackFromKarte が走る）。
+// 履歴を積めていない場合（history 非対応・直接遷移等）はその場で戻す。
+function backFromKarte() {
+  if (history.state && history.state.karteOpen) {
+    history.back();
+  } else {
+    _doBackFromKarte();
+  }
+}
+
+// dlm85: ブラウザ「戻る」対応。カルテ用の履歴から抜けたらカルテを閉じる。
+window.addEventListener('popstate', function () {
+  const karteScreen = document.getElementById('screen-interview-karte');
+  const karteVisible = karteScreen && karteScreen.classList.contains('active');
+  // カルテ表示中に、カルテ用状態でなくなった＝戻る操作 → 戻り先へ
+  if (karteVisible && !(history.state && history.state.karteOpen)) {
+    _doBackFromKarte();
+  }
+});
 
 // セクションの外枠（タイトル＋本体）
 function karteSecShell(title, inner) {
