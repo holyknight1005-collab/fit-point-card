@@ -1986,6 +1986,14 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </button>
     </div>
 
+    <!-- dlm100: 退塾登録の猶予期間（翌月8日まで）ログインできる旨のお知らせ帯 -->
+    <div id="stu-withdraw-notice" style="display:none;background:linear-gradient(135deg,#FDECEC,#FFFDF7);border:1.5px solid #E8A9A9;border-radius:var(--radius);padding:13px 15px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:7px">
+        <span style="font-size:17px">🚪</span>
+        <span id="stu-withdraw-body" style="font-size:12px;font-weight:700;color:#B03A3A;line-height:1.7"></span>
+      </div>
+    </div>
+
     <!-- 夏期講習の申込書 未提出のお知らせ -->
     <div id="stu-koushu-notice" style="display:none;background:linear-gradient(135deg,#FFF3DF,#FFFDF7);border:1.5px solid #E8C193;border-radius:var(--radius);padding:13px 15px;margin-bottom:12px">
       <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">
@@ -6328,7 +6336,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm98';
+const APP_VERSION = '20260702dlm100';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6742,7 +6750,8 @@ function renderStudentFilterChips() {
   const pool = staffStudents.filter(s =>
     (s.division || '高校部') === currentDivision &&
     s.inactive_reason !== '除外' &&
-    (showGraduated ? (s.is_active === false) : (s.is_active !== false))
+    (showGraduated ? (s.is_active === false) : (s.is_active !== false)) &&
+    (showGraduated || !isStudentHiddenAsWithdrawn(s))   // dlm99: 在籍一覧では退塾非表示対象を母集団からも外す
   );
   // 学校：出現順を保ちつつ重複除去
   const schools = [];
@@ -6855,6 +6864,33 @@ function summaryCell(value, label) {
   '</div>';
 }
 
+// dlm99: 退塾登録した生徒を「発効日(退塾月末)の翌月8日」を過ぎたら生徒一覧から非表示にする判定。
+//  is_active は true のまま（退塾者名簿で管理）。発効日の翌月8日「以降」で非表示。
+function studentWithdrawHideDate(s) {
+  const eff = s && s.withdraw_effective_date;
+  if (!eff) return null;
+  const y = parseInt(eff.slice(0,4),10), m = parseInt(eff.slice(5,7),10);
+  if (!y || !m) return null;
+  const ny = (m === 12) ? y+1 : y;
+  const nm = (m === 12) ? 1 : m+1;
+  return ny + '-' + String(nm).padStart(2,'0') + '-08';
+}
+function isStudentHiddenAsWithdrawn(s) {
+  if (!s || !s.withdraw_status) return false;         // 退塾登録が無ければ対象外
+  const hideOn = studentWithdrawHideDate(s);
+  if (!hideOn) return false;
+  return getTodayJST() >= hideOn;                      // 翌月8日以降は非表示
+}
+
+// dlm100: 生徒本人のログイン可否。退塾登録しても猶予（翌月8日）まではログイン可（ビデオ補習確認等）。
+//  翌月8日以降、または物理的に is_active=false の退塾者はログイン不可。卒業生は可。
+function isStudentLoginBlocked(s) {
+  if (!s) return true;
+  if (s.is_active === false && s.inactive_reason === '退塾') return true; // 物理退塾済み
+  if (isStudentHiddenAsWithdrawn(s)) return true;                          // 猶予切れ（翌月8日以降）
+  return false;
+}
+
 function renderStudentList() {
   const todayISO = getTodayJST();
   try { renderStudentFilterChips(); } catch (e) {}
@@ -6864,6 +6900,8 @@ function renderStudentList() {
       if (s.inactive_reason === '除外') return false; // 除外生徒は在籍・退塾者どちらの一覧でも完全に隠す
       const divOK = ((s.division || '高校部') === currentDivision); // 主部門で絞る（表示スッキリ）
       const activeOK = showGraduated ? (s.is_active === false) : (s.is_active !== false);
+      // dlm99: 在籍一覧では、退塾登録して発効日翌月8日を過ぎた子を非表示（退塾者名簿へ）
+      if (!showGraduated && isStudentHiddenAsWithdrawn(s)) return false;
       const schoolOK = filterSchool === '全員' || s.school === filterSchool;
       const gradeOK  = filterGrade === '全学年' || s.grade === filterGrade;
       // 会員種別（通常/時期別のみ）。未設定は通常扱い。dlm30
@@ -6926,7 +6964,7 @@ function renderStudentList() {
       return '<div class="student-row" data-student-id="' + s.id + '" onclick="openInterviewKarte(\'' + s.id + '\',\'staff\')">' +
         avatar +
         '<div class="student-info">' +
-          '<div class="student-name">' + s.name + (s.is_active === false ? ' <span style="font-size:10px;color:#d32f2f;font-weight:700">' + (s.inactive_reason === '退塾' ? '🚪退塾' : '🎓卒業') + '</span>' : (s.withdraw_status === '確定' ? ' <span style="font-size:10px;color:#C0392B;font-weight:700">✅退塾確定' + (s.withdraw_effective_date ? '(' + s.withdraw_effective_date.slice(5).replace('-', '/') + ')' : '') + '</span>' : (s.withdraw_status === '申し出' ? ' <span style="font-size:10px;color:#B8860B;font-weight:700">📝退塾申出中</span>' : ''))) + '</div>' +
+          '<div class="student-name">' + s.name + (s.is_active === false ? ' <span style="font-size:10px;color:#d32f2f;font-weight:700">' + (s.inactive_reason === '退塾' ? '🚪退塾' : '🎓卒業') + '</span>' : ((s.withdraw_status === '退塾' || s.withdraw_status === '確定' || s.withdraw_status === '申し出') ? ' <span style="font-size:10px;color:#C0392B;font-weight:700">🚪退塾' + (s.withdraw_effective_date ? '(' + s.withdraw_effective_date.slice(5).replace('-', '/') + ')' : '') + '</span>' : '')) + '</div>' +
           '<div class="student-email">' + school + grade + s.email + '</div>' +
         '</div>' +
         (todayIds.has(s.id) ? '<div class="today-badge">来塾</div>' : '') +
@@ -7003,8 +7041,8 @@ async function autoLogin() {
   try {
     const data = await sbGet('students', 'email=eq.' + encodeURIComponent(email) + '&pin=eq.' + encodeURIComponent(pin) + '&select=*');
     if (!data || data.length === 0) { clearLoginState(); hideLoading(); return; }
-    // 退塾者は自動ログインも不可（卒業生は可）
-    if (data[0].is_active === false && data[0].inactive_reason === '退塾') { clearLoginState(); hideLoading(); return; }
+    // 退塾者はログイン不可。ただし退塾登録の猶予中（翌月8日まで）は可（卒業生は可）。dlm100
+    if (isStudentLoginBlocked(data[0])) { clearLoginState(); hideLoading(); return; }
     currentStudent = data[0];
     const since = new Date(); since.setFullYear(since.getFullYear() - 1);
     const checkins = await sbGet('checkins', 'student_id=eq.' + currentStudent.id + '&checkin_date=gte.' + toJSTDateStr(since) + '&select=checkin_date&order=checkin_date.desc');
@@ -7336,8 +7374,8 @@ async function doLogin() {
       if (okParent) return;
       err.textContent = 'メールアドレスまたはパスワードが違います'; err.classList.add('show'); hideLoading(); return;
     }
-    // 退塾者はログイン不可（卒業生はログイン可）
-    if (data[0].is_active === false && data[0].inactive_reason === '退塾') {
+    // 退塾者はログイン不可。退塾登録の猶予中（翌月8日まで）は可（卒業生は可）。dlm100
+    if (isStudentLoginBlocked(data[0])) {
       err.textContent = 'このアカウントは現在ご利用いただけません。塾までお問い合わせください。';
       err.classList.add('show'); hideLoading(); return;
     }
@@ -7894,6 +7932,21 @@ async function loadTotalEarnedPoints() {
   }
 }
 
+// dlm100: 退塾登録の猶予期間（翌月8日まで）に、生徒ホーム上部へ「8日でログインできなくなる」旨の帯を出す。
+function renderStudentWithdrawNotice(s) {
+  const box = document.getElementById('stu-withdraw-notice');
+  const body = document.getElementById('stu-withdraw-body');
+  if (!box || !body) return;
+  if (!s || !s.withdraw_status || !s.withdraw_effective_date) { box.style.display = 'none'; return; }
+  const hideOn = (typeof studentWithdrawHideDate === 'function') ? studentWithdrawHideDate(s) : null;
+  if (!hideOn) { box.style.display = 'none'; return; }
+  // 猶予切れ（翌月8日以降）はそもそもログインできないが、念のため非表示
+  if (getTodayJST() >= hideOn) { box.style.display = 'none'; return; }
+  const m = parseInt(hideOn.slice(5,7),10), d = parseInt(hideOn.slice(8,10),10);
+  body.textContent = m + '月' + d + '日でログインできなくなります。それまではビデオ補習などの確認ができます。';
+  box.style.display = 'block';
+}
+
 function initStudentScreen() {
   const s = currentStudent;
   document.getElementById('student-name-header').textContent = s.name;
@@ -7903,6 +7956,7 @@ function initStudentScreen() {
   updateLoginStreak();
   loadUnifiedCalendar();
   loadStudentAnnouncements();
+  if (typeof renderStudentWithdrawNotice === 'function') renderStudentWithdrawNotice(s);
   loadStudentDashboard();
   loadMyReports();
   loadStudentInterviewShared();
@@ -11385,34 +11439,28 @@ function renderGraduateSection() {
     const reqRaw = detailStudent.withdraw_requested_at || '';
     const reqLabel = reqRaw ? (reqRaw.slice(0, 4) + '/' + reqRaw.slice(5, 7) + '/' + reqRaw.slice(8, 10)) : '';
 
-    if (ws === '申し出') {
-      // 退塾申し出中（相談中）：在籍・月謝はそのまま。確定 or 撤回
-      box.innerHTML =
-        '<div style="background:#FFF7E6;border:1px solid #E8C97A;border-radius:8px;padding:10px;margin-bottom:12px">' +
-          '<div style="font-size:13px;font-weight:800;color:#B8860B;margin-bottom:4px">📝 退塾申し出中（相談中）</div>' +
-          '<div style="font-size:11px;color:#7A6000;line-height:1.6">申し出日：' + (reqLabel || '—') + '<br>確定すると <b>' + (effLabel || '—') + '</b>（申し出月の月末）付けで退塾になります。<br>現在は在籍中・月謝も継続です。</div>' +
-        '</div>' +
-        '<div style="display:flex;gap:8px">' +
-          '<button onclick="confirmWithdraw()" style="flex:1;padding:11px;background:var(--surface2);border:1.5px solid #e57373;border-radius:8px;color:#d32f2f;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">✅ 退塾を確定する</button>' +
-          '<button onclick="cancelWithdraw()" style="flex:1;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">↩️ 申し出を撤回</button>' +
-        '</div>';
-    } else if (ws === '確定') {
-      // 退塾確定：月末まで在籍、月末後は表示時判定で自動的に在籍外（is_active は true のまま）
+    if (ws === '退塾' || ws === '申し出' || ws === '確定') {
+      // dlm99: 退塾登録済み（単一状態）。月末まで在籍、翌月8日で一覧→退塾者名簿へ。取り消しで復帰。
       const todayStr = getTodayJST();
       const passed = effRaw && todayStr > effRaw;
+      const hideOn = (typeof studentWithdrawHideDate === 'function') ? studentWithdrawHideDate(detailStudent) : null;
+      const hideLabel = hideOn ? (hideOn.slice(0,4) + '/' + hideOn.slice(5,7) + '/' + hideOn.slice(8,10)) : '';
       box.innerHTML =
         '<div style="background:#FDECEC;border:1px solid #E8B4B4;border-radius:8px;padding:10px;margin-bottom:12px">' +
-          '<div style="font-size:13px;font-weight:800;color:#C0392B;margin-bottom:4px">✅ 退塾確定' + (passed ? '（退塾済み）' : '（' + (effLabel || '—') + ' 付け）') + '</div>' +
-          '<div style="font-size:11px;color:#8A2A2A;line-height:1.6">申し出日：' + (reqLabel || '—') + '<br>在籍最終日：<b>' + (effLabel || '—') + '</b>' + (passed ? '<br>※在籍最終日を過ぎたため、集計上は在籍から外れています。' : '<br>※この日までは在籍・月謝が続きます。') + '<br>本人のログインは停止しています。</div>' +
+          '<div style="font-size:13px;font-weight:800;color:#C0392B;margin-bottom:4px">🚪 退塾登録済み' + (passed ? '（在籍最終日を経過）' : '（' + (effLabel || '—') + ' 付け）') + '</div>' +
+          '<div style="font-size:11px;color:#8A2A2A;line-height:1.6">登録日：' + (reqLabel || '—') + '<br>在籍最終日：<b>' + (effLabel || '—') + '</b>（この月末まで在籍・月謝が続きます）' +
+          (hideLabel ? '<br>一覧から退塾者名簿へ移る日：<b>' + hideLabel + '</b>' : '') +
+          (passed ? '<br>※在籍最終日を過ぎたため、集計上は在籍から外れています。' : '') +
+          '</div>' +
         '</div>' +
-        '<button onclick="cancelWithdraw()" style="width:100%;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">↩️ 退塾確定を取り消す（在籍に戻す）</button>';
+        '<button onclick="cancelWithdraw()" style="width:100%;padding:11px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">↩️ 退塾登録を取り消す（在籍に戻す）</button>';
     } else {
-      // 通常：退塾申し出 / 卒業 / 除外
+      // 通常：退塾登録 / 卒業 / 除外
       box.innerHTML =
-        '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">退塾は「申し出（相談中）→確定」の2段階です。申し出ても確定するまで在籍・月謝は続きます。確定すると申し出月の月末で在籍から外れます。<br>🎓 卒業：本人はログイン可能のまま<br>🚪 退塾申し出：本人ログインは確定時に停止</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">🚪 退塾登録：確認1回で登録します。登録月の月末まで在籍・月謝が続き、翌月8日を過ぎると生徒一覧から退塾者名簿へ移ります。取り消せば在籍に戻せます。<br>🎓 卒業：本人はログイン可能のまま</div>' +
         '<div style="display:flex;gap:8px;margin-bottom:10px">' +
           '<button onclick="deactivateStudent(\'卒業\')" style="flex:1;padding:11px;background:var(--surface2);border:1.5px solid var(--orange);border-radius:8px;color:var(--orange-d);font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🎓 卒業</button>' +
-          '<button onclick="requestWithdraw()" style="flex:1;padding:11px;background:var(--surface2);border:1.5px solid #e57373;border-radius:8px;color:#d32f2f;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🚪 退塾申し出</button>' +
+          '<button onclick="requestWithdraw()" style="flex:1;padding:11px;background:var(--surface2);border:1.5px solid #e57373;border-radius:8px;color:#d32f2f;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🚪 退塾登録</button>' +
         '</div>' +
         '<div style="border-top:1px dashed var(--border);padding-top:10px">' +
           '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">🚫 除外：デモ・テスト用の生徒を、一覧・集計・出欠・チェックインなど<b>すべてから完全に隠します</b>。退塾者一覧にも出ません。データは消えず、いつでも解除できます。</div>' +
@@ -11457,58 +11505,32 @@ async function requestWithdraw() {
   const today = getTodayJST();
   const eff = monthEndJST(new Date(today + 'T00:00:00+09:00'));
   const effLabel = eff.slice(0, 4) + '/' + eff.slice(5, 7) + '/' + eff.slice(8, 10);
-  if (!confirm(detailStudent.name + 'さんの「退塾申し出」を登録します。\n\n相談中の状態です。在籍・月謝はそのまま続きます（確定するまで人数は減りません）。\n確定すると ' + effLabel + '（申し出月の月末）付けで退塾になります。\n\nよろしいですか？')) return;
+  // dlm99: 2段階（申し出→確定）を廃止し、1タップで退塾登録。確認は1回だけ。
+  if (!confirm(detailStudent.name + 'さんを退塾登録します。\n\n' + effLabel + '（' + eff.slice(5,7) + '月末）付けの退塾になります。\n在籍・月謝はその月末まで続き、翌月8日を過ぎると生徒一覧から退塾者名簿へ移ります。\n受講の終了処理は、講師が出席画面から行ってください。\n\n本当に退塾登録にしますか？')) return;
   showLoading('処理中...');
   try {
     await sbPatch('students', 'id=eq.' + detailStudent.id, {
-      withdraw_status: '申し出',
+      withdraw_status: '退塾',
       withdraw_requested_at: today,
       withdraw_effective_date: eff
     });
-    detailStudent.withdraw_status = '申し出';
+    detailStudent.withdraw_status = '退塾';
     detailStudent.withdraw_requested_at = today;
     detailStudent.withdraw_effective_date = eff;
     hideLoading();
-    showToast('📝 退塾申し出を登録しました（相談中）', 'success');
+    showToast('🚪 退塾登録しました（' + effLabel + '付け）', 'success');
     renderGraduateSection();
   } catch (e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
-// 退塾を確定（申し出月の月末で在籍外。is_active は true のまま、表示時判定で外す）
-async function confirmWithdraw() {
-  if (!detailStudent) return;
-  if (!currentStaff || currentStaff.role !== 'admin') { showToast('管理者のみ操作できます', 'error'); return; }
-  // 申し出が無ければ今日基準で発効日を作る（申し出と同時確定のケース）
-  const today = getTodayJST();
-  const reqAt = detailStudent.withdraw_requested_at || today;
-  const eff = detailStudent.withdraw_effective_date || monthEndJST(new Date(reqAt + 'T00:00:00+09:00'));
-  const effLabel = eff.slice(0, 4) + '/' + eff.slice(5, 7) + '/' + eff.slice(8, 10);
-  if (!confirm(detailStudent.name + 'さんの退塾を確定します。\n\n' + effLabel + '（在籍最終日）まで在籍・月謝が続き、それを過ぎると自動的に在籍から外れます。\n本人のログインは確定時点で停止します。\n\nよろしいですか？')) return;
-  showLoading('処理中...');
-  try {
-    await sbPatch('students', 'id=eq.' + detailStudent.id, {
-      withdraw_status: '確定',
-      withdraw_requested_at: reqAt,
-      withdraw_effective_date: eff
-    });
-    detailStudent.withdraw_status = '確定';
-    detailStudent.withdraw_requested_at = reqAt;
-    detailStudent.withdraw_effective_date = eff;
-    hideLoading();
-    showToast('✅ 退塾を確定しました（' + effLabel + '付け）', 'success');
-    renderGraduateSection();
-  } catch (e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
-}
+// dlm99: 退塾は1タップ登録に一本化したため confirmWithdraw（旧2段階の確定）は廃止。
+
 
 // 退塾申し出/確定を取り消し（在籍継続）
 async function cancelWithdraw() {
   if (!detailStudent) return;
   if (!currentStaff || currentStaff.role !== 'admin') { showToast('管理者のみ操作できます', 'error'); return; }
-  const wasConfirmed = detailStudent.withdraw_status === '確定';
-  const msg = wasConfirmed
-    ? detailStudent.name + 'さんの退塾確定を取り消します。\n在籍に戻り、月謝も継続します。\n\nよろしいですか？'
-    : detailStudent.name + 'さんの退塾申し出を撤回します。\n在籍継続として扱います。\n\nよろしいですか？';
-  if (!confirm(msg)) return;
+  if (!confirm(detailStudent.name + 'さんの退塾登録を取り消します。\n在籍に戻り、月謝も継続します。\n\nよろしいですか？')) return;
   showLoading('処理中...');
   try {
     await sbPatch('students', 'id=eq.' + detailStudent.id, {
@@ -11520,7 +11542,7 @@ async function cancelWithdraw() {
     detailStudent.withdraw_requested_at = null;
     detailStudent.withdraw_effective_date = null;
     hideLoading();
-    showToast(wasConfirmed ? '↩️ 退塾確定を取り消しました（在籍継続）' : '↩️ 退塾申し出を撤回しました（在籍継続）', 'success');
+    showToast('↩️ 退塾登録を取り消しました（在籍継続）', 'success');
     renderGraduateSection();
   } catch (e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
@@ -36676,15 +36698,11 @@ function renderAttendanceRoster() {
     const makeupTag = row.isMakeup ? '<span style="font-size:9px;background:#E8E2F5;color:#6B4FA0;padding:1px 6px;border-radius:10px;margin-left:4px">📺 補習承認</span>' : '';
     const provTag = attProvisional[s.id] ? '<span style="font-size:9px;background:#FFF3DF;color:#8F5F12;border:1px solid #E8C193;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="申込書が未提出です">⏳ 申込未提出</span>' : '';
     const lapTag = attLapDone[s.id] ? '<span style="font-size:9px;background:#EAF7EA;color:#3B6D11;border:1px solid #8CC98C;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="1周完了・2周目のため請求対象外です">🆓 2周目・無料</span>' : '';
-    // dlm96: 退塾申出中／退塾確定を講師に可視化（受講終了処理の気づき用）。effective_date があれば「MM/末」表示。
+    // dlm96/dlm99: 退塾登録を講師に可視化（受講終了処理の気づき用）。effective_date があれば「M月末で」表示。
     let withdrawTag = '';
-    if (s.withdraw_status === '申し出' || s.withdraw_status === '確定') {
+    if (s.withdraw_status === '退塾' || s.withdraw_status === '申し出' || s.withdraw_status === '確定') {
       const eff = s.withdraw_effective_date ? (parseInt(s.withdraw_effective_date.slice(5,7),10) + '月末で') : '';
-      if (s.withdraw_status === '確定') {
-        withdrawTag = '<span style="font-size:9px;background:#FDECEC;color:#C0392B;border:1px solid #E8A9A9;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="退塾が確定しています。受講終了処理をお願いします">🚪 ' + eff + '退塾確定</span>';
-      } else {
-        withdrawTag = '<span style="font-size:9px;background:#FFF6E0;color:#B8860B;border:1px solid #E8C57A;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="退塾の申し出があります。受講終了処理をお願いします">📝 ' + eff + '退塾申出中</span>';
-      }
+      withdrawTag = '<span style="font-size:9px;background:#FDECEC;color:#C0392B;border:1px solid #E8A9A9;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="退塾登録済み。受講終了処理（この月で終了）をお願いします">🚪 ' + eff + '退塾</span>';
     }
     const sub = [s.school, fmtGrade(s.grade), inLabel].filter(Boolean).join(' ・ ');
     // アバター
