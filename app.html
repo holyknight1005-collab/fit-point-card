@@ -5540,6 +5540,16 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div style="font-size:11px;color:var(--muted);margin-bottom:12px;line-height:1.6">
         在籍生徒の面談を記録します。普段は随時、時期別講習の前などは「締切」を作ると全体の進捗が見えます。締切設定日以降に面談すると「済」になります。
       </div>
+      <!-- 🗣 fitへの要望ピックアップ（面談で挙がった要望を横断表示・折りたたみ）dlm82 -->
+      <div style="border:1px solid var(--border);border-radius:10px;margin-bottom:16px;overflow:hidden">
+        <div onclick="toggleReqPick()" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 12px;background:var(--surface2);cursor:pointer">
+          <div style="font-size:13px;font-weight:800;color:var(--text)">🗣 fitへの要望ピックアップ <span id="reqpick-count" style="font-size:11px;font-weight:700;color:var(--muted)"></span></div>
+          <span id="reqpick-caret" style="font-size:12px;color:var(--muted);transition:transform .15s">▼</span>
+        </div>
+        <div id="reqpick-body" style="display:none;padding:10px 12px">
+          <div id="reqpick-list" style="font-size:12px;color:var(--muted)">読み込み中…</div>
+        </div>
+      </div>
       <!-- 締切（キャンペーン）進捗 -->
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <div style="font-size:13px;font-weight:800;color:var(--text)">🎯 面談の締切・進捗</div>
@@ -6255,7 +6265,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm81';
+const APP_VERSION = '20260702dlm82';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -43778,6 +43788,7 @@ async function karteSaveInterview() {
   showLoading('記録中...');
   try {
     await sbPost('student_interviews', body);
+    if (typeof _reqPickLoaded !== 'undefined') _reqPickLoaded = false; // 要望ピックアップを次回再取得
     let goalErr = false;
     for (const g of goalRows) {
       const goalBody = {
@@ -43894,6 +43905,7 @@ async function karteSaveEditInterview(id) {
   showLoading('保存中...');
   try {
     await sbPatch('student_interviews', 'id=eq.' + id, body);
+    if (typeof _reqPickLoaded !== 'undefined') _reqPickLoaded = false; // 要望ピックアップを次回再取得
     hideLoading();
     showToast('✅ 面談を更新しました', 'success');
     const sid = window._karteIvSid || (typeof karteStudentId !== 'undefined' ? karteStudentId : null);
@@ -44162,6 +44174,71 @@ function setInterviewSchool(v) { ivSchool = v; renderInterviewList(); }
 function setInterviewGrade(v) { ivGrade = v; renderInterviewList(); }
 function setInterviewDoneFilter(v) { ivDoneFilter = v; renderInterviewList(); }
 
+
+// ===== 🗣 fitへの要望ピックアップ（dlm82） =====
+// dlm80で追加した student_interviews.req_to_fit を横断表示する。
+// 直近50件を新しい順に。行タップでその生徒の面談カルテを開く。
+let _reqPickLoaded = false;
+
+function toggleReqPick() {
+  const body = document.getElementById('reqpick-body');
+  const caret = document.getElementById('reqpick-caret');
+  if (!body) return;
+  const open = body.style.display === 'none';
+  body.style.display = open ? 'block' : 'none';
+  if (caret) caret.style.transform = open ? 'rotate(180deg)' : 'rotate(0deg)';
+  if (open && !_reqPickLoaded) loadReqPick();
+}
+
+async function loadReqPick() {
+  const listEl = document.getElementById('reqpick-list');
+  const countEl = document.getElementById('reqpick-count');
+  if (!listEl) return;
+  listEl.innerHTML = '<div style="font-size:12px;color:var(--muted)">読み込み中…</div>';
+  let rows = [];
+  try {
+    rows = await sbGet('student_interviews',
+      'req_to_fit=not.is.null&select=student_id,interview_date,req_to_fit,interviewer&order=interview_date.desc&limit=50') || [];
+  } catch (e) {
+    listEl.innerHTML = '<div style="font-size:12px;color:#B23B2E">読み込みに失敗しました（add_interview_detail_columns.sql 未実行の可能性）</div>';
+    return;
+  }
+  // 空文字は除外（not.is.null だけでは空文字が残る場合がある）
+  rows = rows.filter(r => r.req_to_fit && String(r.req_to_fit).trim());
+  _reqPickLoaded = true;
+  if (countEl) countEl.textContent = '（' + rows.length + '件）';
+
+  if (!rows.length) {
+    listEl.innerHTML = '<div style="font-size:12px;color:var(--muted)">まだ「fitへの要望」の記録はありません。</div>';
+    return;
+  }
+
+  // 生徒名マップ（ivStudents 優先、無ければ students を取得）
+  let stuById = {};
+  (ivStudents || []).forEach(s => { stuById[s.id] = s; });
+  const missing = [...new Set(rows.map(r => r.student_id).filter(id => id && !stuById[id]))];
+  if (missing.length) {
+    try {
+      const got = await sbGet('students', 'id=in.(' + missing.join(',') + ')&select=id,name,school,grade') || [];
+      got.forEach(s => { stuById[s.id] = s; });
+    } catch (e) {}
+  }
+
+  listEl.innerHTML = rows.map(r => {
+    const s = stuById[r.student_id] || {};
+    const nm = s.name || '（不明な生徒）';
+    const meta = [s.school, s.grade].filter(Boolean).join(' ');
+    const who = (r.interviewer && ivStaffMap[r.interviewer]) ? ivStaffMap[r.interviewer] : (r.interviewer || '');
+    return '<div onclick="openInterviewKarte(\'' + escapeAttr(r.student_id) + '\',\'interview\')" style="padding:9px 2px;border-bottom:1px solid var(--border);cursor:pointer">' +
+      '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">' +
+        '<div style="font-size:12px;font-weight:800;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(nm) + (meta ? ' <span style="font-size:10px;font-weight:600;color:var(--muted)">' + escapeHtml(meta) + '</span>' : '') + '</div>' +
+        '<div style="flex:0 0 auto;font-size:10px;color:var(--muted)">' + escapeHtml(ivFmtDate(r.interview_date)) + (who ? ' / ' + escapeHtml(who) : '') + '</div>' +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5;margin-top:2px">' + escapeHtml(String(r.req_to_fit)) + '</div>' +
+    '</div>';
+  }).join('');
+}
+
 // 生徒一覧（面談チェック）を描画
 function renderInterviewList() {
   const area = document.getElementById('interview-list-area');
@@ -44355,6 +44432,7 @@ async function saveInterview() {
   showLoading('記録中...');
   try {
     await sbPost('student_interviews', body);
+    if (typeof _reqPickLoaded !== 'undefined') _reqPickLoaded = false; // 要望ピックアップを次回再取得
     // 目標を登録（interview_id は情報用リンクのため null。生徒画面は student_id で参照）
     let goalErr = false;
     for (const g of goalRows) {
