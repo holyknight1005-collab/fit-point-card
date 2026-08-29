@@ -5218,7 +5218,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <!-- セクション4: みんなのシフト・確定監督（全員閲覧可）dlm89 -->
       <div style="background:linear-gradient(135deg,#F3F6FA,#FFFFFF);border:1.5px solid #C7D3E0;border-radius:var(--radius);padding:14px 16px;margin-top:16px">
         <div style="font-size:14px;font-weight:700;color:#41618C;margin-bottom:8px">👀 みんなのシフト・確定監督</div>
-        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">確定した監督と、各スタッフのシフト状況を確認できます（全員が見られます）。</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">確定した監督・みんなの希望（○△）・各スタッフのシフト状況を確認できます（全員が見られます）。希望は確定前の段階です。</div>
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
           <button onclick="svViewWeekShift(-1)" style="font-size:12px;font-weight:700;border:1px solid var(--line);border-radius:8px;background:#fff;padding:6px 12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">‹ 前の週</button>
           <span id="sv-view-week-label" style="flex:1;text-align:center;font-size:13px;font-weight:700;color:var(--fg);min-width:120px">—</span>
@@ -35575,7 +35575,60 @@ async function svRenderView() {
   }
   h += '</table></div>';
 
-  // ---- 下段：みんなのシフト状況（社会人=定型勤務 / 大学生=○希望数） ----
+  // ---- 中段：みんなの希望マトリクス（この週。○=入れる / △=できたら避けたい）----
+  // dlm101: 誰がどのコマに希望を出しているかを全員が見えるようにする。
+  // ×とその理由は載せない（気まずさ・プライバシー配慮）。確定前の希望段階であることを明記。
+  {
+    const wishBySlot = {}; // 'date|period' -> { circle:[name], triangle:[name] }
+    wishes.forEach(w => {
+      const wt = w.wish_type || 'circle';
+      if (wt !== 'circle' && wt !== 'triangle') return; // ×(cross)は表示しない
+      const k = w.sv_date + '|' + w.period;
+      const slot = wishBySlot[k] || (wishBySlot[k] = { circle: [], triangle: [] });
+      const nm = w.staff_name || resolveStaffName(w.staff_id) || w.staff_id;
+      (wt === 'circle' ? slot.circle : slot.triangle).push(nm);
+    });
+    h += '<div style="font-size:13px;font-weight:800;color:#1A7340;margin:16px 0 4px">🙋 みんなの希望（この週）</div>';
+    h += '<div style="font-size:11px;color:var(--muted);margin-bottom:6px;line-height:1.6"><b style="color:#1A7340">○</b> 入れる ／ <b style="color:#9A7A15">△</b> できたら避けたい を出している人の一覧です。これは<b>希望段階</b>で、確定は別に通知されます。（×希望・その理由はここには表示していません）</div>';
+    h += '<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:560px;table-layout:fixed">';
+    h += '<tr><th style="border:1px solid var(--line);background:#f7f7f7;padding:5px 3px;font-size:10px;width:52px">限＼日</th>';
+    dates.forEach((d, i) => {
+      const iso = svIsoFromDate(d);
+      const isToday = iso === todayIso;
+      h += '<th style="border:1px solid var(--line);background:' + (isToday ? '#FFF6E6' : '#f7f7f7') + ';padding:5px 3px;font-size:10px">' + wlabels[i] + '<br>' + (d.getMonth()+1) + '/' + d.getDate() + '</th>';
+    });
+    h += '</tr>';
+    for (let p = 1; p <= 6; p++) {
+      const t = (typeof PERIODS !== 'undefined' && PERIODS[p]) ? PERIODS[p] : null;
+      h += '<tr><td style="border:1px solid var(--line);background:#faf8f4;padding:4px 3px;font-size:10px;text-align:center;font-weight:700">' +
+        (SV_PERIOD_LABEL[p] || (p+'限')) + (t ? '<br><span style="font-weight:400;color:var(--muted);font-size:8.5px">' + t[0] + '</span>' : '') + '</td>';
+      dates.forEach(d => {
+        const iso = svIsoFromDate(d);
+        const slot = wishBySlot[iso + '|' + p];
+        let cell;
+        if (slot && (slot.circle.length || slot.triangle.length)) {
+          let inner = '';
+          if (slot.circle.length) {
+            inner += '<div style="font-size:9.5px;color:#1A7340;font-weight:700;line-height:1.3">' +
+              slot.circle.map(n => '○' + escapeHtml(n)).join('<br>') + '</div>';
+          }
+          if (slot.triangle.length) {
+            inner += '<div style="font-size:9px;color:#9A7A15;font-weight:600;line-height:1.3;' + (slot.circle.length ? 'margin-top:2px;' : '') + '">' +
+              slot.triangle.map(n => '△' + escapeHtml(n)).join('<br>') + '</div>';
+          }
+          const bg = slot.circle.length ? '#EAF7EE' : '#FCF7E6';
+          const bd = slot.circle.length ? '#A6D5B5' : '#E6D28A';
+          cell = '<div style="min-height:30px;background:' + bg + ';border:1px solid ' + bd + ';border-radius:5px;padding:3px 2px">' + inner + '</div>';
+        } else {
+          cell = '<div style="min-height:30px;background:#fff;border-radius:5px" title="希望なし"></div>';
+        }
+        h += '<td style="border:1px solid var(--line);padding:2px;vertical-align:top">' + cell + '</td>';
+      });
+      h += '</tr>';
+    }
+    h += '</table></div>';
+  }
+
   const empMap = {}; perms.forEach(pp => { empMap[pp.staff_id] = pp.employment_type || ''; });
   // 定型シフトを staff_id×dow でまとめる
   const tmplByStaff = {};
