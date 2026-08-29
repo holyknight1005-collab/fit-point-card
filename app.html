@@ -336,6 +336,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 .school-menu-title{font-size:15px;font-weight:700}
 .school-menu-sub{font-size:11px;opacity:0.8;line-height:1.5}
 .school-badge-inline{background:rgba(255,255,255,0.2);font-size:10px;padding:2px 8px;border-radius:20px;font-weight:700;margin-left:8px}
+.sv-emp-btn{font-size:11px;font-weight:700;border:1px solid var(--line);border-radius:8px;padding:4px 10px;cursor:pointer;white-space:nowrap}
 </style>
 <style>
 #screen-review > div:first-of-type,
@@ -5131,10 +5132,14 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div id="smcontent-supervision" style="display:none">
       <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">自習室の監督シフトを管理します。<b>希望</b>を出す→<b>管理者が担当を決定</b>→担当者が<b>監督報告</b>を作成、の流れです。1コマ90分・時間割の限に準拠します。</div>
 
-      <!-- セクション1: 希望を出す（週カレンダー dlm31） -->
+      <!-- セクション1: 希望を出す（週カレンダー dlm31 / dlm88三値化） -->
       <div style="background:linear-gradient(135deg,#EAF7EE,#FFFFFF);border:1.5px solid #A6D5B5;border-radius:var(--radius);padding:14px 16px;margin-bottom:16px">
         <div style="font-size:14px;font-weight:700;color:#1A7340;margin-bottom:8px">🙋 監督できるコマを希望する</div>
-        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">空きコマをタップすると希望を登録できます。<b style="color:#1A7340">緑</b>＝希望中（タップで取り下げ）。<b style="color:#B87A2D">授業</b>＝自分の授業がある時間で、監督希望は出せません。メモを付けたい場合は下の欄に入力してからコマをタップしてください。</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">コマをタップして希望を切り替えます：<b style="color:#1A7340">○入れる</b>→<b style="color:#9A7A15">△できたら避けたい</b>→<b style="color:#C0392B">×入れない</b>→未設定。<b style="color:#B87A2D">授業</b>のある時間は自動で監督不可です。メモを付けたい場合は下の欄に入力してからコマをタップしてください。</div>
+        <!-- dlm88: 区分振り分け（管理者のみ） -->
+        <div id="sv-emp-admin" style="display:none;background:#F7F3FC;border:1px solid #D8C7EE;border-radius:10px;padding:12px;margin-bottom:12px"></div>
+        <!-- dlm88: 社会人の定型出勤シフト（社会人のみ） -->
+        <div id="sv-shift-template" style="display:none;background:#FDF6EC;border:1px solid #EAD3B0;border-radius:10px;padding:12px;margin-bottom:12px"></div>
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
           <button onclick="svWeekShift(-1)" style="font-size:12px;font-weight:700;border:1px solid var(--line);border-radius:8px;background:#fff;padding:6px 12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">‹ 前の週</button>
           <span id="sv-week-label" style="flex:1;text-align:center;font-size:13px;font-weight:700;color:var(--fg);min-width:120px">—</span>
@@ -6276,7 +6281,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm86';
+const APP_VERSION = '20260702dlm88';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -34032,8 +34037,8 @@ function initKomaCount() {
   }
   const mi = document.getElementById('kc-month');
   if (mi && !mi.value) {
-    const t = getTodayJST(); // 'YYYYMMDD'
-    mi.value = t.slice(0, 4) + '-' + t.slice(4, 6);
+    const t = getTodayJST(); // 'YYYY-MM-DD'
+    mi.value = t.slice(0, 7); // 'YYYY-MM'
   }
   const body = document.getElementById('kc-body');
   if (body) body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">対象月を選んで「集計」を押してください。</div>';
@@ -34494,17 +34499,200 @@ function svMondayOf(d) {
   return x;
 }
 
-function initSupervision() {
+// ============================================================
+// dlm88: 自習監督シフト刷新（区分・定型シフト・三値希望）
+// ============================================================
+// 雇用区分・定型シフトのキャッシュ（この画面表示中のみ保持）
+var _svEmploymentType = null;      // 'shakaijin' | 'daigakusei' | null(未設定)
+
+// upsert ヘルパー（on_conflict + merge-duplicates）。既存パターンに合わせ生fetchで実装。
+async function svUpsert(table, onConflict, body) {
+  const res = await fetch(SB_URL + '/rest/v1/' + table + '?on_conflict=' + onConflict, {
+    method: 'POST',
+    headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+var _svMyShiftTemplate = {};       // { dow(0-6): {from, to} }  勤務区間。無い曜日=休み
+var _svAllStaffCache = null;       // [{staff_id, name}]（区分振り分けUI用）
+var _svPermCache = null;           // { staff_id: employment_type }
+
+// 三値の見た目定義。circle=○入れる / triangle=△できたら避けたい / cross=×入れない
+var SV_WISH_STYLE = {
+  circle:   { mark: '○', bg: '#DBF0E2', border: '#1A7340', color: '#1A7340', label: '入れる' },
+  triangle: { mark: '△', bg: '#FBF3D9', border: '#C79A1E', color: '#9A7A15', label: '避けたい' },
+  cross:    { mark: '×', bg: '#F6E2E2', border: '#C0392B', color: '#C0392B', label: '入れない' }
+};
+// タップでの循環順（大学生・社会人の勤務内コマ共通）。未設定→○→△→×→未設定
+var SV_WISH_CYCLE = [null, 'circle', 'triangle', 'cross'];
+function svNextWish(cur) {
+  const i = SV_WISH_CYCLE.indexOf(cur == null ? null : cur);
+  return SV_WISH_CYCLE[(i + 1) % SV_WISH_CYCLE.length];
+}
+
+// 自分の雇用区分を取得（staff_permissions.employment_type）
+async function svLoadMyEmployment() {
+  _svEmploymentType = null;
+  const sid = svMyStaffId();
+  if (!sid) return;
+  try {
+    const rows = await sbGet('staff_permissions',
+      'staff_id=eq.' + encodeURIComponent(sid) + '&select=employment_type') || [];
+    _svEmploymentType = (rows[0] && rows[0].employment_type) ? rows[0].employment_type : null;
+  } catch (e) { _svEmploymentType = null; }
+}
+
+// 自分の定型シフトを取得（社会人のみ使用）。{dow:{from,to}}
+async function svLoadMyShiftTemplate() {
+  _svMyShiftTemplate = {};
+  const sid = svMyStaffId();
+  if (!sid) return;
+  try {
+    const rows = await sbGet('staff_shift_template',
+      'staff_id=eq.' + encodeURIComponent(sid) + '&select=dow,work_from_period,work_to_period') || [];
+    rows.forEach(r => {
+      const from = (r.work_from_period == null) ? 0 : Number(r.work_from_period);
+      if (!from) return; // 0/NULL=休み
+      _svMyShiftTemplate[Number(r.dow)] = { from: from, to: (r.work_to_period == null ? 6 : Number(r.work_to_period)) };
+    });
+  } catch (e) { _svMyShiftTemplate = {}; }
+}
+
+// 定型シフト上、その曜日×限が「勤務内」か。社会人以外は常に true（勤務概念なし）。
+function svIsWorkingCell(dow, period) {
+  if (_svEmploymentType !== 'shakaijin') return true;
+  const t = _svMyShiftTemplate[dow];
+  if (!t) return false; // 休み
+  return period >= t.from && period <= t.to;
+}
+
+// ---- 定型シフト登録UI（社会人） ----
+function svRenderShiftTemplateUI() {
+  const box = document.getElementById('sv-shift-template');
+  if (!box) return;
+  if (_svEmploymentType !== 'shakaijin') { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  const wl = ['日','月','火','水','木','金','土'];
+  // 曜日は月〜日の順で並べる（dow: 1..6,0）
+  const order = [1,2,3,4,5,6,0];
+  const perOpts = (sel, includeZero) => {
+    let o = includeZero ? '<option value="0"' + (sel === 0 ? ' selected' : '') + '>休み</option>' : '';
+    for (let p = 1; p <= 6; p++) o += '<option value="' + p + '"' + (sel === p ? ' selected' : '') + '>' + p + '限</option>';
+    return o;
+  };
+  let h = '<div style="font-size:13px;font-weight:700;color:#B87A2D;margin-bottom:6px">🕒 定型出勤シフト（毎週）</div>' +
+    '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">曜日ごとに勤務する限の範囲を登録します。勤務外の限は編みかけで表示され、監督には入れません。休みの曜日は「休み」を選んでください。</div>';
+  h += '<table style="border-collapse:collapse;font-size:12px"><tr><th style="padding:3px 8px;text-align:left">曜日</th><th style="padding:3px 8px">出勤（開始）</th><th style="padding:3px 8px">終了</th></tr>';
+  order.forEach(dow => {
+    const t = _svMyShiftTemplate[dow];
+    const from = t ? t.from : 0;
+    const to = t ? t.to : 6;
+    h += '<tr>' +
+      '<td style="padding:3px 8px;font-weight:700">' + wl[dow] + '</td>' +
+      '<td style="padding:3px 8px"><select id="svst-from-' + dow + '" style="font-size:12px;padding:3px 6px">' + perOpts(from, true) + '</select></td>' +
+      '<td style="padding:3px 8px"><select id="svst-to-' + dow + '" style="font-size:12px;padding:3px 6px">' + perOpts(to, false) + '</select></td>' +
+      '</tr>';
+  });
+  h += '</table>';
+  h += '<button onclick="svSaveShiftTemplate()" style="margin-top:8px;font-size:12px;font-weight:700;background:var(--orange);color:#fff;border:1px solid var(--orange);border-radius:8px;padding:6px 14px;cursor:pointer">定型シフトを保存</button>';
+  box.innerHTML = h;
+}
+
+async function svSaveShiftTemplate() {
+  const sid = svMyStaffId();
+  if (!sid) { showToast('スタッフ情報が取得できません', 'error'); return; }
+  const order = [1,2,3,4,5,6,0];
+  try {
+    for (const dow of order) {
+      const fromEl = document.getElementById('svst-from-' + dow);
+      const toEl = document.getElementById('svst-to-' + dow);
+      if (!fromEl) continue;
+      let from = parseInt(fromEl.value, 10) || 0;
+      let to = parseInt(toEl.value, 10) || 6;
+      if (from && to < from) to = from; // 終了が開始より前なら補正
+      // upsert（staff_id,dow で一意）
+      await svUpsert('staff_shift_template', 'staff_id,dow',
+        { staff_id: sid, dow: dow, work_from_period: from || null, work_to_period: to, updated_at: new Date().toISOString() });
+    }
+    showToast('定型シフトを保存しました', 'success');
+    await svLoadMyShiftTemplate();
+    svRenderShiftTemplateUI();
+    await svRenderWeek();
+  } catch (e) {
+    console.warn('svSaveShiftTemplate失敗', e);
+    showToast('保存に失敗しました（SQL未適用の可能性）', 'error');
+  }
+}
+
+// ---- 区分振り分けUI（管理者） ----
+async function svRenderEmploymentAdmin() {
+  const box = document.getElementById('sv-emp-admin');
+  if (!box) return;
+  if (!canDecideSupervision()) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  box.innerHTML = '<div style="font-size:12px;color:var(--muted)">読み込み中…</div>';
+  try {
+    // fit001(代表)を除く在籍スタッフ
+    const staff = await sbGet('staff', 'is_active=eq.true&select=staff_id,name&order=staff_id') || [];
+    const perms = await sbGet('staff_permissions', 'select=staff_id,employment_type') || [];
+    const permMap = {}; perms.forEach(p => { permMap[p.staff_id] = p.employment_type || ''; });
+    const list = staff.filter(s => String(s.staff_id).toLowerCase() !== 'fit001');
+    let h = '<div style="font-size:13px;font-weight:700;color:#7A5CB0;margin-bottom:6px">👥 スタッフの区分設定（管理者）</div>' +
+      '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">各スタッフを「社会人（定型出勤シフト）」か「大学生（週ごとの希望）」に設定します。未設定のスタッフは希望入力に進めません。</div>';
+    h += '<div style="display:flex;flex-direction:column;gap:5px">';
+    list.forEach(s => {
+      const cur = permMap[s.staff_id] || '';
+      const sel = (v) => cur === v ? ' style="background:var(--orange);color:#fff;border-color:var(--orange)"' : ' style="background:#fff"';
+      h += '<div style="display:flex;align-items:center;gap:8px">' +
+        '<span style="flex:1;font-size:12px;font-weight:700">' + escapeHtml(s.name || s.staff_id) + '<span style="font-weight:400;color:var(--muted);font-size:10px"> ' + s.staff_id + '</span>' + (cur ? '' : ' <span style="color:#C0392B;font-size:10px">未設定</span>') + '</span>' +
+        '<button onclick="svSetEmployment(\'' + s.staff_id + '\',\'shakaijin\')"' + sel('shakaijin') + ' class="sv-emp-btn">社会人</button>' +
+        '<button onclick="svSetEmployment(\'' + s.staff_id + '\',\'daigakusei\')"' + sel('daigakusei') + ' class="sv-emp-btn">大学生</button>' +
+        '</div>';
+    });
+    h += '</div>';
+    box.innerHTML = h;
+  } catch (e) {
+    box.innerHTML = '<div style="font-size:12px;color:#C0392B">読み込みに失敗しました（SQL未適用の可能性）。</div>';
+  }
+}
+
+async function svSetEmployment(staffId, type) {
+  try {
+    await svUpsert('staff_permissions', 'staff_id',
+      { staff_id: staffId, employment_type: type, updated_at: new Date().toISOString() });
+    showToast('区分を設定しました', 'success');
+    await svRenderEmploymentAdmin();
+    // 自分自身の区分を変えた場合は希望画面も更新
+    if (String(staffId) === String(svMyStaffId())) {
+      await svLoadMyEmployment();
+      svRenderShiftTemplateUI();
+      await svRenderWeek();
+    }
+  } catch (e) {
+    console.warn('svSetEmployment失敗', e);
+    showToast('設定に失敗しました（SQL未適用の可能性）', 'error');
+  }
+}
+
+async function initSupervision() {
   // 今日を含む週の月曜を初期表示に
-  const today = getTodayJST(); // 'YYYYMMDD'
-  const ty = parseInt(today.slice(0,4),10), tm = parseInt(today.slice(4,6),10), td = parseInt(today.slice(6,8),10);
+  // getTodayJST() は 'YYYY-MM-DD'（ハイフン区切り）。slice(4,6) 等は誤り→split で分解する。
+  const today = getTodayJST(); // 'YYYY-MM-DD'
+  const [ty, tm, td] = today.split('-').map(Number);
   const thisMon = svMondayOf(new Date(ty, tm-1, td));
-  // 初期表示は「翻週の月曜」（来週分のシフトを最初に見せる）
+  // 初期表示は「翌週の月曜」（来週分のシフトを最初に見せる）
   _svWeekMonday = new Date(thisMon.getFullYear(), thisMon.getMonth(), thisMon.getDate() + 7);
 
   // 決定セクションは管理者のみ
   const decSec = document.getElementById('sv-decide-section');
   if (decSec) decSec.style.display = canDecideSupervision() ? 'block' : 'none';
+
+  // dlm88: 自分の区分・定型シフトを読み込み、区分UI/シフトUIを準備
+  await svLoadMyEmployment();
+  await svLoadMyShiftTemplate();
+  svRenderShiftTemplateUI();          // 社会人のみ表示
+  if (canDecideSupervision()) svRenderEmploymentAdmin(); // 管理者のみ表示
 
   // 希望カレンダー
   if (!canWishSupervision()) {
@@ -34544,6 +34732,13 @@ async function svRenderWeek() {
   if (label) label.textContent = svFmtDate(fromIso) + ' 〜 ' + svFmtDate(toIso);
   const jumpEl = document.getElementById('sv-week-jump');
   if (jumpEl) jumpEl.value = fromIso.slice(0, 7);
+
+  // 区分未設定なら希望入力に進めない旨を表示（管理者に設定依頼）
+  if (_svEmploymentType !== 'shakaijin' && _svEmploymentType !== 'daigakusei') {
+    grid.innerHTML = '<div style="font-size:12px;color:#C0392B;line-height:1.7;padding:10px;background:#FCEDED;border-radius:8px">あなたの区分（社会人／大学生）が未設定です。管理者に区分の設定を依頼してください。設定後、この画面で希望を入力できます。</div>';
+    return;
+  }
+
   grid.innerHTML = '<div style="font-size:12px;color:var(--muted)">読み込み中...</div>';
 
   const sid = svMyStaffId();
@@ -34553,7 +34748,6 @@ async function svRenderWeek() {
   try {
     // 自分の担当授業（主担当∪追加担当）
     const tmap = await loadTeacherClassMap();
-    // staff.id（UUID）を解決：staff_idコードから
     let myUuid = null;
     const sById = (tmap && tmap.staffById) || {};
     Object.keys(sById).forEach(uuid => { if (String(sById[uuid].staff_id) === String(sid)) myUuid = uuid; });
@@ -34574,11 +34768,13 @@ async function svRenderWeek() {
       });
     }
 
-    // その週の自分の希望（未取下げ）
+    // その週の自分の希望（三値）。未取下げのみ。wish_type が無い旧行は circle 扱い。
     const wishes = await sbGet('supervision_wishes',
       'staff_id=eq.' + encodeURIComponent(sid) + '&withdrawn=eq.false&sv_date=gte.' + fromIso + '&sv_date=lte.' + toIso +
-      '&select=id,sv_date,period,note') || [];
-    wishes.forEach(w => { _svMyWishCells[w.sv_date + '|' + w.period] = { id: w.id, note: w.note || '' }; });
+      '&select=id,sv_date,period,note,wish_type') || [];
+    wishes.forEach(w => {
+      _svMyWishCells[w.sv_date + '|' + w.period] = { id: w.id, note: w.note || '', type: w.wish_type || 'circle' };
+    });
   } catch (e) {
     grid.innerHTML = '<div style="font-size:12px;color:#C0392B">読み込みに失敗しました（SQL未適用の可能性）。</div>';
     return;
@@ -34588,10 +34784,9 @@ async function svRenderWeek() {
   const wlabels = ['月','火','水','木','金','土','日'];
   const dates = [];
   for (let i = 0; i < 7; i++) dates.push(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i));
-  const todayIso = (function(){ const t=getTodayJST(); return t.slice(0,4)+'-'+t.slice(4,6)+'-'+t.slice(6,8); })();
+  const todayIso = getTodayJST();
 
   let h = '<table style="border-collapse:collapse;width:100%;min-width:560px;table-layout:fixed">';
-  // ヘッダー
   h += '<tr><th style="border:1px solid var(--line);background:#f7f7f7;padding:5px 3px;font-size:10px;width:52px">限＼日</th>';
   dates.forEach((d, i) => {
     const iso = svIsoFromDate(d);
@@ -34600,62 +34795,93 @@ async function svRenderWeek() {
       wlabels[i] + '<br>' + (d.getMonth()+1) + '/' + d.getDate() + '</th>';
   });
   h += '</tr>';
-  // 各限
+
   for (let p = 1; p <= 6; p++) {
     const t = (typeof PERIODS !== 'undefined' && PERIODS[p]) ? PERIODS[p] : null;
     h += '<tr><td style="border:1px solid var(--line);background:#faf8f4;padding:4px 3px;font-size:10px;text-align:center;font-weight:700">' +
       (SV_PERIOD_LABEL[p] || (p+'限')) + (t ? '<br><span style="font-weight:400;color:var(--muted);font-size:8.5px">' + t[0] + '</span>' : '') + '</td>';
     dates.forEach(d => {
       const iso = svIsoFromDate(d);
+      const dow = d.getDay();
       const key = iso + '|' + p;
       const past = iso < todayIso;
       const cls = _svMyClassCells[key];
       const wish = _svMyWishCells[key];
+      const working = svIsWorkingCell(dow, p); // 社会人:勤務内か / 他:常にtrue
       let cell;
       if (cls) {
-        // 授業あり＝ロック
-        cell = '<div style="min-height:34px;background:#FDF4EA;border-radius:5px;padding:3px 2px;font-size:9px;color:#B87A2D;font-weight:700;line-height:1.2;overflow:hidden;text-overflow:ellipsis">授業<br><span style="font-weight:400;font-size:8px">' + escapeHtml(cls) + '</span></div>';
-      } else if (wish) {
-        cell = '<div onclick="svToggleWish(\'' + iso + '\',' + p + ')" style="min-height:34px;background:#DBF0E2;border:1px solid #1A7340;border-radius:5px;padding:3px 2px;font-size:9px;color:#1A7340;font-weight:700;cursor:pointer;line-height:1.2">希望中' + (wish.note ? '<br><span style="font-weight:400;font-size:8px">' + escapeHtml(wish.note) + '</span>' : '') + '</div>';
+        // 授業あり＝全員×ロック（授業ラベル）
+        cell = '<div style="min-height:34px;background:#FDF4EA;border-radius:5px;padding:3px 2px;font-size:9px;color:#B87A2D;font-weight:700;line-height:1.2;overflow:hidden;text-overflow:ellipsis" title="授業のため監督不可">授業<br><span style="font-weight:400;font-size:8px">' + escapeHtml(cls) + '</span></div>';
+      } else if (!working) {
+        // 社会人の勤務外・休み＝編みかけ（監督不可）。タップ不可。
+        const hatch = 'repeating-linear-gradient(45deg,#eee,#eee 4px,#f7f7f7 4px,#f7f7f7 8px)';
+        cell = '<div style="min-height:34px;background:' + hatch + ';border-radius:5px" title="勤務時間外（監督対象外）"></div>';
       } else if (past) {
-        cell = '<div style="min-height:34px;background:#f2f2f2;border-radius:5px"></div>';
+        // 過去コマ：希望があれば表示のみ、無ければ空
+        if (wish) {
+          const st = SV_WISH_STYLE[wish.type] || SV_WISH_STYLE.circle;
+          cell = '<div style="min-height:34px;background:' + st.bg + ';border:1px solid ' + st.border + ';border-radius:5px;padding:3px 2px;font-size:11px;color:' + st.color + ';font-weight:700;text-align:center;opacity:.6">' + st.mark + '</div>';
+        } else {
+          cell = '<div style="min-height:34px;background:#f2f2f2;border-radius:5px"></div>';
+        }
       } else {
-        cell = '<div onclick="svToggleWish(\'' + iso + '\',' + p + ')" style="min-height:34px;background:#fff;border:1px dashed #cbd5c9;border-radius:5px;cursor:pointer" title="タップで希望"></div>';
+        // 入力可能コマ：三値。タップで循環。
+        if (wish) {
+          const st = SV_WISH_STYLE[wish.type] || SV_WISH_STYLE.circle;
+          cell = '<div onclick="svToggleWish(\'' + iso + '\',' + p + ')" style="min-height:34px;background:' + st.bg + ';border:1px solid ' + st.border + ';border-radius:5px;padding:3px 2px;font-size:12px;color:' + st.color + ';font-weight:700;cursor:pointer;text-align:center;line-height:1.15">' + st.mark + (wish.note ? '<br><span style="font-weight:400;font-size:8px">' + escapeHtml(wish.note) + '</span>' : '') + '</div>';
+        } else {
+          cell = '<div onclick="svToggleWish(\'' + iso + '\',' + p + ')" style="min-height:34px;background:#fff;border:1px dashed #cbd5c9;border-radius:5px;cursor:pointer" title="タップで ○→△→× を切替"></div>';
+        }
       }
       h += '<td style="border:1px solid var(--line);padding:2px;vertical-align:top">' + cell + '</td>';
     });
     h += '</tr>';
   }
   h += '</table>';
+  h += '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">タップで <b style="color:#1A7340">○入れる</b> → <b style="color:#9A7A15">△できたら避けたい</b> → <b style="color:#C0392B">×入れない</b> → 未設定 を切替。' + (_svEmploymentType === 'shakaijin' ? '編みかけ＝勤務時間外（監督対象外）。' : '') + '授業のある時間は自動で監督不可です。</div>';
   grid.innerHTML = h;
 }
 
-// コマをタップ：希望が無ければ登録、あれば取り下げ
+// コマをタップ：三値を循環（未設定→○→△→×→未設定）
 async function svToggleWish(iso, period) {
   if (!canWishSupervision()) { showToast('希望を出せる権限がありません', 'error'); return; }
   const key = iso + '|' + period;
   if (_svMyClassCells[key]) { showToast('この時間は授業があるため希望できません', 'info'); return; }
+  // 社会人の勤務外はそもそも操作不可
+  const [yy, mm, dd] = iso.split('-').map(Number);
+  const dow = new Date(yy, mm-1, dd).getDay();
+  if (!svIsWorkingCell(dow, period)) { showToast('勤務時間外のため監督対象外です', 'info'); return; }
   const sid = svMyStaffId();
   if (!sid) { showToast('スタッフ情報が取得できません', 'error'); return; }
+
   const existing = _svMyWishCells[key];
+  const curType = existing ? existing.type : null;
+  const nextType = svNextWish(curType); // null | circle | triangle | cross
+  const noteEl = document.getElementById('sv-wish-note');
+  const note = (noteEl && noteEl.value) ? noteEl.value : (existing ? existing.note : '');
+
   try {
-    if (existing) {
-      // 取り下げ
-      await sbPatch('supervision_wishes', 'id=eq.' + existing.id, { withdrawn: true, updated_at: new Date().toISOString() });
-      showToast('希望を取り下げました', 'success');
+    if (nextType === null) {
+      // 未設定に戻す＝取り下げ
+      if (existing) {
+        await sbPatch('supervision_wishes', 'id=eq.' + existing.id, { withdrawn: true, updated_at: new Date().toISOString() });
+        showToast('希望を取り消しました', 'success');
+      }
+    } else if (existing) {
+      // 既存行の wish_type を更新（取下げ復活も兼ねる）
+      await sbPatch('supervision_wishes', 'id=eq.' + existing.id,
+        { wish_type: nextType, withdrawn: false, note: note, updated_at: new Date().toISOString() });
     } else {
-      // 登録（取下げ済みが残っていれば復活）
-      const noteEl = document.getElementById('sv-wish-note');
-      const note = (noteEl && noteEl.value) ? noteEl.value : '';
+      // 取下げ済みが残っていれば復活、無ければ新規
       const prev = await sbGet('supervision_wishes',
         'sv_date=eq.' + iso + '&period=eq.' + period + '&staff_id=eq.' + encodeURIComponent(sid) + '&select=id') || [];
       if (prev.length) {
         await sbPatch('supervision_wishes', 'id=eq.' + prev[0].id,
-          { withdrawn: false, note: note, updated_at: new Date().toISOString() });
+          { wish_type: nextType, withdrawn: false, note: note, updated_at: new Date().toISOString() });
       } else {
-        await sbPost('supervision_wishes', { sv_date: iso, period: period, staff_id: sid, staff_name: svMyName(), note: note });
+        await sbPost('supervision_wishes',
+          { sv_date: iso, period: period, staff_id: sid, staff_name: svMyName(), note: note, wish_type: nextType });
       }
-      showToast('希望を登録しました', 'success');
     }
     await svRenderWeek();
     if (canDecideSupervision()) svLoadDecide();
@@ -34670,8 +34896,8 @@ let _svDecideMonday = null;   // 決定画面で表示中の週の月曜（Date�
 
 function svDecideWeekShift(delta) {
   if (!_svDecideMonday) {
-    const t = getTodayJST();
-    _svDecideMonday = svMondayOf(new Date(parseInt(t.slice(0,4),10), parseInt(t.slice(4,6),10)-1, parseInt(t.slice(6,8),10)));
+    const [y, m, d] = getTodayJST().split('-').map(Number);
+    _svDecideMonday = svMondayOf(new Date(y, m-1, d));
   }
   _svDecideMonday = new Date(_svDecideMonday.getFullYear(), _svDecideMonday.getMonth(), _svDecideMonday.getDate() + delta * 7);
   svLoadDecide();
@@ -34691,8 +34917,8 @@ async function svLoadDecide() {
   if (!box) return;
   // 週の初期化（未設定なら今日を含む週）
   if (!_svDecideMonday) {
-    const t = getTodayJST();
-    _svDecideMonday = svMondayOf(new Date(parseInt(t.slice(0,4),10), parseInt(t.slice(4,6),10)-1, parseInt(t.slice(6,8),10)));
+    const [y, m, d] = getTodayJST().split('-').map(Number);
+    _svDecideMonday = svMondayOf(new Date(y, m-1, d));
   }
   const monday = _svDecideMonday;
   const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
