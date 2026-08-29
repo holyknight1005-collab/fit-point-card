@@ -1187,6 +1187,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <select class="form-input-sm" id="interview-interviewer" style="width:100%;margin-bottom:8px"><option value="">未設定</option></select>
     <div style="font-size:11px;color:var(--muted);margin-bottom:3px">📝 スタッフメモ（内部用・生徒/保護者には出ません）</div>
     <textarea class="form-input-sm" id="interview-note" rows="3" placeholder="面談の内容・要望・所感など（内部記録）" style="margin-bottom:8px;resize:vertical"></textarea>
+    <div id="interview-detail-fields"></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:3px">💬 生徒に共有するメモ（生徒アプリ「面談で話したこと」に表示）</div>
     <textarea class="form-input-sm" id="interview-snote" rows="3" placeholder="生徒に向けて残す言葉・約束したことなど" style="margin-bottom:6px;resize:vertical"></textarea>
     <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text);margin-bottom:12px;cursor:pointer"><input type="checkbox" id="interview-parent" style="width:16px;height:16px;cursor:pointer"><span>👪 保護者向け印刷に載せる</span></label>
@@ -6253,7 +6254,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm79';
+const APP_VERSION = '20260702dlm80';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -26528,6 +26529,89 @@ function ivPeriodOptions() {
   for (let p = 0; p <= 7; p++) h += '<option value="' + p + '">' + p + '限</option>';
   return h;
 }
+
+// ===== 面談内容 6項目（構造化）dlm80 =====
+// prefix は 'karte-iv'（カルテ内フォーム）/ 'interview'（面談タブのモーダル）
+// hint = スタッフが面談時に意識してほしいこと（各項目の下に常時グレー表示）
+const IV_DETAIL_FIELDS = [
+  { key: 'req_to_fit',      col: 'req_to_fit',      label: '① fitへの要望',
+    hint: '聞き取りはするが「なんでも改善できる」とは言わない。ただし、そのうち1つでも改善できることを実施してみる。',
+    ph: '塾・授業・環境などへの要望' },
+  { key: 'current_worry',   col: 'current_worry',   label: '② 現在の悩み',
+    hint: '「特になし」で終わらせず、適度に情報を引き出す。',
+    ph: '勉強・生活・人間関係などの悩み' },
+  { key: 'career',          col: 'career',          label: '③ 進路',
+    hint: '適当なことは伝えない。不確かなことは持ち帰る。',
+    ph: '志望校・学部・将来の方向性など' },
+  { key: 'study_advice',    col: 'study_advice',    label: '④ 勉強のアドバイス',
+    hint: '具体的で実行できる内容を伝える。',
+    ph: '今回伝えた勉強法・進め方など' },
+  { key: 'small_goal',      col: 'small_goal',      label: '⑤ 小さい目標',
+    hint: '達成できる粒度で、次回まで続けられる目標を一緒に決める。',
+    ph: '次回までに取り組む小さな目標' },
+  { key: 'connected_staff', col: 'connected_staff', label: '⑥ スタッフと接続',
+    hint: '誰と繋いだかを記録（他スタッフへの引き継ぎ・共有）。',
+    ph: '繋いだスタッフ・共有した相手など' }
+];
+
+// 6項目フォームのHTMLを生成（prefix で id を出し分け）
+function ivDetailFieldsHtml(prefix) {
+  return '<div style="border-top:1px dashed var(--border);margin:10px 0 8px"></div>' +
+    '<div style="font-size:11px;font-weight:800;color:var(--orange-d);margin-bottom:6px">📝 面談内容（項目別）</div>' +
+    IV_DETAIL_FIELDS.map(f =>
+      '<div style="margin-bottom:8px">' +
+        '<div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:1px">' + f.label + '</div>' +
+        '<div style="font-size:9px;color:var(--muted);line-height:1.35;margin-bottom:3px">💡 ' + f.hint + '</div>' +
+        '<textarea class="form-input-sm" id="' + prefix + '-' + f.key + '" rows="2" placeholder="' + escapeAttr(f.ph) + '" style="width:100%;resize:vertical"></textarea>' +
+      '</div>'
+    ).join('') +
+    '<div style="border-top:1px dashed var(--border);margin:8px 0"></div>';
+}
+
+// 6項目の入力値を body オブジェクトに詰める（空は null）
+function ivReadDetailFields(prefix, body) {
+  IV_DETAIL_FIELDS.forEach(f => {
+    const el = document.getElementById(prefix + '-' + f.key);
+    body[f.col] = (el && (el.value || '').trim()) ? el.value.trim() : null;
+  });
+  return body;
+}
+
+// 履歴表示用：6項目のうち入力があるものだけを表示HTMLに
+function ivDetailFieldsView(r) {
+  const parts = IV_DETAIL_FIELDS
+    .filter(f => r[f.col] && String(r[f.col]).trim())
+    .map(f =>
+      '<div style="margin-top:5px">' +
+        '<div style="font-size:10px;font-weight:700;color:var(--orange-d)">' + f.label + '</div>' +
+        '<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">' + escapeHtml(String(r[f.col])) + '</div>' +
+      '</div>'
+    );
+  return parts.length ? '<div style="margin-top:6px;border-top:1px solid var(--border);padding-top:5px">' + parts.join('') + '</div>' : '';
+}
+
+// 編集フォーム用：6項目HTML（id に面談idを付与し、既存値をプリセット）
+function ivDetailFieldsEditHtml(id, r) {
+  return '<div style="border-top:1px dashed var(--border);margin:8px 0 6px"></div>' +
+    '<div style="font-size:11px;font-weight:800;color:var(--orange-d);margin-bottom:6px">📝 面談内容（項目別）</div>' +
+    IV_DETAIL_FIELDS.map(f =>
+      '<div style="margin-bottom:8px">' +
+        '<div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:1px">' + f.label + '</div>' +
+        '<div style="font-size:9px;color:var(--muted);line-height:1.35;margin-bottom:3px">💡 ' + f.hint + '</div>' +
+        '<textarea class="form-input-sm" id="karte-ive-' + f.key + '-' + id + '" rows="2" placeholder="' + escapeAttr(f.ph) + '" style="width:100%;resize:vertical">' + escapeHtml(r[f.col] || '') + '</textarea>' +
+      '</div>'
+    ).join('');
+}
+
+// 編集フォームの6項目値を body に詰める
+function ivReadDetailFieldsEdit(id, body) {
+  IV_DETAIL_FIELDS.forEach(f => {
+    const el = document.getElementById('karte-ive-' + f.key + '-' + id);
+    body[f.col] = (el && (el.value || '').trim()) ? el.value.trim() : null;
+  });
+  return body;
+}
+
 function ivReadPeriod(prefix) {
   const el = document.getElementById(prefix + '-period');
   if (!el) return null;
@@ -43221,7 +43305,7 @@ async function karteLoadInterviews(sid) {
     // 面談履歴
     let rows = [];
     try {
-      rows = await sbGet('student_interviews', 'student_id=eq.' + sid + '&select=id,interview_date,interviewer,note,student_note,share_to_parent,created_at&order=interview_date.desc') || [];
+      rows = await sbGet('student_interviews', 'student_id=eq.' + sid + '&select=id,interview_date,interviewer,note,student_note,share_to_parent,created_at,req_to_fit,current_worry,career,study_advice,small_goal,connected_staff&order=interview_date.desc') || [];
     } catch (e) {
       el.style.display = 'none'; el.innerHTML = ''; return;
     }
@@ -43260,6 +43344,7 @@ async function karteLoadInterviews(sid) {
         '</div>' +
         '<div style="font-size:10px;color:var(--muted);margin-bottom:2px">📝 スタッフメモ（内部用・生徒/保護者には出ません）</div>' +
         '<textarea class="form-input-sm" id="karte-iv-note" rows="3" placeholder="面談の内容・要望・所感など（内部記録）" style="width:100%;resize:vertical;margin-bottom:8px"></textarea>' +
+        ivDetailFieldsHtml('karte-iv') +
         '<div style="font-size:10px;color:var(--muted);margin-bottom:2px">💬 生徒に共有するメモ（生徒アプリ「面談で話したこと」に表示）</div>' +
         '<textarea class="form-input-sm" id="karte-iv-snote" rows="3" placeholder="生徒に向けて残す言葉・約束したことなど" style="width:100%;resize:vertical;margin-bottom:6px"></textarea>' +
         '<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text);margin-bottom:10px;cursor:pointer">' +
@@ -43318,7 +43403,7 @@ async function karteLoadInterviews(sid) {
                 '<button onclick="karteEditInterview(' + r.id + ')" style="background:none;border:none;color:var(--orange-d);font-size:11px;font-weight:700;cursor:pointer;padding:0 2px;white-space:nowrap">✏️ 編集</button>' +
               '</div>' +
             '</div>' +
-            '<div id="karte-iv-view-' + r.id + '" style="' + (openInit ? '' : 'display:none;') + 'padding-left:17px">' + staffMemo + studentMemo + '</div>' +
+            '<div id="karte-iv-view-' + r.id + '" style="' + (openInit ? '' : 'display:none;') + 'padding-left:17px">' + staffMemo + ivDetailFieldsView(r) + studentMemo + '</div>' +
             '<div id="karte-iv-edit-' + r.id + '" style="display:none"></div>' +
           '</div>';
         }).join('');
@@ -43522,6 +43607,7 @@ async function karteSaveInterview() {
     created_by: (typeof currentStaff !== 'undefined' && currentStaff) ? (currentStaff.staff_id || null) : null,
     updated_at: new Date().toISOString()
   };
+  ivReadDetailFields('karte-iv', body);
   // 目標収集
   const goalRows = Array.from(document.querySelectorAll('#karte-iv-goals > div')).map(row => {
     const title = (row.querySelector('.kiv-goal-title') ? row.querySelector('.kiv-goal-title').value : '').trim();
@@ -43609,6 +43695,7 @@ function karteEditInterview(id) {
       '<textarea class="form-input-sm" id="karte-ive-note-' + id + '" rows="4" style="width:100%;resize:vertical;margin-bottom:8px">' + escapeHtml(r.note || '') + '</textarea>' +
       '<div style="font-size:10px;color:var(--muted);margin-bottom:2px">💬 生徒に共有するメモ（生徒アプリ「面談で話したこと」に表示）</div>' +
       '<textarea class="form-input-sm" id="karte-ive-snote-' + id + '" rows="4" style="width:100%;resize:vertical;margin-bottom:8px">' + escapeHtml(r.student_note || '') + '</textarea>' +
+      ivDetailFieldsEditHtml(id, r) +
       '<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text);margin-bottom:10px;cursor:pointer">' +
         '<input type="checkbox" id="karte-ive-parent-' + id + '"' + (r.share_to_parent ? ' checked' : '') + ' style="width:16px;height:16px;cursor:pointer"><span>👪 保護者向け印刷に載せる</span></label>' +
       '<div style="display:flex;gap:8px">' +
@@ -43645,6 +43732,7 @@ async function karteSaveEditInterview(id) {
     share_to_parent: !!(parentEl && parentEl.checked),
     updated_at: new Date().toISOString()
   };
+  ivReadDetailFieldsEdit(id, body);
   showLoading('保存中...');
   try {
     await sbPatch('student_interviews', 'id=eq.' + id, body);
@@ -43976,7 +44064,9 @@ async function openInterviewModal(studentId) {
   const ivTimeEl = document.getElementById('interview-time');
   if (ivTimeEl) ivTimeEl.value = '';
   document.getElementById('interview-note').value = '';
-  // 担当セレクト
+  // 面談内容6項目（構造化）を差し込み＆リセット
+  const ivDetailBox = document.getElementById('interview-detail-fields');
+  if (ivDetailBox) ivDetailBox.innerHTML = ivDetailFieldsHtml('interview');
   const sel = document.getElementById('interview-interviewer');
   if (sel) {
     sel.innerHTML = '<option value="">未設定</option>' +
@@ -44096,6 +44186,7 @@ async function saveInterview() {
     created_by: currentStaff ? (currentStaff.staff_id || null) : null,
     updated_at: new Date().toISOString()
   };
+  ivReadDetailFields('interview', body);
   // 入力された目標を収集（内容が空の行はスキップ）
   const goalRows = Array.from(document.querySelectorAll('#interview-goal-inputs > div')).map(row => {
     const title = (row.querySelector('.iv-goal-title')?.value || '').trim();
