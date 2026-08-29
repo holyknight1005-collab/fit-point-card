@@ -6328,7 +6328,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm95';
+const APP_VERSION = '20260702dlm98';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6667,7 +6667,7 @@ document.addEventListener('visibilitychange', function() {
   }
 });
 
-function showScreen(id) { document.querySelectorAll('.screen').forEach(s => s.classList.remove('active')); document.getElementById(id).classList.add('active'); }
+function showScreen(id) { document.querySelectorAll('.screen').forEach(s => s.classList.remove('active')); document.getElementById(id).classList.add('active'); if (typeof karteOnScreenChange === 'function') { try { karteOnScreenChange(id); } catch(e){} } }
 function showToast(msg, type) { const t = document.getElementById('toast'); t.textContent = msg; t.className = 'toast show ' + (type || 'info'); setTimeout(() => t.classList.remove('show'), 2800); }
 function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 // 受講サイクルの表示ラベル。開始日(started_on)ではなく「◯月◯回目」で統一する。
@@ -35598,8 +35598,10 @@ async function svDecide(sv_date, period, staff_id, staff_name) {
   if (!canDecideSupervision()) { showToast('決定権限がありません', 'error'); return; }
   try {
     const exist = await sbGet('supervision_assignments',
-      'sv_date=eq.' + sv_date + '&period=eq.' + period + '&staff_id=eq.' + encodeURIComponent(staff_id) + '&select=id') || [];
+      'sv_date=eq.' + sv_date + '&period=eq.' + period + '&staff_id=eq.' + encodeURIComponent(staff_id) + '&select=id,cancelled') || [];
+    let isNewConfirm = true;  // dlm97: 新規確定 or 取消からの復活のときだけ本人へ通知（再確定の重複通知は避ける）
     if (exist.length) {
+      if (exist[0].cancelled === false) isNewConfirm = false;
       await sbPatch('supervision_assignments', 'id=eq.' + exist[0].id,
         { cancelled: false, decided_by: svMyStaffId(), decided_at: new Date().toISOString(), updated_at: new Date().toISOString() });
     } else {
@@ -35610,11 +35612,42 @@ async function svDecide(sv_date, period, staff_id, staff_name) {
       });
     }
     showToast('担当を決定しました', 'success');
+    // dlm97: 確定した本人の ToDo に「自習監督が決まりました」を通知
+    if (isNewConfirm) { svNotifyAssignee(staff_id, sv_date, period).catch(() => {}); }
     svLoadDecide();
   } catch (e) {
     console.warn('svDecide失敗', e);
     showToast('決定に失敗しました', 'error');
   }
+}
+
+// dlm97: 監督確定を当人の ToDo に通知。staff_id(コード)→UUID を解決して staff_todos に1件送る。
+async function svNotifyAssignee(staffCode, sv_date, period) {
+  try {
+    const staffRows = await sbGet('staff', 'is_active=eq.true&select=id,staff_id') || [];
+    const uuidByCode = {}; staffRows.forEach(s => { uuidByCode[s.staff_id] = s.id; });
+    const toId = uuidByCode[staffCode];
+    if (!toId) return;
+    // 日付表示（M/D(曜)）
+    let dateLabel = sv_date;
+    try {
+      const [yy, mm, dd] = sv_date.split('-').map(n => parseInt(n, 10));
+      const wd = ['日','月','火','水','木','金','土'][new Date(yy, mm - 1, dd).getDay()];
+      dateLabel = mm + '/' + dd + '(' + wd + ')';
+    } catch (e) {}
+    const title = '自習監督が決まりました（' + dateLabel + ' ' + period + '限）';
+    const detail = dateLabel + ' の ' + period + '限の自習監督に決定しました。当日夜、ホームの「今日の予定」から監督報告をお願いします。';
+    const fromId = (currentStaff && currentStaff.id) || svMyStaffId();
+    await sbPost('staff_todos', {
+      from_staff_id: fromId, to_staff_id: toId,
+      title: title, detail: detail, due_date: sv_date, link_target: 'supervision'
+    }).catch(async (err) => {
+      // link_target 未対応環境は最小構成で再送
+      if (/column|PGRST|400/i.test(String(err && err.message || err))) {
+        await sbPost('staff_todos', { from_staff_id: fromId, to_staff_id: toId, title: title, detail: detail, due_date: sv_date });
+      } else throw err;
+    });
+  } catch (e) { /* 通知失敗は確定自体を妨げない */ }
 }
 
 async function svCancelAssign(id) {
@@ -36643,6 +36676,16 @@ function renderAttendanceRoster() {
     const makeupTag = row.isMakeup ? '<span style="font-size:9px;background:#E8E2F5;color:#6B4FA0;padding:1px 6px;border-radius:10px;margin-left:4px">📺 補習承認</span>' : '';
     const provTag = attProvisional[s.id] ? '<span style="font-size:9px;background:#FFF3DF;color:#8F5F12;border:1px solid #E8C193;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="申込書が未提出です">⏳ 申込未提出</span>' : '';
     const lapTag = attLapDone[s.id] ? '<span style="font-size:9px;background:#EAF7EA;color:#3B6D11;border:1px solid #8CC98C;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="1周完了・2周目のため請求対象外です">🆓 2周目・無料</span>' : '';
+    // dlm96: 退塾申出中／退塾確定を講師に可視化（受講終了処理の気づき用）。effective_date があれば「MM/末」表示。
+    let withdrawTag = '';
+    if (s.withdraw_status === '申し出' || s.withdraw_status === '確定') {
+      const eff = s.withdraw_effective_date ? (parseInt(s.withdraw_effective_date.slice(5,7),10) + '月末で') : '';
+      if (s.withdraw_status === '確定') {
+        withdrawTag = '<span style="font-size:9px;background:#FDECEC;color:#C0392B;border:1px solid #E8A9A9;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="退塾が確定しています。受講終了処理をお願いします">🚪 ' + eff + '退塾確定</span>';
+      } else {
+        withdrawTag = '<span style="font-size:9px;background:#FFF6E0;color:#B8860B;border:1px solid #E8C57A;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="退塾の申し出があります。受講終了処理をお願いします">📝 ' + eff + '退塾申出中</span>';
+      }
+    }
     const sub = [s.school, fmtGrade(s.grade), inLabel].filter(Boolean).join(' ・ ');
     // アバター
     const avatar = s.photo_url
@@ -36664,7 +36707,7 @@ function renderAttendanceRoster() {
       '<div style="display:flex;align-items:center;gap:10px">' +
         avatar +
         '<div style="flex:1;min-width:0">' +
-          '<div style="font-size:14px;font-weight:500;color:var(--text)">' + (s.name||'(不明)') + ' ' + noteBadge + makeupTag + provTag + lapTag + '</div>' +
+          '<div style="font-size:14px;font-weight:500;color:var(--text)">' + (s.name||'(不明)') + ' ' + noteBadge + makeupTag + provTag + lapTag + withdrawTag + '</div>' +
           '<div style="font-size:11px;color:var(--muted)">' + sub + '</div>' +
         '</div>' +
         linyContactBtns(s, {small:true}) +
@@ -41803,6 +41846,61 @@ function ivFmtDate(d) { return d ? String(d).slice(5).replace('-', '/') : ''; }
 let karteStudentId = null;
 let karteStudent = null;
 let karteBackTo = 'interview'; // 'interview' | 'detail' | 'att'（出席表から）
+
+// dlm98: 面談中にカルテから他画面へ「寄り道」しても、一発でカルテに戻れる浮動ボタン。
+// カルテ表示中に別画面へ移ったら寄り道中フラグを立て、浮動ボタンを出す。
+let karteDetourActive = false;
+let _karteClosingProperly = false;
+let _kartePrevScreen = null;
+function karteEnsureFloatBtn() {
+  let b = document.getElementById('karte-return-fab');
+  if (b) return b;
+  b = document.createElement('button');
+  b.id = 'karte-return-fab';
+  b.onclick = karteReturnFromDetour;
+  b.style.cssText = 'display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:78px;z-index:9000;' +
+    'background:var(--orange-d,#B5741A);color:#fff;border:none;border-radius:22px;padding:11px 18px;font-size:13px;font-weight:800;' +
+    "font-family:'Noto Sans JP',sans-serif;box-shadow:0 8px 22px -6px rgba(120,80,20,.45);cursor:pointer;max-width:90vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+  document.body.appendChild(b);
+  return b;
+}
+function karteShowFloatBtn() {
+  if (!karteStudentId) return;
+  const b = karteEnsureFloatBtn();
+  const nm = (karteStudent && karteStudent.name) ? karteStudent.name : '生徒';
+  b.textContent = '📋 ' + nm + ' さんのカルテに戻る';
+  b.style.display = 'block';
+}
+function karteHideFloatBtn() {
+  const b = document.getElementById('karte-return-fab');
+  if (b) b.style.display = 'none';
+}
+// 浮動ボタンから、開いていた生徒のカルテを開き直す。
+function karteReturnFromDetour() {
+  if (!karteStudentId) { karteHideFloatBtn(); karteDetourActive = false; return; }
+  karteDetourActive = false;
+  karteHideFloatBtn();
+  openInterviewKarte(karteStudentId, karteBackTo);
+}
+// showScreen フック：カルテ↔他画面の遷移で寄り道状態と浮動ボタンを制御。
+// _kartePrevScreen は「この遷移の直前に出ていた画面」。
+function karteOnScreenChange(id) {
+  const cameFromKarte = (_kartePrevScreen === 'screen-interview-karte');
+  _kartePrevScreen = id;
+  if (id === 'screen-interview-karte') {
+    // カルテに入った → 寄り道解除・ボタン非表示
+    karteDetourActive = false;
+    karteHideFloatBtn();
+    return;
+  }
+  // カルテから他画面へ出た瞬間に寄り道開始（正規の「戻る」は _doBackFromKarte 側で解除済み）
+  if (cameFromKarte && karteStudentId && !_karteClosingProperly) {
+    karteDetourActive = true;
+  }
+  if (karteStudentId && karteDetourActive) {
+    karteShowFloatBtn();
+  }
+}
 // 授業出席セクションの状態（期間切替は再取得せずこの保持データを絞り込んで再描画）
 let karteAttData = null;        // { classes:[{id,name,subject}], rows:[{cid,date,mark}] }
 let karteAttPeriod = 'month';   // 'month' | '3m' | '6m' | '1y' | 'all'
@@ -41928,6 +42026,7 @@ async function openInterviewKarte(studentId, backTo) {
 
 // dlm85: 実際にカルテを閉じて戻り先画面を出す処理（popstate から呼ぶ）。
 function _doBackFromKarte() {
+  _karteClosingProperly = true;  // dlm98: これは正規の閉じ。寄り道扱いにしない。
   if (karteBackTo === 'detail') {
     showScreen('screen-staff-detail');
   } else if (karteBackTo === 'school') {
@@ -41939,6 +42038,10 @@ function _doBackFromKarte() {
     // 'interview' も 'att' も、裏で開いたままの screen-staff-manage（面談/出席表タブ）へ戻る
     showScreen('screen-staff-manage');
   }
+  // dlm98: 正規に閉じたので寄り道状態を解除し浮動ボタンを消す
+  karteDetourActive = false;
+  if (typeof karteHideFloatBtn === 'function') karteHideFloatBtn();
+  _karteClosingProperly = false;
 }
 
 // dlm85: 戻るボタンの入口。ブラウザ履歴を1つ戻す（popstate 経由で _doBackFromKarte が走る）。
