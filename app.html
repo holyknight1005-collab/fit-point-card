@@ -6336,7 +6336,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm100';
+const APP_VERSION = '20260702dlm101';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -18476,7 +18476,11 @@ const TEACHER_CHECK_EXCLUDE_CODES = ['fit001'];
 
 // 講師 → 担当授業 の対応を作る
 // 戻り値: { byTeacher: { staffUuid: [{id,name,subject}] }, excludedCodes: [...] }
-async function loadTeacherClassMap() {
+async function loadTeacherClassMap(opts) {
+  // opts.includeKosotsu=true のとき浪人生(kosotsu)講座も含める。
+  // 既定(false)は従来通り除外（報告書催促・出席チェック等はこちら）。
+  // 自習監督の希望グリッドだけ includeKosotsu:true で呼ぶ（浪人生講座も授業として表示するため）。
+  const includeKosotsu = !!(opts && opts.includeKosotsu);
   let cm = [], ct = [], staffRows = [];
   try {
     cm = await sbGet('class_master', 'is_active=eq.true&select=id,name,subject,category,grade_level,teacher_staff_id') || [];
@@ -18491,9 +18495,9 @@ async function loadTeacherClassMap() {
     if (TEACHER_CHECK_EXCLUDE_CODES.indexOf(String(s.staff_id || '').toLowerCase()) >= 0) excludeUuids.add(s.id);
   });
 
-  // 高卒生（浪人生）区分は集計しない
+  // 高卒生（浪人生）区分は既定では集計しない。includeKosotsu=true のときのみ含める。
   const classById = {};
-  cm.forEach(c => { if ((c.category || 'normal') !== 'kosotsu') classById[c.id] = c; });
+  cm.forEach(c => { if (includeKosotsu || (c.category || 'normal') !== 'kosotsu') classById[c.id] = c; });
 
   const byTeacher = {};
   const add = (sid, cls) => {
@@ -34242,7 +34246,7 @@ async function loadKomaCount() {
       sbGetAll('class_reports', 'session_date=gte.' + from + '&session_date=lte.' + to + '&select=staff_id,class_master_id,session_date,theme,content,student_notes,homework').catch(() => []),
       sbGetAll('class_sessions', 'session_date=gte.' + from + '&session_date=lte.' + to + '&select=class_master_id,session_date,period').catch(() => []),
       sbGet('class_master', 'select=id,name,category,division').catch(() => []),
-      loadTeacherClassMap().catch(() => ({ byTeacher: {}, staffById: {} })),
+      loadTeacherClassMap({ includeKosotsu: true }).catch(() => ({ byTeacher: {}, staffById: {} })),
       // dlm37: 自習監督の決定済みシフト（cancelled=false）。report_text 空 = 監督報告未記入。テーブル未作成でも落とさない。
       sbGet('supervision_assignments', 'sv_date=gte.' + from + '&sv_date=lte.' + to + '&cancelled=eq.false&select=sv_date,period,staff_id,staff_name,report_text').catch(() => [])
     ]);
@@ -34335,10 +34339,13 @@ async function loadKomaCount() {
     if (!a.report_text || !String(a.report_text).trim()) o.unfilled++;
   });
 
-  // 授業区分の判定：その他(体験/無料開放/定期テスト対策) を優先、それ以外は division で中学/高校。
+  // 授業区分の判定：浪人(kosotsu)を最優先で分離 → その他(体験/無料開放/定期テスト対策) → 中学/高校。
   // 共通テスト対策(common_test)は高校の正規講座なので division 通り（高校）に数える。
+  // 浪人(kosotsu)は一括料金で1コマ単価の売上に乗らないため、担当負荷(コマ数)としては数えるが
+  // 報告書未記入の集計からは除外する（催促対象外）。
   const catBucket = (cm) => {
     const cat = (cm && cm.category) || 'normal';
+    if (cat === 'kosotsu') return 'ronin';
     if (cat === 'trial' || cat === 'free_open' || cat === 'regular_test') return 'other';
     return ((cm && cm.division) === '中学部') ? 'jhs' : 'hs';
   };
@@ -34353,43 +34360,53 @@ async function loadKomaCount() {
       const cm = cmById[cid] || {};
       const plan = (classPlan[cid] || {}).plan || 0;
       const unfilled = (classPlan[cid] || {}).unfilled || 0;
+      const bucket = catBucket(cm);
+      // 浪人(kosotsu)は報告書を書かない運用のため、報告書ベースの count は常に0になる。
+      // 担当負荷としては「その月に実際に開講したコマ数(plan)」で数える。
+      const count = (bucket === 'ronin') ? plan : ((byStaffClass[sid] || {})[cid] || 0);
       return {
         cid: cid,
         name: (cid === '(不明)') ? '（授業不明）' : (cm.name || '（授業名なし）'),
         category: cm.category || 'normal',
         division: cm.division || '高校部',
-        bucket: catBucket(cm),
-        count: (byStaffClass[sid] || {})[cid] || 0,
+        bucket: bucket,
+        count: count,
         plan: plan,
-        unfilled: unfilled,
+        // 浪人は未記入の催促対象外なので、内訳の未記入も0扱いにする。
+        unfilled: (bucket === 'ronin') ? 0 : unfilled,
         people: enrollCountBy[cid] || 0
       };
     });
     breakdown.sort((a, b) => kcSortKey(a) - kcSortKey(b) || (a.name < b.name ? -1 : 1));
 
-    // 中学/高校/その他 コマ数（＝自分が書いた報告書を区分ごとに集計）
-    let jhsKoma = 0, hsKoma = 0, otherKoma = 0;
+    // 中学/高校/その他/浪人 コマ数。浪人は plan(実開講数) を count に入れてあるのでそのまま合算。
+    let jhsKoma = 0, hsKoma = 0, otherKoma = 0, roninKoma = 0;
     breakdown.forEach(b => {
       if (b.bucket === 'jhs') jhsKoma += b.count;
       else if (b.bucket === 'other') otherKoma += b.count;
+      else if (b.bucket === 'ronin') roninKoma += b.count;
       else hsKoma += b.count;
     });
 
-    // 授業の未記入合計（担当講座で誰も書いていないセッション数の合計）
+    // 授業の未記入合計（担当講座で誰も書いていないセッション数の合計）。浪人(kosotsu)は催促対象外なので除外。
     let classUnfilled = 0;
-    myClassIds.forEach(cid => { classUnfilled += (classPlan[cid] || {}).unfilled || 0; });
+    myClassIds.forEach(cid => {
+      const cm = cmById[cid] || {};
+      if ((cm.category || 'normal') === 'kosotsu') return; // 浪人は未記入に数えない
+      classUnfilled += (classPlan[cid] || {}).unfilled || 0;
+    });
 
     // 自習監督
     const sv = svByStaff[sid] || { koma: 0, unfilled: 0 };
     const svKoma = sv.koma, svUnfilled = sv.unfilled;
 
-    const classKoma = jhsKoma + hsKoma + otherKoma;
+    const classKoma = jhsKoma + hsKoma + otherKoma + roninKoma;
     const totalKoma = classKoma + svKoma;
     const totalUnfilled = classUnfilled + svUnfilled;
 
     return {
       staffId: sid, name: resolveStaffName(sid) || sid,
-      jhsKoma: jhsKoma, hsKoma: hsKoma, otherKoma: otherKoma, svKoma: svKoma,
+      jhsKoma: jhsKoma, hsKoma: hsKoma, otherKoma: otherKoma, roninKoma: roninKoma, svKoma: svKoma,
       totalKoma: totalKoma, classUnfilled: classUnfilled, svUnfilled: svUnfilled, unfilled: totalUnfilled,
       breakdown: breakdown
     };
@@ -34423,7 +34440,7 @@ async function loadKomaCount() {
     return;
   }
 
-  html += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">講師名をタップすると講座ごとの内訳（コマ数・受講人数・未記入）が開きます。「その他」は体験授業・無料開放・定期テスト対策、「自習」は自習監督の決定済みシフトです。</div>';
+  html += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">講師名をタップすると講座ごとの内訳（コマ数・受講人数・未記入）が開きます。「その他」は体験授業・無料開放・定期テスト対策、「浪人」は高卒生講座（一括料金のため売上には乗らず、担当コマ数のみ計上。報告書催促の対象外）、「自習」は自習監督の決定済みシフトです。</div>';
 
   // 横スクロール可能なラッパー（狭い画面でも列が潰れない）
   html += '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><div style="min-width:660px">';
@@ -34435,6 +34452,7 @@ async function loadKomaCount() {
       '<span style="flex:1;text-align:left;' + colH + '">講師名</span>' +
       '<span style="width:64px;' + colH + '">中学<br>コマ数</span>' +
       '<span style="width:64px;' + colH + '">高校<br>コマ数</span>' +
+      '<span style="width:64px;' + colH + '">浪人<br>コマ数</span>' +
       '<span style="width:64px;' + colH + '">その他<br>コマ数</span>' +
       '<span style="width:64px;' + colH + '">自習監督<br>コマ数</span>' +
       '<span style="width:80px;' + colH + '">合計コマ数<br>（反映済み）</span>' +
@@ -34453,6 +34471,7 @@ async function loadKomaCount() {
       '<span style="flex:1;text-align:left;font-size:14px">合計</span>' +
       '<span style="width:64px;text-align:center;font-size:14px">' + rows.reduce((s,r)=>s+r.jhsKoma,0) + '</span>' +
       '<span style="width:64px;text-align:center;font-size:14px">' + rows.reduce((s,r)=>s+r.hsKoma,0) + '</span>' +
+      '<span style="width:64px;text-align:center;font-size:14px">' + rows.reduce((s,r)=>s+(r.roninKoma||0),0) + '</span>' +
       '<span style="width:64px;text-align:center;font-size:14px">' + rows.reduce((s,r)=>s+r.otherKoma,0) + '</span>' +
       '<span style="width:64px;text-align:center;font-size:14px">' + svTotal + '</span>' +
       '<span style="width:80px;text-align:center;font-size:16px;color:var(--orange-d)">' + grandTotal + '</span>' +
@@ -34483,7 +34502,7 @@ function kcRowHtml(r, idx) {
     '<div onclick="kcToggleDetail(' + idx + ')" style="display:flex;align-items:center;gap:8px;padding:14px;cursor:pointer">' +
       '<span style="width:22px;height:22px;border:1.5px solid var(--line);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--muted);flex:0 0 auto">' + (idx + 1) + '</span>' +
       '<span style="flex:1;text-align:left;font-size:16px;font-weight:800">' + escapeHtml(r.name) + '</span>' +
-      cell(r.jhsKoma) + cell(r.hsKoma) + cell(r.otherKoma) + cell(r.svKoma) +
+      cell(r.jhsKoma) + cell(r.hsKoma) + cell(r.roninKoma || 0) + cell(r.otherKoma) + cell(r.svKoma) +
       '<span style="width:80px;text-align:center;font-size:17px;font-weight:800;color:var(--orange-d)">' + r.totalKoma + '<span style="font-size:11px;font-weight:600;color:var(--muted)"> コマ</span></span>' +
       ufBadge +
       '<span id="kc-arrow-' + idx + '" style="width:16px;text-align:center;font-size:12px;color:var(--muted)">▶</span>' +
@@ -34542,9 +34561,10 @@ function kcRowHtml(r, idx) {
   return h;
 }
 
-// 区分バッジ（中学=青／高校=橙／その他=灰）
+// 区分バッジ（中学=青／高校=橙／浪人=紫／その他=灰）
 function kcBucketBadge(bucket) {
   if (bucket === 'jhs') return '<span style="font-size:11px;font-weight:700;color:#1E4276;background:#E6F0FB;border:1px solid #A9C8E8;border-radius:6px;padding:2px 8px">中学</span>';
+  if (bucket === 'ronin') return '<span style="font-size:11px;font-weight:700;color:#5A4A8A;background:#EDEAF7;border:1px solid #C3B8E4;border-radius:6px;padding:2px 8px">浪人</span>';
   if (bucket === 'other') return '<span style="font-size:11px;font-weight:700;color:#8A6D3B;background:#FBF3E2;border:1px solid #E4CE9E;border-radius:6px;padding:2px 8px">その他</span>';
   return '<span style="font-size:11px;font-weight:700;color:#B25A00;background:#FCEEDD;border:1px solid #E8B98A;border-radius:6px;padding:2px 8px">高校</span>';
 }
@@ -34951,8 +34971,8 @@ async function svRenderWeek() {
   _svMyClassCells = {};
 
   try {
-    // 自分の担当授業（主担当∪追加担当）
-    const tmap = await loadTeacherClassMap();
+    // 自分の担当授業（主担当∪追加担当）。浪人生講座も監督グリッドには授業として表示する。
+    const tmap = await loadTeacherClassMap({ includeKosotsu: true });
     let myUuid = null;
     const sById = (tmap && tmap.staffById) || {};
     Object.keys(sById).forEach(uuid => { if (String(sById[uuid].staff_id) === String(sid)) myUuid = uuid; });
