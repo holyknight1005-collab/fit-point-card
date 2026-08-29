@@ -3409,6 +3409,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <!-- 各セクション（PCでは2カラム） -->
     <div id="karte-grid">
       <div id="karte-sec-profile" class="karte-sec"></div>
+      <div id="karte-sec-parent" class="karte-sec"></div>
       <div id="karte-sec-checkins" class="karte-sec"></div>
       <div id="karte-sec-attendance" class="karte-sec"></div>
       <div id="karte-sec-review" class="karte-sec"></div>
@@ -6254,7 +6255,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm80';
+const APP_VERSION = '20260702dlm81';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -40883,6 +40884,7 @@ let karteAttPeriod = 'month';   // 'month' | '3m' | '6m' | '1y' | 'all'
 // カルテのセクション定義（チップ・表示制御に使う）
 const KARTE_SECTIONS = [
   { key: 'profile',     label: '👤 プロフィール' },
+  { key: 'parent',      label: '👪 保護者記録（初回）' },
   { key: 'checkins',    label: '📅 来塾率' },
   { key: 'attendance',  label: '✅ 授業出席' },
   { key: 'review',      label: '📚 復習の定着度' },
@@ -40978,6 +40980,7 @@ async function openInterviewKarte(studentId, backTo) {
   showScreen('screen-interview-karte');
   // 非同期で各セクションをロード（順次・失敗は握りつぶし）
   karteLoadProfile(s);
+  karteLoadParent(s);
   karteLoadCheckins(studentId);
   karteLoadAttendance(studentId);
   karteLoadReview(studentId);
@@ -41076,6 +41079,161 @@ function karteLoadProfile(s) {
   }
 
   el.innerHTML = karteSecShell('👤 プロフィール', html);
+}
+
+
+// ---- 👪 保護者記録（初回）dlm81 ----
+// students に持つ 6カラム（parent_call_*, parent_meeting_*）を表示・編集。
+// enroll_date >= 2026-09-01 の生徒で未記録なら「入力してください」警告を出す。
+// 学校担当（charge_schools）が自分に含まれる場合は宛先として強調する。
+const PARENT_REQUIRE_FROM = '2026-09-01'; // この日以降の入塾は保護者記録を必須扱い
+
+function karteFmtDateShort(d) {
+  if (!d) return '';
+  try { return ivFmtDate(d); } catch (e) { return String(d); }
+}
+
+// 現在ログイン中スタッフが、この学校の担当（charge_schools）かどうか
+function karteAmIChargeOfSchool(school) {
+  try {
+    if (typeof saMyPerms === 'object' && saMyPerms && Array.isArray(saMyPerms.charge_schools)) {
+      return isStaffInChargeOf(saMyPerms.charge_schools, school);
+    }
+  } catch (e) {}
+  return false;
+}
+
+async function karteLoadParent(s) {
+  const el = document.getElementById('karte-sec-parent');
+  if (!el) return;
+  // 担当者名マップ（_karteStaffMap は karteLoadInterviews が非同期で設定するため、
+  // 先に呼ばれるこちらでは空のことがある。空なら自前で取得する）
+  let staffMap = window._karteStaffMap || {};
+  if (!Object.keys(staffMap).length) {
+    try {
+      const staff = await sbGet('staff', 'select=staff_id,name&order=staff_id') || [];
+      staffMap = {};
+      staff.forEach(x => { if (x.staff_id) staffMap[x.staff_id] = x.name; });
+      window._karteStaffMap = staffMap;
+    } catch (e) { staffMap = {}; }
+  }
+  const staffNameOf = (code) => (code && staffMap[code]) ? (staffMap[code] + '（' + code + '）') : (code || '');
+
+  const enroll = s.enroll_date || '';
+  const isRequired = !!(enroll && enroll >= PARENT_REQUIRE_FROM);
+  const callDone = !!(s.parent_call_date);
+  const meetDone = !!(s.parent_meeting_date);
+  const anyMissing = !callDone || !meetDone;
+
+  let warn = '';
+  if (isRequired && anyMissing) {
+    const amCharge = karteAmIChargeOfSchool(s.school);
+    const miss = [];
+    if (!callDone) miss.push('初回保護者電話');
+    if (!meetDone) miss.push('保護者面談');
+    warn =
+      '<div style="background:' + (amCharge ? '#FDECEA' : '#FFF6E5') + ';border:1px solid ' + (amCharge ? '#E6A9A2' : '#EBCE8E') + ';border-radius:8px;padding:9px 11px;margin-bottom:10px">' +
+        '<div style="font-size:12px;font-weight:800;color:' + (amCharge ? '#B23B2E' : '#9A6A12') + ';margin-bottom:2px">⚠️ 保護者記録が未入力です</div>' +
+        '<div style="font-size:11px;color:var(--text);line-height:1.5">' +
+          '未記録：' + miss.join('・') + '<br>' +
+          (amCharge
+            ? '<b>あなたはこの学校（' + escapeHtml(s.school || '') + '）の担当です。</b>下のフォームから入力してください。'
+            : 'この学校（' + escapeHtml(s.school || '') + '）の担当スタッフは入力してください。') +
+        '</div>' +
+      '</div>';
+  }
+
+  const block = (kind) => {
+    const title = kind === 'call' ? '📞 初回保護者電話' : '🧑‍🤝‍🧑 保護者面談';
+    const dCol = kind === 'call' ? 'parent_call_date'  : 'parent_meeting_date';
+    const sCol = kind === 'call' ? 'parent_call_staff' : 'parent_meeting_staff';
+    const nCol = kind === 'call' ? 'parent_call_note'  : 'parent_meeting_note';
+    const dVal = s[dCol] || '';
+    const sVal = s[sCol] || '';
+    const nVal = s[nCol] || '';
+    const done = !!dVal;
+
+    const myCode = (typeof currentStaff !== 'undefined' && currentStaff) ? (currentStaff.staff_id || '') : '';
+    const staffOpts = '<option value="">未設定</option>' +
+      Object.keys(staffMap).map(k => '<option value="' + k + '"' + (k === (sVal || myCode) ? ' selected' : '') + '>' + escapeHtml(staffMap[k]) + '（' + k + '）</option>').join('');
+
+    const view = done
+      ? '<div style="font-size:12px;color:var(--text);line-height:1.6">' +
+          '<div><b>実施日：</b>' + escapeHtml(karteFmtDateShort(dVal)) + '</div>' +
+          (sVal ? '<div><b>担当：</b>' + escapeHtml(staffNameOf(sVal)) + '</div>' : '') +
+          (nVal ? '<div style="margin-top:3px;white-space:pre-wrap"><b>内容：</b>' + escapeHtml(nVal) + '</div>' : '') +
+        '</div>'
+      : '<div style="font-size:12px;color:#B23B2E;font-weight:700">未記録</div>';
+
+    const form =
+      '<div id="kparent-form-' + kind + '" style="display:none;margin-top:6px">' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">' +
+          '<div style="flex:1 1 46%;min-width:0"><div style="font-size:10px;color:var(--muted);margin-bottom:2px">実施日</div>' +
+            '<input class="form-input-sm" type="date" id="kparent-date-' + kind + '" value="' + escapeAttr(dVal) + '" style="width:100%"></div>' +
+          '<div style="flex:1 1 46%;min-width:0"><div style="font-size:10px;color:var(--muted);margin-bottom:2px">担当</div>' +
+            '<select class="form-input-sm" id="kparent-staff-' + kind + '" style="width:100%">' + staffOpts + '</select></div>' +
+        '</div>' +
+        '<textarea class="form-input-sm" id="kparent-note-' + kind + '" rows="3" placeholder="話した内容・保護者からの要望など" style="width:100%;resize:vertical;margin-bottom:6px">' + escapeHtml(nVal) + '</textarea>' +
+        '<div style="display:flex;gap:8px">' +
+          '<button onclick="karteSaveParent(\'' + kind + '\')" style="flex:1;padding:9px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">保存する</button>' +
+          '<button onclick="karteToggleParentForm(\'' + kind + '\',false)" style="flex:0 0 auto;padding:9px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">キャンセル</button>' +
+        '</div>' +
+      '</div>';
+
+    return '<div style="background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:8px">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px">' +
+          '<div style="font-size:12px;font-weight:800;color:var(--text)">' + title + '</div>' +
+          '<button onclick="karteToggleParentForm(\'' + kind + '\',true)" style="background:none;border:none;color:var(--orange-d);font-size:11px;font-weight:700;cursor:pointer;padding:0 2px;white-space:nowrap">' + (done ? '✏️ 編集' : '＋ 記録する') + '</button>' +
+        '</div>' +
+        '<div id="kparent-view-' + kind + '">' + view + '</div>' +
+        form +
+      '</div>';
+  };
+
+  el.innerHTML = karteSecShell('👪 保護者記録（初回）',
+    warn + block('call') + block('meeting') +
+    (isRequired ? '' : '<div style="font-size:10px;color:var(--muted);margin-top:2px">※ ' + PARENT_REQUIRE_FROM.replace(/-/g,'/') + ' 以降の入塾生は保護者記録が必須です</div>')
+  );
+}
+
+function karteToggleParentForm(kind, show) {
+  const f = document.getElementById('kparent-form-' + kind);
+  const v = document.getElementById('kparent-view-' + kind);
+  if (f) f.style.display = show ? 'block' : 'none';
+  if (v) v.style.display = show ? 'none' : 'block';
+}
+
+async function karteSaveParent(kind) {
+  const sid = (typeof karteStudentId !== 'undefined') ? karteStudentId : null;
+  if (!sid) { showToast('生徒が特定できません', 'error'); return; }
+  const dateEl  = document.getElementById('kparent-date-' + kind);
+  const staffEl = document.getElementById('kparent-staff-' + kind);
+  const noteEl  = document.getElementById('kparent-note-' + kind);
+  const date = (dateEl && dateEl.value || '').trim();
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) { showToast('実施日の形式が不正です', 'error'); return; }
+  const body = {};
+  if (kind === 'call') {
+    body.parent_call_date  = date || null;
+    body.parent_call_staff = (staffEl && staffEl.value || '').trim() || null;
+    body.parent_call_note  = (noteEl && noteEl.value || '').trim() || null;
+  } else {
+    body.parent_meeting_date  = date || null;
+    body.parent_meeting_staff = (staffEl && staffEl.value || '').trim() || null;
+    body.parent_meeting_note  = (noteEl && noteEl.value || '').trim() || null;
+  }
+  showLoading('保存中...');
+  try {
+    await sbPatch('students', 'id=eq.' + sid, body);
+    if (typeof karteStudent === 'object' && karteStudent && karteStudent.id === sid) {
+      Object.assign(karteStudent, body);
+    }
+    hideLoading();
+    showToast('✅ 保護者記録を保存しました', 'success');
+    if (typeof karteStudent === 'object' && karteStudent) karteLoadParent(karteStudent);
+  } catch (e) {
+    hideLoading();
+    showToast('保存に失敗しました（add_parent_contact_columns.sql 未実行の可能性）', 'error');
+  }
 }
 
 // ---- ① 来塾率（直近30日・年度累計） ----
