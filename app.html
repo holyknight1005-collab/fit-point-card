@@ -3395,9 +3395,13 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <button onclick="backFromKarte()" class="page-btn" style="padding:6px 12px;flex:0 0 auto">‹ 戻る</button>
       <div id="karte-avatar" style="flex:0 0 auto;width:52px;height:52px;border-radius:50%;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:var(--muted);overflow:hidden"></div>
       <div style="flex:1;min-width:0">
-        <div id="karte-name" style="font-size:17px;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">－</div>
+        <div style="display:flex;align-items:center;gap:8px;min-width:0">
+          <div id="karte-name" style="font-size:17px;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">－</div>
+          <div id="karte-points" style="flex:0 0 auto;font-size:12px;font-weight:800;color:var(--orange-d);background:var(--surface2);border-radius:10px;padding:2px 8px;white-space:nowrap"></div>
+        </div>
         <div id="karte-meta" style="font-size:11px;color:var(--muted)"></div>
       </div>
+      <button onclick="karteToStudentDetail()" class="page-btn" style="padding:6px 10px;flex:0 0 auto;font-size:11px" title="プロフィール・個人設定を編集">⚙️ 設定</button>
     </div>
     <!-- 表示切替チップ -->
     <div id="karte-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
@@ -6249,7 +6253,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm78';
+const APP_VERSION = '20260702dlm79';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6844,7 +6848,7 @@ function renderStudentList() {
       const avatar = s.photo_url
         ? '<div class="student-avatar" style="background-image:url(' + s.photo_url + ');background-size:cover;background-position:center;cursor:zoom-in" onclick="event.stopPropagation();openPhotoModal(\'' + s.photo_url + '\',\'' + (s.name||'').replace(/\x27/g,'') + '\')"></div>'
         : '<div class="student-avatar">' + s.name[0] + '</div>';
-      return '<div class="student-row" data-student-id="' + s.id + '" onclick="openStudentDetail(' + idx + ')">' +
+      return '<div class="student-row" data-student-id="' + s.id + '" onclick="openInterviewKarte(\'' + s.id + '\',\'manage\')">' +
         avatar +
         '<div class="student-info">' +
           '<div class="student-name">' + s.name + (s.is_active === false ? ' <span style="font-size:10px;color:#d32f2f;font-weight:700">' + (s.inactive_reason === '退塾' ? '🚪退塾' : '🎓卒業') + '</span>' : (s.withdraw_status === '確定' ? ' <span style="font-size:10px;color:#C0392B;font-weight:700">✅退塾確定' + (s.withdraw_effective_date ? '(' + s.withdraw_effective_date.slice(5).replace('-', '/') + ')' : '') + '</span>' : (s.withdraw_status === '申し出' ? ' <span style="font-size:10px;color:#B8860B;font-weight:700">📝退塾申出中</span>' : ''))) + '</div>' +
@@ -11557,9 +11561,32 @@ function backFromDetail() {
     openHomeFeature('student-view');
   } else if (detailBackTarget === 'basicedit') {
     openStaffManage('basicedit');
+  } else if (detailBackTarget === 'karte') {
+    // 面談カルテから来た場合はカルテに戻る
+    if (typeof karteStudentId !== 'undefined' && karteStudentId) {
+      openInterviewKarte(karteStudentId, (typeof karteBackTo !== 'undefined' ? karteBackTo : 'manage'));
+    } else {
+      showScreen('screen-staff');
+    }
   } else {
     showScreen('screen-staff');
   }
+}
+
+// 面談カルテ →「⚙️設定」→ 生徒詳細（プロフィール・個人設定の編集）へ
+async function karteToStudentDetail() {
+  const sid = (typeof karteStudentId !== 'undefined') ? karteStudentId : null;
+  if (!sid) { showToast('生徒が特定できません', 'error'); return; }
+  // staffStudents 内に対象がいなければ読み込む（面談タブ等から開いた場合の保険）
+  let idx = staffStudents.findIndex(x => x && x.id === sid);
+  if (idx < 0) {
+    try {
+      staffStudents = await sbGet('students', 'select=*&order=school,grade,name') || [];
+      idx = staffStudents.findIndex(x => x && x.id === sid);
+    } catch (e) {}
+  }
+  if (idx < 0) { showToast('生徒データを取得できませんでした', 'error'); return; }
+  openStudentDetail(idx, 'karte');
 }
 // 承認待ちバッジの合算カウンタ（申請＋復習＋補習）。各ローダーが自分の分を書き込む。
 let _pendingCounts = { apps: 0, review: 0, makeup: 0, goals: 0, exams: 0, appeals: 0 };
@@ -40844,6 +40871,7 @@ async function openInterviewKarte(studentId, backTo) {
   karteStudent = s;
   document.getElementById('karte-name').textContent = s.name || '－';
   document.getElementById('karte-meta').textContent = [s.school, s.grade].filter(Boolean).join(' ');
+  { const _pe = document.getElementById('karte-points'); if (_pe) { const _pt = (s.points != null) ? Number(s.points) : null; _pe.textContent = (_pt != null && !isNaN(_pt)) ? (_pt.toLocaleString() + 'pt') : ''; _pe.style.display = (_pt != null && !isNaN(_pt)) ? '' : 'none'; } }
   // 顔写真（あれば表示・タップで拡大、なければ頭文字）
   const av = document.getElementById('karte-avatar');
   if (av) {
