@@ -6342,7 +6342,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm102';
+const APP_VERSION = '20260702dlm103';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -17780,13 +17780,20 @@ async function createStaffTodo() {
   // 宛先を決める。学校指定は charge_schools から担当者を引く（重複は自動で1件に）
   let recipients = [];
   let schoolNote = '';
+  // 学校指定のときは学校ごとに別グループを作る（各校が独立して完了）。null なら従来どおり1グループ。
+  let schoolGroups = null;   // [{ key:'松山東', recipients:[uuid,...] }]
   if (newTodoTargetType === 'school') {
     const schools = [];
     document.querySelectorAll('.todo-school-cb:checked').forEach(cb => schools.push(cb.value));
     if (!schools.length || !title) { showToast('学校とタイトルを入力してください', 'error'); return; }
     showLoading('担当者を確認中...');
     try {
-      recipients = await resolveChargeStaffIds(schools);
+      const bySchool = await resolveChargeStaffIdsBySchool(schools);
+      schoolGroups = schools
+        .map(s => ({ key: s, recipients: (bySchool[s] || []).slice() }))
+        .filter(g => g.recipients.length);
+      // 全体の宛先（存在チェック・件数表示用。重複は1件に）
+      recipients = [...new Set(schoolGroups.flatMap(g => g.recipients))];
     } catch (e) { hideLoading(); showToast('担当者の取得に失敗しました', 'error'); return; }
     hideLoading();
     if (!recipients.length) {
@@ -17824,31 +17831,45 @@ async function createStaffTodo() {
   const groupId = newTodoGroupId();
   const isPrivate = !!document.getElementById('todo-is-private')?.checked;
   const linkTarget = (document.getElementById('todo-link-target') || {}).value || null;
+  // 1件分を登録する。group_id はグループごとに切り替える。
+  const postOneTodo = async (toId, gid) => {
+    await sbPost('staff_todos', {
+      from_staff_id: currentStaff.id,
+      to_staff_id: toId,
+      title, detail, due_date: due || null,
+      needs_approval: needsApproval,
+      todo_kind: newTodoKind,
+      group_id: gid,
+      completion_mode: cmode,
+      is_private: isPrivate,
+      link_target: linkTarget
+    }).catch(async (err) => {
+      // todo_kind / group_id / completion_mode 列が未適用の環境 → 最小構成で登録
+      if (/column|PGRST|400/i.test(String(err && err.message || err))) {
+        // 非公開指定のときは黙って公開ToDoに落とさない。
+        // 列が無いまま登録すると全員に見えてしまうため、ここは失敗させる。
+        if (isPrivate) throw new Error('非公開ToDoに必要な列がまだありません（add_todo_private.sql を実行してください）');
+        await sbPost('staff_todos', {
+          from_staff_id: currentStaff.id, to_staff_id: toId,
+          title, detail, due_date: due || null, needs_approval: needsApproval
+        });
+      } else throw err;
+    });
+  };
   showLoading('作成中...');
   try {
-    for (const toId of recipients) {
-      await sbPost('staff_todos', {
-        from_staff_id: currentStaff.id,
-        to_staff_id: toId,
-        title, detail, due_date: due || null,
-        needs_approval: needsApproval,
-        todo_kind: newTodoKind,
-        group_id: groupId,
-        completion_mode: cmode,
-        is_private: isPrivate,
-        link_target: linkTarget
-      }).catch(async (err) => {
-        // todo_kind / group_id / completion_mode 列が未適用の環境 → 最小構成で登録
-        if (/column|PGRST|400/i.test(String(err && err.message || err))) {
-          // 非公開指定のときは黙って公開ToDoに落とさない。
-          // 列が無いまま登録すると全員に見えてしまうため、ここは失敗させる。
-          if (isPrivate) throw new Error('非公開ToDoに必要な列がまだありません（add_todo_private.sql を実行してください）');
-          await sbPost('staff_todos', {
-            from_staff_id: currentStaff.id, to_staff_id: toId,
-            title, detail, due_date: due || null, needs_approval: needsApproval
-          });
-        } else throw err;
-      });
+    if (schoolGroups) {
+      // 学校ごとに別グループ＝各校が独立して完了（each=各校全員／any=各校の誰か1人）
+      for (const g of schoolGroups) {
+        const gid = newTodoGroupId();
+        for (const toId of g.recipients) {
+          await postOneTodo(toId, gid);
+        }
+      }
+    } else {
+      for (const toId of recipients) {
+        await postOneTodo(toId, groupId);
+      }
     }
     hideLoading();
     showToast('📨 ' + (schoolNote ? schoolNote + 'の担当 ' : '') + recipients.length + '名にToDoを依頼しました' + (cmode === 'any' ? '（誰か1人でOK）' : (needsApproval ? '（承認制）' : '')), 'success');
@@ -18834,8 +18855,12 @@ function setTodoCompletionMode(mode) {
   if (eb) eb.style.cssText = base + (newTodoCompletionMode === 'each' ? on : off);
   if (ab) ab.style.cssText = base + (newTodoCompletionMode === 'any' ? on : off);
   if (hint) hint.textContent = (newTodoCompletionMode === 'any')
-    ? '全学校への定例連絡など、代表1名が対応すれば済む依頼向けです。1人が完了すると全員のToDoが消えます。'
-    : '選んだ全員がそれぞれ完了する必要があります。';
+    ? (newTodoTargetType === 'school'
+        ? '学校ごとに、その学校の担当の誰か1人が完了すればその学校ぶんが完了します（他校には影響しません）。'
+        : '代表1名が対応すれば済む依頼向けです。1人が完了すると全員のToDoが消えます。')
+    : (newTodoTargetType === 'school'
+        ? '学校ごとに、その学校の担当全員が完了する必要があります。'
+        : '選んだ全員がそれぞれ完了する必要があります。');
   // 'any' は代表者の完了で全員解除されるため、承認制とは併用しない
   const na = document.getElementById('todo-needs-approval');
   const naRow = document.getElementById('todo-approval-row');
@@ -19269,7 +19294,7 @@ async function doneTodo(id) {
         { is_done: true, done_at: nowIso, done_by_staff_id: currentStaff.id, rejected_at: null, reject_note: null });
       await awardTodoPoints(currentStaff.id, isLateAny);
       hideLoading();
-      showToast(isLateAny ? '完了（遅延 -1pt）／全員ぶんを解除しました' : '✅ 完了！+1pt ／全員ぶんを解除しました', isLateAny ? 'error' : 'success');
+      showToast(isLateAny ? '完了（遅延 -1pt）／同じグループのぶんを解除しました' : '✅ 完了！+1pt ／同じグループのぶんを解除しました', isLateAny ? 'error' : 'success');
       refreshTodoViews();
       return;
     }
