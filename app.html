@@ -35546,6 +35546,11 @@ async function svLoadDecide() {
   const box = document.getElementById('sv-decide-body');
   const label = document.getElementById('sv-decide-week-label');
   if (!box) return;
+  // 名前解決（resolveStaffName）は allStaffList 依存。決定画面を先に開くと
+  // ×理由のスタッフ名がコード表示になるため、未ロードならここで確保する。
+  if ((typeof allStaffList === 'undefined' || !allStaffList || !allStaffList.length) && typeof loadStaffSelect === 'function') {
+    try { await loadStaffSelect(); } catch (e) {}
+  }
   // 週の初期化（未設定なら今日を含む週）
   if (!_svDecideMonday) {
     const [y, m, d] = getTodayJST().split('-').map(Number);
@@ -35560,17 +35565,36 @@ async function svLoadDecide() {
   if (jumpEl) jumpEl.value = fromIso.slice(0, 7);
   box.innerHTML = '<div style="font-size:12px;color:var(--muted)">読み込み中...</div>';
 
-  let wishes = [], assigns = [];
+  let wishes = [], assigns = [], dayNotes = [], svPerms = [];
   try {
-    [wishes, assigns] = await Promise.all([
+    [wishes, assigns, dayNotes, svPerms] = await Promise.all([
       sbGet('supervision_wishes', 'sv_date=gte.' + fromIso + '&sv_date=lte.' + toIso + '&withdrawn=eq.false&select=id,sv_date,period,staff_id,staff_name,note,wish_type&order=sv_date,period').catch(() => []),
-      sbGet('supervision_assignments', 'sv_date=gte.' + fromIso + '&sv_date=lte.' + toIso + '&cancelled=eq.false&select=id,sv_date,period,staff_id,staff_name,decided_by&order=sv_date,period').catch(() => [])
+      sbGet('supervision_assignments', 'sv_date=gte.' + fromIso + '&sv_date=lte.' + toIso + '&cancelled=eq.false&select=id,sv_date,period,staff_id,staff_name,decided_by&order=sv_date,period').catch(() => []),
+      // その週の全スタッフの「×の日の理由・留意事項」。決定の参考に日の見出しへまとめて出す。
+      sbGet('supervision_day_notes', 'sv_date=gte.' + fromIso + '&sv_date=lte.' + toIso + '&select=sv_date,staff_id,reason&order=sv_date').catch(() => []),
+      // 監督対象者（社会人・大学生）。この週に希望を1件も出していない人＝未入力として表示する。
+      sbGet('staff_permissions', 'employment_type=in.(shakaijin,daigakusei)&select=staff_id,employment_type').catch(() => [])
     ]);
   } catch (e) {
     box.innerHTML = '<div style="font-size:12px;color:#C0392B">読み込みに失敗しました（SQL未適用の可能性）。</div>';
     return;
   }
-  wishes = wishes || []; assigns = assigns || [];
+  wishes = wishes || []; assigns = assigns || []; dayNotes = dayNotes || []; svPerms = svPerms || [];
+
+  // 未入力者：監督対象（社会人・大学生）のうち、この週に希望も×理由も1件も出していない人。
+  const submittedIds = new Set();
+  wishes.forEach(w => { if (w.staff_id) submittedIds.add(String(w.staff_id)); });
+  dayNotes.forEach(n => { if (n.staff_id) submittedIds.add(String(n.staff_id)); });
+  const notSubmitted = svPerms
+    .map(p => String(p.staff_id))
+    .filter(sid => sid && !submittedIds.has(sid) && sid !== 'fit001'); // fit001は監督に入らない
+
+  // 日ごとに×理由をまとめる（reason が空の行は無視）
+  const notesByDay = {}; // iso -> [{staff_id, reason}]
+  dayNotes.forEach(n => {
+    if (!n.reason || !n.reason.trim()) return;
+    (notesByDay[n.sv_date] || (notesByDay[n.sv_date] = [])).push({ staff_id: n.staff_id, reason: n.reason.trim() });
+  });
 
   // dlm93: 各希望者/確定者の負荷（授業/監督コマ数）を集計。基準月は「週の月曜が属する月」。
   const mFrom = monday.getFullYear() + '-' + String(monday.getMonth() + 1).padStart(2, '0') + '-01';
@@ -35593,17 +35617,35 @@ async function svLoadDecide() {
   for (let i = 0; i < 7; i++) dates.push(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i));
 
   let h = '<div style="display:flex;flex-direction:column;gap:12px">';
+  // 未入力者（この週にまだ希望を出していない対象スタッフ）＝リマインド対象
+  if (notSubmitted.length) {
+    const names = notSubmitted.map(sid => escapeHtml(resolveStaffName(sid) || sid)).join('、');
+    h += '<div style="border:1px solid #E6C15A;border-radius:10px;background:#FCF7E8;padding:8px 12px">' +
+      '<div style="font-size:12px;font-weight:800;color:#8A6D14;margin-bottom:3px">📭 未入力（' + notSubmitted.length + '名）— この週の希望がまだです</div>' +
+      '<div style="font-size:12px;color:#6E5A1A;line-height:1.7">' + names + '</div>' +
+      '<div style="text-align:right;margin-top:5px"><button onclick="svRemindUnsubmitted(\'' + fromIso + '\',\'' + toIso + '\')" style="font-size:11px;font-weight:700;color:#fff;background:#B8912E;border:none;border-radius:6px;padding:4px 12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🔔 入力を依頼（ToDo送信）</button></div>' +
+      '</div>';
+  }
   let anyDay = false;
   dates.forEach((d, di) => {
     const iso = svIsoFromDate(d);
     // その日に希望 or 確定がある限だけ
     const periodsWithData = [];
     for (let p = 1; p <= 6; p++) { const s = bySlot[slotKey(iso, p)]; if (s && (s.wishes.length || s.assigns.length)) periodsWithData.push(p); }
-    if (!periodsWithData.length) return;
+    const dnotes = notesByDay[iso];
+    // 希望も確定も無いが×理由だけある日も、留意事項を見せるためカードを出す。
+    if (!periodsWithData.length && !(dnotes && dnotes.length)) return;
     anyDay = true;
     h += '<div style="border:1px solid #9CC0E8;border-radius:10px;overflow:hidden">' +
-      '<div style="background:#EAF2FB;padding:6px 10px;font-size:13px;font-weight:800;color:#1E4276">' + wlabels[di] + ' ' + escapeHtml(svFmtDate(iso)) + '</div>' +
-      '<div style="padding:8px 10px;display:flex;flex-direction:column;gap:8px">';
+      '<div style="background:#EAF2FB;padding:6px 10px;font-size:13px;font-weight:800;color:#1E4276">' + wlabels[di] + ' ' + escapeHtml(svFmtDate(iso)) + '</div>';
+    // ×の日の理由・留意事項（その日に出ている全員分をまとめて表示）
+    if (dnotes && dnotes.length) {
+      h += '<div style="background:#FDF3F2;border-bottom:1px solid #F0C9C4;padding:6px 10px;font-size:11px;color:#8A3A32;line-height:1.6">' +
+        '<span style="font-weight:800">⚠️ ✕理由・留意事項</span><br>' +
+        dnotes.map(n => '<span style="display:inline-block;margin:1px 0"><b>' + escapeHtml(resolveStaffName(n.staff_id) || n.staff_id) + '</b>：' + escapeHtml(n.reason) + '</span>').join('<br>') +
+        '</div>';
+    }
+    h += '<div style="padding:8px 10px;display:flex;flex-direction:column;gap:8px">';
     periodsWithData.forEach(p => {
       const slot = bySlot[slotKey(iso, p)];
       const assignedIds = new Set(slot.assigns.map(a => String(a.staff_id)));
@@ -35650,10 +35692,20 @@ async function svLoadDecide() {
       }
       h += '</div>';
     });
+    if (!periodsWithData.length) {
+      h += '<div style="font-size:11px;color:var(--muted)">この日は入れる希望・確定はありません（上記は留意事項）。</div>';
+    }
     h += '</div></div>';
   });
   h += '</div>';
-  if (!anyDay) h = '<div style="font-size:12px;color:var(--muted)">この週は希望も担当もありません。</div>';
+  // 日カードが無い週：未入力バナーは残しつつ、案内文を添える（バナーで上書きしない）
+  if (!anyDay) {
+    if (notSubmitted.length) {
+      h += '<div style="font-size:12px;color:var(--muted);margin-top:4px">この週はまだ希望・担当がありません（未入力者は上に表示）。</div>';
+    } else {
+      h = '<div style="font-size:12px;color:var(--muted)">この週は希望も担当もありません。</div>';
+    }
+  }
   box.innerHTML = h;
 }
 
@@ -35711,6 +35763,58 @@ async function svSendWishRequest() {
   } catch (e) {
     hideLoading();
     console.warn('svSendWishRequest失敗', e);
+    showToast('送信に失敗しました', 'error');
+  }
+}
+
+// 未入力者だけに、その週の希望入力を依頼する ToDo を送る（決定画面の📭バナーから）。
+// svSendWishRequest の対象を「まだ希望を出していない人」に絞った版。
+async function svRemindUnsubmitted(fromIso, toIso) {
+  if (!canDecideSupervision()) { showToast('送信権限がありません', 'error'); return; }
+  try {
+    // 対象者（社会人・大学生、fit001除く）
+    const perms = await sbGet('staff_permissions', 'employment_type=in.(shakaijin,daigakusei)&select=staff_id') || [];
+    const targetCodes = perms.map(p => String(p.staff_id)).filter(c => c && c.toLowerCase() !== 'fit001');
+    if (!targetCodes.length) { showToast('対象スタッフがいません', 'info'); return; }
+    // その週に希望 or ×理由を1件でも出している人を除く
+    const [ws, dn] = await Promise.all([
+      sbGet('supervision_wishes', 'sv_date=gte.' + fromIso + '&sv_date=lte.' + toIso + '&withdrawn=eq.false&select=staff_id').catch(() => []),
+      sbGet('supervision_day_notes', 'sv_date=gte.' + fromIso + '&sv_date=lte.' + toIso + '&select=staff_id').catch(() => [])
+    ]);
+    const done = new Set();
+    (ws || []).forEach(w => { if (w.staff_id) done.add(String(w.staff_id)); });
+    (dn || []).forEach(n => { if (n.staff_id) done.add(String(n.staff_id)); });
+    const codes = targetCodes.filter(c => !done.has(c));
+    if (!codes.length) { showToast('未入力の人はいません', 'success'); return; }
+    // コード→UUID
+    const staffRows = await sbGet('staff', 'is_active=eq.true&select=id,staff_id') || [];
+    const uuidByCode = {}; staffRows.forEach(s => { uuidByCode[s.staff_id] = s.id; });
+    const recipients = codes.map(c => uuidByCode[c]).filter(Boolean);
+    if (!recipients.length) { showToast('対象アカウントが見つかりません', 'error'); return; }
+
+    const weekLabel = svFmtDate(fromIso) + '〜' + svFmtDate(toIso);
+    if (!confirm('未入力の' + recipients.length + '名に「' + weekLabel + ' の自習監督シフト希望を入力」ToDoを送りますか？')) return;
+
+    const title = '自習監督のシフト希望を入力（' + weekLabel + '）';
+    const detail = weekLabel + ' の自習監督のシフト希望（○入れる／△できたら避けたい／×入れない）がまだ未入力です。入力をお願いします。';
+    showLoading('送信中...');
+    let ok = 0;
+    for (const toId of recipients) {
+      try {
+        await sbPost('staff_todos', { from_staff_id: currentStaff.id, to_staff_id: toId, title: title, detail: detail, due_date: null, link_target: 'supervision' });
+        ok++;
+      } catch (err) {
+        if (/column|PGRST|400/i.test(String(err && err.message || err))) {
+          await sbPost('staff_todos', { from_staff_id: currentStaff.id, to_staff_id: toId, title: title, detail: detail });
+          ok++;
+        }
+      }
+    }
+    hideLoading();
+    showToast('🔔 ' + ok + '名に入力依頼を送りました', 'success');
+  } catch (e) {
+    hideLoading();
+    console.warn('svRemindUnsubmitted失敗', e);
     showToast('送信に失敗しました', 'error');
   }
 }
