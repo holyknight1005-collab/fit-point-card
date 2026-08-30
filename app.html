@@ -6347,7 +6347,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm108';
+const APP_VERSION = '20260702dlm109';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -35822,14 +35822,18 @@ async function svLoadDecide() {
   assigns.forEach(a => { const c = String(a.staff_id); if (c && c.toLowerCase() !== 'fit001' && !targetCodes.includes(c)) targetCodes.push(c); });
   const staffCodes = (typeof sortByStaffCode === 'function') ? sortByStaffCode(targetCodes.slice()) : targetCodes.slice();
 
-  // 勤務枠（社会人）：staff_shift_template。code -> {dow: {from,to}}
+  // 勤務枠（社会人）：staff_shift_template。code -> {dow: {from,to,off}}
+  //  work_from_period が null の行は「その曜日は休み」を意味する（登録UIで「休み」を選ぶと null 保存）。
+  //  以前は null を from=1 に変換していたため、休みの日が「1〜6限 全勤務」に化けて黒塗りされない不具合があった。
   const shiftByStaff = {};
   try {
     const st = await sbGet('staff_shift_template', 'select=staff_id,dow,work_from_period,work_to_period') || [];
     st.forEach(r => {
       const c = String(r.staff_id);
+      const isOff = (r.work_from_period == null);
       (shiftByStaff[c] || (shiftByStaff[c] = {}))[Number(r.dow)] = {
-        from: (r.work_from_period == null ? 1 : Number(r.work_from_period)),
+        off: isOff,
+        from: isOff ? null : Number(r.work_from_period),
         to: (r.work_to_period == null ? 6 : Number(r.work_to_period))
       };
     });
@@ -35903,11 +35907,11 @@ async function svLoadDecide() {
         const isAssigned = !!assignSet[key];
         const wtype = wishMap[key];
         const hasClass = classByStaff[code] && classByStaff[code].has(iso + '|' + p);
-        // 勤務外（社会人のみ）：定型シフトの枠外
+        // 勤務外（社会人のみ）：定型シフトの枠外。休み(off)の曜日は全コマ勤務外。
         let offDuty = false;
         if (empByStaff[code] === 'shakaijin') {
           const t = shiftByStaff[code] && shiftByStaff[code][dow];
-          offDuty = !t || p < t.from || p > t.to;
+          offDuty = !t || t.off || p < t.from || p > t.to;
         }
         // セルの見た目を状態優先で決める
         let bg = '#fff', txt = '', color = '#333', title = nm + ' ' + (d.getMonth()+1)+'/'+d.getDate() + ' ' + p + '限';
