@@ -5952,6 +5952,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div id="cm-orphan-result" style="display:none;margin-bottom:10px"></div>
       <button onclick="scanMissingCycles()" style="width:100%;margin-bottom:8px;padding:9px;background:var(--surface);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🗓️ 回数（周回）未設定の通常授業を点検</button>
       <div id="cm-cycle-result" style="display:none;margin-bottom:10px"></div>
+      <div id="cm-scope-bar" style="display:none;margin-bottom:8px"></div>
       <div id="cm-filter-bar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
       <div id="cm-list" style="display:flex;flex-direction:column;gap:8px"></div>
     <!-- ↓ 登録・編集系（普段は使わない） -->
@@ -21020,6 +21021,7 @@ function classColorOf(cm) {
 }
 let classMasterList = [];
 let cmCategoryFilter = 'all';   // 授業管理の区分フィルタ（all / normal / summer / ...）
+let cmAdminMineOnly = true;     // dlm102: admin時、既定は「自分の担当だけ」表示。切替で全授業。
 let cmTeacherNames = {};        // classId -> [name,...]（loadClassMasterList で構築、renderCmList で使用）
 let cmSessionCount = {};        // classId -> 登録済み回数（同上）
 let cmEnrollCount = {};         // classId -> 継続中の受講人数（名簿確認用・dkp）
@@ -21056,7 +21058,11 @@ async function loadClassMasterList() {
   // ★中学部担当(is_chugaku_staff)は、currentDivision='中学部' のときは全授業を見られる。
   let query = 'is_active=eq.true&division=eq.' + encodeURIComponent(currentDivision) + '&order=subject,name&select=*,staff(name)';
   const chugakuAll = (currentDivision === '中学部') && await isChugakuStaff();
-  if (currentStaff && currentStaff.role !== 'admin' && !chugakuAll) {
+  const isAdmin = !!(currentStaff && currentStaff.role === 'admin');
+  // dlm102: 非admin は常に自分の担当のみ。admin は既定で自分の担当のみ（cmAdminMineOnly）、切替で全授業。
+  // ただし中学部担当が中学部を見ているときは従来どおり全授業（chugakuAll）。
+  const mineOnly = (!isAdmin || cmAdminMineOnly) && !chugakuAll;
+  if (currentStaff && mineOnly) {
     // 追加担当として割り当てられた授業IDを先に取得
     let assignedIds = [];
     try {
@@ -21074,7 +21080,11 @@ async function loadClassMasterList() {
   classMasterList = await sbGet('class_master', query) || [];
   const el = document.getElementById('cm-list');
   if (!classMasterList.length) {
-    el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">授業がありません</div>';
+    renderCmScopeBar(); // dlm102: 0件でも切替は出す（自分の担当が無い場合に全授業へ戻せるように）
+    const emptyMsg = (currentStaff && currentStaff.role === 'admin' && cmAdminMineOnly)
+      ? 'あなたが担当している授業はありません。「📚 全授業」に切り替えると全て表示できます。'
+      : '授業がありません';
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">' + emptyMsg + '</div>';
     return;
   }
   // 追加担当（class_teachers）を取得して授業ID -> 講師名配列 を作る（主担当∪追加担当）。
@@ -21146,10 +21156,40 @@ function setCmCategoryFilter(key) {
   renderCmList();
 }
 
+// dlm102: admin の表示範囲切替（自分の担当だけ ⇄ 全授業）。データ取得から変わるので再読込。
+function setCmAdminScope(mineOnly) {
+  const next = !!mineOnly;
+  if (cmAdminMineOnly === next) return;
+  cmAdminMineOnly = next;
+  loadClassMasterList();
+}
+
 // 授業管理の一覧を描画（区分フィルタ対応）。データ取得は loadClassMasterList 側。
+// dlm102: admin 用「自分の担当だけ / 全授業」切替バーの描画（0件時も出せるよう関数化）
+function renderCmScopeBar() {
+  const scopeBar = document.getElementById('cm-scope-bar');
+  if (!scopeBar) return;
+  const isAdmin = !!(currentStaff && currentStaff.role === 'admin');
+  if (!isAdmin) { scopeBar.style.display = 'none'; scopeBar.innerHTML = ''; return; }
+  scopeBar.style.display = 'flex';
+  scopeBar.style.gap = '6px';
+  scopeBar.style.flexWrap = 'wrap';
+  scopeBar.style.alignItems = 'center';
+  const mkScope = (mineOnly, label) => {
+    const on = (cmAdminMineOnly === mineOnly);
+    return '<button onclick="setCmAdminScope(' + mineOnly + ')" style="padding:6px 14px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;border:1.5px solid ' +
+      (on ? '#2D6CB6' : 'var(--border)') + ';background:' + (on ? '#2D6CB6' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--text)') + '">' + label + '</button>';
+  };
+  scopeBar.innerHTML = '<span style="font-size:10px;color:var(--muted);margin-right:2px">表示範囲</span>' +
+    mkScope(true, '👤 自分の担当だけ') + mkScope(false, '📚 全授業');
+}
+
 function renderCmList() {
   const el = document.getElementById('cm-list');
   if (!el) return;
+
+  // dlm102: admin 用「自分の担当だけ / 全授業」切替バー
+  renderCmScopeBar();
 
   // --- 区分フィルタバー：データに存在する区分だけ出す ---
   const bar = document.getElementById('cm-filter-bar');
@@ -25090,6 +25130,7 @@ async function cleanupOneMaster(gi, ri) {
 // 選択の先頭を「主担当」として残す（カレンダー強調など既存機能の互換のため）。
 let ctModalClassId = null;
 let ctModalSelected = new Set();   // 選択中の staff.id
+let ctModalRoles = {};             // dlm102: staff.id -> 'main'|'support'（役割）
 let ctModalStaff = [];             // 全スタッフ
 let ctModalDepts = {};             // 部名 -> [staff.id]（staff_permissions.departments 由来）
 
@@ -25115,10 +25156,11 @@ async function setClassTeacher(classId) {
   } catch (e) { ctModalDepts = {}; }
   // 現在の担当（主担当 ∪ class_teachers）
   ctModalSelected = new Set();
+  ctModalRoles = {}; // dlm102: staffId -> 'main' | 'support'（役割。既定 support）
   if (cm && cm.teacher_staff_id) ctModalSelected.add(cm.teacher_staff_id);
   try {
-    const cts = await sbGet('class_teachers', 'class_master_id=eq.' + classId + '&select=staff_id') || [];
-    cts.forEach(ct => ctModalSelected.add(ct.staff_id));
+    const cts = await sbGet('class_teachers', 'class_master_id=eq.' + classId + '&select=staff_id,role') || [];
+    cts.forEach(ct => { ctModalSelected.add(ct.staff_id); ctModalRoles[ct.staff_id] = (ct.role === 'main') ? 'main' : 'support'; });
   } catch (e) { /* class_teachers 未作成でも主担当だけで開く */ }
 
   let overlay = document.getElementById('class-teacher-modal');
@@ -25131,7 +25173,7 @@ async function setClassTeacher(classId) {
     '<div style="background:var(--surface);border-radius:16px;padding:20px;max-width:360px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 20px 50px -12px rgba(0,0,0,0.3)" onclick="event.stopPropagation()">' +
       '<div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px">担当講師を選ぶ</div>' +
       '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + (cm ? escapeHtml(cm.name) : '') + '</div>' +
-      '<div style="font-size:10px;color:var(--muted);margin-bottom:12px;line-height:1.5">複数選べます（例：超感覚英語＝仙波・石丸）。選んだ講師の「今日やること」に、この授業の復習の承認待ちが出ます。先頭が主担当になります。</div>' +
+      '<div style="font-size:10px;color:var(--muted);margin-bottom:12px;line-height:1.5">複数選べます（例：超感覚英語＝仙波・石丸）。選んだ講師の「今日やること」に、この授業の復習の承認待ちが出ます。先頭が主担当になります。<br>選んだ講師は右の <b>★メイン / サポート</b> で役割を切り替えられます（実際に教える人＝メイン、編集権限だけ＝サポート）。</div>' +
       '<div id="ct-dept-row" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>' +
       '<div id="ct-staff-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px"></div>' +
       '<button onclick="saveClassTeachers()" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;margin-bottom:8px">保存する</button>' +
@@ -25168,7 +25210,10 @@ function toggleCtDept(dept) {
   const ids = ctModalDepts[dept] || [];
   if (!ids.length) return;
   const allOn = ids.every(id => ctModalSelected.has(id));
-  ids.forEach(id => { if (allOn) ctModalSelected.delete(id); else ctModalSelected.add(id); });
+  ids.forEach(id => {
+    if (allOn) { ctModalSelected.delete(id); delete ctModalRoles[id]; }
+    else { ctModalSelected.add(id); if (!ctModalRoles[id]) ctModalRoles[id] = 'support'; }
+  });
   renderCtDeptRow();
   renderCtStaffList();
 }
@@ -25176,19 +25221,44 @@ function toggleCtDept(dept) {
 function renderCtStaffList() {
   const el = document.getElementById('ct-staff-list');
   if (!el) return;
-  el.innerHTML = ctModalStaff.map(s => {
+  // dlm102: 役割の並び順統一のため fit番号順で表示
+  const list = (typeof sortByStaffCode === 'function') ? sortByStaffCode(ctModalStaff) : ctModalStaff;
+  el.innerHTML = list.map(s => {
     const on = ctModalSelected.has(s.id);
+    const role = ctModalRoles[s.id] === 'main' ? 'main' : 'support';
+    const isMain = role === 'main';
+    // 選択中の講師だけ、名前の右に メイン/サポート 切替を出す。
+    const roleBtn = on
+      ? '<span onclick="event.stopPropagation();toggleCtRole(\'' + s.id + '\')" ' +
+          'style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:700;padding:3px 10px;border-radius:12px;cursor:pointer;' +
+          'border:1.5px solid ' + (isMain ? '#2D6CB6' : '#C9A24B') + ';' +
+          'background:' + (isMain ? '#2D6CB6' : '#FBF3DD') + ';color:' + (isMain ? '#fff' : '#8A6D1F') + '">' +
+          (isMain ? '★メイン' : 'サポート') + '</span>'
+      : '';
     return '<button type="button" onclick="toggleCtStaff(\'' + s.id + '\')" ' +
-      'style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border:1.5px solid ' + (on ? 'var(--orange)' : 'var(--border)') + ';' +
+      'style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;border:1.5px solid ' + (on ? 'var(--orange)' : 'var(--border)') + ';' +
       'background:' + (on ? 'var(--orange-l)' : 'var(--surface)') + ';border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;text-align:left">' +
-      '<span style="font-size:13px;color:var(--text)">' + escapeHtml(s.name) + '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + escapeHtml(s.staff_id || '') + '</span></span>' +
-      '<span style="font-size:14px;font-weight:700;color:' + (on ? 'var(--orange-d)' : 'var(--muted)') + '">' + (on ? '✓' : '＋') + '</span></button>';
+      '<span style="font-size:13px;color:var(--text);flex:1">' + escapeHtml(s.name) + '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + escapeHtml(s.staff_id || '') + '</span></span>' +
+      roleBtn +
+      '<span style="font-size:14px;font-weight:700;color:' + (on ? 'var(--orange-d)' : 'var(--muted)') + ';min-width:14px;text-align:center">' + (on ? '✓' : '＋') + '</span></button>';
   }).join('');
 }
 
+// dlm102: 選択中講師の役割を メイン⇄サポート で切り替える
+function toggleCtRole(staffId) {
+  if (!ctModalSelected.has(staffId)) return;
+  ctModalRoles[staffId] = (ctModalRoles[staffId] === 'main') ? 'support' : 'main';
+  renderCtStaffList();
+}
+
 function toggleCtStaff(staffId) {
-  if (ctModalSelected.has(staffId)) ctModalSelected.delete(staffId);
-  else ctModalSelected.add(staffId);
+  if (ctModalSelected.has(staffId)) {
+    ctModalSelected.delete(staffId);
+    delete ctModalRoles[staffId]; // dlm102: 選択解除で役割もクリア
+  } else {
+    ctModalSelected.add(staffId);
+    if (!ctModalRoles[staffId]) ctModalRoles[staffId] = 'support'; // 新規選択は既定サポート
+  }
   renderCtDeptRow();
   renderCtStaffList();
 }
@@ -25206,16 +25276,25 @@ async function saveClassTeachers() {
     let hasTable = true;
     let existing = [];
     try {
-      existing = await sbGet('class_teachers', 'class_master_id=eq.' + classId + '&select=id,staff_id') || [];
+      existing = await sbGet('class_teachers', 'class_master_id=eq.' + classId + '&select=id,staff_id,role') || [];
     } catch (e) { hasTable = false; }
 
     if (hasTable) {
+      const existingById = {}; existing.forEach(r => { existingById[r.staff_id] = r; });
       const existingSet = new Set(existing.map(r => r.staff_id));
       const selectedSet = new Set(selected);
-      // 追加
+      const roleOf = sid => (ctModalRoles[sid] === 'main') ? 'main' : 'support';
+      // 追加（role 付き）
       for (const sid of selected) {
         if (!existingSet.has(sid)) {
-          try { await sbPost('class_teachers', { class_master_id: classId, staff_id: sid }); } catch (e) {}
+          try { await sbPost('class_teachers', { class_master_id: classId, staff_id: sid, role: roleOf(sid) }); } catch (e) {}
+        } else {
+          // dlm102: 既存行は役割が変わっていれば更新
+          const cur = existingById[sid];
+          const newRole = roleOf(sid);
+          if (cur && (cur.role || 'support') !== newRole) {
+            try { await sbPatch('class_teachers', 'id=eq.' + cur.id, { role: newRole }); } catch (e) {}
+          }
         }
       }
       // 削除（選択解除されたもの）
