@@ -10664,6 +10664,15 @@ async function loadStaffHomeCalendar() {
       });
     } catch(e) { /* テーブル未作成時は未記入扱い（色付けなし運用に倒す） */ }
 
+    // 確定済みの週の、自分の監督コマ（ホームカレンダーにも授業と並べて出す）
+    staffCalSupervisions = {};
+    try {
+      const myCode = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : null;
+      const svSlots = await svGetConfirmedSlotsForStaff(myCode, firstISO, lastISO);
+      svSlots.forEach(s => { (staffCalSupervisions[s.sv_date] || (staffCalSupervisions[s.sv_date] = [])).push(s.period); });
+      Object.keys(staffCalSupervisions).forEach(k => staffCalSupervisions[k].sort((a, b) => a - b));
+    } catch (e) { /* 取得失敗時は監督コマなしで続行 */ }
+
     // 初回のみ：自分の担当授業がその月に1件も無ければ「全体」に倒す（事務スタッフ等への配慮）
     if (!staffHomeCalFilterInit) {
       staffHomeCalFilterInit = true;
@@ -10712,6 +10721,7 @@ function renderStaffHomeCalMonth(year, month) {
     sess.forEach(s => titleParts.push((s.period ? s.period + '限 ' : '') + s.class_name + (s.teacher_name ? '（' + s.teacher_name + '）' : '')));
     evs.forEach(ev => titleParts.push('🎪 ' + ev.title));
     bdays.forEach(b => titleParts.push('🎂 ' + b.name));
+    (staffCalSupervisions[dateISO] || []).forEach(p => titleParts.push('🪑 自習監督 ' + p + '限'));
     if (hasTodo) titleParts.push('📋 ToDo締切 ' + todoInfo.total + '件' + (hasOpenTodo ? '（未完了' + todoInfo.open + '）' : '（完了）'));
     const title = titleParts.join(' / ').replace(/"/g, '&quot;');
 
@@ -10756,6 +10766,10 @@ function renderStaffHomeCalMonth(year, month) {
       const label = (tm ? tm + ' ' : '') + s.class_name;
       items.push({ kind: 'sess', label: label, color: s.color || '#E8923A' });
     });
+    // 監督コマ（確定済み・自分）を授業の後に並べる
+    (staffCalSupervisions[dateISO] || []).forEach(p => {
+      items.push({ kind: 'sv', label: p + '限 🪑監督', color: '#2D6CB6' });
+    });
     // 帯は先に（上に）、単発イベントは後に
     const bandEvs = evs.filter(ev => ev.band);
     const singleEvs = evs.filter(ev => !ev.band);
@@ -10773,6 +10787,8 @@ function renderStaffHomeCalMonth(year, month) {
       show.forEach(it => {
         const safe = (it.label || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         if (it.kind === 'sess') {
+          itemsHtml += '<span class="cal-sess-name" style="background:' + it.color + '" title="' + safe + '">' + safe + '</span>';
+        } else if (it.kind === 'sv') {
           itemsHtml += '<span class="cal-sess-name" style="background:' + it.color + '" title="' + safe + '">' + safe + '</span>';
         } else if (it.kind === 'band') {
           // 帯：開始日/単日のみタイトル表示。中間・終了日は色バーのみで連続して見せる
@@ -27841,6 +27857,7 @@ let staffCalReports = {};   // dateISO -> staff_reports レコード（自分の
 let staffHomeMyReports = new Set();  // 自分が報告書を書いた日付(YYYY-MM-DD)の集合（ホームカレンダー用）
 let staffHomeTodoDue = {};            // dateISO -> {total, open} 自分のToDo締切（ホームカレンダー用）
 let staffCalReportSet = new Set();    // 'classId|date' で class_reports が存在するセット（両カレンダー共用）
+let staffCalSupervisions = {};        // dateISO -> [period,...] 確定済みの自分の監督コマ（両カレンダー共用）
 let staffHomeCalShownYear = null, staffHomeCalShownMonth = null;  // ホームカレンダーが今表示中の年月
 let staffCalModalDate = null;
 
@@ -27953,6 +27970,15 @@ async function loadStaffCalendar() {
       });
     } catch(e) { /* テーブル未作成時は色付けなし */ }
 
+    // 確定済みの週の、自分の監督コマを取得（授業と並べてカレンダーに出す）
+    staffCalSupervisions = {};
+    try {
+      const myCode = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : null;
+      const svSlots = await svGetConfirmedSlotsForStaff(myCode, firstISO, lastISO);
+      svSlots.forEach(s => { (staffCalSupervisions[s.sv_date] || (staffCalSupervisions[s.sv_date] = [])).push(s.period); });
+      Object.keys(staffCalSupervisions).forEach(k => staffCalSupervisions[k].sort((a, b) => a - b));
+    } catch (e) { /* 取得失敗時は監督コマなしで続行 */ }
+
     renderStaffCalMonth();
   } catch(e) {
     grid.innerHTML = '<div style="grid-column:1/8;font-size:12px;color:var(--red);text-align:center;padding:12px">読み込みに失敗しました</div>';
@@ -28031,6 +28057,7 @@ function renderStaffCalMonth() {
     sess.forEach(s => titleParts.push((s.period ? s.period + '限 ' : '') + s.class_name + (s.teacher_name ? '（' + s.teacher_name + '）' : '')));
     evs.forEach(ev => titleParts.push('🎪 ' + ev.title));
     bdays.forEach(b => titleParts.push('🎂 ' + b.name));
+    (staffCalSupervisions[dateISO] || []).forEach(p => titleParts.push('🪑 自習監督 ' + p + '限'));
     if (reportMissing) titleParts.push('授業報告 未記入');
     const title = titleParts.join(' / ').replace(/"/g, '&quot;');
 
@@ -28052,6 +28079,11 @@ function renderStaffCalMonth() {
     // 授業報告 未記入マーク（右下）
     if (reportMissing) {
       marks += '<span style="position:absolute;bottom:1px;right:3px;font-size:8px;font-weight:700;color:var(--red)">!</span>';
+    }
+    // 監督コマ（確定済み・自分）マーク（右下・報告未記入と重ならないよう少し内側）
+    const svPeriods = staffCalSupervisions[dateISO] || [];
+    if (svPeriods.length) {
+      marks += '<span style="position:absolute;bottom:1px;right:' + (reportMissing ? '10px' : '3px') + ';font-size:8px;line-height:1">🪑</span>';
     }
 
     html += '<div class="cal-day" title="' + title + '"' + onclick +
@@ -28114,6 +28146,21 @@ function openStaffCalModal(dateISO, simple) {
         chgBadge +
         repHtml +
       '</div>';
+    });
+    body += '</div>';
+  }
+
+  // 自習監督（確定済み・自分の担当コマ）
+  const svModalPeriods = (staffCalSupervisions[dateISO] || []).slice().sort((a, b) => a - b);
+  if (svModalPeriods.length) {
+    body += '<div style="margin-top:10px"><div style="font-size:12px;font-weight:700;color:#2D6CB6;margin-bottom:6px">🪑 自習監督</div>';
+    svModalPeriods.forEach(p => {
+      const t = svPeriodTimeLabel(p);
+      body += '<div style="background:#EAF2FB;border:1px solid #9CC0E8;border-radius:8px;padding:8px 10px;margin-bottom:6px">' +
+        '<div style="font-size:13px;font-weight:700;color:#1E4276">' + p + '限 自習監督' +
+        '<span style="font-size:9px;background:#2D6CB6;color:#fff;padding:1px 6px;border-radius:10px;margin-left:6px">担当</span></div>' +
+        (t ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + t + '〜</div>' : '') +
+        '</div>';
     });
     body += '</div>';
   }
@@ -34899,6 +34946,45 @@ function svMondayOf(d) {
   return x;
 }
 
+// ある期間[fromIso,toIso]で「確定済みの週」に属する、指定スタッフ(コード)の監督コマを返す。
+// カレンダー／ホームに授業と並べて出すための共通取得。
+// week_confirmed テーブルが無い環境では [] を返す（＝まだ誰のカレンダーにも出さない安全側）。
+// 戻り値: [{ sv_date, period, staff_id }]
+// 日付は 'YYYY-MM-DD' 文字列から new Date(y,m-1,d) でローカル構築する（UTCドリフト回避）。
+function svMondayIsoOf(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return svIsoFromDate(svMondayOf(new Date(y, m - 1, d)));
+}
+async function svGetConfirmedSlotsForStaff(staffCode, fromIso, toIso) {
+  if (!staffCode) return [];
+  let confirmedWeeks;
+  try {
+    const rows = await sbGet('supervision_week_confirmed',
+      'week_monday=gte.' + svMondayIsoOf(fromIso) +
+      '&week_monday=lte.' + toIso + '&select=week_monday') || [];
+    confirmedWeeks = new Set(rows.map(r => r.week_monday));
+  } catch (e) {
+    return []; // テーブル未作成（SQL未適用）→ 何も出さない
+  }
+  if (!confirmedWeeks.size) return [];
+  let assigns = [];
+  try {
+    assigns = await sbGet('supervision_assignments',
+      'sv_date=gte.' + fromIso + '&sv_date=lte.' + toIso +
+      '&cancelled=eq.false&staff_id=eq.' + encodeURIComponent(staffCode) +
+      '&select=sv_date,period,staff_id') || [];
+  } catch (e) { return []; }
+  // 確定済みの週のコマだけに絞る
+  return assigns.filter(a => confirmedWeeks.has(svMondayIsoOf(a.sv_date)));
+}
+
+// 監督コマの表示ラベル（時限→時刻帯）。カレンダー・ホーム共通。
+function svPeriodTimeLabel(period) {
+  const times = { 1:'10:20', 2:'12:30', 3:'14:20', 4:'16:10', 5:'18:00', 6:'19:50' };
+  return times[period] || '';
+}
+
+
 // ============================================================
 // dlm88: 自習監督シフト刷新（区分・定型シフト・三値希望）
 // ============================================================
@@ -35589,6 +35675,14 @@ async function svLoadDecide() {
   }
   wishes = wishes || []; assigns = assigns || []; dayNotes = dayNotes || []; svPerms = svPerms || [];
 
+  // この週が「確定済み」か（supervision_week_confirmed に fromIso の行があるか）
+  let weekConfirmed = false, weekConfirmedBy = null, weekConfirmedAt = null;
+  try {
+    const wc = await sbGet('supervision_week_confirmed',
+      'week_monday=eq.' + fromIso + '&select=confirmed_by,confirmed_at&limit=1') || [];
+    if (wc.length) { weekConfirmed = true; weekConfirmedBy = wc[0].confirmed_by; weekConfirmedAt = wc[0].confirmed_at; }
+  } catch (e) { /* テーブル未作成なら未確定扱い */ }
+
   // 未入力者：監督対象（社会人・大学生）のうち、この週に希望も×理由も1件も出していない人。
   const submittedIds = new Set();
   wishes.forEach(w => { if (w.staff_id) submittedIds.add(String(w.staff_id)); });
@@ -35714,7 +35808,28 @@ async function svLoadDecide() {
       h = '<div style="font-size:12px;color:var(--muted)">この週は希望も担当もありません。</div>';
     }
   }
-  box.innerHTML = h;
+
+  // 「これで確定」UI。確定するとその週の担当者のカレンダーに監督コマが出て、本人に通知が届く。
+  const assignCount = assigns.length;
+  let confirmUi = '';
+  if (weekConfirmed) {
+    let atLabel = '';
+    try { if (weekConfirmedAt) { const dt = new Date(weekConfirmedAt); atLabel = (dt.getMonth()+1) + '/' + dt.getDate(); } } catch (e) {}
+    confirmUi = '<div style="margin-top:14px;border:1px solid #A6D5B5;background:#EAF7EE;border-radius:10px;padding:10px 12px">' +
+      '<div style="font-size:13px;font-weight:800;color:#1A7340;margin-bottom:2px">✅ この週は確定済み</div>' +
+      '<div style="font-size:11px;color:#3B7A52;line-height:1.6">担当者のカレンダー（ホーム・マイカレンダー）に監督コマが表示され、本人へ通知済みです。' +
+      (weekConfirmedBy ? '（確定：' + escapeHtml(resolveStaffName(weekConfirmedBy) || weekConfirmedBy) + (atLabel ? ' ' + atLabel : '') + '）' : '') + '</div>' +
+      '<div style="text-align:right;margin-top:6px"><button onclick="svUnconfirmWeek(\'' + fromIso + '\')" style="font-size:11px;font-weight:700;color:#C0392B;background:#fff;border:1px solid #E0A0A0;border-radius:6px;padding:4px 12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">確定を解除</button></div>' +
+      '</div>';
+  } else {
+    confirmUi = '<div style="margin-top:14px;border:1px solid #9CC0E8;background:#F3F8FD;border-radius:10px;padding:10px 12px">' +
+      '<div style="font-size:12px;color:#1E4276;line-height:1.7;margin-bottom:6px">決定した担当（' + assignCount + 'コマ）でこの週を確定します。確定すると<b>担当者のカレンダーに監督コマが表示</b>され、<b>本人へ通知</b>が届きます。</div>' +
+      '<button onclick="svConfirmWeek(\'' + fromIso + '\',\'' + toIso + '\')"' + (assignCount ? '' : ' disabled') +
+      ' style="width:100%;padding:11px;font-size:14px;font-weight:800;color:#fff;background:' + (assignCount ? 'linear-gradient(135deg,#2D6CB6,#1E4E8A)' : '#B7C4D4') + ';border:none;border-radius:8px;cursor:' + (assignCount ? 'pointer' : 'not-allowed') + ';font-family:\'Noto Sans JP\',sans-serif">✅ この週を確定する</button>' +
+      (assignCount ? '' : '<div style="font-size:11px;color:var(--muted);margin-top:5px">まだ確定コマがありません。先に各コマの担当を「決定」してください。</div>') +
+      '</div>';
+  }
+  box.innerHTML = h + confirmUi;
 }
 
 // ============================================================
@@ -36053,9 +36168,8 @@ async function svDecide(sv_date, period, staff_id, staff_name) {
         decided_by: svMyStaffId()
       });
     }
-    showToast('担当を決定しました', 'success');
-    // dlm97: 確定した本人の ToDo に「自習監督が決まりました」を通知
-    if (isNewConfirm) { svNotifyAssignee(staff_id, sv_date, period).catch(() => {}); }
+    showToast('担当を決定しました（仮）', 'success');
+    // 通知は「これで確定」時にまとめて送るため、個別決定では通知しない（決定＝仮決め段階）。
     svLoadDecide();
   } catch (e) {
     console.warn('svDecide失敗', e);
@@ -36100,6 +36214,92 @@ async function svCancelAssign(id) {
     showToast('確定を取り消しました', 'success');
     svLoadDecide();
   } catch (e) { showToast('取消に失敗しました', 'error'); }
+}
+
+// 「これで確定」：その週(fromIso=月曜)を確定登録し、担当者全員のカレンダーに監督コマを出す＋本人へ通知。
+async function svConfirmWeek(fromIso, toIso) {
+  if (!canDecideSupervision()) { showToast('確定権限がありません', 'error'); return; }
+  try {
+    // その週の確定コマ（担当者ごとにまとめる）
+    const assigns = await sbGet('supervision_assignments',
+      'sv_date=gte.' + fromIso + '&sv_date=lte.' + toIso + '&cancelled=eq.false&select=sv_date,period,staff_id&order=sv_date,period') || [];
+    if (!assigns.length) { showToast('確定するコマがありません', 'info'); return; }
+    const weekLabel = svFmtDate(fromIso) + '〜' + svFmtDate(toIso);
+    if (!confirm(weekLabel + ' の監督（' + assigns.length + 'コマ）を確定します。\n担当者のカレンダーに反映し、本人へ通知します。よろしいですか？')) return;
+    showLoading('確定中...');
+    // 週確定フラグを upsert（テーブル未作成なら明示エラー）
+    try {
+      await svUpsert('supervision_week_confirmed', 'week_monday',
+        { week_monday: fromIso, confirmed_by: svMyStaffId(), confirmed_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    } catch (e) {
+      hideLoading();
+      showToast('確定テーブルが未作成です（create_supervision_week_confirmed.sql を実行してください）', 'error');
+      return;
+    }
+    // 担当者ごとにコマをまとめて通知（1人1通）
+    const byStaff = {};
+    assigns.forEach(a => { (byStaff[a.staff_id] || (byStaff[a.staff_id] = [])).push(a); });
+    const staffRows = await sbGet('staff', 'is_active=eq.true&select=id,staff_id') || [];
+    const uuidByCode = {}; staffRows.forEach(s => { uuidByCode[s.staff_id] = s.id; });
+    const fromId = (currentStaff && currentStaff.id) || svMyStaffId();
+    let notified = 0;
+    for (const code of Object.keys(byStaff)) {
+      const toId = uuidByCode[code];
+      if (!toId) continue;
+      const slots = byStaff[code].slice().sort((a, b) => (a.sv_date + a.period).localeCompare(b.sv_date + b.period));
+      const lines = slots.map(s => {
+        let dl = s.sv_date;
+        try { const [y,m,d] = s.sv_date.split('-').map(n=>parseInt(n,10)); dl = m+'/'+d+'('+['日','月','火','水','木','金','土'][new Date(y,m-1,d).getDay()]+')'; } catch(e){}
+        return '・' + dl + ' ' + s.period + '限';
+      }).join('\n');
+      const title = '今週の自習監督が確定しました（' + weekLabel + '）';
+      const detail = weekLabel + ' の自習監督が確定しました。担当は以下です。カレンダーにも表示されています。\n' + lines + '\n当日夜、ホームの「今日の予定」から監督報告をお願いします。';
+      try {
+        await sbPost('staff_todos', { from_staff_id: fromId, to_staff_id: toId, title: title, detail: detail, link_target: 'supervision' });
+        notified++;
+      } catch (err) {
+        if (/column|PGRST|400/i.test(String(err && err.message || err))) {
+          await sbPost('staff_todos', { from_staff_id: fromId, to_staff_id: toId, title: title, detail: detail });
+          notified++;
+        }
+      }
+    }
+    hideLoading();
+    showToast('✅ 確定しました（' + notified + '名に通知）', 'success');
+    svLoadDecide();
+  } catch (e) {
+    hideLoading();
+    console.warn('svConfirmWeek失敗', e);
+    showToast('確定に失敗しました', 'error');
+  }
+}
+
+// 週の確定を解除（カレンダー表示を取り下げる）。assignments 自体は残す。
+async function svUnconfirmWeek(fromIso) {
+  if (!canDecideSupervision()) { showToast('権限がありません', 'error'); return; }
+  if (!confirm('この週の「確定」を解除しますか？\n担当者のカレンダーから監督コマが消えます（決定した担当自体は残ります）。')) return;
+  showLoading('解除中...');
+  try {
+    // 物理削除は不可のため、確定行を「無効化」する運用にする。
+    // week_confirmed には無効化列が無いので、confirmed_by を空にして「未確定」とみなす…のではなく、
+    // ここは行を消す代わりに confirmed_at を保持しつつ、判定は「行の存在」で行っているため
+    // 解除＝行を消したい。DELETE不可なので、確定判定を confirmed_by の有無に変える方式は取らず、
+    // 代替として week_monday はそのままに、別カラムが無い以上、DELETEを試みる（RLSで拒否ならメッセージ）。
+    const res = await fetch(SB_URL + '/rest/v1/supervision_week_confirmed?week_monday=eq.' + fromIso, {
+      method: 'DELETE',
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Prefer': 'return=minimal' }
+    });
+    hideLoading();
+    if (res.ok) {
+      showToast('確定を解除しました', 'success');
+      svLoadDecide();
+    } else {
+      showToast('解除できませんでした（権限設定をご確認ください）', 'error');
+    }
+  } catch (e) {
+    hideLoading();
+    showToast('解除に失敗しました', 'error');
+  }
 }
 
 // ---------- 監督報告（自習の様子＋次への引き継ぎ dlm32） ----------
