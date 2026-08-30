@@ -5178,9 +5178,14 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <!-- dlm92: ×の日の理由入力 -->
         <div id="sv-day-reasons"></div>
         <!-- dlm92: 保存バー（ローカル編集→まとめて保存） -->
-        <div id="sv-save-bar" style="display:none;align-items:center;gap:10px;margin-top:12px">
+        <div id="sv-save-bar" style="display:none;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
           <button id="sv-save-btn" onclick="svSaveWishes()" style="opacity:0.55;font-size:13px;font-weight:700;background:#1A7340;color:#fff;border:none;border-radius:8px;padding:9px 20px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">保存</button>
           <span style="font-size:10.5px;color:var(--muted);line-height:1.5">タップした変更は、保存を押すまで反映されません。</span>
+        </div>
+        <!-- dlm107: この週は全部入れない（全休）を申請するボタン。希望を出さないと「未入力」扱いになるため、明示的に「全休」を出せるようにする。 -->
+        <div id="sv-allunavail-bar" style="display:none;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
+          <button onclick="svRequestFullWeekOff()" style="font-size:12px;font-weight:700;background:#FBEFEF;color:#B03A34;border:1px solid #E3B4B0;border-radius:8px;padding:8px 14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🚫 今週は全部入れません（全休を申請）</button>
+          <div style="font-size:10px;color:var(--muted);margin-top:5px;line-height:1.5">1コマも入れない週は、これを押すと「全休」として登録され、未入力の催促が来なくなります。</div>
         </div>
       </div>
 
@@ -6342,7 +6347,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm107';
+const APP_VERSION = '20260702dlm108';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -18559,17 +18564,21 @@ async function loadTeacherClassMap(opts) {
       if (ENGLISH_MAIN_TEACHER_CODES.indexOf(String(s.staff_id || '').toLowerCase()) >= 0) englishMainUuids.add(s.id);
     });
   }
-  const add = (sid, cls) => {
+  // isMain=true（class_master.teacher_staff_id ＝ その授業の主担当）のときは
+  // 英語であっても必ず本人の担当として載せる（＝授業のある時間は監督不可にする）。
+  // 英語の追加担当(class_teachers)だけを、メイン講師でない限り除外する
+  // （編集権限のための登録であって実際の担当ではないため）。
+  // 以前は主担当でも subject==='英語' かつメイン講師コード外だと除外され、
+  // 大野など英語授業を主担当で持つ社会人の授業がグリッドに出ない不具合があった。
+  const add = (sid, cls, isMain) => {
     if (!sid || !cls || excludeUuids.has(sid)) return;
-    // 英語授業は「メイン講師」だけを担当(=ロック対象)として載せる。
-    // それ以外は編集権限のための登録なので載せない（監督に入れられるようにする）。
-    if (excludeEnglishExtra && cls.subject === '英語' && !englishMainUuids.has(sid)) return;
+    if (excludeEnglishExtra && !isMain && cls.subject === '英語' && !englishMainUuids.has(sid)) return;
     if (!byTeacher[sid]) byTeacher[sid] = [];
     if (!byTeacher[sid].some(x => x.id === cls.id)) byTeacher[sid].push(cls);
   };
-  // 主担当・追加担当ともに add で英語メイン講師判定を通す
-  Object.values(classById).forEach(c => add(c.teacher_staff_id, c));
-  ct.forEach(r => { add(r.staff_id, classById[r.class_master_id]); });
+  // 主担当は isMain=true で常に載せる。追加担当のみ英語フィルタを通す。
+  Object.values(classById).forEach(c => add(c.teacher_staff_id, c, true));
+  ct.forEach(r => { add(r.staff_id, classById[r.class_master_id], false); });
   return { byTeacher, classById, staffById };
 }
 
@@ -19281,6 +19290,13 @@ async function awardTodoPoints(staffId, isLate) {
   return ptsDelta;
 }
 
+// ポイント対象外のToDoか？（自習監督の確定通知などは「予定のお知らせ」なのでポイントを付けない）
+function todoAwardsPoints(todo) {
+  if (!todo) return true;
+  if (todo.link_target === 'supervision') return false;
+  return true;
+}
+
 async function doneTodo(id) {
   // 先に対象を読んでから確認する。'any' は影響範囲が広いので文言を変える
   let todo = null;
@@ -19308,9 +19324,10 @@ async function doneTodo(id) {
       await sbPatch('staff_todos',
         'group_id=eq.' + todo.group_id + '&is_done=eq.false',
         { is_done: true, done_at: nowIso, done_by_staff_id: currentStaff.id, rejected_at: null, reject_note: null });
-      await awardTodoPoints(currentStaff.id, isLateAny);
+      const awardAny = todoAwardsPoints(todo);
+      if (awardAny) await awardTodoPoints(currentStaff.id, isLateAny);
       hideLoading();
-      showToast(isLateAny ? '完了（遅延 -1pt）／同じグループのぶんを解除しました' : '✅ 完了！+1pt ／同じグループのぶんを解除しました', isLateAny ? 'error' : 'success');
+      showToast(!awardAny ? '✅ 完了しました／同じグループのぶんを解除しました' : (isLateAny ? '完了（遅延 -1pt）／同じグループのぶんを解除しました' : '✅ 完了！+1pt ／同じグループのぶんを解除しました'), (awardAny && isLateAny) ? 'error' : 'success');
       refreshTodoViews();
       return;
     }
@@ -19328,10 +19345,11 @@ async function doneTodo(id) {
 
     const isLate = isTodoLateByDoneAt({ due_date: todo?.due_date, done_at: nowIso });
     await sbPatch('staff_todos', 'id=eq.' + id, { is_done: true, done_at: nowIso });
-    await awardTodoPoints(currentStaff.id, isLate);
+    const award = todoAwardsPoints(todo);
+    if (award) await awardTodoPoints(currentStaff.id, isLate);
 
     hideLoading();
-    showToast(isLate ? '完了（遅延 -1pt）' : '✅ 完了！+1pt', isLate ? 'error' : 'success');
+    showToast(!award ? '✅ 完了しました' : (isLate ? '完了（遅延 -1pt）' : '✅ 完了！+1pt'), (award && isLate) ? 'error' : 'success');
     refreshTodoViews();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
@@ -19345,9 +19363,10 @@ async function approveTodo(id) {
     if (!todo) { hideLoading(); showToast('対象が見つかりません', 'error'); return; }
     const isLate = isTodoLateByDoneAt(todo);
     await sbPatch('staff_todos', 'id=eq.' + id, { approved_at: new Date().toISOString(), rejected_at: null });
-    await awardTodoPoints(todo.to_staff_id, isLate);
+    const awardApp = todoAwardsPoints(todo);
+    if (awardApp) await awardTodoPoints(todo.to_staff_id, isLate);
     hideLoading();
-    showToast(isLate ? '✅ 承認しました（遅延 -1pt）' : '✅ 承認しました（+1pt）', isLate ? 'error' : 'success');
+    showToast(!awardApp ? '✅ 承認しました' : (isLate ? '✅ 承認しました（遅延 -1pt）' : '✅ 承認しました（+1pt）'), (awardApp && isLate) ? 'error' : 'success');
     refreshTodoViews();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
@@ -19372,9 +19391,10 @@ async function forceCompleteTodo(id, name) {
       is_done: true, done_at: nowIso, approved_at: nowIso,
       done_by_staff_id: currentStaff.id, rejected_at: null, reject_note: null
     });
-    await awardTodoPoints(todo.to_staff_id, isLate);
+    const awardForce = todoAwardsPoints(todo);
+    if (awardForce) await awardTodoPoints(todo.to_staff_id, isLate);
     hideLoading();
-    showToast(isLate ? '⚡ 強制完了しました（期限超 -1pt）' : '⚡ 強制完了しました（+1pt）', isLate ? 'error' : 'success');
+    showToast(!awardForce ? '⚡ 強制完了しました' : (isLate ? '⚡ 強制完了しました（期限超 -1pt）' : '⚡ 強制完了しました（+1pt）'), (awardForce && isLate) ? 'error' : 'success');
     refreshTodoViews();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
@@ -35258,6 +35278,7 @@ async function svRenderWeek() {
     grid.innerHTML = '<div style="font-size:12px;color:var(--muted);line-height:1.7;padding:10px;background:#f2f2f2;border-radius:8px">あなたは監督シフトの対象外に設定されています。希望の入力は不要です。</div>';
     const rz = document.getElementById('sv-day-reasons'); if (rz) rz.innerHTML = '';
     const sb = document.getElementById('sv-save-bar'); if (sb) sb.style.display = 'none';
+    const ab = document.getElementById('sv-allunavail-bar'); if (ab) ab.style.display = 'none';
     return;
   }
   // 区分未設定なら希望入力に進めない旨を表示（管理者に設定依頼）
@@ -35265,6 +35286,7 @@ async function svRenderWeek() {
     grid.innerHTML = '<div style="font-size:12px;color:#C0392B;line-height:1.7;padding:10px;background:#FCEDED;border-radius:8px">あなたの区分（社会人／大学生）が未設定です。管理者に区分の設定を依頼してください。設定後、この画面で希望を入力できます。</div>';
     const rz = document.getElementById('sv-day-reasons'); if (rz) rz.innerHTML = '';
     const sb = document.getElementById('sv-save-bar'); if (sb) sb.style.display = 'none';
+    const ab = document.getElementById('sv-allunavail-bar'); if (ab) ab.style.display = 'none';
     return;
   }
 
@@ -35320,6 +35342,7 @@ async function svRenderWeek() {
 
   svMarkDirty(false);
   const sb = document.getElementById('sv-save-bar'); if (sb) sb.style.display = 'flex';
+  const ab = document.getElementById('sv-allunavail-bar'); if (ab) ab.style.display = 'block';
   svPaintGrid();
   svRenderDayReasons();
 }
@@ -35545,6 +35568,43 @@ async function svSaveWishes() {
   }
 }
 
+// dlm107: この週は全部入れない（全休）を申請する。
+//  ・その週の月曜に supervision_day_notes（reason=全休）を1件入れる → 決定画面で「回答済み・全休」とわかり、未入力の催促対象から外れる。
+//  ・すでに出している ○/△ の希望があれば取り下げる（全休と矛盾するため）。
+//  ・SQLは不要（既存テーブルのみ使用）。
+async function svRequestFullWeekOff() {
+  if (!canWishSupervision()) { showToast('希望を出せる権限がありません', 'error'); return; }
+  const sid = svMyStaffId();
+  if (!sid || !_svWeekMonday) { showToast('スタッフ情報が取得できません', 'error'); return; }
+  const monday = _svWeekMonday;
+  const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
+  const fromIso = svIsoFromDate(monday);
+  const toIso = svIsoFromDate(sunday);
+  const wk = svFmtDate(fromIso) + '〜' + svFmtDate(sunday.getFullYear() + '-' + String(sunday.getMonth()+1).padStart(2,'0') + '-' + String(sunday.getDate()).padStart(2,'0'));
+  if (!confirm(wk + ' の週は「全部入れません（全休）」で申請します。\nこの週に出している○△の希望があれば取り下げます。よろしいですか？')) return;
+  showLoading('全休を申請中...');
+  try {
+    // その週の自分の有効な希望（○△×とも）を取り下げる
+    const mine = await sbGet('supervision_wishes',
+      'staff_id=eq.' + encodeURIComponent(sid) + '&withdrawn=eq.false&sv_date=gte.' + fromIso + '&sv_date=lte.' + toIso + '&select=id') || [];
+    for (const w of mine) {
+      await sbPatch('supervision_wishes', 'id=eq.' + w.id, { withdrawn: true, updated_at: new Date().toISOString() });
+    }
+    // 週の月曜に「全休」理由を1件入れる（決定画面の理由バナー＆回答済み判定に使われる）
+    await svUpsert('supervision_day_notes', 'staff_id,sv_date',
+      { staff_id: sid, sv_date: fromIso, reason: '今週は全休（1コマも入れません）', updated_at: new Date().toISOString() });
+    hideLoading();
+    showToast('🚫 全休で申請しました', 'success');
+    await svRenderWeek();
+    if (canDecideSupervision()) svLoadDecide();
+    svRenderView();
+  } catch (e) {
+    hideLoading();
+    console.warn('svRequestFullWeekOff失敗', e);
+    showToast('申請に失敗しました', 'error');
+  }
+}
+
 // ---------- 担当を決定（管理者・週カレンダー dlm32） ----------
 let _svDecideMonday = null;   // 決定画面で表示中の週の月曜（Date）
 
@@ -35670,10 +35730,11 @@ async function svLoadDecide() {
   if ((typeof allStaffList === 'undefined' || !allStaffList || !allStaffList.length) && typeof loadStaffSelect === 'function') {
     try { await loadStaffSelect(); } catch (e) {}
   }
-  // 週の初期化（未設定なら今日を含む週）
+  // 週の初期化（未設定なら翌週＝来週分を最初に見せる。確認・決定するのは来週分のため）
   if (!_svDecideMonday) {
     const [y, m, d] = getTodayJST().split('-').map(Number);
-    _svDecideMonday = svMondayOf(new Date(y, m-1, d));
+    const thisMon = svMondayOf(new Date(y, m-1, d));
+    _svDecideMonday = new Date(thisMon.getFullYear(), thisMon.getMonth(), thisMon.getDate() + 7);
   }
   const monday = _svDecideMonday;
   const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
