@@ -6347,7 +6347,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm109';
+const APP_VERSION = '20260702dlm110';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -35074,58 +35074,94 @@ function svIsWorkingCell(dow, period) {
 }
 
 // ---- 定型シフト登録UI（社会人） ----
+// dlm110: 定型シフトはローカル編集（タップで選ぶ→まとめて保存）。
+//  _svShiftDraft[dow] = Set(選択中の限)  空Set=休み。保存時に from=min, to=max（範囲）に変換。
+var _svShiftDraft = null;
+var _svShiftDirty = false;
+
+function svShiftDraftFromTemplate() {
+  const d = {};
+  for (const dow of [1,2,3,4,5,6,0]) {
+    const t = _svMyShiftTemplate[dow];
+    d[dow] = new Set();
+    if (t && t.from) { for (let p = t.from; p <= t.to; p++) d[dow].add(p); }
+  }
+  return d;
+}
+
 function svRenderShiftTemplateUI() {
   const box = document.getElementById('sv-shift-template');
   if (!box) return;
   if (_svEmploymentType !== 'shakaijin') { box.style.display = 'none'; return; }
   box.style.display = 'block';
+  if (!_svShiftDraft) { _svShiftDraft = svShiftDraftFromTemplate(); _svShiftDirty = false; }
   const wl = ['日','月','火','水','木','金','土'];
-  // 曜日は月〜日の順で並べる（dow: 1..6,0）
   const order = [1,2,3,4,5,6,0];
-  const perOpts = (sel, includeZero) => {
-    let o = includeZero ? '<option value="0"' + (sel === 0 ? ' selected' : '') + '>休み</option>' : '';
-    for (let p = 1; p <= 6; p++) o += '<option value="' + p + '"' + (sel === p ? ' selected' : '') + '>' + p + '限</option>';
-    return o;
-  };
   let h = '<div style="font-size:13px;font-weight:700;color:#B87A2D;margin-bottom:6px">🕒 定型出勤シフト（毎週）</div>' +
-    '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">曜日ごとに勤務する限の範囲を登録します。勤務外の限は編みかけで表示され、監督には入れません。休みの曜日は「休み」を選んでください。</div>';
-  h += '<table style="border-collapse:collapse;font-size:12px"><tr><th style="padding:3px 8px;text-align:left">曜日</th><th style="padding:3px 8px">出勤（開始）</th><th style="padding:3px 8px">終了</th></tr>';
+    '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">曜日ごとに<b>出勤する限をタップ</b>で選び、最後に「定型シフトを保存」を押してください。連続した範囲（開始〜終了）として登録されます。1つも選ばなければその曜日は<b>休み</b>です。</div>';
+  h += '<div style="display:flex;flex-direction:column;gap:6px">';
   order.forEach(dow => {
-    const t = _svMyShiftTemplate[dow];
-    const from = t ? t.from : 0;
-    const to = t ? t.to : 6;
-    h += '<tr>' +
-      '<td style="padding:3px 8px;font-weight:700">' + wl[dow] + '</td>' +
-      '<td style="padding:3px 8px"><select id="svst-from-' + dow + '" style="font-size:12px;padding:3px 6px">' + perOpts(from, true) + '</select></td>' +
-      '<td style="padding:3px 8px"><select id="svst-to-' + dow + '" style="font-size:12px;padding:3px 6px">' + perOpts(to, false) + '</select></td>' +
-      '</tr>';
+    const sel = _svShiftDraft[dow] || new Set();
+    const isOff = sel.size === 0;
+    h += '<div style="display:flex;align-items:center;gap:6px">';
+    h += '<div style="width:26px;font-weight:700;font-size:13px;color:' + (isOff ? '#B03A34' : 'var(--text)') + '">' + wl[dow] + '</div>';
+    for (let p = 1; p <= 6; p++) {
+      const on = sel.has(p);
+      h += '<button type="button" onclick="svToggleShiftCell(' + dow + ',' + p + ')" ' +
+        'style="width:34px;height:32px;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer;' +
+        'font-family:\'Noto Sans JP\',sans-serif;' +
+        (on
+          ? 'background:#F3D9BF;border:1.5px solid #C88A3E;color:#8a5a1a;'
+          : 'background:#fff;border:1px solid #ddd;color:#bbb;') +
+        '">' + p + '</button>';
+    }
+    h += '<span style="margin-left:6px;font-size:11px;font-weight:700;color:' + (isOff ? '#B03A34' : '#8a5a1a') + '">' +
+      (isOff ? '休み' : (Math.min(...sel) + '〜' + Math.max(...sel) + '限')) + '</span>';
+    h += '</div>';
   });
-  h += '</table>';
-  h += '<button onclick="svSaveShiftTemplate()" style="margin-top:8px;font-size:12px;font-weight:700;background:var(--orange);color:#fff;border:1px solid var(--orange);border-radius:8px;padding:6px 14px;cursor:pointer">定型シフトを保存</button>';
+  h += '</div>';
+  // 保存ボタン（未変更のときは淡く）
+  h += '<div style="display:flex;align-items:center;gap:10px;margin-top:10px">' +
+    '<button onclick="svSaveShiftTemplate()" style="opacity:' + (_svShiftDirty ? '1' : '0.55') + ';font-size:12px;font-weight:700;background:var(--orange);color:#fff;border:1px solid var(--orange);border-radius:8px;padding:7px 16px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">定型シフトを保存</button>' +
+    (_svShiftDirty ? '<span style="font-size:10.5px;color:#B03A34">未保存の変更があります</span>' : '<span style="font-size:10.5px;color:var(--muted)">タップで選んで保存を押してください</span>') +
+    '</div>';
   box.innerHTML = h;
+}
+
+// タップで限を ON/OFF（ローカルのみ）。範囲外を飛ばして選んでも保存時は min〜max の連続範囲になる点を明示。
+function svToggleShiftCell(dow, p) {
+  if (!_svShiftDraft) _svShiftDraft = svShiftDraftFromTemplate();
+  const sel = _svShiftDraft[dow] || (_svShiftDraft[dow] = new Set());
+  if (sel.has(p)) sel.delete(p); else sel.add(p);
+  _svShiftDirty = true;
+  svRenderShiftTemplateUI();
 }
 
 async function svSaveShiftTemplate() {
   const sid = svMyStaffId();
   if (!sid) { showToast('スタッフ情報が取得できません', 'error'); return; }
+  if (!_svShiftDraft) _svShiftDraft = svShiftDraftFromTemplate();
   const order = [1,2,3,4,5,6,0];
+  showLoading('保存中...');
   try {
     for (const dow of order) {
-      const fromEl = document.getElementById('svst-from-' + dow);
-      const toEl = document.getElementById('svst-to-' + dow);
-      if (!fromEl) continue;
-      let from = parseInt(fromEl.value, 10) || 0;
-      let to = parseInt(toEl.value, 10) || 6;
-      if (from && to < from) to = from; // 終了が開始より前なら補正
+      const sel = _svShiftDraft[dow] || new Set();
+      let from, to;
+      if (sel.size === 0) { from = null; to = 6; }        // 休み
+      else { from = Math.min(...sel); to = Math.max(...sel); }  // 連続範囲に丸める
       // upsert（staff_id,dow で一意）
       await svUpsert('staff_shift_template', 'staff_id,dow',
-        { staff_id: sid, dow: dow, work_from_period: from || null, work_to_period: to, updated_at: new Date().toISOString() });
+        { staff_id: sid, dow: dow, work_from_period: from, work_to_period: to, updated_at: new Date().toISOString() });
     }
-    showToast('定型シフトを保存しました', 'success');
+    _svShiftDirty = false;
     await svLoadMyShiftTemplate();
+    _svShiftDraft = svShiftDraftFromTemplate();  // 保存後の状態を基準に
+    hideLoading();
+    showToast('定型シフトを保存しました', 'success');
     svRenderShiftTemplateUI();
     await svRenderWeek();
   } catch (e) {
+    hideLoading();
     console.warn('svSaveShiftTemplate失敗', e);
     showToast('保存に失敗しました（SQL未適用の可能性）', 'error');
   }
@@ -35864,7 +35900,11 @@ async function svLoadDecide() {
   //  assignSet: 'iso|period|code' -> true（確定）
   //  wishMap:   'iso|period|code' -> 'circle'|'triangle'|'cross'
   const assignSet = {};
-  assigns.forEach(a => { assignSet[a.sv_date + '|' + a.period + '|' + String(a.staff_id)] = true; });
+  const genbaSet = {}; // 'iso|period' -> true（現場対応：自習監督なし）
+  assigns.forEach(a => {
+    if (String(a.staff_id) === 'genba') { genbaSet[a.sv_date + '|' + a.period] = true; return; }
+    assignSet[a.sv_date + '|' + a.period + '|' + String(a.staff_id)] = true;
+  });
   const wishMap = {};
   wishes.forEach(w => { wishMap[w.sv_date + '|' + w.period + '|' + String(w.staff_id)] = w.wish_type; });
   // ×理由（日単位）：'iso|code' -> reason
@@ -35943,6 +35983,22 @@ async function svLoadDecide() {
     });
     mt += '</tr>';
   });
+  // ===== 現場対応 行（最下部・固定）=====
+  // 自習監督を置かないコマ（大きい授業がある等）を「現場対応」として印だけ付ける。
+  // staff_id='genba' の assignment 行として保存。確定・通知・カレンダー・監督コマ数には入らない。
+  mt += '<tr><td style="position:sticky;left:0;z-index:2;background:#FCEFD9;border:1px solid #ccc;padding:3px 6px;font-weight:800;min-width:66px;color:#8a5a1a">現場対応</td>';
+  dates.forEach((d, di) => {
+    const iso = svIsoFromDate(d);
+    P.forEach(p => {
+      const on = !!genbaSet[iso + '|' + p];
+      const title = '現場対応 ' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + p + '限' + (on ? '：現場（自習監督なし・タップで解除）' : '：タップで現場にする（監督を置かない）');
+      const bg = on ? '#D9A441' : '#FFF8EC';
+      const txt = on ? '現' : '';
+      const color = on ? '#fff' : '#caa';
+      mt += '<td onclick="svToggleGenba(\'' + iso + '\',' + p + ',' + (on ? 'true' : 'false') + ')" title="' + escapeAttr(title) + '" style="border:1px solid #ccc;padding:0;width:26px;height:24px;text-align:center;background:' + bg + ';color:' + color + ';font-weight:800;cursor:pointer">' + txt + '</td>';
+    });
+  });
+  mt += '</tr>';
   mt += '</table></div>';
   // 凡例
   mt += '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.8">' +
@@ -35952,6 +36008,7 @@ async function svLoadDecide() {
     '<span style="display:inline-block;width:12px;height:12px;background:#E38B3E;vertical-align:middle;border:1px solid #ccc"></span> ×入れない　' +
     '<span style="display:inline-block;width:12px;height:12px;background:#F3D9BF;vertical-align:middle;border:1px solid #ccc"></span> 授業　' +
     '<span style="display:inline-block;width:12px;height:12px;background:#2b2b2b;vertical-align:middle;border:1px solid #ccc"></span> 勤務外　' +
+    '<span style="display:inline-block;width:12px;height:12px;background:#D9A441;vertical-align:middle;border:1px solid #ccc"></span> 現場（監督なし）　' +
     '<span style="display:inline-block;width:12px;height:12px;background:#EDEDED;vertical-align:middle;border:1px solid #ccc"></span> ○初期値(社会人)　' +
     '<span style="display:inline-block;width:12px;height:12px;background:#F3E1DF;vertical-align:middle;border:1px solid #ccc"></span> ×初期値(大学生)' +
     '<br>※ 社会人は勤務内で希望未入力なら初期値○（入れる）＝タップで確定できます。大学生は希望未入力なら初期値×（入れない）＝そのままでは確定対象外。' +
@@ -35964,7 +36021,7 @@ async function svLoadDecide() {
   h += mt;
 
   // 「これで確定」UI。確定するとその週の担当者のカレンダーに監督コマが出て、本人に通知が届く。
-  const assignCount = assigns.length;
+  const assignCount = assigns.filter(a => String(a.staff_id) !== 'genba').length;
   let confirmUi = '';
   if (weekConfirmed) {
     let atLabel = '';
@@ -35975,6 +36032,40 @@ async function svLoadDecide() {
       (weekConfirmedBy ? '（確定：' + escapeHtml(resolveStaffName(weekConfirmedBy) || weekConfirmedBy) + (atLabel ? ' ' + atLabel : '') + '）' : '') + '</div>' +
       '<div style="text-align:right;margin-top:6px"><button onclick="svUnconfirmWeek(\'' + fromIso + '\')" style="font-size:11px;font-weight:700;color:#C0392B;background:#fff;border:1px solid #E0A0A0;border-radius:6px;padding:4px 12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">確定を解除</button></div>' +
       '</div>';
+    // ===== 監督交代パネル（確定後）=====
+    // 確定済みコマ一覧をタップ→担当を入れ替え→両者に通知。交代を立てられない場合は「現場対応」を選ぶ。
+    const confirmedSlots = assigns
+      .filter(a => String(a.staff_id) !== 'genba')
+      .slice()
+      .sort((a, b) => (a.sv_date + String(a.period).padStart(2,'0')).localeCompare(b.sv_date + String(b.period).padStart(2,'0')));
+    // 交代候補：監督対象者（社会人・大学生、fit001除く）を fit番号順に
+    const optCodes = staffCodes.slice();
+    let hv = '<div style="margin-top:12px;border:1px solid #E3C08A;background:#FDF6EA;border-radius:10px;padding:10px 12px">' +
+      '<div style="font-size:13px;font-weight:800;color:#B87A2D;margin-bottom:4px">🔁 監督を交代する</div>' +
+      '<div style="font-size:10.5px;color:var(--muted);line-height:1.6;margin-bottom:8px">確定済みのコマの担当を入れ替えます。選ぶと元の担当・新しい担当の両方に通知が届き、カレンダーも書き換わります。交代を立てられない場合は「現場対応（監督なし）」を選んでください。</div>';
+    if (!confirmedSlots.length) {
+      hv += '<div style="font-size:11px;color:var(--muted)">確定済みの監督コマがありません。</div>';
+    } else {
+      hv += '<div style="display:flex;flex-direction:column;gap:6px">';
+      confirmedSlots.forEach(a => {
+        let dl = a.sv_date;
+        try { const [y,m,dd] = a.sv_date.split('-').map(n=>parseInt(n,10)); dl = m+'/'+dd+'('+['日','月','火','水','木','金','土'][new Date(y,m-1,dd).getDay()]+')'; } catch(e){}
+        const curName = resolveStaffName(a.staff_id) || a.staff_id;
+        let opts = '<option value="">— 交代先を選ぶ —</option>';
+        optCodes.forEach(c => { if (c !== String(a.staff_id)) opts += '<option value="' + escapeAttr(c) + '">' + escapeHtml(resolveStaffName(c) || c) + '</option>'; });
+        opts += '<option value="genba">🏗 現場対応（監督なし）</option>';
+        hv += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;border-top:1px dashed #E3C08A;padding-top:6px">' +
+          '<span style="font-size:11.5px;font-weight:700;color:#7a5a2a;white-space:nowrap">' + dl + ' ' + a.period + '限</span>' +
+          '<span style="font-size:11px;color:#555;white-space:nowrap">現：' + escapeHtml(curName) + '</span>' +
+          '<span style="font-size:11px;color:#999">→</span>' +
+          '<select id="hv-' + a.sv_date + '-' + a.period + '" style="font-size:11.5px;padding:4px 6px;flex:1;min-width:120px">' + opts + '</select>' +
+          '<button onclick="svHandoverSlot(\'' + a.sv_date + '\',' + a.period + ',\'' + escapeAttr(String(a.staff_id)) + '\')" style="font-size:11px;font-weight:700;color:#fff;background:#C88A3E;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">交代</button>' +
+          '</div>';
+      });
+      hv += '</div>';
+    }
+    hv += '</div>';
+    confirmUi += hv;
   } else {
     confirmUi = '<div style="margin-top:14px;border:1px solid #9CC0E8;background:#F3F8FD;border-radius:10px;padding:10px 12px">' +
       '<div style="font-size:12px;color:#1E4276;line-height:1.7;margin-bottom:6px">決定した担当（' + assignCount + 'コマ）でこの週を確定します。確定すると<b>担当者のカレンダーに監督コマが表示</b>され、<b>本人へ通知</b>が届きます。</div>' +
@@ -36343,6 +36434,111 @@ async function svToggleCell(sv_date, period, staff_id, staff_name, isAssigned) {
   }
 }
 
+// 現場対応（自習監督なし）のON/OFF。staff_id='genba' の assignment 行として保存する。
+// 確定・通知・カレンダー・監督コマ数からは 'genba' を必ず除外しているので、印だけが付く。
+async function svToggleGenba(sv_date, period, isOn) {
+  if (!canDecideSupervision()) { showToast('権限がありません', 'error'); return; }
+  try {
+    if (isOn) {
+      // 解除
+      const exist = await sbGet('supervision_assignments',
+        'sv_date=eq.' + sv_date + '&period=eq.' + period + '&staff_id=eq.genba&cancelled=eq.false&select=id') || [];
+      for (const r of exist) {
+        await sbPatch('supervision_assignments', 'id=eq.' + r.id, { cancelled: true, updated_at: new Date().toISOString() });
+      }
+      showToast('現場を解除しました', 'success');
+    } else {
+      // 設定：既存(取消含む)があれば復活、なければ新規
+      const exist = await sbGet('supervision_assignments',
+        'sv_date=eq.' + sv_date + '&period=eq.' + period + '&staff_id=eq.genba&select=id,cancelled') || [];
+      if (exist.length) {
+        await sbPatch('supervision_assignments', 'id=eq.' + exist[0].id,
+          { cancelled: false, decided_by: svMyStaffId(), decided_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+      } else {
+        await sbPost('supervision_assignments', {
+          sv_date: sv_date, period: period, staff_id: 'genba', staff_name: '現場対応', decided_by: svMyStaffId()
+        });
+      }
+      showToast('現場対応にしました（監督なし）', 'success');
+    }
+    svLoadDecide();
+  } catch (e) {
+    console.warn('svToggleGenba失敗', e);
+    showToast('操作に失敗しました', 'error');
+  }
+}
+
+// 監督交代：確定済みコマの担当を oldCode → 選択した新担当（or 現場)に入れ替え、両者へ通知（ポイントなし）。
+async function svHandoverSlot(sv_date, period, oldCode) {
+  if (!canDecideSupervision()) { showToast('権限がありません', 'error'); return; }
+  const sel = document.getElementById('hv-' + sv_date + '-' + period);
+  const newCode = sel ? sel.value : '';
+  if (!newCode) { showToast('交代先を選んでください', 'info'); return; }
+  if (newCode === oldCode) { showToast('同じ担当です', 'info'); return; }
+  let dl = sv_date;
+  try { const [y,m,dd] = sv_date.split('-').map(n=>parseInt(n,10)); dl = m+'/'+dd+'('+['日','月','火','水','木','金','土'][new Date(y,m-1,dd).getDay()]+')'; } catch(e){}
+  const oldName = resolveStaffName(oldCode) || oldCode;
+  const toGenba = (newCode === 'genba');
+  const newName = toGenba ? '現場対応' : (resolveStaffName(newCode) || newCode);
+  const slotLabel = dl + ' ' + period + '限';
+  const msg = toGenba
+    ? slotLabel + ' の監督を「現場対応（監督なし）」に変更します。\n' + oldName + 'さんの担当を外し、本人に通知します。よろしいですか？'
+    : slotLabel + ' の監督を ' + oldName + ' → ' + newName + ' に交代します。\n両方に通知します。よろしいですか？';
+  if (!confirm(msg)) return;
+  showLoading('交代処理中...');
+  try {
+    // 1) 元担当を取消
+    const oldRows = await sbGet('supervision_assignments',
+      'sv_date=eq.' + sv_date + '&period=eq.' + period + '&staff_id=eq.' + encodeURIComponent(oldCode) + '&cancelled=eq.false&select=id') || [];
+    for (const r of oldRows) {
+      await sbPatch('supervision_assignments', 'id=eq.' + r.id, { cancelled: true, updated_at: new Date().toISOString() });
+    }
+    // 2) 新担当を確定（現場含む）。既存(取消含む)があれば復活、なければ新規
+    const newRows = await sbGet('supervision_assignments',
+      'sv_date=eq.' + sv_date + '&period=eq.' + period + '&staff_id=eq.' + encodeURIComponent(newCode) + '&select=id,cancelled') || [];
+    if (newRows.length) {
+      await sbPatch('supervision_assignments', 'id=eq.' + newRows[0].id,
+        { cancelled: false, staff_name: newName, decided_by: svMyStaffId(), decided_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    } else {
+      await sbPost('supervision_assignments', {
+        sv_date: sv_date, period: period, staff_id: newCode, staff_name: newName, decided_by: svMyStaffId()
+      });
+    }
+    // 3) 通知（ポイントなし＝link_target='supervision'）
+    const staffRows = await sbGet('staff', 'is_active=eq.true&select=id,staff_id') || [];
+    const uuidByCode = {}; staffRows.forEach(s => { uuidByCode[s.staff_id] = s.id; });
+    const fromId = (currentStaff && currentStaff.id) || svMyStaffId();
+    const sendTodo = async (toCode, title, detail) => {
+      const toId = uuidByCode[toCode];
+      if (!toId) return;
+      try {
+        await sbPost('staff_todos', { from_staff_id: fromId, to_staff_id: toId, title: title, detail: detail, link_target: 'supervision' });
+      } catch (err) {
+        if (/column|PGRST|400/i.test(String(err && err.message || err))) {
+          await sbPost('staff_todos', { from_staff_id: fromId, to_staff_id: toId, title: title, detail: detail });
+        }
+      }
+    };
+    // 元担当へ（oldは常に実在スタッフ）
+    await sendTodo(oldCode,
+      '自習監督が交代になりました（' + slotLabel + '）',
+      slotLabel + ' の自習監督は ' + (toGenba ? '現場対応（監督なし）に変更' : newName + 'さんに交代') + 'になりました。あなたの担当は外れています。');
+    // 新担当へ（現場のときは通知しない）
+    if (!toGenba) {
+      await sendTodo(newCode,
+        '自習監督を代わりに担当します（' + slotLabel + '）',
+        slotLabel + ' の自習監督を ' + oldName + 'さんから代わって担当します。カレンダーにも表示されます。当日夜、ホームの「今日の予定」から監督報告をお願いします。');
+    }
+    hideLoading();
+    showToast(toGenba ? '現場対応に変更しました（元担当に通知）' : '交代しました（両者に通知）', 'success');
+    svLoadDecide();
+  } catch (e) {
+    hideLoading();
+    console.warn('svHandoverSlot失敗', e);
+    showToast('交代に失敗しました', 'error');
+  }
+}
+
 async function svDecide(sv_date, period, staff_id, staff_name) {  if (!canDecideSupervision()) { showToast('決定権限がありません', 'error'); return; }
   try {
     const exist = await sbGet('supervision_assignments',
@@ -36411,9 +36607,10 @@ async function svCancelAssign(id) {
 async function svConfirmWeek(fromIso, toIso) {
   if (!canDecideSupervision()) { showToast('確定権限がありません', 'error'); return; }
   try {
-    // その週の確定コマ（担当者ごとにまとめる）
-    const assigns = await sbGet('supervision_assignments',
+    // その週の確定コマ（担当者ごとにまとめる）。現場対応(genba)は監督ではないので除外。
+    let assigns = await sbGet('supervision_assignments',
       'sv_date=gte.' + fromIso + '&sv_date=lte.' + toIso + '&cancelled=eq.false&select=sv_date,period,staff_id&order=sv_date,period') || [];
+    assigns = assigns.filter(a => String(a.staff_id) !== 'genba');
     if (!assigns.length) { showToast('確定するコマがありません', 'info'); return; }
     const weekLabel = svFmtDate(fromIso) + '〜' + svFmtDate(toIso);
     if (!confirm(weekLabel + ' の監督（' + assigns.length + 'コマ）を確定します。\n担当者のカレンダーに反映し、本人へ通知します。よろしいですか？')) return;
