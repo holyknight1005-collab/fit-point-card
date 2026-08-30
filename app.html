@@ -5991,6 +5991,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
             <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" class="cm-grade-chk" value="2" style="width:16px;height:16px">2年</label>
             <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" class="cm-grade-chk" value="3" style="width:16px;height:16px">3年</label>
           </div></div>
+        <div>
+          <div class="form-label">担当講師（任意・複数選べます／先頭が主担当）</div>
+          <div id="cm-new-teacher-chips" style="display:flex;flex-wrap:wrap;gap:6px;padding:4px 2px"></div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px;line-height:1.5">選んだ講師の役割（★メイン／サポート）は、登録後に授業をタップして「担当講師を選ぶ」で調整できます。</div>
+        </div>
         <button class="form-btn" onclick="createClassMaster()">授業を追加する</button>
       </div>
 
@@ -21022,6 +21027,8 @@ function classColorOf(cm) {
 let classMasterList = [];
 let cmCategoryFilter = 'all';   // 授業管理の区分フィルタ（all / normal / summer / ...）
 let cmAdminMineOnly = true;     // dlm102: admin時、既定は「自分の担当だけ」表示。切替で全授業。
+let cmNewTeacherSel = [];        // dlm102: 新規授業登録フォームで選んだ担当講師（staff.id の配列。先頭=主担当）
+let cmNewTeacherStaff = [];      // dlm102: フォーム用スタッフ一覧キャッシュ
 let cmTeacherNames = {};        // classId -> [name,...]（loadClassMasterList で構築、renderCmList で使用）
 let cmSessionCount = {};        // classId -> 登録済み回数（同上）
 let cmEnrollCount = {};         // classId -> 継続中の受講人数（名簿確認用・dkp）
@@ -21081,6 +21088,7 @@ async function loadClassMasterList() {
   const el = document.getElementById('cm-list');
   if (!classMasterList.length) {
     renderCmScopeBar(); // dlm102: 0件でも切替は出す（自分の担当が無い場合に全授業へ戻せるように）
+    try { renderCmNewTeacherChips(); } catch (e) {} // dlm102: 0件でも登録フォームのチップは出す
     const emptyMsg = (currentStaff && currentStaff.role === 'admin' && cmAdminMineOnly)
       ? 'あなたが担当している授業はありません。「📚 全授業」に切り替えると全て表示できます。'
       : '授業がありません';
@@ -21148,6 +21156,7 @@ async function loadClassMasterList() {
     }
   } catch (e) { /* 人数が数えられなくても一覧は出す */ }
   renderCmList();
+  try { renderCmNewTeacherChips(); } catch (e) {} // dlm102: 登録フォームの担当講師チップ
   try { scInitMonth(); scRenderMonthLabel(); } catch (e) {}
 }
 
@@ -21162,6 +21171,38 @@ function setCmAdminScope(mineOnly) {
   if (cmAdminMineOnly === next) return;
   cmAdminMineOnly = next;
   loadClassMasterList();
+}
+
+// dlm102: 新規授業登録フォームの担当講師チップを描画。fit番号順。先頭が主担当（★）。
+async function renderCmNewTeacherChips() {
+  const el = document.getElementById('cm-new-teacher-chips');
+  if (!el) return;
+  if (!cmNewTeacherStaff.length) {
+    try { cmNewTeacherStaff = await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id') || []; }
+    catch (e) { cmNewTeacherStaff = []; }
+  }
+  const list = (typeof sortByStaffCode === 'function') ? sortByStaffCode(cmNewTeacherStaff) : cmNewTeacherStaff;
+  el.innerHTML = list.map(s => {
+    const idx = cmNewTeacherSel.indexOf(s.id);
+    const on = idx >= 0;
+    const isMain = idx === 0;
+    const bg = on ? (isMain ? '#2D6CB6' : 'var(--orange-l)') : 'var(--surface)';
+    const bd = on ? (isMain ? '#2D6CB6' : 'var(--orange)') : 'var(--border)';
+    const fg = on ? (isMain ? '#fff' : 'var(--orange-d)') : 'var(--text)';
+    const tag = isMain ? '★主 ' : (on ? '✓ ' : '');
+    return '<button type="button" onclick="toggleCmNewTeacher(\'' + s.id + '\')" ' +
+      'style="padding:5px 12px;font-size:12px;font-weight:700;border-radius:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
+      'border:1.5px solid ' + bd + ';background:' + bg + ';color:' + fg + '">' +
+      tag + escapeHtml(s.name) + '</button>';
+  }).join('');
+}
+
+// dlm102: 担当講師チップのトグル。最初に選んだ人が先頭=主担当になる。
+function toggleCmNewTeacher(staffId) {
+  const idx = cmNewTeacherSel.indexOf(staffId);
+  if (idx >= 0) cmNewTeacherSel.splice(idx, 1);
+  else cmNewTeacherSel.push(staffId);
+  renderCmNewTeacherChips();
 }
 
 // 授業管理の一覧を描画（区分フィルタ対応）。データ取得は loadClassMasterList 側。
@@ -22529,10 +22570,36 @@ async function createClassMaster() {
   showLoading('登録中...');
   try {
     const data = { name, subject, grade_level: grades.join(','), category, school_year: schoolYear, total_sessions: totalSessions, division: currentDivision };
-    // 中学部担当が中学部の授業を作る場合は teacher_staff_id を自分に固定しない（講師未設定運用）
+    // dlm102: フォームで担当講師を選んでいれば、先頭を主担当にする。
+    const selTeachers = Array.isArray(cmNewTeacherSel) ? cmNewTeacherSel.slice() : [];
     const cmChugakuAll = (currentDivision === '中学部') && await isChugakuStaff();
-    if (currentStaff?.role !== 'admin' && !cmChugakuAll) data.teacher_staff_id = currentStaff.id;
-    await sbPost('class_master', data);
+    if (selTeachers.length) {
+      data.teacher_staff_id = selTeachers[0];
+    } else if (currentStaff?.role !== 'admin' && !cmChugakuAll) {
+      // 従来どおり：担当未選択かつ非admin（中学部担当以外）は自分を主担当に
+      data.teacher_staff_id = currentStaff.id;
+    }
+    // 作成した授業のIDを受け取る（追加担当の登録に使う）。sbPostReturn は挿入行を返す。
+    let created = null;
+    try { created = await sbPostReturn('class_master', data); }
+    catch (e) { created = null; await sbPost('class_master', data); }
+    // dlm102: 2人目以降を追加担当（class_teachers, role=support）として登録
+    if (selTeachers.length > 1) {
+      let newId = null;
+      if (created && created[0] && created[0].id) newId = created[0].id;
+      if (!newId) {
+        // returning が使えなかった場合は直近作成分を引き当てる
+        try {
+          const rows = await sbGet('class_master', 'name=eq.' + encodeURIComponent(name) + '&division=eq.' + encodeURIComponent(currentDivision) + '&order=created_at.desc&select=id&limit=1') || [];
+          if (rows[0]) newId = rows[0].id;
+        } catch (e) {}
+      }
+      if (newId) {
+        for (const sid of selTeachers.slice(1)) {
+          try { await sbPost('class_teachers', { class_master_id: newId, staff_id: sid, role: 'support' }); } catch (e) {}
+        }
+      }
+    }
     hideLoading();
     document.getElementById('cm-name').value = '';
     document.getElementById('cm-school-year').value = '';
@@ -22541,6 +22608,7 @@ async function createClassMaster() {
     if (totEl) totEl.value = '';
     onCmCategoryChange();
     document.querySelectorAll('.cm-grade-chk').forEach(c => c.checked = false);
+    cmNewTeacherSel = []; // dlm102: 担当選択をリセット
     showToast('✅ 授業を登録しました', 'success');
     loadClassMasterList();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
