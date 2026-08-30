@@ -6342,7 +6342,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm106';
+const APP_VERSION = '20260702dlm107';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -35374,7 +35374,16 @@ function svPaintGrid() {
           const st = SV_WISH_STYLE[draft.type] || SV_WISH_STYLE.circle;
           cell = '<div onclick="svTapCell(\'' + iso + '\',' + p + ')" style="min-height:34px;background:' + st.bg + ';border:1px solid ' + st.border + ';border-radius:5px;padding:3px 2px;font-size:12px;color:' + st.color + ';font-weight:700;cursor:pointer;text-align:center;line-height:1.15">' + st.mark + (draft.note ? '<br><span style="font-weight:400;font-size:8px">' + escapeHtml(draft.note) + '</span>' : '') + '</div>';
         } else {
-          cell = '<div onclick="svTapCell(\'' + iso + '\',' + p + ')" style="min-height:34px;background:#fff;border:1px dashed #cbd5c9;border-radius:5px;cursor:pointer" title="タップで ○→△→× を切替"></div>';
+          // 未設定セルは区分ごとの初期値を淡く表示する（DBには保存しない＝タップするまで実データにならない）。
+          //   社会人：勤務内・授業なしの空きは初期値○（入れる）。入れない日だけ×を出す運用。
+          //   大学生：空きは初期値×（入れない）。入れるコマだけ○を出す運用。
+          if (_svEmploymentType === 'shakaijin') {
+            cell = '<div onclick="svTapCell(\'' + iso + '\',' + p + ')" style="min-height:34px;background:#F3FAF5;border:1px dashed #9FC7AE;border-radius:5px;cursor:pointer;text-align:center;padding:3px 2px;font-size:12px;color:#8FBBA0;font-weight:700;line-height:1.15" title="初期値：○入れる（タップで変更）">○<br><span style="font-weight:400;font-size:7.5px;color:#A9C9B5">初期値</span></div>';
+          } else if (_svEmploymentType === 'daigakusei') {
+            cell = '<div onclick="svTapCell(\'' + iso + '\',' + p + ')" style="min-height:34px;background:#FBF3F3;border:1px dashed #E0B4B0;border-radius:5px;cursor:pointer;text-align:center;padding:3px 2px;font-size:12px;color:#D3938E;font-weight:700;line-height:1.15" title="初期値：×入れない（入れるコマだけタップで○に）">×<br><span style="font-weight:400;font-size:7.5px;color:#DDA8A3">初期値</span></div>';
+          } else {
+            cell = '<div onclick="svTapCell(\'' + iso + '\',' + p + ')" style="min-height:34px;background:#fff;border:1px dashed #cbd5c9;border-radius:5px;cursor:pointer" title="タップで ○→△→× を切替"></div>';
+          }
         }
       }
       h += '<td style="border:1px solid var(--line);padding:2px;vertical-align:top">' + cell + '</td>';
@@ -35382,7 +35391,15 @@ function svPaintGrid() {
     h += '</tr>';
   }
   h += '</table>';
-  h += '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">タップで <b style="color:#1A7340">○入れる</b> → <b style="color:#9A7A15">△できたら避けたい</b> → <b style="color:#C0392B">×入れない</b> → 未設定 を切替。' + (_svEmploymentType === 'shakaijin' ? '編みかけ＝勤務時間外（監督対象外）。' : '') + '授業のある時間は自動で監督不可です。<b>変更は「保存」を押すまで反映されません。</b></div>';
+  let helpTxt;
+  if (_svEmploymentType === 'shakaijin') {
+    helpTxt = '<b style="color:#1A7340">勤務内で授業のないコマは初期値○（入れる）</b>です。<b>入れない日だけ</b>タップして <b style="color:#C0392B">×入れない</b>（→<b style="color:#9A7A15">△避けたい</b>→初期値○）にしてください。編みかけ＝勤務時間外（監督対象外）。';
+  } else if (_svEmploymentType === 'daigakusei') {
+    helpTxt = '<b style="color:#C0392B">初期値は×（入れない）</b>です。<b>入れるコマだけ</b>タップして <b style="color:#1A7340">○入れる</b>（→<b style="color:#9A7A15">△避けたい</b>→初期値×）にしてください。';
+  } else {
+    helpTxt = 'タップで <b style="color:#1A7340">○入れる</b> → <b style="color:#9A7A15">△できたら避けたい</b> → <b style="color:#C0392B">×入れない</b> → 未設定 を切替。';
+  }
+  h += '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">' + helpTxt + '授業のある時間は自動で監督不可です。<b>変更は「保存」を押すまで反映されません。</b></div>';
   grid.innerHTML = h;
 }
 
@@ -35396,7 +35413,15 @@ function svTapCell(iso, period) {
   if (!svIsWorkingCell(dow, period)) { showToast('勤務時間外のため監督対象外です', 'info'); return; }
 
   const cur = _svDraft[key] ? _svDraft[key].type : null;
-  const next = svNextWish(cur);
+  // 区分ごとに循環順を変える（未設定＝区分の初期値。最初のタップは初期値と逆向きの例外へ）。
+  //   社会人（初期値○）：未設定 → ×入れない → △避けたい → 未設定
+  //   大学生（初期値×）：未設定 → ○入れる → △避けたい → 未設定
+  //   区分未設定：従来どおり ○→△→×
+  let cycle;
+  if (_svEmploymentType === 'shakaijin') cycle = [null, 'cross', 'triangle'];
+  else if (_svEmploymentType === 'daigakusei') cycle = [null, 'circle', 'triangle'];
+  else cycle = SV_WISH_CYCLE;
+  const next = cycle[(cycle.indexOf(cur == null ? null : cur) + 1) % cycle.length];
   if (next === null) {
     if (_svDraft[key]) { _svDraft[key].type = null; } // idは保持（保存時に取下げ判定）
   } else {
@@ -35836,6 +35861,11 @@ async function svLoadDecide() {
         }
         else if (wtype === 'triangle') { bg = '#EAD07A'; txt = '△'; color = '#6b571a'; title += '：△できたら避けたい（タップで確定）'; clickable = true; }
         else if (wtype === 'circle') { bg = '#D6D6D6'; txt = '○'; color = '#333'; title += '：○入れる（タップで確定）'; clickable = true; }
+        // 希望が無いセルは区分ごとの初期値で解釈する。
+        //   社会人：勤務内・授業なしの空き＝初期値○（タップで確定可）
+        //   大学生：空き＝初期値×（入れない＝確定対象外）
+        else if (empByStaff[code] === 'shakaijin') { bg = '#EDEDED'; txt = '○'; color = '#555'; title += '：○入れる（初期値・タップで確定）'; clickable = true; }
+        else if (empByStaff[code] === 'daigakusei') { bg = '#F3E1DF'; txt = '×'; color = '#B5716B'; title += '：×入れない（初期値）'; }
         else { bg = '#FBFBFB'; txt = ''; title += '：未入力（タップで確定）'; clickable = true; }
         // 週が確定済みのときは編集不可（解除してから編集する運用）
         if (weekConfirmed) clickable = false;
@@ -35857,8 +35887,10 @@ async function svLoadDecide() {
     '<span style="display:inline-block;width:12px;height:12px;background:#E38B3E;vertical-align:middle;border:1px solid #ccc"></span> ×入れない　' +
     '<span style="display:inline-block;width:12px;height:12px;background:#F3D9BF;vertical-align:middle;border:1px solid #ccc"></span> 授業　' +
     '<span style="display:inline-block;width:12px;height:12px;background:#2b2b2b;vertical-align:middle;border:1px solid #ccc"></span> 勤務外　' +
-    '<span style="display:inline-block;width:12px;height:12px;background:#FBFBFB;vertical-align:middle;border:1px solid #ccc"></span> 未入力' +
-    '<br>※ ○△未入力のセルをタップで確定（✓）、確定セルをタップで解除。×・授業・勤務外は確定できません。×にカーソル/長押しで理由表示。確定済みの週は「確定を解除」してから編集できます。' +
+    '<span style="display:inline-block;width:12px;height:12px;background:#EDEDED;vertical-align:middle;border:1px solid #ccc"></span> ○初期値(社会人)　' +
+    '<span style="display:inline-block;width:12px;height:12px;background:#F3E1DF;vertical-align:middle;border:1px solid #ccc"></span> ×初期値(大学生)' +
+    '<br>※ 社会人は勤務内で希望未入力なら初期値○（入れる）＝タップで確定できます。大学生は希望未入力なら初期値×（入れない）＝そのままでは確定対象外。' +
+    '<br>※ ○△初期値○のセルをタップで確定（✓）、確定セルをタップで解除。×・×初期値・授業・勤務外は確定できません。×にカーソル/長押しで理由表示。確定済みの週は「確定を解除」してから編集できます。' +
     '</div>';
   // 週にデータが無ければマトリクスを案内文に差し替える（外側divは35721で開いた1つを使い回す）
   if (!anyDay && !notSubmitted.length) {
