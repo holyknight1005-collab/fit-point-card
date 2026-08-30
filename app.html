@@ -35825,18 +35825,25 @@ async function svLoadDecide() {
         }
         // セルの見た目を状態優先で決める
         let bg = '#fff', txt = '', color = '#333', title = nm + ' ' + (d.getMonth()+1)+'/'+d.getDate() + ' ' + p + '限';
-        if (isAssigned) { bg = '#4CAF7D'; txt = '✓'; color = '#fff'; title += '：確定'; }
+        let clickable = false;   // タップで確定/解除できるセルか
+        if (isAssigned) { bg = '#4CAF7D'; txt = '✓'; color = '#fff'; title += '：確定（タップで解除）'; clickable = true; }
         else if (offDuty) { bg = '#2b2b2b'; txt = ''; title += '：勤務時間外'; }
         else if (hasClass) { bg = '#F3D9BF'; txt = '授'; color = '#8a5a1a'; title += '：授業'; }
         else if (wtype === 'cross') {
           bg = '#E38B3E'; color = '#fff';
           const rsn = reasonMap[iso + '|' + code];
-          txt = rsn ? '×' : '×'; title += '：×' + (rsn ? '（' + rsn + '）' : '');
+          txt = '×'; title += '：×' + (rsn ? '（' + rsn + '）' : '');
         }
-        else if (wtype === 'triangle') { bg = '#EAD07A'; txt = '△'; color = '#6b571a'; title += '：△できたら避けたい'; }
-        else if (wtype === 'circle') { bg = '#D6D6D6'; txt = '○'; color = '#333'; title += '：○入れる'; }
-        else { bg = '#FBFBFB'; txt = ''; title += '：未入力'; }
-        mt += '<td title="' + escapeAttr(title) + '" style="border:1px solid #ccc;padding:0;width:26px;height:24px;text-align:center;background:' + bg + ';color:' + color + ';font-weight:700">' + txt + '</td>';
+        else if (wtype === 'triangle') { bg = '#EAD07A'; txt = '△'; color = '#6b571a'; title += '：△できたら避けたい（タップで確定）'; clickable = true; }
+        else if (wtype === 'circle') { bg = '#D6D6D6'; txt = '○'; color = '#333'; title += '：○入れる（タップで確定）'; clickable = true; }
+        else { bg = '#FBFBFB'; txt = ''; title += '：未入力（タップで確定）'; clickable = true; }
+        // 週が確定済みのときは編集不可（解除してから編集する運用）
+        if (weekConfirmed) clickable = false;
+        const onclick = clickable
+          ? ' onclick="svToggleCell(\'' + iso + '\',' + p + ',\'' + escapeAttr(code) + '\',\'' + escapeAttr(nm) + '\',' + (isAssigned ? 'true' : 'false') + ')"'
+          : '';
+        const cursor = clickable ? 'cursor:pointer;' : '';
+        mt += '<td' + onclick + ' title="' + escapeAttr(title) + '" style="border:1px solid #ccc;padding:0;width:26px;height:24px;text-align:center;background:' + bg + ';color:' + color + ';font-weight:700;' + cursor + '">' + txt + '</td>';
       });
     });
     mt += '</tr>';
@@ -35851,7 +35858,7 @@ async function svLoadDecide() {
     '<span style="display:inline-block;width:12px;height:12px;background:#F3D9BF;vertical-align:middle;border:1px solid #ccc"></span> 授業　' +
     '<span style="display:inline-block;width:12px;height:12px;background:#2b2b2b;vertical-align:middle;border:1px solid #ccc"></span> 勤務外　' +
     '<span style="display:inline-block;width:12px;height:12px;background:#FBFBFB;vertical-align:middle;border:1px solid #ccc"></span> 未入力' +
-    '<br>※ ×にマウスを乗せると理由が出ます（スマホは長押し/タップ）。確定操作は次バージョンで対応予定。' +
+    '<br>※ ○△未入力のセルをタップで確定（✓）、確定セルをタップで解除。×・授業・勤務外は確定できません。×にカーソル/長押しで理由表示。確定済みの週は「確定を解除」してから編集できます。' +
     '</div>';
   // 週にデータが無ければマトリクスを案内文に差し替える（外側divは35721で開いた1つを使い回す）
   if (!anyDay && !notSubmitted.length) {
@@ -36203,8 +36210,43 @@ async function svRenderView() {
   box.innerHTML = h;
 }
 
-async function svDecide(sv_date, period, staff_id, staff_name) {
+// マトリクス決定画面：セルタップで確定/解除をトグルする。
+// isAssigned=true のセル（確定済み）→ 解除、それ以外（○/△/未入力）→ 確定。
+async function svToggleCell(sv_date, period, staff_id, staff_name, isAssigned) {
   if (!canDecideSupervision()) { showToast('決定権限がありません', 'error'); return; }
+  try {
+    if (isAssigned) {
+      // 解除：該当の確定行を cancelled=true に
+      const exist = await sbGet('supervision_assignments',
+        'sv_date=eq.' + sv_date + '&period=eq.' + period + '&staff_id=eq.' + encodeURIComponent(staff_id) + '&cancelled=eq.false&select=id') || [];
+      for (const r of exist) {
+        await sbPatch('supervision_assignments', 'id=eq.' + r.id, { cancelled: true, updated_at: new Date().toISOString() });
+      }
+      showToast('解除しました', 'success');
+    } else {
+      // 確定：既存行があれば復活、なければ新規
+      const exist = await sbGet('supervision_assignments',
+        'sv_date=eq.' + sv_date + '&period=eq.' + period + '&staff_id=eq.' + encodeURIComponent(staff_id) + '&select=id,cancelled') || [];
+      if (exist.length) {
+        await sbPatch('supervision_assignments', 'id=eq.' + exist[0].id,
+          { cancelled: false, decided_by: svMyStaffId(), decided_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+      } else {
+        await sbPost('supervision_assignments', {
+          sv_date: sv_date, period: period, staff_id: staff_id,
+          staff_name: staff_name || resolveStaffName(staff_id) || staff_id,
+          decided_by: svMyStaffId()
+        });
+      }
+      showToast('確定しました（仮）', 'success');
+    }
+    svLoadDecide();
+  } catch (e) {
+    console.warn('svToggleCell失敗', e);
+    showToast('操作に失敗しました', 'error');
+  }
+}
+
+async function svDecide(sv_date, period, staff_id, staff_name) {  if (!canDecideSupervision()) { showToast('決定権限がありません', 'error'); return; }
   try {
     const exist = await sbGet('supervision_assignments',
       'sv_date=eq.' + sv_date + '&period=eq.' + period + '&staff_id=eq.' + encodeURIComponent(staff_id) + '&select=id,cancelled') || [];
