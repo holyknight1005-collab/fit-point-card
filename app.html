@@ -25593,6 +25593,8 @@ function cycleNext(c, isNormal) {
 // {year, month, no} の前の回を返す（cycleNext の逆）
 // 通常講座: 月4回で繰り下がり（5月1回目→4月4回目、4月1回目→前年度3月4回目）
 // 講習: 通し番号なので no を -1 するだけ
+// ※ dlm103以降、回数編集の cascade は「以降のみ」振り直しに変更したため現在は未使用。
+//    逆方向の計算が再び必要になったとき用に残置。
 function cyclePrev(c, isNormal) {
   if (isNormal === false) {
     return { year: c.year, month: null, no: c.no - 1 };
@@ -28374,7 +28376,7 @@ async function openSessionCycleEdit(classId, dateISO, periodStr) {
       '<div style="display:flex;flex-direction:column;align-items:center"><input class="ck-cyc-in" id="scyc-no" type="number" inputmode="numeric" min="1" placeholder="回" value="' + (cur.no != null ? cur.no : '') + '" style="width:48px"><span class="ck-cyc-unit">' + (isNormal ? '回目' : '回') + '</span></div>' +
     '</div>' +
     '<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:14px">' +
-      '<input type="checkbox" id="scyc-cascade" checked><span>この回を基準に、前後の同じ授業も自動で連番を振り直す</span></label>' +
+      '<input type="checkbox" id="scyc-cascade" checked><span>この回より<b>後</b>の同じ授業も、続きの番号に自動で振り直す（前の回は変更しません）</span></label>' +
     '<button onclick="saveSessionCycle(\'' + escapeAttr(classId) + '\',\'' + dateISO + '\',\'' + (curPeriod != null ? curPeriod : '') + '\',' + isNormal + ')" style="width:100%;padding:12px;background:linear-gradient(135deg,#7A3E9D,#5E2E7A);border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;margin-bottom:8px">保存する</button>' +
     '<button onclick="document.getElementById(\'session-cycle-modal\').remove()" style="width:100%;padding:10px;background:transparent;border:none;color:var(--muted);font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">閉じる</button>' +
     '</div>';
@@ -28400,17 +28402,8 @@ async function saveSessionCycle(classId, dateISO, periodStr, isNormal) {
     await sbPatch('class_sessions', q, { cycle_year: y, cycle_month: isNormal ? m : null, cycle_no: no });
 
     if (cascade) {
-      // 過去方向：この日付より前のセッションを日付降順で取り、遡って番号を振り直す（補習は番号を消費しない）
-      const earlier = await sbGet('class_sessions',
-        'class_master_id=eq.' + classId + '&session_date=lt.' + dateISO +
-        '&select=id,session_date,period,is_makeup&order=session_date.desc,period.desc') || [];
-      let back = { year: y, month: isNormal ? m : null, no: no };
-      for (const s of earlier) {
-        if (s.is_makeup) continue; // 補習は番号なしのまま
-        back = cyclePrev(back, isNormal);
-        await sbPatch('class_sessions', 'id=eq.' + s.id, { cycle_year: back.year, cycle_month: back.month, cycle_no: back.no });
-      }
-      // 未来方向：この日付より後のセッションを日付順に取り、連番を振り直す
+      // 変更したこの回より「後」の同じ授業だけを、続きの番号に振り直す。
+      // 前（過去方向）は一切触らない：留学等で月内の回数が変則になっても、既存の番号を壊さないため。
       const later = await sbGet('class_sessions',
         'class_master_id=eq.' + classId + '&session_date=gt.' + dateISO +
         '&select=id,session_date,period,is_makeup&order=session_date,period') || [];
@@ -28423,7 +28416,7 @@ async function saveSessionCycle(classId, dateISO, periodStr, isNormal) {
     }
     hideLoading();
     const ov = document.getElementById('session-cycle-modal'); if (ov) ov.remove();
-    showToast('🔢 回数を保存しました' + (cascade ? '（前後も連番更新）' : ''), 'success');
+    showToast('🔢 回数を保存しました' + (cascade ? '（以降も連番更新）' : ''), 'success');
     if (typeof loadStaffCalendar === 'function') { try { loadStaffCalendar(); } catch (e) {} }
     if (typeof loadTodayClasses === 'function') { try { loadTodayClasses(); } catch (e) {} }
     if (typeof loadSessionList === 'function') { try { loadSessionList(); } catch (e) {} }
@@ -31964,7 +31957,7 @@ async function loadAttOverview() {
 //   夏期=出欠のみ / 通常=コメント欄付き（コメントはCSVラウンドトリップ）
 // ============================================================
 let _asLoaded = false;
-let _asData = null;          // { division, category, ym, students:[{id,name,num,grade,school,subjects:[{name,days:[{date,md,wd,per,status}]}]}] }
+let _asData = null;          // { division, category, ym, students:[{id,name,num,grade,school,subjects:[{name,days:[{date,md,wd,per,cyc,status}]}]}] }
 let _asComments = {};        // student_id -> comment 文字列（DB＋CSV読込で反映）
 let _asMeta = {};            // student_id -> { id, confirmed, confirmed_by, on_hold, hold_note } DB由来
 let _asMyStuIds = null;      // 自分の担当授業を受講中の生徒IDセット（scope=mine 用）
@@ -32057,7 +32050,7 @@ async function loadAttSheet() {
     const sessions = await sbGet('class_sessions',
       'class_master_id=in.(' + classIds.join(',') + ')' +
       dateFilter +
-      '&select=class_master_id,session_date,period&order=session_date,period') || [];
+      '&select=class_master_id,session_date,period,cycle_month,cycle_no,is_makeup&order=session_date,period') || [];
 
     // 受講登録（継続中）
     const enrolls = await sbGetActiveEnrollments('class_master_id=in.(' + classIds.join(',') +
@@ -32108,11 +32101,17 @@ async function loadAttSheet() {
         const days = csess.map(s => {
           const d = new Date(s.session_date + 'T00:00:00+09:00');
           const status = attMap[m.id + '|' + s.session_date + '|' + (s.period || '') + '|' + sid] || '';
+          // 回数ラベル：補習=🔁／通常(月あり)=「8-③」／講習・夏期(月なし)=「③」／未登録=空
+          let cyc = '';
+          if (s.is_makeup) cyc = '🔁';
+          else if (s.cycle_no != null && s.cycle_month != null) cyc = s.cycle_month + '-' + rbCircled(s.cycle_no);
+          else if (s.cycle_no != null) cyc = rbCircled(s.cycle_no);
           return {
             date: s.session_date,
             md: (d.getMonth() + 1) + '/' + d.getDate(),
             wd: wlabels[d.getDay()],
             per: s.period || '',
+            cyc: cyc,
             status: status
           };
         });
@@ -33105,7 +33104,7 @@ function buildAttSheetDocHtml(st) {
       const d = sub.days[i];
       if (!d) { dayHead.push('<td style="border:1px solid #bbb;' + HATCH + '"></td>'); marks.push('<td style="border:1px solid #bbb;' + HATCH + '"></td>'); }
       else {
-        dayHead.push('<td style="border:1px solid #bbb;text-align:center;font-size:8.5pt;color:#555;padding:2px 0;background:#faf8f2">' + d.md + '<br><span style="font-size:7.5pt;color:#888">' + d.wd + '</span></td>');
+        dayHead.push('<td style="border:1px solid #bbb;text-align:center;font-size:8.5pt;color:#555;padding:2px 0;background:#faf8f2">' + d.md + '<br><span style="font-size:7.5pt;color:#888">' + d.wd + '</span>' + (d.cyc ? '<br><span style="font-size:7.5pt;color:#B5721B;font-weight:700">' + d.cyc + '</span>' : '') + '</td>');
         marks.push(asMarkCell(d.status, null, null));
       }
     }
