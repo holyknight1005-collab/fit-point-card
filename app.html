@@ -6347,7 +6347,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm111';
+const APP_VERSION = '20260702dlm112';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -35852,10 +35852,10 @@ async function svLoadDecide() {
   }
   // ===== マトリクス決定画面（行=スタッフ / 列=日×限）dlm106 =====
   // 対象スタッフ（社会人・大学生、fit001除く）を fit番号順に。
-  const targetCodes = svPerms.map(p => String(p.staff_id)).filter(c => c && c.toLowerCase() !== 'fit001');
-  // 希望・確定・×理由に登場するが perms に無いコードも拾う（保険）
-  wishes.forEach(w => { const c = String(w.staff_id); if (c && c.toLowerCase() !== 'fit001' && !targetCodes.includes(c)) targetCodes.push(c); });
-  assigns.forEach(a => { const c = String(a.staff_id); if (c && c.toLowerCase() !== 'fit001' && !targetCodes.includes(c)) targetCodes.push(c); });
+  const targetCodes = svPerms.map(p => String(p.staff_id)).filter(c => c && c.toLowerCase() !== 'fit001' && c !== 'genba');
+  // 希望・確定・×理由に登場するが perms に無いコードも拾う（保険）。genba(現場対応)は担当ではないので除外。
+  wishes.forEach(w => { const c = String(w.staff_id); if (c && c.toLowerCase() !== 'fit001' && c !== 'genba' && !targetCodes.includes(c)) targetCodes.push(c); });
+  assigns.forEach(a => { const c = String(a.staff_id); if (c && c.toLowerCase() !== 'fit001' && c !== 'genba' && !targetCodes.includes(c)) targetCodes.push(c); });
   const staffCodes = (typeof sortByStaffCode === 'function') ? sortByStaffCode(targetCodes.slice()) : targetCodes.slice();
 
   // 勤務枠（社会人）：staff_shift_template。code -> {dow: {from,to,off}}
@@ -35914,31 +35914,39 @@ async function svLoadDecide() {
   const anyDay = (wishes.length + assigns.length) > 0;
 
   // ---- マトリクス組み立て ----
+  // 縦横スクロールできる枠。ヘッダ3段（曜日/限/日付）と左のスタッフ名列を固定(sticky)する。
   const P = [1,2,3,4,5,6];
-  let mt = '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:8px">';
-  mt += '<table style="border-collapse:collapse;font-size:11px;white-space:nowrap">';
-  // ヘッダ1：曜日
-  mt += '<tr><th style="position:sticky;left:0;z-index:3;background:#F0F0F0;border:1px solid #ccc;padding:3px 6px;min-width:66px">曜日</th>';
+  const NAMEW = 92;   // スタッフ名列の幅
+  const CELLW = 40;   // 1コマの幅
+  const CELLH = 34;   // 1コマの高さ
+  const RH1 = 26, RH2 = 24, RH3 = 24; // ヘッダ各段の高さ（sticky offset計算用）
+  let mt = '<div style="overflow:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:8px;max-height:70vh">';
+  mt += '<table style="border-collapse:separate;border-spacing:0;font-size:12px;white-space:nowrap">';
+  // ヘッダ1：曜日（top:0、左上は最前面）
+  mt += '<tr>';
+  mt += '<th style="position:sticky;left:0;top:0;z-index:6;background:#E8E8E8;border:1px solid #ccc;padding:4px 6px;min-width:' + NAMEW + 'px;height:' + RH1 + 'px">曜日</th>';
   dates.forEach((d, di) => {
     const bg = (di % 2 === 0) ? '#EDEDED' : '#FFFFFF';
-    mt += '<th colspan="6" style="background:' + bg + ';border:1px solid #ccc;padding:3px 6px;font-weight:800">' + wlabels[di] + '</th>';
+    mt += '<th colspan="6" style="position:sticky;top:0;z-index:4;background:' + bg + ';border:1px solid #ccc;padding:4px 6px;font-weight:800;height:' + RH1 + 'px">' + wlabels[di] + '</th>';
   });
   mt += '</tr>';
-  // ヘッダ2：限
-  mt += '<tr><th style="position:sticky;left:0;z-index:3;background:#F0F0F0;border:1px solid #ccc;padding:2px 6px">時間</th>';
-  dates.forEach((d, di) => { P.forEach(p => { mt += '<th style="border:1px solid #ccc;padding:2px 4px;min-width:26px;font-weight:700">' + rbCircled(p) + '</th>'; }); });
+  // ヘッダ2：限（top:RH1）
+  mt += '<tr>';
+  mt += '<th style="position:sticky;left:0;top:' + RH1 + 'px;z-index:6;background:#E8E8E8;border:1px solid #ccc;padding:3px 6px;height:' + RH2 + 'px">時間</th>';
+  dates.forEach((d, di) => { P.forEach(p => { mt += '<th style="position:sticky;top:' + RH1 + 'px;z-index:4;background:#F5F5F5;border:1px solid #ccc;padding:3px 4px;min-width:' + CELLW + 'px;font-weight:700;height:' + RH2 + 'px">' + rbCircled(p) + '</th>'; }); });
   mt += '</tr>';
-  // ヘッダ3：日付
-  mt += '<tr><th style="position:sticky;left:0;z-index:3;background:#F0F0F0;border:1px solid #ccc;padding:2px 6px">日付</th>';
+  // ヘッダ3：日付（top:RH1+RH2）
+  mt += '<tr>';
+  mt += '<th style="position:sticky;left:0;top:' + (RH1 + RH2) + 'px;z-index:6;background:#E8E8E8;border:1px solid #ccc;padding:3px 6px;height:' + RH3 + 'px">日付</th>';
   dates.forEach((d, di) => {
     const bg = (di % 2 === 0) ? '#F7F7F7' : '#FFFFFF';
-    mt += '<th colspan="6" style="background:' + bg + ';border:1px solid #ccc;padding:2px 6px;color:#555">' + (d.getMonth()+1) + '/' + d.getDate() + '</th>';
+    mt += '<th colspan="6" style="position:sticky;top:' + (RH1 + RH2) + 'px;z-index:4;background:' + bg + ';border:1px solid #ccc;padding:3px 6px;color:#555;height:' + RH3 + 'px">' + (d.getMonth()+1) + '/' + d.getDate() + '</th>';
   });
   mt += '</tr>';
-  // 本体：スタッフ行
+  // 本体：スタッフ行（名前列は左固定）
   staffCodes.forEach(code => {
     const nm = resolveStaffName(code) || code;
-    mt += '<tr><td style="position:sticky;left:0;z-index:2;background:#fff;border:1px solid #ccc;padding:3px 6px;font-weight:700;min-width:66px">' + escapeHtml(nm) + '</td>';
+    mt += '<tr><td style="position:sticky;left:0;z-index:2;background:#fff;border:1px solid #ccc;padding:4px 8px;font-weight:700;min-width:' + NAMEW + 'px;font-size:12.5px">' + escapeHtml(nm) + '</td>';
     dates.forEach((d, di) => {
       const iso = svIsoFromDate(d);
       const dow = d.getDay();
@@ -35978,7 +35986,7 @@ async function svLoadDecide() {
           ? ' onclick="svToggleCell(\'' + iso + '\',' + p + ',\'' + escapeAttr(code) + '\',\'' + escapeAttr(nm) + '\',' + (isAssigned ? 'true' : 'false') + ')"'
           : '';
         const cursor = clickable ? 'cursor:pointer;' : '';
-        mt += '<td' + onclick + ' title="' + escapeAttr(title) + '" style="border:1px solid #ccc;padding:0;width:26px;height:24px;text-align:center;background:' + bg + ';color:' + color + ';font-weight:700;' + cursor + '">' + txt + '</td>';
+        mt += '<td' + onclick + ' title="' + escapeAttr(title) + '" style="border:1px solid #ccc;padding:0;width:' + CELLW + 'px;height:' + CELLH + 'px;text-align:center;font-size:13px;background:' + bg + ';color:' + color + ';font-weight:700;' + cursor + '">' + txt + '</td>';
       });
     });
     mt += '</tr>';
@@ -35986,7 +35994,7 @@ async function svLoadDecide() {
   // ===== 現場対応 行（最下部・固定）=====
   // 自習監督を置かないコマ（大きい授業がある等）を「現場対応」として印だけ付ける。
   // staff_id='genba' の assignment 行として保存。確定・通知・カレンダー・監督コマ数には入らない。
-  mt += '<tr><td style="position:sticky;left:0;z-index:2;background:#FCEFD9;border:1px solid #ccc;padding:3px 6px;font-weight:800;min-width:66px;color:#8a5a1a">現場対応</td>';
+  mt += '<tr><td style="position:sticky;left:0;z-index:2;background:#FCEFD9;border:1px solid #ccc;padding:4px 8px;font-weight:800;min-width:' + NAMEW + 'px;color:#8a5a1a;font-size:12.5px">現場対応</td>';
   dates.forEach((d, di) => {
     const iso = svIsoFromDate(d);
     P.forEach(p => {
@@ -35995,7 +36003,7 @@ async function svLoadDecide() {
       const bg = on ? '#D9A441' : '#FFF8EC';
       const txt = on ? '現' : '';
       const color = on ? '#fff' : '#caa';
-      mt += '<td onclick="svToggleGenba(\'' + iso + '\',' + p + ',' + (on ? 'true' : 'false') + ')" title="' + escapeAttr(title) + '" style="border:1px solid #ccc;padding:0;width:26px;height:24px;text-align:center;background:' + bg + ';color:' + color + ';font-weight:800;cursor:pointer">' + txt + '</td>';
+      mt += '<td onclick="svToggleGenba(\'' + iso + '\',' + p + ',' + (on ? 'true' : 'false') + ')" title="' + escapeAttr(title) + '" style="border:1px solid #ccc;padding:0;width:' + CELLW + 'px;height:' + CELLH + 'px;text-align:center;font-size:13px;background:' + bg + ';color:' + color + ';font-weight:800;cursor:pointer">' + txt + '</td>';
     });
   });
   mt += '</tr>';
