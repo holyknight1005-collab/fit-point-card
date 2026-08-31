@@ -6419,7 +6419,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm118';
+const APP_VERSION = '20260702dlm119';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -21176,8 +21176,9 @@ function classColorOf(cm) {
   return '#E8923A';
 }
 let classMasterList = [];
-let cmCategoryFilter = 'all';   // 授業管理の区分フィルタ（all / normal / summer / ...）
+let cmCategoryFilter = 'normal';   // 授業管理の区分フィルタ。既定は「通常」（夏期はタップで切替）
 let cmAdminMineOnly = true;     // dlm102: admin時、既定は「自分の担当だけ」表示。切替で全授業。
+let cmBothDivisions = true;     // dlm118: 授業管理は既定で高校部＋中学部をまとめて表示（部門切替不要）。
 let cmNewTeacherSel = [];        // dlm102: 新規授業登録フォームで選んだ担当講師（staff.id の配列。先頭=主担当）
 let cmNewTeacherStaff = [];      // dlm102: フォーム用スタッフ一覧キャッシュ
 let cmTeacherNames = {};        // classId -> [name,...]（loadClassMasterList で構築、renderCmList で使用）
@@ -21212,10 +21213,11 @@ async function loadClassMasterList() {
   const bulkBox = document.getElementById('cmbulk-rows');
   if (bulkBox && !bulkBox.children.length) { for (let i = 0; i < 3; i++) await addCmBulkRow(); }
   // 自分の授業のみ（管理者は全部）。主担当(teacher_staff_id) ∪ 追加担当(class_teachers)。
-  // 部門（中学部/高校部）で絞る。
+  // dlm118: 既定は高校部＋中学部をまとめて表示（cmBothDivisions=true）。部門ごとに見たいときだけ絞る。
+  let query = 'is_active=eq.true&order=subject,name&select=*,staff(name)';
+  if (!cmBothDivisions) query = 'is_active=eq.true&division=eq.' + encodeURIComponent(currentDivision) + '&order=subject,name&select=*,staff(name)';
   // ★中学部担当(is_chugaku_staff)は、currentDivision='中学部' のときは全授業を見られる。
-  let query = 'is_active=eq.true&division=eq.' + encodeURIComponent(currentDivision) + '&order=subject,name&select=*,staff(name)';
-  const chugakuAll = (currentDivision === '中学部') && await isChugakuStaff();
+  const chugakuAll = (!cmBothDivisions && currentDivision === '中学部') && await isChugakuStaff();
   const isAdmin = !!(currentStaff && currentStaff.role === 'admin');
   // dlm102: 非admin は常に自分の担当のみ。admin は既定で自分の担当のみ（cmAdminMineOnly）、切替で全授業。
   // ただし中学部担当が中学部を見ているときは従来どおり全授業（chugakuAll）。
@@ -21431,12 +21433,11 @@ function renderCmList() {
     return;
   }
 
-  const subjGroups = {};
-  filtered.forEach(c => {
-    if (!subjGroups[c.subject]) subjGroups[c.subject] = [];
-    subjGroups[c.subject].push(c);
-  });
-  const mainHtml = subjectGroupsSorted(subjGroups).map(([subj, list]) =>
+  // dlm118: cmBothDivisions のときは高校部→中学部の順にブロック分け。単一部門時は従来どおり。
+  function _cmSubjHtml(list) {
+    const g = {};
+    list.forEach(c => { (g[c.subject] || (g[c.subject] = [])).push(c); });
+    return subjectGroupsSorted(g).map(([subj, list]) =>
     '<div style="margin-bottom:8px">' +
     '<div style="font-size:11px;font-weight:700;color:' + (SUBJ_COLORS[subj]||'#5A5A5A') + ';padding:4px 0;border-bottom:1px solid var(--border);margin-bottom:4px">' + subj + '</div>' +
     list.map(c => {
@@ -21478,7 +21479,20 @@ function renderCmList() {
       '</div>';
     }).join('') +
     '</div>'
-  ).join('');
+    ).join('');
+  }
+  let mainHtml = '';
+  if (cmBothDivisions) {
+    const divOrder = [['高校部','🎓 高校部'],['中学部','📗 中学部']];
+    divOrder.forEach(([dv, label]) => {
+      const dl = filtered.filter(c => (c.division || '高校部') === dv);
+      if (!dl.length) return;
+      mainHtml += '<div style="margin:10px 0 4px;font-size:13px;font-weight:800;color:var(--text);background:var(--surface2);border-radius:8px;padding:6px 10px">' + label + '　<span style="font-size:11px;color:var(--muted);font-weight:600">' + dl.length + '講座</span></div>';
+      mainHtml += _cmSubjHtml(dl);
+    });
+  } else {
+    mainHtml = _cmSubjHtml(filtered);
+  }
 
   // --- アーカイブセクション（過去年度の講習）dlm76 ---
   // データは消さず、折りたたみで閲覧できるようにする。年度ごとにグループ化。
