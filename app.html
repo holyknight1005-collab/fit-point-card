@@ -57773,7 +57773,35 @@ async function detectDuplicateStudents() {
     }
     (groups[k] = groups[k] || []).push(s);
   });
-  const dupGroups = Object.keys(groups).map(k => groups[k]).filter(g => g.length >= 2);
+  let dupGroups = Object.keys(groups).map(k => groups[k]).filter(g => g.length >= 2);
+  dupGroups.forEach(g => g._review = false);  // 氏名＋学校一致＝確実
+
+  // dlm116: 氏名（正規化）だけが一致し、学校が空 or 不一致のペアも「要確認」として追加検出。
+  //   SSS登録の子などが学校名を入れず、同名でも別グループになって取りこぼす穴をふさぐ。
+  //   すでに上のグループに入っている生徒は除外し、二重検出を防ぐ。
+  const alreadyGrouped = new Set();
+  dupGroups.forEach(g => g.forEach(s => alreadyGrouped.add(s.id)));
+  const byName = {};
+  students.forEach(s => {
+    const nk = normalizeName(s.name || '');
+    if (!nk) return;
+    (byName[nk] = byName[nk] || []).push(s);
+  });
+  Object.keys(byName).forEach(nk => {
+    const g = byName[nk];
+    if (g.length < 2) return;
+    // このうち、まだどの確実グループにも入っていない生徒だけを対象にする
+    const rest = g.filter(s => !alreadyGrouped.has(s.id));
+    if (rest.length < 2) return;
+    // 全員の学校が同一かつ空でないなら、それは上の確実検出で既に拾われているはず → ここでは扱わない
+    const schools = new Set(rest.map(s => normalizeName(s.school || '')));
+    const hasEmpty = rest.some(s => !normalizeName(s.school || ''));
+    if (schools.size === 1 && !hasEmpty) return;  // 同一学校で空なし＝確実側の担当
+    const rg = rest.slice();
+    rg._review = true;  // 要確認フラグ（学校が空 or 不一致）
+    dupGroups.push(rg);
+    rest.forEach(s => alreadyGrouped.add(s.id));
+  });
 
   if (!dupGroups.length) {
     area.innerHTML = '<div style="font-size:12px;color:#1E8449;padding:8px;background:#EAF6EE;border-radius:8px">✅ 重複は見つかりませんでした。</div>';
@@ -57783,8 +57811,13 @@ async function detectDuplicateStudents() {
   window._dupStudentMap = {};
   students.forEach(s => { window._dupStudentMap[s.id] = s; });
 
-  let html = '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + dupGroups.length + '組の重複候補が見つかりました。残す側（実アカウント優先）を確認して統合してください。</div>';
+  const nReview = dupGroups.filter(g => g._review).length;
+  const nExact = dupGroups.length - nReview;
+  let html = '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + dupGroups.length + '組の重複候補が見つかりました'
+    + (nReview ? '（うち<b style="color:#B7791F">⚠️要確認 ' + nReview + '組</b>：氏名は同じですが学校が未入力／不一致です）' : '')
+    + '。残す側（実アカウント優先）を確認して統合してください。</div>';
   dupGroups.forEach((g, gi) => {
+    const review = !!g._review;
     // 残す側の推奨：実アカウント優先→ポイント多い→入塾日が古い
     const sorted = g.slice().sort((a, b) => {
       const ra = isRealAccount(a) ? 0 : 1, rb = isRealAccount(b) ? 0 : 1;
@@ -57793,23 +57826,33 @@ async function detectDuplicateStudents() {
       return (a.enroll_date || '9999').localeCompare(b.enroll_date || '9999');
     });
     const keepId = sorted[0].id;
-    html += '<div style="border:1px solid #E8C98A;border-radius:8px;padding:10px;margin-bottom:8px;background:#fff">';
-    html += '<div style="font-size:12px;font-weight:800;color:#96690F;margin-bottom:6px">' + escapeHtml(sorted[0].name || '') + '（' + escapeHtml(sorted[0].school || '') + ' ' + (sorted[0].grade || '') + '年）</div>';
+    const boxBorder = review ? '#E8B4B4' : '#E8C98A';
+    const boxBg = review ? '#FDF6F6' : '#fff';
+    html += '<div style="border:1px solid ' + boxBorder + ';border-radius:8px;padding:10px;margin-bottom:8px;background:' + boxBg + '">';
+    if (review) {
+      html += '<div style="font-size:10px;color:#B7791F;background:#FEF3E0;border-radius:6px;padding:3px 7px;margin-bottom:6px;line-height:1.5">⚠️ 氏名のみ一致（学校が未入力／不一致）。<b>同一人物か必ず確認</b>してから統合してください。</div>';
+    }
+    html += '<div style="font-size:12px;font-weight:800;color:#96690F;margin-bottom:6px">' + escapeHtml(sorted[0].name || '') + '</div>';
     html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">残す側を選択：</div>';
     html += '<div style="display:flex;flex-direction:column;gap:4px">';
     g.forEach(s => {
       const real = isRealAccount(s);
       const badge = real ? '<span style="font-size:9px;color:#1E8449;background:#EAF6EE;border-radius:6px;padding:1px 6px">✅アプリ登録</span>' : '<span style="font-size:9px;color:#96690F;background:#FEF3E0;border-radius:6px;padding:1px 6px">仮アカ</span>';
+      // 要確認グループでは学校・学年を強調表示（判断材料）
+      const schoolLabel = review
+        ? '<span style="font-size:10px;font-weight:700;color:' + (s.school ? '#8A5A00' : '#C0392B') + ';white-space:nowrap">' + escapeHtml(s.school || '(学校未入力)') + ' ' + (s.grade || '') + '</span>'
+        : '';
       html += '<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:4px 6px;border:1px solid var(--border);border-radius:6px">' +
         '<input type="radio" name="dupkeep-' + gi + '" value="' + escapeAttr(String(s.id)) + '"' + (s.id === keepId ? ' checked' : '') + '>' +
-        badge + '<span style="flex:1;min-width:0;color:var(--text)">' + escapeHtml(String(s.email || '(メールなし)')) + '</span>' +
+        badge + schoolLabel + '<span style="flex:1;min-width:0;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(String(s.email || '(メールなし)')) + '</span>' +
         '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' + (s.points || 0) + 'pt' + (s.enroll_date ? '・入塾' + String(s.enroll_date).slice(5).replace('-', '/') : '') + '</span>' +
         '</label>';
     });
     html += '</div>';
     const otherIds = g.map(s => s.id);
+    const btnColor = review ? 'linear-gradient(135deg,#D98A8A,#B7791F)' : 'linear-gradient(135deg,#E9A93C,#C6851B)';
     html += '<button onclick="mergeStudents(' + gi + ',[' + otherIds.map(x => "'" + escapeAttr(String(x)) + "'").join(',') + '])" ' +
-      'style="margin-top:8px;width:100%;padding:8px;background:linear-gradient(135deg,#E9A93C,#C6851B);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">🔗 選択した側に統合する</button>';
+      'style="margin-top:8px;width:100%;padding:8px;background:' + btnColor + ';border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">🔗 選択した側に統合する</button>';
     html += '</div>';
   });
   area.innerHTML = html;
