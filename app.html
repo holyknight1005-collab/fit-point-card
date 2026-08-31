@@ -6384,7 +6384,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm115';
+const APP_VERSION = '20260702dlm116';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -12100,10 +12100,23 @@ async function approveApplication(id, name, email, school, grade) {
       const cand = await sbGet('students',
         'select=id,name,school,roster_only,email&order=created_at.desc&limit=500') || [];
       const key = rosterKey(name, school);
+      const nkey = normalizeName(name);
+      // dlm116: 学校ズレでも同一人物に結び付けるための緩い一致判定。
+      //   本人が学校名を入れず「その他」等で自己登録し、名簿は正しい学校名、というケースで
+      //   二重作成を防ぐ。氏名（正規化）が一致し、学校が「空 or その他 or 一致」なら同一人物とみなす。
+      //   両方が具体的な別学校名のときだけ別人として新規作成する（誤結合防止）。
+      const vagueSchool = sc => { const v = normalizeName(sc || ''); return v === '' || v === 'その他' || v === 'その他学校'; };
+      const looseSame = s => {
+        if (normalizeName(s.name) !== nkey) return false;
+        const a = normalizeName(s.school || ''), b = normalizeName(school || '');
+        if (a === b) return true;                 // 学校一致
+        return vagueSchool(a) || vagueSchool(b);  // どちらかが空/その他なら同一人物とみなす
+      };
       // ① まず既にアプリ登録済み（roster_only でない実アカウント）が同一人物ならそれを優先し、新規作成しない
-      const realHit = cand.find(s => s.roster_only !== true && rosterKey(s.name, s.school) === key);
+      let realHit = cand.find(s => s.roster_only !== true && rosterKey(s.name, s.school) === key);
+      if (!realHit) realHit = cand.find(s => s.roster_only !== true && looseSame(s));  // 学校ズレ救済
       if (realHit) {
-        // 実アカウントが既に存在 → 重複を作らず、メール/PIN/ふりがなを最新で更新
+        // 実アカウントが既に存在 → 重複を作らず、メール/PIN/ふりがなを最新で更新（入塾日は触らない）
         try {
           await sbPatch('students', 'id=eq.' + realHit.id, { email: email, pin: pin, student_no: pin, name_kana: nameKana });
         } catch (eK) {
@@ -12112,9 +12125,13 @@ async function approveApplication(id, name, email, school, grade) {
         promoted = true;
       } else {
         // ② 名簿生（roster_only）がいれば昇格
-        const hit = cand.find(s => s.roster_only === true && rosterKey(s.name, s.school) === key);
+        let hit = cand.find(s => s.roster_only === true && rosterKey(s.name, s.school) === key);
+        if (!hit) hit = cand.find(s => s.roster_only === true && looseSame(s));  // 学校ズレ救済
         if (hit) {
+          // 昇格：ログイン情報を付与。学校は「本人が具体名を入れ、名簿側が空/その他」のときだけ本人入力で補完。
+          //   入塾日(enroll_date)は名簿側の手動値を尊重し、ここでは絶対に触らない。
           const promoteBody = { email: email, pin: pin, student_no: pin, roster_only: false, name_kana: nameKana };
+          if (!vagueSchool(school) && vagueSchool(hit.school)) promoteBody.school = school;
           try {
             await sbPatch('students', 'id=eq.' + hit.id, promoteBody);
           } catch (eK) {
@@ -57811,6 +57828,17 @@ async function detectDuplicateStudents() {
   window._dupStudentMap = {};
   students.forEach(s => { window._dupStudentMap[s.id] = s; });
 
+  // dlm116: 重複候補の生徒だけ履歴件数を取得（残す側の推奨・表示に使う）。
+  //   統合は「残す側に履歴を付け替える」ので、履歴の多い側を残すのが安全（消える重複行を最小化）。
+  const candIds = [];
+  dupGroups.forEach(g => g.forEach(s => candIds.push(s.id)));
+  window._dupHistMap = {};
+  await Promise.all(candIds.map(async id => {
+    try { window._dupHistMap[id] = await countStudentHistory(id); }
+    catch (e) { window._dupHistMap[id] = { attendance: 0, points: 0, enrollments: 0, checkins: 0 }; }
+  }));
+  const histTotalOf = id => { const h = window._dupHistMap[id] || {}; return (h.attendance||0)+(h.points||0)+(h.enrollments||0)+(h.checkins||0); };
+
   const nReview = dupGroups.filter(g => g._review).length;
   const nExact = dupGroups.length - nReview;
   let html = '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + dupGroups.length + '組の重複候補が見つかりました'
@@ -57818,8 +57846,12 @@ async function detectDuplicateStudents() {
     + '。残す側（実アカウント優先）を確認して統合してください。</div>';
   dupGroups.forEach((g, gi) => {
     const review = !!g._review;
-    // 残す側の推奨：実アカウント優先→ポイント多い→入塾日が古い
+    // dlm116: 残す側の推奨を「履歴が多い側」最優先に変更。
+    //   （旧：実アカ優先 → アプリ登録直後で履歴ゼロの側が選ばれ、出欠が消える方向だった）
+    //   履歴同数なら 実アカ優先 → ポイント多い → 入塾日が古い。
     const sorted = g.slice().sort((a, b) => {
+      const ha = histTotalOf(a.id), hb = histTotalOf(b.id);
+      if (ha !== hb) return hb - ha;                          // 履歴多い側を先頭
       const ra = isRealAccount(a) ? 0 : 1, rb = isRealAccount(b) ? 0 : 1;
       if (ra !== rb) return ra - rb;
       if ((b.points || 0) !== (a.points || 0)) return (b.points || 0) - (a.points || 0);
@@ -57833,7 +57865,7 @@ async function detectDuplicateStudents() {
       html += '<div style="font-size:10px;color:#B7791F;background:#FEF3E0;border-radius:6px;padding:3px 7px;margin-bottom:6px;line-height:1.5">⚠️ 氏名のみ一致（学校が未入力／不一致）。<b>同一人物か必ず確認</b>してから統合してください。</div>';
     }
     html += '<div style="font-size:12px;font-weight:800;color:#96690F;margin-bottom:6px">' + escapeHtml(sorted[0].name || '') + '</div>';
-    html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">残す側を選択：</div>';
+    html += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">残す側を選択（<b>履歴の多い側を推奨</b>）：</div>';
     html += '<div style="display:flex;flex-direction:column;gap:4px">';
     g.forEach(s => {
       const real = isRealAccount(s);
@@ -57842,9 +57874,22 @@ async function detectDuplicateStudents() {
       const schoolLabel = review
         ? '<span style="font-size:10px;font-weight:700;color:' + (s.school ? '#8A5A00' : '#C0392B') + ';white-space:nowrap">' + escapeHtml(s.school || '(学校未入力)') + ' ' + (s.grade || '') + '</span>'
         : '';
-      html += '<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:4px 6px;border:1px solid var(--border);border-radius:6px">' +
-        '<input type="radio" name="dupkeep-' + gi + '" value="' + escapeAttr(String(s.id)) + '"' + (s.id === keepId ? ' checked' : '') + '>' +
-        badge + schoolLabel + '<span style="flex:1;min-width:0;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(String(s.email || '(メールなし)')) + '</span>' +
+      // 履歴件数バッジ（出欠・受講・来塾）。履歴ゼロは薄く「履歴なし」。
+      const h = window._dupHistMap[s.id] || {};
+      const hbits = [];
+      if (h.attendance) hbits.push('出欠' + h.attendance);
+      if (h.enrollments) hbits.push('受講' + h.enrollments);
+      if (h.checkins) hbits.push('来塾' + h.checkins);
+      const histTotal = histTotalOf(s.id);
+      const histLabel = hbits.length
+        ? '<span style="font-size:9px;font-weight:700;color:#2D5FA6;background:#EAF2FB;border-radius:6px;padding:1px 6px;white-space:nowrap">' + hbits.join('・') + '</span>'
+        : '<span style="font-size:9px;color:#B0A99A;background:#F5F3EF;border-radius:6px;padding:1px 6px;white-space:nowrap">履歴なし</span>';
+      const isRec = (s.id === keepId);
+      const recMark = isRec ? '<span style="font-size:9px;color:#fff;background:#1E8449;border-radius:6px;padding:1px 6px;white-space:nowrap">推奨</span>' : '';
+      html += '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:5px 6px;border:1px solid ' + (isRec ? '#9CCBA9' : 'var(--border)') + ';border-radius:6px;background:' + (isRec ? '#F3FAF5' : 'transparent') + ';flex-wrap:wrap">' +
+        '<input type="radio" name="dupkeep-' + gi + '" value="' + escapeAttr(String(s.id)) + '"' + (isRec ? ' checked' : '') + '>' +
+        badge + histLabel + recMark + schoolLabel +
+        '<span style="flex:1;min-width:80px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(String(real ? (s.email || '') : '(仮アカ)')) + '</span>' +
         '<span style="font-size:10px;color:var(--muted);white-space:nowrap">' + (s.points || 0) + 'pt' + (s.enroll_date ? '・入塾' + String(s.enroll_date).slice(5).replace('-', '/') : '') + '</span>' +
         '</label>';
     });
@@ -57883,14 +57928,45 @@ async function mergeStudents(groupIndex, allIds) {
         try { await sbPatch(tbl, 'target_student_id=eq.' + encodeURIComponent(fromId), { target_student_id: keepId }); }
         catch (e) {}
       }
-      // 残す側に入塾日が無く、from にあれば補完
+      // dlm116: 残す側で空の項目を、消す側(from)の値で補完する（競合＝両方に値があれば残す側優先で上書きしない）。
+      //   入塾日(enroll_date)は「スタッフが手動管理するもの」なので、
+      //   残す側に既に値があれば絶対に触らない（アプリ側の値で上書きしない）。空のときだけ補完する。
+      //   ログイン情報(email/pin/liny_id)は、残す側がプレースホルダ(roster+…)なら実アカ側から引き継ぐ。
       try {
-        const fromS = (window._dupStudentMap || {})[fromId];
-        if (fromS && fromS.enroll_date && keep && !keep.enroll_date) {
-          await sbPatch('students', 'id=eq.' + encodeURIComponent(keepId), { enroll_date: fromS.enroll_date });
-          keep.enroll_date = fromS.enroll_date;
+        const fromFull = (await sbGet('students', 'id=eq.' + encodeURIComponent(fromId) + '&select=*'))[0] || {};
+        const keepFull = (await sbGet('students', 'id=eq.' + encodeURIComponent(keepId) + '&select=*'))[0] || {};
+        const isPlaceholderEmail = e => !e || /^roster\+.*@fit\.local$/.test(String(e));
+        const patch = {};
+        // 空なら補完する一般プロフィール項目（両方値ありは残す側優先で触らない）
+        const FILL_FIELDS = ['school','school_detail','grade','division','course_track','gender','birthday',
+          'club','name_kana','family_name','given_name','family_kana','given_kana',
+          'membership_status','campus','photo_url','desired_subjects',
+          'faculty1','faculty2','faculty3','univ1','univ2','univ3',
+          'enroll_date'];
+        FILL_FIELDS.forEach(f => {
+          const kv = keepFull[f], fv = fromFull[f];
+          const keepEmpty = (kv === null || kv === undefined || kv === '' || (f === 'membership_status' && kv === '通常'));
+          if (keepEmpty && fv !== null && fv !== undefined && fv !== '') patch[f] = fv;
+        });
+        // ログイン情報：残す側がプレースホルダで、from が実アカならログインを引き継ぐ
+        if (isPlaceholderEmail(keepFull.email) && !isPlaceholderEmail(fromFull.email)) {
+          patch.email = fromFull.email;
+          if (fromFull.pin) { patch.pin = fromFull.pin; patch.student_no = fromFull.pin; }
+          patch.roster_only = false;
         }
-      } catch (e) {}
+        // LINE連携も残す側が空なら引き継ぐ
+        if (!keepFull.liny_id && fromFull.liny_id) patch.liny_id = fromFull.liny_id;
+        if (!keepFull.parent_liny_id && fromFull.parent_liny_id) patch.parent_liny_id = fromFull.parent_liny_id;
+        if (Object.keys(patch).length) {
+          try { await sbPatch('students', 'id=eq.' + encodeURIComponent(keepId), patch); }
+          catch (ePatch) {
+            // 未作成列があれば1つずつ試して通るものだけ反映
+            for (const k of Object.keys(patch)) {
+              try { await sbPatch('students', 'id=eq.' + encodeURIComponent(keepId), { [k]: patch[k] }); } catch (e2) {}
+            }
+          }
+        }
+      } catch (e) { /* 補完失敗は統合自体を止めない */ }
       // from を除外（論理削除）
       try {
         await sbPatch('students', 'id=eq.' + encodeURIComponent(fromId), { is_active: false, inactive_at: new Date().toISOString(), inactive_reason: '除外' });
