@@ -6347,7 +6347,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm113';
+const APP_VERSION = '20260702dlm114';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -35950,15 +35950,15 @@ async function svLoadDecide() {
   // ---- マトリクス組み立て ----
   // 縦横スクロールできる枠。ヘッダ3段（曜日/限/日付）と左のスタッフ名列を固定(sticky)する。
   const P = [1,2,3,4,5,6];
-  const NAMEW = 92;   // スタッフ名列の幅
+  const NAMEW = 118;  // スタッフ名列の幅（dlm114: 負荷指標を併記するため拡張）
   const CELLW = 40;   // 1コマの幅
   const CELLH = 34;   // 1コマの高さ
   const RH1 = 26, RH2 = 24, RH3 = 24; // ヘッダ各段の高さ（sticky offset計算用）
-  let mt = '<div style="overflow:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:8px;max-height:70vh">';
+  let mt = '<div id="sv-decide-matrix-scroll" style="overflow:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:8px;max-height:70vh">';
   mt += '<table style="border-collapse:separate;border-spacing:0;font-size:12px;white-space:nowrap">';
   // ヘッダ1：曜日（top:0、左上は最前面）
   mt += '<tr>';
-  mt += '<th style="position:sticky;left:0;top:0;z-index:6;background:#E8E8E8;border:1px solid #ccc;padding:4px 6px;min-width:' + NAMEW + 'px;height:' + RH1 + 'px">曜日</th>';
+  mt += '<th style="position:sticky;left:0;top:0;z-index:6;background:#E8E8E8;border:1px solid #ccc;padding:4px 6px;min-width:' + NAMEW + 'px;height:' + RH1 + 'px"><span style="font-size:11px">曜日</span><span style="font-size:9px;color:#777;font-weight:400"> ／ 週授業・週監督</span></th>';
   dates.forEach((d, di) => {
     const bg = (di % 2 === 0) ? '#EDEDED' : '#FFFFFF';
     mt += '<th colspan="6" style="position:sticky;top:0;z-index:4;background:' + bg + ';border:1px solid #ccc;padding:4px 6px;font-weight:800;height:' + RH1 + 'px">' + wlabels[di] + '</th>';
@@ -35986,9 +35986,29 @@ async function svLoadDecide() {
   });
   mt += '</tr>';
   // 本体：スタッフ行（名前列は左固定）
+  // dlm114: バランス調整のため氏名の横に負荷指標を出す。
+  //  週授業 … _svStats（DB確定・授業は正確）
+  //  週監督 … 実効値（draft反映）でこの週を数え直す＝タップで即増減
+  //  月監督 … DB月累計 − DBの今週分 + 実効の今週分（表示中の週の下書きを月累計へ反映）
+  const effWeekSuper = (code) => {
+    let n = 0;
+    dates.forEach(d => {
+      const iso = svIsoFromDate(d);
+      P.forEach(p => { if (isAssignedEff(iso, p, code)) n++; });
+    });
+    return n;
+  };
   staffCodes.forEach(code => {
     const nm = resolveStaffName(code) || code;
-    mt += '<tr><td style="position:sticky;left:0;z-index:2;background:#fff;border:1px solid #ccc;padding:4px 8px;font-weight:700;min-width:' + NAMEW + 'px;font-size:12.5px">' + escapeHtml(nm) + '</td>';
+    const st = (_svStats && _svStats[code]) || { wLesson: 0, wSuper: 0, mLesson: 0, mSuper: 0 };
+    const wSup = effWeekSuper(code);                       // 週監督（draft反映）
+    const mSup = (st.mSuper || 0) - (st.wSuper || 0) + wSup; // 月監督（表示週の下書きを反映）
+    const metrics = '<div style="font-size:10px;color:var(--muted);font-weight:400;line-height:1.35;margin-top:2px;white-space:nowrap">' +
+      '授業<b style="color:#2D6CB6">' + (st.wLesson || 0) + '</b>' +
+      '／監督<b style="color:#1E7A4E">' + wSup + '</b>' +
+      '<br><span style="color:#999">今月監督 ' + mSup + '</span>' +
+      '</div>';
+    mt += '<tr><td style="position:sticky;left:0;z-index:2;background:#fff;border:1px solid #ccc;padding:4px 8px;font-weight:700;min-width:' + NAMEW + 'px;font-size:12.5px">' + escapeHtml(nm) + metrics + '</td>';
     dates.forEach((d, di) => {
       const iso = svIsoFromDate(d);
       const dow = d.getDay();
@@ -36133,7 +36153,14 @@ async function svLoadDecide() {
   }
   out += confirmUi;
   out += '</div>';
+  // dlm114: innerHTML差し替えでマトリクス枠が作り直されるとスクロール位置が0に戻り、
+  // 「1人タップすると初期位置に戻る」挙動になる。差し替え前に退避→差し替え後に復元する。
+  const _prevScroll = document.getElementById('sv-decide-matrix-scroll');
+  const _sl = _prevScroll ? _prevScroll.scrollLeft : 0;
+  const _st = _prevScroll ? _prevScroll.scrollTop : 0;
   box.innerHTML = out;
+  const _newScroll = document.getElementById('sv-decide-matrix-scroll');
+  if (_newScroll) { _newScroll.scrollLeft = _sl; _newScroll.scrollTop = _st; }
   }; // ← render() ここまで
   _svDecideRerender = render;
   render();
