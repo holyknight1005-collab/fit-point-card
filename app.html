@@ -35680,7 +35680,7 @@ function svDecideJumpToMonth(ym) {
 // 監督＝supervision_assignments(cancelled=false) を期間内で計数（staff_id はコード基準）。
 async function svComputeLoadStats(staffCodes, weekFromIso, weekToIso, monthFromIso, monthToIso) {
   const stats = {};
-  staffCodes.forEach(c => { stats[c] = { emp: null, wLesson: 0, wSuper: 0, mLesson: 0, mSuper: 0 }; });
+  staffCodes.forEach(c => { stats[c] = { emp: null, wLesson: 0, wSuper: 0, mLesson: 0, mSuper: 0, mSuperByMonth: {}, wSuperByMonth: {} }; });
   if (!staffCodes.length) return stats;
   try {
     // code -> UUID、区分
@@ -35724,7 +35724,9 @@ async function svComputeLoadStats(staffCodes, weekFromIso, weekToIso, monthFromI
     Object.values(classesByUuid).forEach(set => set.forEach(id => allClassIds.add(id)));
     let monthSessions = [];
     if (allClassIds.size) {
-      monthSessions = await sbGet('class_sessions',
+      // dlm114: sbGet(1000行上限)だと全対象クラスの月セッションが打ち切られ、
+      //  週該当分がこぼれて wLesson が過少（石田で12→1）になる。sbGetAllで全件取得する。
+      monthSessions = await sbGetAll('class_sessions',
         'class_master_id=in.(' + [...allClassIds].map(id => '"' + id + '"').join(',') +
         ')&session_date=gte.' + monthFromIso + '&session_date=lte.' + monthToIso +
         '&select=class_master_id,session_date').catch(() => []) || [];
@@ -35742,16 +35744,21 @@ async function svComputeLoadStats(staffCodes, weekFromIso, weekToIso, monthFromI
         if (inWeek) stats[code].wLesson++;
       });
     });
-    // 監督側：月範囲で一括取得しコードで計数
-    const svRows = await sbGet('supervision_assignments',
+    // 監督側：月範囲で一括取得しコードで計数（dlm114: 1000行制限回避のためsbGetAll）
+    const svRows = await sbGetAll('supervision_assignments',
       'sv_date=gte.' + monthFromIso + '&sv_date=lte.' + monthToIso +
       '&cancelled=eq.false&select=sv_date,staff_id').catch(() => []) || [];
     svRows.forEach(r => {
       const code = String(r.staff_id);
       if (!stats[code]) return;
       const inWeek = (r.sv_date >= weekFromIso && r.sv_date <= weekToIso);
+      const ym = String(r.sv_date).slice(0, 7); // 'YYYY-MM'（dlm114: 月別累計）
       stats[code].mSuper++;
-      if (inWeek) stats[code].wSuper++;
+      stats[code].mSuperByMonth[ym] = (stats[code].mSuperByMonth[ym] || 0) + 1;
+      if (inWeek) {
+        stats[code].wSuper++;
+        stats[code].wSuperByMonth[ym] = (stats[code].wSuperByMonth[ym] || 0) + 1;
+      }
     });
   } catch (e) { /* 集計失敗時は 0 のまま返す（決定操作は妨げない） */ }
   return stats;
@@ -35835,10 +35842,23 @@ async function svLoadDecide() {
     (notesByDay[n.sv_date] || (notesByDay[n.sv_date] = [])).push({ staff_id: n.staff_id, reason: n.reason.trim() });
   });
 
-  // dlm93: 各希望者/確定者の負荷（授業/監督コマ数）を集計。基準月は「週の月曜が属する月」。
-  const mFrom = monday.getFullYear() + '-' + String(monday.getMonth() + 1).padStart(2, '0') + '-01';
-  const mLast = new Date(monday.getFullYear(), monday.getMonth() + 1, 0).getDate();
-  const mTo = monday.getFullYear() + '-' + String(monday.getMonth() + 1).padStart(2, '0') + '-' + String(mLast).padStart(2, '0');
+  // dlm114: 監督コマは月単位で見たい（月またぎ週は各月の累計を並記）。
+  //  取得範囲＝週にかかる最初の月の1日〜最後の月の末日。授業(wLesson)は週集計のみ使用。
+  //  weekMonths: この週がかかる月 'YYYY-MM' の配列（順序：日付順）。またがなければ1つ。
+  const weekMonths = [];
+  {
+    const seen = new Set();
+    for (let i = 0; i < 7; i++) {
+      const dd = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
+      const ym = dd.getFullYear() + '-' + String(dd.getMonth() + 1).padStart(2, '0');
+      if (!seen.has(ym)) { seen.add(ym); weekMonths.push(ym); }
+    }
+  }
+  const _firstYm = weekMonths[0];
+  const _lastYm = weekMonths[weekMonths.length - 1];
+  const mFrom = _firstYm + '-01';
+  const [_ly, _lm] = _lastYm.split('-').map(Number);
+  const mTo = _lastYm + '-' + String(new Date(_ly, _lm, 0).getDate()).padStart(2, '0');
   const codeSet = new Set();
   wishes.forEach(w => { if (w.staff_id) codeSet.add(String(w.staff_id)); });
   assigns.forEach(a => { if (a.staff_id) codeSet.add(String(a.staff_id)); });
@@ -35986,27 +36006,38 @@ async function svLoadDecide() {
   });
   mt += '</tr>';
   // 本体：スタッフ行（名前列は左固定）
-  // dlm114: バランス調整のため氏名の横に負荷指標を出す。
-  //  週授業 … _svStats（DB確定・授業は正確）
-  //  週監督 … 実効値（draft反映）でこの週を数え直す＝タップで即増減
-  //  月監督 … DB月累計 − DBの今週分 + 実効の今週分（表示中の週の下書きを月累計へ反映）
-  const effWeekSuper = (code) => {
-    let n = 0;
+  // dlm114: バランス調整の指標を氏名の横に出す。
+  //  授業 … その週のコマ数（_svStats.wLesson・週集計）
+  //  監督 … 月単位の累計。週が月をまたぐ場合は各月の累計を併記、またがなければ当月のみ。
+  //         各月の値＝月DB累計 − その月のDB今週分 + その月の実効今週分（表示週の下書きを即反映）。
+  const ymOf = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  const effWeekSuperByMonth = (code) => {
+    const m = {}; // 'YYYY-MM' -> n
     dates.forEach(d => {
       const iso = svIsoFromDate(d);
-      P.forEach(p => { if (isAssignedEff(iso, p, code)) n++; });
+      const ym = ymOf(d);
+      P.forEach(p => { if (isAssignedEff(iso, p, code)) m[ym] = (m[ym] || 0) + 1; });
     });
-    return n;
+    return m;
   };
+  const monthLabel = (ym) => Number(ym.slice(5, 7)) + '月';
   staffCodes.forEach(code => {
     const nm = resolveStaffName(code) || code;
-    const st = (_svStats && _svStats[code]) || { wLesson: 0, wSuper: 0, mLesson: 0, mSuper: 0 };
-    const wSup = effWeekSuper(code);                       // 週監督（draft反映）
-    const mSup = (st.mSuper || 0) - (st.wSuper || 0) + wSup; // 月監督（表示週の下書きを反映）
-    const metrics = '<div style="font-size:10px;color:var(--muted);font-weight:400;line-height:1.35;margin-top:2px;white-space:nowrap">' +
-      '授業<b style="color:#2D6CB6">' + (st.wLesson || 0) + '</b>' +
-      '／監督<b style="color:#1E7A4E">' + wSup + '</b>' +
-      '<br><span style="color:#999">今月監督 ' + mSup + '</span>' +
+    const st = (_svStats && _svStats[code]) || { wLesson: 0, mSuperByMonth: {}, wSuperByMonth: {} };
+    const effByM = effWeekSuperByMonth(code);
+    // 週監督合計（授業行の横に出す当週合計）
+    let wSupTotal = 0; Object.keys(effByM).forEach(k => { wSupTotal += effByM[k]; });
+    // 月別の監督累計（下書き反映）
+    const monthParts = weekMonths.map(ym => {
+      const dbMonth = (st.mSuperByMonth && st.mSuperByMonth[ym]) || 0;
+      const dbWeek  = (st.wSuperByMonth && st.wSuperByMonth[ym]) || 0;
+      const effWeek = effByM[ym] || 0;
+      const val = dbMonth - dbWeek + effWeek;
+      return monthLabel(ym) + '<b style="color:#1E7A4E">' + val + '</b>';
+    }).join('　');
+    const metrics = '<div style="font-size:10px;color:var(--muted);font-weight:400;line-height:1.4;margin-top:2px;white-space:nowrap">' +
+      '授業<b style="color:#2D6CB6">' + (st.wLesson || 0) + '</b>／監督<b style="color:#1E7A4E">' + wSupTotal + '</b>' +
+      '<br><span style="color:#999">今月監督 </span>' + monthParts +
       '</div>';
     mt += '<tr><td style="position:sticky;left:0;z-index:2;background:#fff;border:1px solid #ccc;padding:4px 8px;font-weight:700;min-width:' + NAMEW + 'px;font-size:12.5px">' + escapeHtml(nm) + metrics + '</td>';
     dates.forEach((d, di) => {
