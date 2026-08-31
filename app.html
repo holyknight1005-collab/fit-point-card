@@ -6419,7 +6419,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm120';
+const APP_VERSION = '20260702dlm121';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32237,9 +32237,22 @@ async function loadAttSheet() {
       dateFilter +
       '&select=class_master_id,session_date,period,cycle_month,cycle_no,is_makeup&order=session_date,period') || [];
 
-    // 受講登録（継続中）
-    const enrolls = await sbGetActiveEnrollments('class_master_id=in.(' + classIds.join(',') +
-      ')&select=class_master_id,student_id');
+    // 受講登録（継続中 ＋ シート期間内にまだ授業日が残る「月途中退会」も含める）
+    // dlm121: 従来は sbGetActiveEnrollments（ended_on IS NULL のみ）だったため、
+    //   月の途中で退会（ended_on に未来日をセット）した生徒が、まだ授業日が残っていても
+    //   出席表から丸ごと消えていた（近藤さん：ended_on=9/7 なのに9月シートに全く出ない）。
+    //   → ended_on IS NULL または ended_on >= 判定下限日 の受講も取得する。
+    //   判定下限：通常等は選択月初(first)、夏期は取得済みセッションの最古日（無ければ first）。
+    //   各授業日での「ended_on を過ぎた回」は下の days 生成でカットする（ended_on 当日は在籍＝表示）。
+    let enrollLowerBound = first;
+    if (isSummer && sessions.length) {
+      const minSess = sessions.reduce((a, s) => (s.session_date < a ? s.session_date : a), sessions[0].session_date);
+      enrollLowerBound = minSess;
+    }
+    const enrolls = await sbGetAll('class_enrollments',
+      'class_master_id=in.(' + classIds.join(',') + ')' +
+      '&or=(ended_on.is.null,ended_on.gte.' + enrollLowerBound + ')' +
+      '&select=class_master_id,student_id,ended_on') || [];
 
     // 出欠記録（夏期は全期間・通常等は当月）
     // ※ 授業数×生徒数が増えると当月でも1000行を超える（sbGetは先頭1000行で打ち切られ、
@@ -32266,11 +32279,20 @@ async function loadAttSheet() {
     const attMap = {}; // classId|date|period|student -> status
     atts.forEach(a => { attMap[a.class_master_id + '|' + a.session_date + '|' + (a.period || '') + '|' + a.student_id] = a.status; });
 
-    // 生徒 -> 受講クラスID一覧
+    // 生徒 -> 受講クラス（classId -> ended_on）。ended_on は日付カット用（null=継続中）。
     const classesByStu = {};
     enrolls.forEach(e => {
       if (!stuSet.has(e.student_id)) return;
-      (classesByStu[e.student_id] || (classesByStu[e.student_id] = new Set())).add(e.class_master_id);
+      const mp = classesByStu[e.student_id] || (classesByStu[e.student_id] = {});
+      // 同一クラスに複数行がある場合は「より遅い ended_on（=より長く在籍）」を優先。
+      // どちらかが null（継続中）なら null を採用。
+      if (!(e.class_master_id in mp)) {
+        mp[e.class_master_id] = e.ended_on || null;
+      } else {
+        const prev = mp[e.class_master_id];
+        if (prev === null || e.ended_on == null) mp[e.class_master_id] = null;
+        else if (e.ended_on > prev) mp[e.class_master_id] = e.ended_on;
+      }
     });
 
     const wlabels = ['日', '月', '火', '水', '木', '金', '土'];
@@ -32278,12 +32300,16 @@ async function loadAttSheet() {
     const students = [];
     Object.keys(classesByStu).forEach(sid => {
       const stu = stuMap[sid] || {};
-      const cidSet = classesByStu[sid];
+      const cidMap = classesByStu[sid]; // { classId: ended_on|null }
       const subjects = [];
       // 授業（クラス）ごとに、その生徒の授業日×出欠
       masters.forEach(m => {
-        if (!cidSet.has(m.id)) return;
-        const csess = (sessByClass[m.id] || []);
+        if (!(m.id in cidMap)) return;
+        const endedOn = cidMap[m.id]; // null=継続中 / 'YYYY-MM-DD'=在籍最終日
+        let csess = (sessByClass[m.id] || []);
+        // dlm121: 月途中退会（ended_on あり）は、在籍最終日を過ぎた回を出席表から除外。
+        //   ended_on 当日は在籍扱いで残す（例：ended_on=9/7 → 9/7は表示、9/14以降は非表示）。
+        if (endedOn) csess = csess.filter(s => s.session_date <= endedOn);
         if (!csess.length) return;
         const days = csess.map(s => {
           const d = new Date(s.session_date + 'T00:00:00+09:00');
