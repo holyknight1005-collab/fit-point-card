@@ -1593,8 +1593,8 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </select>
       <div id="svedit-exclude-note" style="display:none;font-size:10px;color:#A04040;background:#FDF2F2;border:1px solid #E8B4B4;border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.5">「除外」にすると、名簿・全集計・出欠・売上などすべてから完全に隠れます。データは残り、管理者の「デモ確認」タブから確認・復籍できます。</div>
       <div id="svedit-withdraw-fields" style="display:none">
-        <div style="font-size:11px;color:var(--muted);margin-bottom:3px">退塾日</div>
-        <input class="form-input-sm" type="date" id="svedit-withdraw-date" style="width:100%;margin-bottom:8px">
+        <div id="svedit-withdraw-date-auto" style="font-size:11px;color:#8A2A2A;background:#FDECEC;border:1px solid #E8B4B4;border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.6">在籍最終日は<b>登録した月の月末</b>に自動設定されます。<br>月末まで在籍・月謝が続き、翌月8日を過ぎると生徒一覧から退塾者名簿へ移ります（本人は翌月8日までログイン可）。</div>
+        <input type="hidden" id="svedit-withdraw-date">
         <div style="font-size:11px;color:var(--muted);margin-bottom:3px">退塾時の学年 <span id="svedit-wgrade-hint" style="color:var(--muted);font-weight:400"></span></div>
         <select class="form-select" id="svedit-withdraw-grade" style="width:100%;font-size:13px;margin-bottom:8px">
           <option value="">（自動：退塾日から推定）</option>
@@ -6384,7 +6384,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm114';
+const APP_VERSION = '20260702dlm115';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -52987,7 +52987,8 @@ async function saveSvEdit() {
     if (division === '高校部' || division === '中学部') rbody.division = division;
     if (status === '退塾') {
       rbody.status = '退塾';
-      rbody.withdraw_date = wdate;
+      // dlm115: 退塾日は登録月の月末に統一（app登録生徒の退塾フローと揃える）。
+      rbody.withdraw_date = wdate || monthEndJST(new Date(getTodayJST() + 'T00:00:00+09:00'));
       rbody.withdraw_reason = wreason || null;   // 専用列。未適用環境では下でnoteに再保存
       rbody.withdraw_reason_note = wnote || null;
       rbody.withdraw_grade_adj = wgrade || null;  // 退塾時学年の手動調整（空=逆算に任せる）
@@ -53045,9 +53046,14 @@ async function saveSvEdit() {
     body.is_active = false; body.inactive_reason = '卒業'; body.inactive_at = new Date().toISOString();
     body.withdraw_status = null;
   } else if (status === '退塾') {
-    body.is_active = false; body.inactive_reason = '退塾'; body.inactive_at = new Date().toISOString();
-    body.withdraw_status = '確定';
-    body.withdraw_effective_date = wdate;
+    // dlm115: 学校担当側の退塾も管理側(requestWithdraw)と完全統一。
+    //   在籍(is_active)は月末まで維持し、withdraw_status='退塾'・発効日=登録月の月末で登録。
+    //   生徒は翌月8日まではログイン可、翌月8日で退塾者名簿へ移る（isStudentHiddenAsWithdrawn 等が前提とする形）。
+    //   即日 is_active=false にしない（これが「その日で退塾・即非表示」バグの原因だった）。
+    body.is_active = true; body.inactive_reason = null; body.inactive_at = null;
+    body.withdraw_status = '退塾';
+    body.withdraw_requested_at = getTodayJST();
+    body.withdraw_effective_date = monthEndJST(new Date(getTodayJST() + 'T00:00:00+09:00'));
     body.withdraw_reason = wreason || null;
     body.withdraw_reason_note = wnote || null;
     body.withdraw_grade_adj = wgrade || null;
@@ -53067,7 +53073,14 @@ async function saveSvEdit() {
     // 退塾・卒業は取り消し確認
     const wasActive = cur.is_active !== false;
     if (wasActive && status !== 'active') {
-      if (!confirm((cur.name || 'この生徒') + 'さんを「' + status + '」にします。よろしいですか？')) return;
+      if (status === '退塾') {
+        // dlm115: 発効日=登録月の月末を明示。在籍・月謝は月末まで継続、翌月8日で名簿へ、本人は翌月8日までログイン可。
+        const eff = monthEndJST(new Date(getTodayJST() + 'T00:00:00+09:00'));
+        const effLabel = eff.slice(0,4) + '/' + eff.slice(5,7) + '/' + eff.slice(8,10);
+        if (!confirm((cur.name || 'この生徒') + 'さんを退塾登録します。\n\n' + effLabel + '（' + eff.slice(5,7) + '月末）付けの退塾になります。\n在籍・月謝はその月末まで続き、翌月8日を過ぎると生徒一覧から退塾者名簿へ移ります。\n本人は翌月8日までログインできます。\n\n本当に退塾登録にしますか？')) return;
+      } else {
+        if (!confirm((cur.name || 'この生徒') + 'さんを「' + status + '」にします。よろしいですか？')) return;
+      }
     }
   }
 
@@ -53090,6 +53103,8 @@ async function saveSvEdit() {
     // membership_status / withdraw_* 列が無い旧環境向けフォールバック（最小項目のみ再保存）
     try {
       const minBody = { school: body.school, grade: body.grade, course_track: body.course_track, enroll_date: body.enroll_date, is_active: body.is_active, inactive_reason: body.inactive_reason };
+      if (body.withdraw_status !== undefined) minBody.withdraw_status = body.withdraw_status;
+      if (body.withdraw_effective_date !== undefined) minBody.withdraw_effective_date = body.withdraw_effective_date;
       await sbPatch('students', 'id=eq.' + encodeURIComponent(id), minBody);
       await applySvEditEnrollments(id);
       demoStudentIdSet = null;
