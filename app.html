@@ -6419,7 +6419,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm119';
+const APP_VERSION = '20260702dlm120';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -50595,10 +50595,11 @@ function syncChartTypeTabs() {
 function isEnrolledNow(s) {
   if (!s) return false;
   if (s.inactive_reason === '除外') return false;
-  // 退塾確定：在籍最終日（発効日）までは在籍、過ぎたら在籍外。
+  // 退塾（発効日方式）：在籍最終日（発効日）までは在籍、過ぎたら在籍外。
   // is_active を先に見ると、退塾処理で is_active=false にした生徒が発効日前でも在籍から
   // 早く消える（人数表・学年別名簿・カードが月別表より少なく出る原因）。発効日で判定する。
-  if (s.withdraw_status === '確定') {
+  // dlm120: 旧仕様 '確定' に加え、dlm115以降の新仕様 '退塾' も同じ発効日判定に統合（在籍は月末発効まで維持）。
+  if (s.withdraw_status === '確定' || s.withdraw_status === '退塾') {
     if (s.withdraw_effective_date && getTodayJST() <= s.withdraw_effective_date) return true; // 発効日前・当日は在籍
     return false; // 発効日を過ぎた／発効日未設定は在籍外
   }
@@ -55902,7 +55903,7 @@ async function loadExecDashboard() {
 // 在籍判定は在籍カードと同じ isEnrolledNow（退塾確定は発効日ベースで除外）に統一。
 async function computeHsCampusMatrix() {
   let stu = await sbGetAll('students',
-    'division=eq.' + encodeURIComponent('高校部') + '&or=(is_active.eq.true,withdraw_status.eq.' + encodeURIComponent('確定') + ')&select=id,grade,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status') || [];
+    'division=eq.' + encodeURIComponent('高校部') + '&or=(is_active.eq.true,withdraw_status.eq.' + encodeURIComponent('確定') + ',withdraw_status.eq.' + encodeURIComponent('退塾') + ')&select=id,grade,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status') || [];
   let ids = stu.map(s => s.id);
   ids = await excludeDemoIds(ids);
   const keep = new Set(ids);
@@ -55926,7 +55927,7 @@ async function computeHsCampusMatrix() {
 // それぞれ学年内訳(中1/中2/中3)付きで数える。在籍判定は在籍カードと同じ isEnrolledNow に統一。
 async function computeJhsCampusMatrix() {
   let stu = await sbGetAll('students',
-    'division=eq.' + encodeURIComponent('中学部') + '&or=(is_active.eq.true,withdraw_status.eq.' + encodeURIComponent('確定') + ')&select=id,campus,grade,school,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status') || [];
+    'division=eq.' + encodeURIComponent('中学部') + '&or=(is_active.eq.true,withdraw_status.eq.' + encodeURIComponent('確定') + ',withdraw_status.eq.' + encodeURIComponent('退塾') + ')&select=id,campus,grade,school,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status') || [];
   let ids = stu.map(s => s.id);
   ids = await excludeDemoIds(ids);
   const keep = new Set(ids);
@@ -55980,7 +55981,10 @@ function computeExecStats(stuAll, regularSet, division) {
     stu = stu.filter(s => s.inactive_reason !== '除外');
     stu.forEach(s => {
       const enroll = s.enroll_date || null;
-      const withdraw = (s.withdraw_status === '確定' && s.withdraw_effective_date) ? s.withdraw_effective_date : null;
+      // dlm120: 旧 '確定' に加え新仕様 '退塾' も発効日を採用。
+      // 退塾カード（leftIn）は発効月ベースなので、登録した月に即カウントされる（月末発効を待たない）。
+      // 在籍（enrolledAt）は発効日超過で外れるため、月末までは在籍に残る＝「退塾は即・在籍は月末で減らす」。
+      const withdraw = ((s.withdraw_status === '確定' || s.withdraw_status === '退塾') && s.withdraw_effective_date) ? s.withdraw_effective_date : null;
       // 現在在籍判定は isEnrolledNow に統一（退塾確定は発効日ベース。人数表・月別表と同基準）
       const enrolledNowFlag = isEnrolledNow(s);
       if (enrolledNowFlag) {
