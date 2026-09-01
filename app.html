@@ -6449,7 +6449,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm128';
+const APP_VERSION = '20260702dlm129';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -28137,7 +28137,8 @@ async function loadTodayClasses() {
 
 // ===== スタッフ用カレンダー（講師時間割・予定・誕生日）=====
 let staffCalMonthOffset = 0;
-let staffCalFilter = 'all'; // 'all' | 'mine'
+let staffCalFilter = 'all'; // 'all' | 'mine'（画面上部トグル＝グリッド表示用）
+let staffCalModalFilter = 'mine'; // dlm129: 日別モーダル専用。既定は自分の授業。
 let staffCalSessions = [];  // [{date, period, class_name, class_master_id, teacher_id, teacher_name, mine}]
 let staffCalEvents = {};    // dateISO -> [{title, detail, color}]
 let staffCalBirthdays = {}; // 'MM-DD' -> [{name, type:'staff'|'student'}]
@@ -28381,6 +28382,12 @@ function renderStaffCalMonth() {
   grid.innerHTML = html;
 }
 
+// dlm129: 日別モーダル内で「自分の授業／全体」を切り替えて同じ日付を再描画（グリッドには影響しない）
+function setStaffCalModalFilter(f) {
+  staffCalModalFilter = f;
+  if (staffCalModalDate) openStaffCalModal(staffCalModalDate);
+}
+
 function openStaffCalModal(dateISO, simple) {
   staffCalModalDate = dateISO;
   const dt = new Date(dateISO + 'T00:00:00+09:00');
@@ -28389,11 +28396,25 @@ function openStaffCalModal(dateISO, simple) {
   document.getElementById('staffcal-modal-date').textContent = dateLabel;
 
   const md = dateISO.slice(5);
-  const sess = staffCalSessionsOn(dateISO);
+  // dlm129: モーダルは専用フィルタ（既定=自分）。全体はトグルで。グリッド側の staffCalFilter とは独立。
+  const sess = staffCalSessions.filter(s => s.date === dateISO && (staffCalModalFilter === 'all' || s.mine));
   const evs = staffCalEvents[dateISO] || [];
   const bdays = staffCalBirthdays[md] || [];
 
   let body = '';
+
+  // dlm129: 授業の表示範囲トグル（自分の授業／全体）。既定は自分。全体は選んだときだけ。
+  {
+    const mineOn = (staffCalModalFilter === 'mine');
+    const allCnt = staffCalSessions.filter(s => s.date === dateISO).length;
+    const mineCnt = staffCalSessions.filter(s => s.date === dateISO && s.mine).length;
+    body += '<div style="display:flex;gap:6px;margin-bottom:10px">' +
+      '<button onclick="setStaffCalModalFilter(\'mine\')" style="flex:1;padding:6px 8px;border-radius:12px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;' +
+        (mineOn ? 'border:1.5px solid var(--orange);background:var(--orange);color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">👤 自分の授業' + (mineCnt ? '（' + mineCnt + '）' : '') + '</button>' +
+      '<button onclick="setStaffCalModalFilter(\'all\')" style="flex:1;padding:6px 8px;border-radius:12px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;' +
+        (!mineOn ? 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">🏫 全体（' + allCnt + '）</button>' +
+    '</div>';
+  }
 
   // 授業（時限順）
   if (sess.length) {
