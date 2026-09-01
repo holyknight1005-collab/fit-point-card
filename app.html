@@ -6419,7 +6419,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm122';
+const APP_VERSION = '20260702dlm123';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -10636,7 +10636,7 @@ async function loadStaffHomeCalendar() {
     const lastDate = new Date(year, month + 1, 0).getDate();
     const lastISO = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(lastDate).padStart(2, '0');
 
-    const [sessions, staffList, events, staffBdays, studentBdays, myReports, myTodos, monthCheckins] = await Promise.all([
+    const [sessions, staffList, events, staffBdays, studentBdays, myReports, myTodos, monthCheckins, trialDates] = await Promise.all([
       sbGet('class_sessions', 'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO + '&select=class_master_id,period,start_time,end_time,session_date,cycle_year,cycle_month,cycle_no,is_makeup,school&order=session_date,period'),
       sbGet('staff', 'select=id,name'),
       sbGet('events', 'event_date=lte.' + lastISO + '&or=(end_date.gte.' + firstISO + ',and(end_date.is.null,event_date.gte.' + firstISO + '))&select=title,event_date,end_date,detail,color,scope,target_schools,target_grades,target_ids,created_by').catch(() => []),
@@ -10644,7 +10644,9 @@ async function loadStaffHomeCalendar() {
       sbGet('students', 'birthday=not.is.null&select=name,birthday,school,grade').catch(() => []),
       sbGet('staff_reports', 'staff_id=eq.' + currentStaff.id + '&report_date=gte.' + firstISO + '&report_date=lte.' + lastISO + '&select=report_date').catch(() => []),
       sbGet('staff_todos', 'to_staff_id=eq.' + currentStaff.id + '&due_date=gte.' + firstISO + '&due_date=lte.' + lastISO + '&select=due_date,is_done').catch(() => []),
-      sbGet('checkins', 'checkin_date=gte.' + firstISO + '&checkin_date=lte.' + lastISO + '&select=checkin_date,student_id').catch(() => [])
+      sbGet('checkins', 'checkin_date=gte.' + firstISO + '&checkin_date=lte.' + lastISO + '&select=checkin_date,student_id').catch(() => []),
+      // dlm123: 体験授業の日程（trial_dates）を当月分取得。イベントと同様にカレンダーへ表示するため。
+      sbGet('trial_dates', 'event_date=gte.' + firstISO + '&event_date=lte.' + lastISO + '&select=trial_event_id,event_date,start_time,end_time,place').catch(() => [])
     ]);
 
     // 来塾人数（日付別・生徒ユニーク数）をカレンダーセル用に集計
@@ -10711,6 +10713,37 @@ async function loadStaffHomeCalendar() {
     {
       const viewer = { kind: 'staff', id: currentStaff ? currentStaff.id : null };
       const visible = (events || []).filter(ev => isEventVisibleTo(ev, viewer));
+      // dlm123: 体験授業（trial_dates）をイベントと同じ形に整形して合流。
+      //   親 trial_events から title/color/is_open を引く。非公開(is_open=false)は出さない。
+      //   スタッフカレンダーは運営視点で全件表示（対象条件は生徒向けの絞り込み用）。
+      if ((trialDates || []).length) {
+        try {
+          const teIds = [...new Set(trialDates.map(t => t.trial_event_id).filter(Boolean))];
+          let teMap = {};
+          if (teIds.length) {
+            const tes = await sbGet('trial_events', 'id=in.(' + teIds.join(',') + ')&select=id,title,detail,color,is_open,dept') || [];
+            tes.forEach(te => { teMap[te.id] = te; });
+          }
+          trialDates.forEach(td => {
+            const te = teMap[td.trial_event_id];
+            if (!te || te.is_open === false) return;
+            const timeStr = (td.start_time ? td.start_time.slice(0,5) : '') + (td.end_time ? '\u301c' + td.end_time.slice(0,5) : '');
+            const detailParts = [];
+            if (timeStr) detailParts.push('\ud83d\udd50 ' + timeStr);
+            if (td.place) detailParts.push('\ud83d\udccd ' + td.place);
+            if (te.detail) detailParts.push(te.detail);
+            visible.push({
+              title: '\ud83c\udfab ' + (te.title || '\u4f53\u9a13\u6388\u696d'),
+              event_date: td.event_date,
+              end_date: null,
+              detail: detailParts.join('\n'),
+              color: te.color || '#E9A93C',
+              scope: 'all',
+              _trial: true
+            });
+          });
+        } catch (e) { /* trial テーブル未作成などは無視 */ }
+      }
       staffCalEvents = buildEventDayMap(visible, firstISO, lastISO);
     }
     staffCalBirthdays = {};
@@ -10797,7 +10830,7 @@ function renderStaffHomeCalMonth(year, month) {
 
     const titleParts = [];
     sess.forEach(s => titleParts.push((s.period ? s.period + '限 ' : '') + s.class_name + (s.teacher_name ? '（' + s.teacher_name + '）' : '')));
-    evs.forEach(ev => titleParts.push('🎪 ' + ev.title));
+    evs.forEach(ev => titleParts.push((ev._trial ? '' : '🎪 ') + ev.title));
     bdays.forEach(b => titleParts.push('🎂 ' + b.name));
     (staffCalSupervisions[dateISO] || []).forEach(p => titleParts.push('🪑 自習監督 ' + p + '限'));
     if (hasTodo) titleParts.push('📋 ToDo締切 ' + todoInfo.total + '件' + (hasOpenTodo ? '（未完了' + todoInfo.open + '）' : '（完了）'));
