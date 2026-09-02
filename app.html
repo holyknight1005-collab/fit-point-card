@@ -6496,7 +6496,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm138';
+const APP_VERSION = '20260702dlm140';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -40503,6 +40503,19 @@ function setLineView(v) {
   }
 }
 
+// dlm139: 接点の「本当の区分」を返す。liny_id突合を優先し、contact_kindはフォールバック。
+//   紐付け生徒の liny_id/parent_liny_id と接点の liny_id を突合して生徒/保護者を確定する。
+//   （contact_kind に保護者→生徒の取り違えが一部あるため、突合できるものは突合を正とする）
+function lineContactKind(c) {
+  if (c.student_id && lineStudentMap[c.student_id] && c.liny_id) {
+    const stu = lineStudentMap[c.student_id];
+    const lid = String(c.liny_id);
+    if (stu.parent_liny_id && stu.parent_liny_id === lid) return 'parent';
+    if (stu.liny_id && stu.liny_id === lid) return 'student';
+  }
+  return c.contact_kind || '';
+}
+
 // 接点が属する学校グループkeyを返す（紐付け生徒→学校、未紐付け→tags）。該当なし→'other'
 function lineContactSchoolKey(c) {
   // 1) 紐付け生徒があれば students.school/grade で判定
@@ -41093,7 +41106,8 @@ async function initLineInbox() {
   lineNoData = false;
   let contacts = [];
   try {
-    contacts = await sbGet('line_contacts', 'select=*&order=last_message_at.desc.nullslast&limit=300') || [];
+    // dlm140: 上限撤廃（卒業生を大量登録するため）。sbGetAllで全件取得。
+    contacts = await sbGetAll('line_contacts', 'select=*&order=last_message_at.desc.nullslast') || [];
     if (banner) banner.style.display = 'none';
   } catch (e) {
     lineNoData = true;
@@ -41115,12 +41129,26 @@ async function initLineInbox() {
     return;
   }
 
+  // dlm140: 卒業生(tagsに'卒業生')はメッセージが1件でもある人だけ表示対象にする。
+  //   連絡が来ていない卒業生を全部一覧に出すと重いため。メッセージ有無は line_messages の
+  //   distinct contact_id を先に取得して判定する（在校生・紐付けありは常に表示）。
+  let msgContactIds = new Set();
+  try {
+    const mrows = await sbGetAll('line_messages', 'select=contact_id') || [];
+    mrows.forEach(m => { if (m.contact_id != null) msgContactIds.add(m.contact_id); });
+  } catch (e) {}
+  const isGraduate = (c) => Array.isArray(c.tags) && c.tags.includes('卒業生');
+  contacts = contacts.filter(c => {
+    if (!isGraduate(c)) return true;              // 卒業生以外は常に表示
+    return msgContactIds.has(c.id);              // 卒業生はメッセージがある人だけ
+  });
+
   // 各 contact の最新メッセージ＋未返信数
   const ids = contacts.map(c => c.id);
   let msgsByContact = {};
   try {
-    const msgs = await sbGet('line_messages',
-      'contact_id=in.(' + ids.join(',') + ')&select=contact_id,direction,text,replied,created_at&order=created_at.desc&limit=2000') || [];
+    const msgs = await sbGetAll('line_messages',
+      'contact_id=in.(' + ids.join(',') + ')&select=contact_id,direction,text,replied,created_at&order=created_at.desc') || [];
     msgs.forEach(m => {
       const arr = msgsByContact[m.contact_id] || (msgsByContact[m.contact_id] = []);
       arr.push(m);
@@ -41131,8 +41159,8 @@ async function initLineInbox() {
   const sids = contacts.map(c => c.student_id).filter(Boolean);
   if (sids.length) {
     try {
-      const studs = await sbGet('students', 'id=in.(' + sids.join(',') + ')&select=id,name,school,grade') || [];
-      studs.forEach(s => { lineStudentMap[s.id] = { name: s.name, school: s.school || '', grade: s.grade || '' }; });
+      const studs = await sbGet('students', 'id=in.(' + sids.join(',') + ')&select=id,name,school,grade,liny_id,parent_liny_id') || [];
+      studs.forEach(s => { lineStudentMap[s.id] = { name: s.name, school: s.school || '', grade: s.grade || '', liny_id: s.liny_id ? String(s.liny_id) : '', parent_liny_id: s.parent_liny_id ? String(s.parent_liny_id) : '' }; });
     } catch (e) {}
   }
 
@@ -41164,13 +41192,15 @@ async function initLineInbox() {
 function lineContactLabel(c) {
   // 表示名：紐付けがあれば「学校 生徒名（区分）」、なければ Liny登録名
   const stu = c.student_id ? lineStudentMap[c.student_id] : null;
-  const kind = c.contact_kind === 'parent' ? '保護者' : (c.contact_kind === 'student' ? '生徒' : '');
+  const ck = lineContactKind(c); // dlm139: liny_id突合優先の正確な区分
+  const kind = ck === 'parent' ? '保護者' : (ck === 'student' ? '生徒' : '');
+  const isParent = ck === 'parent';
   if (stu) {
     const school = stu.school ? stu.school + ' ' : '';
-    return { main: school + stu.name + (kind ? '（' + kind + '）' : ''), isParent: c.contact_kind === 'parent' };
+    return { main: school + stu.name + (kind ? '（' + kind + '）' : ''), isParent: isParent };
   }
   const nm = c.liny_name || c.display_name || 'LINEユーザー';
-  return { main: nm + (kind ? '（' + kind + '）' : ''), isParent: c.contact_kind === 'parent' };
+  return { main: nm + (kind ? '（' + kind + '）' : ''), isParent: isParent };
 }
 
 function renderLineContacts() {
@@ -41182,9 +41212,9 @@ function renderLineContacts() {
   if (lineView === 'school') {
     if (lineSchoolKey != null) {
       rows = rows.filter(r => lineContactSchoolKey(r.contact) === lineSchoolKey);
-      // 区分フィルタ
-      if (lineSubKind === 'student') rows = rows.filter(r => r.contact.contact_kind === 'student');
-      else if (lineSubKind === 'parent') rows = rows.filter(r => r.contact.contact_kind === 'parent');
+      // 区分フィルタ（dlm139: liny_id突合優先の正確判定）
+      if (lineSubKind === 'student') rows = rows.filter(r => lineContactKind(r.contact) === 'student');
+      else if (lineSubKind === 'parent') rows = rows.filter(r => lineContactKind(r.contact) === 'parent');
       else if (lineSubKind === 'grad') rows = rows.filter(r => !r.contact.student_id); // 卒業生＝未紐付け
       // 学年フィルタ（紐付け生徒のみ学年判定可能）
       if (lineSubGrade !== 'all') {
