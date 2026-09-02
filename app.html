@@ -6496,7 +6496,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm140';
+const APP_VERSION = '20260702dlm141';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -9525,10 +9525,30 @@ function toggleHomeApprovals() {
 // ② 保護者からの未対応（全スタッフ共通）
 // 受信箱の initLineInbox とは独立に、ここで軽量に取得する。
 // ============================================================
-var homeLineFolderId = 'charge';   // 'charge'=担当学校 / フォルダid / 'all'
+// homeLineFolderId の値: 'charge'=担当学校 / 'all'=すべて / フォルダUUID / 'school:{key}'=学校ビューの各校
+// dlm141: 各自の選択を localStorage に保存し、リロードしても固定維持する。
+var homeLineFolderId = (function(){ try { return localStorage.getItem('fit_home_line_folder') || 'charge'; } catch(e){ return 'charge'; } })();
 var _homeLineContacts = null;      // [{contact, unreplied, isParent, studentName, school}]
 
 function openStaffLineInbox() {
+  // dlm141: ホームで固定している場所を受信箱に反映してから開く
+  try {
+    const v = homeLineFolderId;
+    if (v && v.indexOf('school:') === 0) {
+      lineView = 'school';
+      lineSchoolKey = v.slice('school:'.length);
+      lineSubKind = 'all'; lineSubGrade = 'all';
+      lineFolderId = null; lineFolderLinySet = null;
+    } else if (v && v !== 'charge' && v !== 'all') {
+      // オリジナルフォルダ（UUID）を選択状態にする
+      lineView = 'folder';
+      lineFolderId = v;
+    } else {
+      // 担当学校/すべて → 学校ビューの全体表示
+      lineView = 'school';
+      lineSchoolKey = null;
+    }
+  } catch (e) {}
   if (typeof openStaffManage === 'function') openStaffManage('line');
 }
 
@@ -9536,8 +9556,13 @@ function openStaffLineInbox() {
 async function homeLineFetchContacts() {
   let contacts = [];
   try {
-    contacts = await sbGet('line_contacts', 'select=id,liny_id,student_id,contact_kind,display_name,liny_name&order=last_message_at.desc.nullslast&limit=300') || [];
-  } catch (e) { return []; }
+    contacts = await sbGet('line_contacts', 'select=id,liny_id,student_id,contact_kind,display_name,liny_name,tags&order=last_message_at.desc.nullslast&limit=300') || [];
+  } catch (e) {
+    // tags列が無い環境向けフォールバック（dlm141）
+    try {
+      contacts = await sbGet('line_contacts', 'select=id,liny_id,student_id,contact_kind,display_name,liny_name&order=last_message_at.desc.nullslast&limit=300') || [];
+    } catch (e2) { return []; }
+  }
   if (!contacts.length) return [];
 
   // 未返信数（in かつ replied=false）を contact ごとに集計
@@ -9555,19 +9580,33 @@ async function homeLineFetchContacts() {
   if (sids.length) {
     try {
       const inList = sids.map(v => '"' + String(v).replace(/"/g, '') + '"').join(',');
-      const studs = await sbGet('students', 'id=in.(' + inList + ')&select=id,name,school') || [];
+      const studs = await sbGet('students', 'id=in.(' + inList + ')&select=id,name,school,grade') || [];
       studs.forEach(s => { stuById[s.id] = s; });
     } catch (e) {}
   }
 
   return contacts.map(c => {
     const stu = c.student_id ? stuById[c.student_id] : null;
+    // dlm141: 学校グループkeyを算出（紐付け生徒→学校/学年、未紐付け→tags、該当なし→other）
+    let schoolKey = 'other';
+    try {
+      if (stu && typeof lineSchoolGroupOf === 'function') {
+        const k = lineSchoolGroupOf(stu.school, stu.grade);
+        if (k) schoolKey = k;
+        else if (Array.isArray(c.tags) && typeof LINE_SCHOOL_GROUPS !== 'undefined') {
+          for (const g of LINE_SCHOOL_GROUPS) { if (!g.isOther && c.tags.includes(g.tag)) { schoolKey = g.key; break; } }
+        }
+      } else if (Array.isArray(c.tags) && typeof LINE_SCHOOL_GROUPS !== 'undefined') {
+        for (const g of LINE_SCHOOL_GROUPS) { if (!g.isOther && c.tags.includes(g.tag)) { schoolKey = g.key; break; } }
+      }
+    } catch (e) {}
     return {
       contact: c,
       unreplied: unrepByContact[c.id] || 0,
       isParent: c.contact_kind === 'parent',
       studentName: stu ? stu.name : (c.display_name || c.liny_name || 'LINEユーザー'),
-      school: stu ? (stu.school || '') : ''
+      school: stu ? (stu.school || '') : '',
+      schoolKey: schoolKey
     };
   });
 }
@@ -9596,10 +9635,14 @@ async function loadHomeLine() {
 
   // 対象liny_idセットを決める
   let linySet = null;   // null=全体
+  let schoolKeyFilter = null; // dlm141: 学校ビュー選択時の学校key
   if (homeLineFolderId === 'charge') {
     linySet = await homeLineChargeLinySet();
   } else if (homeLineFolderId === 'all') {
     linySet = null;
+  } else if (homeLineFolderId && homeLineFolderId.indexOf('school:') === 0) {
+    // dlm141: 学校ビューの各校 → schoolKeyで直接フィルタ
+    schoolKeyFilter = homeLineFolderId.slice('school:'.length);
   } else {
     // フォルダid
     try {
@@ -9615,7 +9658,8 @@ async function loadHomeLine() {
 
   // 要対応のみ＋対象で絞る
   let rows = _homeLineContacts.filter(r => r.unreplied > 0);
-  if (linySet) rows = rows.filter(r => r.contact.liny_id && linySet.has(String(r.contact.liny_id)));
+  if (schoolKeyFilter) rows = rows.filter(r => r.schoolKey === schoolKeyFilter);
+  else if (linySet) rows = rows.filter(r => r.contact.liny_id && linySet.has(String(r.contact.liny_id)));
   // 保護者カードと重複しないよう、ここでは本人・保護者どちらも出す（担当の要対応は全部見たい）
 
   if (!rows.length) { sec.style.display = 'none'; return; }
@@ -9655,9 +9699,22 @@ async function buildHomeLineFolderSelect() {
     try { await loadLineFolders(); folders = (typeof lineFolders !== 'undefined') ? lineFolders : []; } catch (e) {}
   }
   let html = '<option value="charge">担当学校</option>';
-  folders.forEach(f => {
-    html += '<option value="' + escapeAttr(f.id) + '">📁 ' + escapeHtml(f.name) + '</option>';
-  });
+  // dlm141: 学校ビューの各校を選択肢に追加（東・南・北…）
+  if (typeof LINE_SCHOOL_GROUPS !== 'undefined' && LINE_SCHOOL_GROUPS) {
+    html += '<optgroup label="学校で見る">';
+    LINE_SCHOOL_GROUPS.forEach(g => {
+      html += '<option value="school:' + g.key + '">🏫 ' + escapeHtml(g.label) + '</option>';
+    });
+    html += '</optgroup>';
+  }
+  // 自分で作ったオリジナルフォルダ
+  if (folders.length) {
+    html += '<optgroup label="マイフォルダ">';
+    folders.forEach(f => {
+      html += '<option value="' + escapeAttr(f.id) + '">📁 ' + escapeHtml(f.name) + '</option>';
+    });
+    html += '</optgroup>';
+  }
   html += '<option value="all">すべて</option>';
   sel.innerHTML = html;
   sel.value = homeLineFolderId;
@@ -9667,6 +9724,7 @@ function onHomeLineFolderChange() {
   const sel = document.getElementById('home-line-folder-sel');
   if (!sel) return;
   homeLineFolderId = sel.value;
+  try { localStorage.setItem('fit_home_line_folder', homeLineFolderId); } catch (e) {} // dlm141: 選択を保存
   loadHomeLine();
 }
 
