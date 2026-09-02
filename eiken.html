@@ -281,6 +281,13 @@
         <h2 class="sec" style="margin-top:14px" id="edTitle">設問を登録</h2>
         <p class="muted" id="edMeta"></p>
 
+        <div id="edAudioUrl" class="hidden" style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:14px;background:#fbfdfc">
+          <label class="fld">🎧 連続音声URL（大問まるごと1本のmp3）</label>
+          <input type="text" id="edAudioUrlInput" placeholder="https://.../object/public/eiken-audio/xxx.mp3">
+          <div class="flex-end" style="margin-top:8px"><button class="btn sm" onclick="saveAudioUrl()">音声URLを保存</button></div>
+          <div class="muted" id="edAudioUrlStatus" style="margin-top:4px"></div>
+        </div>
+
         <div id="edPassages"></div>
 
         <div style="border-top:2px dashed var(--line);margin:18px 0;padding-top:18px">
@@ -333,7 +340,7 @@ const SUPABASE_URL      = "https://jkkfdvvbpzkagbtpqkzp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "eiken-20260902a";
+const APP_VERSION = "eiken-20260902b";
 
 /* ---- 級の定義 ---- */
 const GRADES = {
@@ -538,7 +545,18 @@ function renderExamBody(){
   const meta=QTYPES[curSet.qtype];
   const nChoices=meta.choices;
   const isAudio=(meta.kind==="audio");
+  const hasSetAudio=isAudio && curSet.audio_url;   // 大問まるごと1本の連続mp3
   let globalQ=0;
+
+  // ── 連続音声プレーヤー（本番形式）：セット冒頭に1つ ──
+  if(hasSetAudio){
+    const wrap=document.createElement("div");wrap.className="q-audio";
+    wrap.innerHTML=`<div class="muted">🎧 リスニング音声（この大問の全問を通しで再生します）</div>
+      <audio controls preload="none" src="${esc(curSet.audio_url)}"></audio>
+      <div class="muted" style="margin-top:6px">本番同様、途中の一時停止はせず最後まで聞く練習ができます。</div>`;
+    body.appendChild(wrap);
+  }
+
   curPassages.forEach(pas=>{
     const block=document.createElement("div");
     if(pas.image_url){
@@ -547,19 +565,15 @@ function renderExamBody(){
     }
     const qlist=curQuestions[pas.id]||[];
 
-    // 音声：audio_script を Web Speech で読み上げ
-    if(isAudio && pas.audio_script){
+    // 音声：連続mp3が無い場合のみ、audio_script を Web Speech で個別読み上げ（フォールバック）
+    if(isAudio && !hasSetAudio && pas.audio_script){
       const wrap=document.createElement("div");wrap.className="q-audio";
       const btnId="spk"+Math.random().toString(36).slice(2,8);
-      wrap.innerHTML=`<div class="muted">🔊 音声（読み上げ）</div>
+      wrap.innerHTML=`<div class="muted">🔊 音声（読み上げ・簡易）</div>
         <button type="button" class="btn sm" id="${btnId}" style="margin-top:6px">▶ 再生</button>
         <button type="button" class="btn ghost sm" id="${btnId}_stop" style="margin-top:6px;margin-left:6px">■ 停止</button>
         <span class="muted" id="${btnId}_st" style="margin-left:8px"></span>`;
       block.appendChild(wrap);
-      if(showScript){
-        const sc=document.createElement("div");sc.className="passage-text";sc.textContent=pas.audio_script;
-        block.appendChild(sc);
-      }
       const script=pas.audio_script;
       setTimeout(()=>{
         const b=document.getElementById(btnId);
@@ -567,6 +581,11 @@ function renderExamBody(){
         if(b) b.onclick=()=>speakText(script,btnId+"_st");
         if(stop) stop.onclick=()=>{if(window.speechSynthesis)window.speechSynthesis.cancel();const st=document.getElementById(btnId+"_st");if(st)st.textContent="";};
       },0);
+    }
+    // スクリプト表示（mp3有無に関わらず、トグルONなら台本を出す）
+    if(isAudio && showScript && pas.audio_script){
+      const sc=document.createElement("div");sc.className="passage-text";sc.textContent=pas.audio_script;
+      block.appendChild(sc);
     }
 
     if(pas.passage_text){
@@ -871,9 +890,29 @@ async function openEditor(set){
   const m=QTYPES[set.qtype];
   document.getElementById("edTitle").textContent=`設問登録：${set.title}`;
   document.getElementById("edMeta").textContent=`${GRADES[set.grade].label} / ${m.t} / ${m.choices}択`;
+  // リスニングのときだけ連続音声URL欄を表示
+  const au=document.getElementById("edAudioUrl");
+  if(m.kind==="audio"){
+    au.classList.remove("hidden");
+    document.getElementById("edAudioUrlInput").value=set.audio_url||"";
+    document.getElementById("edAudioUrlStatus").textContent="";
+  }else{
+    au.classList.add("hidden");
+  }
   updateBulkHint(m);
   await renderEditorPassages();
   renderNewPassageForm();
+}
+
+async function saveAudioUrl(){
+  const url=document.getElementById("edAudioUrlInput").value.trim();
+  const st=document.getElementById("edAudioUrlStatus");
+  try{
+    await sbPatch("eiken_sets","id=eq."+editingSet.id,{audio_url:url||null});
+    editingSet.audio_url=url||null;
+    st.innerHTML="<span style='color:var(--ok)'>音声URLを保存しました。</span>";
+    toast("音声URLを保存しました");
+  }catch(e){st.innerHTML="<span style='color:var(--ng)'>保存失敗: "+esc(e.message)+"</span>";}
 }
 
 function updateBulkHint(m){
