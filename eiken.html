@@ -75,6 +75,9 @@
   .expl{margin-top:8px;font-size:13px;background:#f4f7f5;border-radius:8px;padding:8px 10px;color:var(--sub)}
   .q-img{max-width:100%;border-radius:10px;margin-bottom:10px}
   .q-audio{background:#f4f7f5;border-radius:10px;padding:12px;margin-bottom:12px}
+  .mock-sticky{position:sticky;top:8px;z-index:20}
+  .mock-timer{font-size:22px;font-weight:800;color:var(--navy);font-variant-numeric:tabular-nums;letter-spacing:1px}
+  .mock-timer.danger{color:var(--accent)}
   .q-audio audio{width:100%;margin-top:6px}
   .passage-text{white-space:pre-wrap;background:#fbfdfc;border:1px solid var(--line);border-radius:10px;padding:14px;font-size:14px;line-height:1.8;margin-bottom:12px}
   .score-hero{text-align:center;padding:10px 0 20px}
@@ -123,8 +126,13 @@
     <!-- 級選択 -->
     <div id="take-grades">
       <div class="card">
-        <h2 class="sec">級を選ぶ</h2>
-        <p class="muted">受験したい級を選択してください。</p>
+        <h2 class="sec">📝 模試（本番形式の通しテスト）</h2>
+        <p class="muted">リーディングは制限時間つき、リスニングは自動で連続再生。提出後にくわしい結果と解説を確認できます。</p>
+        <div id="examGrid" class="grid grade-grid"><p class="muted">読み込み中…</p></div>
+      </div>
+      <div class="card">
+        <h2 class="sec">大問ごとに練習する</h2>
+        <p class="muted">大問を1つずつ選んで、その場で採点・解説を確認できます。</p>
         <div class="grid grade-grid" id="gradeGrid"></div>
       </div>
     </div>
@@ -204,6 +212,114 @@
       <div id="reviewBody" class="hidden"></div>
     </div>
 
+    <!-- ===== 模試: 受験前セットアップ ===== -->
+    <div id="take-mock-setup" class="hidden">
+      <div class="card">
+        <button class="btn ghost sm" onclick="backToGrades()">← 戻る</button>
+        <h2 class="sec" style="margin-top:14px" id="mockSetupTitle">模試を受ける</h2>
+        <p class="muted" id="mockSetupInfo"></p>
+
+        <label class="fld">受験区分</label>
+        <div class="pill-tabs" style="margin-bottom:12px">
+          <button type="button" id="mkTakerInternal" class="on" onclick="mockSetTaker('internal')">塾生（内部）</button>
+          <button type="button" id="mkTakerExternal" onclick="mockSetTaker('external')">おためし（外部）</button>
+        </div>
+
+        <div id="mkInternalFields">
+          <label class="fld">メールアドレス（塾生ID）</label>
+          <input type="text" id="mkEmail" placeholder="例: taro@example.com">
+        </div>
+        <div id="mkExternalFields" class="hidden">
+          <div class="row2">
+            <div>
+              <label class="fld">学校</label>
+              <select id="mkSchool"></select>
+            </div>
+            <div>
+              <label class="fld">学年</label>
+              <select id="mkGradeYear">
+                <option value="">選択</option>
+                <option>中1</option><option>中2</option><option>中3</option>
+                <option>高1</option><option>高2</option><option>高3</option>
+                <option>その他</option>
+              </select>
+            </div>
+          </div>
+          <div id="mkSchoolOther" class="hidden">
+            <label class="fld">学校名（自由入力）</label>
+            <input type="text" id="mkSchoolOtherInput" placeholder="学校名を入力">
+          </div>
+          <label class="fld">名前</label>
+          <input type="text" id="mkName" placeholder="例: 山田花子">
+        </div>
+
+        <label class="fld" style="margin-top:14px">受験方式</label>
+        <div class="pill-tabs" style="margin-bottom:6px">
+          <button type="button" id="mkModeThrough" class="on" onclick="mockSetMode('through')">通し（推奨）</button>
+          <button type="button" id="mkModeReadingOnly" onclick="mockSetMode('reading')">筆記のみ</button>
+          <button type="button" id="mkModeListeningOnly" onclick="mockSetMode('listening')">リスニングのみ</button>
+        </div>
+        <p class="muted" id="mkModeHint">通しモード：筆記（制限時間つき）→ リスニング（自動連続再生）を続けて受験します。</p>
+
+        <div class="flex-end" style="margin-top:16px">
+          <button class="btn accent" onclick="startMock()">受験を開始する</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 模試: リーディング（制限時間つき一括表示） ===== -->
+    <div id="take-mock-reading" class="hidden">
+      <div class="card mock-sticky">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="badge read">筆記（リーディング）</span>
+          <span class="mock-timer" id="mockTimer">--:--</span>
+        </div>
+      </div>
+      <div class="card">
+        <div id="mockReadingBody"></div>
+        <div class="flex-end" style="margin-top:16px">
+          <button class="btn accent" onclick="submitMockReading()">筆記を提出する</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 模試: リスニング（自動連続再生） ===== -->
+    <div id="take-mock-listening" class="hidden">
+      <div class="card">
+        <span class="badge list">リスニング</span>
+        <h2 class="sec" style="margin-top:10px" id="mockListenTitle">リスニング</h2>
+        <p class="muted">開始すると音声が自動で流れ始めます。本番同様、途中で止められません。各設問の解答欄に印をつけていってください。</p>
+        <div id="mockListenStart" class="flex-end" style="margin-top:8px">
+          <button class="btn accent" onclick="beginMockListening()">▶ リスニングを開始する</button>
+        </div>
+        <div id="mockListenPlayer" class="hidden" style="margin-top:12px"></div>
+      </div>
+      <div class="card hidden" id="mockListenCard">
+        <div id="mockListeningBody"></div>
+        <div class="flex-end" style="margin-top:16px">
+          <button class="btn accent" onclick="submitMockListening()">リスニングを提出する</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 模試: 結果 ===== -->
+    <div id="take-mock-result" class="hidden">
+      <div class="card">
+        <div class="score-hero">
+          <div class="muted" id="mockVerdictLevel"></div>
+          <div class="score-total" id="mockScoreTotal">—</div>
+          <div class="muted" id="mockVerdictMsg" style="margin-top:6px"></div>
+          <div class="score-lr" id="mockScoreLR"></div>
+        </div>
+        <div id="mockWeakBox" style="margin-top:12px"></div>
+        <div class="flex-end" style="margin-top:14px">
+          <button class="btn ghost" onclick="goHome()">ホームへ</button>
+          <button class="btn" onclick="toggleMockReview()">問題ごとの正誤・解説を見る</button>
+        </div>
+      </div>
+      <div id="mockReviewBody" class="hidden"></div>
+    </div>
+
   </div>
 
   <!-- ========== 管理ビュー ========== -->
@@ -211,8 +327,10 @@
     <div class="pill-tabs">
       <button id="atCreate" class="on" onclick="adminTab('create')">選択式を作成</button>
       <button id="atWriting" onclick="adminTab('writing')">ライティング作成</button>
+      <button id="atExam" onclick="adminTab('exam')">模試を組む</button>
       <button id="atList" onclick="adminTab('list')">一覧・編集</button>
       <button id="atResults" onclick="adminTab('results')">受験結果</button>
+      <button id="atExamResults" onclick="adminTab('examresults')">模試成績</button>
     </div>
 
     <!-- 選択式テスト作成 -->
@@ -324,6 +442,71 @@
         <div id="adminResultsList"><p class="muted">読み込み中…</p></div>
       </div>
     </div>
+
+    <!-- 模試を組む -->
+    <div id="admin-exam" class="hidden">
+      <div class="card">
+        <h2 class="sec">模試を新規作成</h2>
+        <div class="row2">
+          <div>
+            <label class="fld">級</label>
+            <select id="exGrade" onchange="exOnGradeChange()">
+              <option value="pre2">準2級</option>
+              <option value="2">2級</option>
+            </select>
+          </div>
+          <div>
+            <label class="fld">筆記の制限時間（分）</label>
+            <input type="number" id="exTime" value="80" min="10" max="180">
+          </div>
+        </div>
+        <label class="fld">タイトル</label>
+        <input type="text" id="exTitle" placeholder="例: 準2級 模試①">
+        <label class="fld">作成者（任意）</label>
+        <input type="text" id="exBy" placeholder="スタッフ名など">
+
+        <h2 class="sec" style="margin-top:16px">構成する大問（級を選ぶと標準構成が自動で入ります）</h2>
+        <p class="muted">各大問に、登録済みの選択式テストを1つずつ割り当ててください。空欄の大問は模試に含まれません。ライティングは模試の自動採点対象外です。</p>
+        <div id="exItemsArea"><p class="muted">読み込み中…</p></div>
+
+        <div class="flex-end" style="margin-top:16px">
+          <button class="btn accent" onclick="createExam()">この内容で模試を作成</button>
+        </div>
+        <div id="exCreateResult" class="muted" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card">
+        <h2 class="sec">作成済みの模試</h2>
+        <div id="examList"><p class="muted">読み込み中…</p></div>
+      </div>
+    </div>
+
+    <!-- 模試成績（外部生集計） -->
+    <div id="admin-examresults" class="hidden">
+      <div class="card">
+        <h2 class="sec">模試成績</h2>
+        <div class="row2">
+          <div>
+            <label class="fld">受験区分</label>
+            <select id="erFilterType" onchange="loadExamResults()">
+              <option value="all">すべて</option>
+              <option value="external">おためし（外部）</option>
+              <option value="internal">塾生（内部）</option>
+            </select>
+          </div>
+          <div>
+            <label class="fld">級</label>
+            <select id="erFilterGrade" onchange="loadExamResults()">
+              <option value="all">すべて</option>
+              <option value="pre2">準2級</option>
+              <option value="2">2級</option>
+            </select>
+          </div>
+        </div>
+        <div id="erSummary" class="muted" style="margin:10px 0"></div>
+        <div id="examResultsList"><p class="muted">読み込み中…</p></div>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -340,7 +523,7 @@ const SUPABASE_URL      = "https://jkkfdvvbpzkagbtpqkzp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "eiken-20260902b";
+const APP_VERSION = "eiken-20260902c";
 
 /* ---- 級の定義 ---- */
 const GRADES = {
@@ -458,8 +641,13 @@ function renderGradeGrid(){
   });
 }
 function backToGrades(){
-  ["take-parts","take-sets","take-exam","take-writing","take-result"].forEach(id=>document.getElementById(id).classList.add("hidden"));
+  ["take-parts","take-sets","take-exam","take-writing","take-result",
+   "take-mock-setup","take-mock-reading","take-mock-listening","take-mock-result"]
+    .forEach(id=>document.getElementById(id).classList.add("hidden"));
   document.getElementById("take-grades").classList.remove("hidden");
+  stopMockTimer();
+  if(window.speechSynthesis) window.speechSynthesis.cancel();
+  mockStopAudio();
 }
 function openGrade(key){
   curGrade=key; curStruct=GRADE_STRUCTURE[key];
@@ -744,17 +932,21 @@ let currentAdminTab="create", editingSet=null;
 
 function adminTab(t){
   currentAdminTab=t;
-  const map={create:"atCreate",writing:"atWriting",list:"atList",results:"atResults"};
+  const map={create:"atCreate",writing:"atWriting",exam:"atExam",list:"atList",results:"atResults",examresults:"atExamResults"};
   Object.keys(map).forEach(k=>document.getElementById(map[k]).classList.toggle("on",k===t));
   document.getElementById("admin-create").classList.toggle("hidden",t!=="create");
   document.getElementById("admin-writing").classList.toggle("hidden",t!=="writing");
+  document.getElementById("admin-exam").classList.toggle("hidden",t!=="exam");
   document.getElementById("admin-list").classList.toggle("hidden",t!=="list");
   document.getElementById("admin-results").classList.toggle("hidden",t!=="results");
+  document.getElementById("admin-examresults").classList.toggle("hidden",t!=="examresults");
   document.getElementById("admin-editor").classList.add("hidden");
   if(t==="create"){acRefreshQtypes();}
   if(t==="writing"){awRefreshQtypes();}
+  if(t==="exam"){exInit();}
   if(t==="list"){loadAdminSets();loadAdminWriting();}
   if(t==="results") loadAdminResults();
+  if(t==="examresults") loadExamResults();
 }
 
 /* 級で選べるqtypeを絞り込む */
@@ -1122,6 +1314,561 @@ async function loadAdminResults(){
   }catch(e){list.innerHTML="<p class='muted'>失敗: "+esc(e.message)+"</p>";}
 }
 
+
+/* =========================================================
+   模試（本番形式の通しテスト）  ※選択式(reading/listening)のみを束ねる
+   ========================================================= */
+
+/* ---- 級標準の筆記制限時間（分） ---- */
+const READING_TIME_DEFAULT = { pre2:80, "2":85 };
+
+/* 級のうち選択式(reading/listening)大問だけをGRADE_STRUCTURE順で返す */
+function examStructure(grade){
+  return GRADE_STRUCTURE[grade].filter(x=>x.group==="reading"||x.group==="listening");
+}
+
+/* ================= 受験: 導線 ================= */
+let mockExams = [];        // 一覧キャッシュ
+let mkExam=null;           // 選択中の模試
+let mkTaker="internal", mkMode="through";
+let mkItems=[];            // [{seq, set, questions:{pid:[q]}, passages:[]}]  受験時に展開
+let mockRead={perQ:[], answers:{}}, mockListen={perQ:[], answers:{}};
+let mkReadingResultId=null; // 分割受験でR提出後のresult行id（L提出時にUPDATE）
+
+async function renderExamGrid(){
+  const g=document.getElementById("examGrid");
+  if(!g) return;
+  try{
+    mockExams = await sbGet("eiken_exams","is_active=eq.true&order=created_at.desc");
+  }catch(e){ g.innerHTML="<p class='muted'>模試の読み込みに失敗しました。</p>"; return; }
+  if(!mockExams.length){ g.innerHTML="<p class='muted'>公開中の模試はまだありません。（管理→模試を組む で作成できます）</p>"; return; }
+  g.innerHTML="";
+  mockExams.forEach(ex=>{
+    const el=document.createElement("button");
+    el.className="grade-tile";
+    el.innerHTML=`<div class="gn">${esc(ex.title)}</div><div class="gd">${esc(GRADES[ex.grade]?GRADES[ex.grade].label:ex.grade)}・筆記${ex.reading_time_min}分</div>`;
+    el.onclick=()=>openMockSetup(ex);
+    g.appendChild(el);
+  });
+}
+
+async function openMockSetup(ex){
+  mkExam=ex; mkTaker="internal"; mkMode="through";
+  document.getElementById("take-grades").classList.add("hidden");
+  document.getElementById("take-mock-setup").classList.remove("hidden");
+  document.getElementById("mockSetupTitle").textContent=ex.title;
+  document.getElementById("mockSetupInfo").textContent=
+    `${GRADES[ex.grade]?GRADES[ex.grade].label:ex.grade}・筆記制限時間 ${ex.reading_time_min}分`;
+  // 受験区分・方式を初期表示に
+  mockSetTaker("internal"); mockSetMode("through");
+  // 内部生メール自動補完
+  try{ const em=localStorage.getItem("fit_email"); if(em) document.getElementById("mkEmail").value=em; }catch(e){}
+  // 学校プルダウン
+  await fillSchoolOptions();
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+function mockSetTaker(t){
+  mkTaker=t;
+  document.getElementById("mkTakerInternal").classList.toggle("on",t==="internal");
+  document.getElementById("mkTakerExternal").classList.toggle("on",t==="external");
+  document.getElementById("mkInternalFields").classList.toggle("hidden",t!=="internal");
+  document.getElementById("mkExternalFields").classList.toggle("hidden",t!=="external");
+}
+function mockSetMode(m){
+  mkMode=m;
+  document.getElementById("mkModeThrough").classList.toggle("on",m==="through");
+  document.getElementById("mkModeReadingOnly").classList.toggle("on",m==="reading");
+  document.getElementById("mkModeListeningOnly").classList.toggle("on",m==="listening");
+  const hint={
+    through:"通しモード：筆記（制限時間つき）→ リスニング（自動連続再生）を続けて受験します。",
+    reading:"筆記のみ：リーディングだけを制限時間つきで受験します。リスニングは後日でOK。",
+    listening:"リスニングのみ：リスニングだけを自動連続再生で受験します。"
+  }[m];
+  document.getElementById("mkModeHint").textContent=hint;
+}
+
+async function fillSchoolOptions(){
+  const sel=document.getElementById("mkSchool");
+  sel.innerHTML="<option value=''>選択</option>";
+  try{
+    const rows=await sbGet("schools","select=name&order=name.asc");
+    rows.forEach(s=>{ const o=document.createElement("option"); o.value=s.name; o.textContent=s.name; sel.appendChild(o); });
+  }catch(e){ /* schoolsが無い/権限無い環境でも自由入力で継続 */ }
+  const other=document.createElement("option"); other.value="__other__"; other.textContent="その他（自由入力）"; sel.appendChild(other);
+  sel.onchange=()=>{ document.getElementById("mkSchoolOther").classList.toggle("hidden", sel.value!=="__other__"); };
+}
+
+/* 受験者情報の検証と取り出し */
+function collectTaker(){
+  if(mkTaker==="internal"){
+    const email=document.getElementById("mkEmail").value.trim();
+    if(!email){ toast("メールアドレスを入力してください"); return null; }
+    return {taker_type:"internal", student_email:email, ext_school:null, ext_name:null, ext_grade:null};
+  }else{
+    let school=document.getElementById("mkSchool").value;
+    if(school==="__other__") school=document.getElementById("mkSchoolOtherInput").value.trim();
+    const name=document.getElementById("mkName").value.trim();
+    const gy=document.getElementById("mkGradeYear").value;
+    if(!school){ toast("学校を選択・入力してください"); return null; }
+    if(!name){ toast("名前を入力してください"); return null; }
+    return {taker_type:"external", student_email:null, ext_school:school, ext_name:name, ext_grade:gy||null};
+  }
+}
+
+/* 模試の明細(set)を展開して問題を読み込む */
+async function loadMockItems(){
+  const items=await sbGet("eiken_exam_items",`exam_id=eq.${mkExam.id}&is_active=eq.true&order=seq.asc`);
+  if(!items.length) throw new Error("この模試には大問が割り当てられていません。");
+  const setIds=items.map(i=>`"${i.set_id}"`).join(",");
+  const sets=await sbGet("eiken_sets",`id=in.(${setIds})`);
+  const setMap={}; sets.forEach(s=>setMap[s.id]=s);
+  const out=[];
+  for(const it of items){
+    const set=setMap[it.set_id]; if(!set) continue;
+    const passages=await sbGet("eiken_passages",`set_id=eq.${set.id}&order=seq.asc`);
+    let questions={};
+    if(passages.length){
+      const pids=passages.map(p=>`"${p.id}"`).join(",");
+      const qs=await sbGet("eiken_questions",`passage_id=in.(${pids})&order=seq.asc`);
+      qs.forEach(q=>{(questions[q.passage_id]=questions[q.passage_id]||[]).push(q);});
+    }
+    out.push({seq:it.seq, set, passages, questions});
+  }
+  return out;
+}
+
+async function startMock(){
+  const taker=collectTaker(); if(!taker) return;
+  window._mkTaker=taker;
+  try{
+    mkItems = await loadMockItems();
+  }catch(e){ toast(e.message); return; }
+  mockRead={perQ:[], answers:{}}; mockListen={perQ:[], answers:{}}; mkReadingResultId=null;
+
+  document.getElementById("take-mock-setup").classList.add("hidden");
+  if(mkMode==="listening"){
+    enterMockListening();
+  }else{
+    enterMockReading();
+  }
+}
+
+/* ================= リーディング（制限時間つき一括表示） ================= */
+let mockTimerId=null, mockTimerEnd=0;
+
+function readingItems(){ return mkItems.filter(it=>QTYPES[it.set.qtype] && QTYPES[it.set.qtype].sec==="reading"); }
+function listeningItems(){ return mkItems.filter(it=>QTYPES[it.set.qtype] && QTYPES[it.set.qtype].sec==="listening"); }
+
+function enterMockReading(){
+  const items=readingItems();
+  document.getElementById("take-mock-reading").classList.remove("hidden");
+  const body=document.getElementById("mockReadingBody");
+  body.innerHTML="";
+  let gq=0;
+  items.forEach(it=>{
+    const sec=document.createElement("div");
+    const st=GRADE_STRUCTURE[mkExam.grade].find(x=>x.qtype===it.set.qtype);
+    sec.innerHTML=`<h2 class="sec">${st?esc(st.no):""}｜${esc(QTYPES[it.set.qtype].t)}</h2>`;
+    gq=renderMockQuestions(sec, it, gq, "read");
+    body.appendChild(sec);
+  });
+  if(gq===0) body.innerHTML="<p class='muted'>この模試の筆記には設問がありません。</p>";
+  startMockTimer(mkExam.reading_time_min);
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+/* 問題を描画し、examAnswers相当を kind別(mockRead/mockListen)に記録 */
+function renderMockQuestions(container, it, gq, kind){
+  const store = kind==="read"?mockRead:mockListen;
+  const meta=QTYPES[it.set.qtype];
+  const nChoices=meta.choices;
+  it.passages.forEach(pas=>{
+    const block=document.createElement("div");
+    if(pas.image_url){ const img=document.createElement("img"); img.className="q-img"; img.src=pas.image_url; block.appendChild(img); }
+    if(pas.passage_text){ const pt=document.createElement("div"); pt.className="passage-text"; pt.textContent=pas.passage_text; block.appendChild(pt); }
+    (it.questions[pas.id]||[]).forEach(q=>{
+      gq++;
+      const qb=document.createElement("div"); qb.className="q-block";
+      const choices=Array.isArray(q.choices)?q.choices:[];
+      let html=`<div class="q-text"><span class="q-num">Q${gq}</span>${q.question_text?esc(q.question_text):""}</div>`;
+      html+=`<div class="choices" data-qid="${q.id}">`;
+      const letters=["1","2","3","4"];
+      choices.slice(0,nChoices).forEach((c,i)=>{
+        html+=`<div class="choice" onclick="pickMock('${kind}','${q.id}',${i},this)"><span class="ltr">${letters[i]}</span><span>${esc(c)}</span></div>`;
+      });
+      html+="</div>"; qb.innerHTML=html; block.appendChild(qb);
+      // 採点用メタを保持
+      store.perQ.push({qid:q.id, qtype:it.set.qtype, sec:meta.sec, correct_index:q.correct_index, q});
+    });
+    container.appendChild(block);
+  });
+  return gq;
+}
+
+function pickMock(kind,qid,idx,el){
+  const store=kind==="read"?mockRead:mockListen;
+  store.answers[qid]=idx;
+  const parent=el.parentElement;
+  [...parent.children].forEach(c=>c.classList.remove("picked"));
+  el.classList.add("picked");
+}
+
+function startMockTimer(min){
+  stopMockTimer();
+  mockTimerEnd=Date.now()+min*60*1000;
+  const tick=()=>{
+    const rem=Math.max(0,Math.floor((mockTimerEnd-Date.now())/1000));
+    const mm=String(Math.floor(rem/60)).padStart(2,"0"), ss=String(rem%60).padStart(2,"0");
+    const el=document.getElementById("mockTimer"); if(el){ el.textContent=mm+":"+ss; el.classList.toggle("danger",rem<=300); }
+    if(rem<=0){ stopMockTimer(); toast("制限時間になりました。自動提出します。"); submitMockReading(); }
+  };
+  tick();
+  mockTimerId=setInterval(tick,1000);
+}
+function stopMockTimer(){ if(mockTimerId){ clearInterval(mockTimerId); mockTimerId=null; } }
+
+async function submitMockReading(){
+  stopMockTimer();
+  // 集計
+  let s=0; mockRead.perQ.forEach(x=>{ if(mockRead.answers[x.qid]===x.correct_index) s++; });
+  window._mockReadScore={s, t:mockRead.perQ.length};
+  document.getElementById("take-mock-reading").classList.add("hidden");
+  if(mkMode==="through"){
+    enterMockListening();               // 続けてリスニングへ
+  }else{
+    await finalizeMock("reading_only");  // 筆記のみ提出
+  }
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+/* ================= リスニング（自動連続再生） ================= */
+let mockAudio=null;
+
+function enterMockListening(){
+  const items=listeningItems();
+  document.getElementById("take-mock-listening").classList.remove("hidden");
+  document.getElementById("mockListenTitle").textContent="リスニング";
+  document.getElementById("mockListenStart").classList.remove("hidden");
+  document.getElementById("mockListenCard").classList.add("hidden");
+  document.getElementById("mockListenPlayer").classList.add("hidden");
+  document.getElementById("mockListenPlayer").innerHTML="";
+  // 設問だけ先に描画（音声はbeginで開始）
+  const body=document.getElementById("mockListeningBody"); body.innerHTML="";
+  let gq=0;
+  items.forEach(it=>{
+    const sec=document.createElement("div");
+    const st=GRADE_STRUCTURE[mkExam.grade].find(x=>x.qtype===it.set.qtype);
+    sec.innerHTML=`<h2 class="sec">${st?esc(st.no):""}｜${esc(QTYPES[it.set.qtype].t)}</h2>`;
+    gq=renderMockQuestions(sec, it, gq, "listen");
+    body.appendChild(sec);
+  });
+  if(gq===0){ document.getElementById("mockListeningBody").innerHTML="<p class='muted'>この模試のリスニングには設問がありません。</p>"; }
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+/* 開始ボタン: 大問ごとの連続mp3を順番に自動再生。無ければWeb Speechフォールバック */
+function beginMockListening(){
+  document.getElementById("mockListenStart").classList.add("hidden");
+  document.getElementById("mockListenCard").classList.remove("hidden");
+  const player=document.getElementById("mockListenPlayer");
+  player.classList.remove("hidden");
+  player.innerHTML=`<div class="q-audio"><div class="muted">🎧 リスニング音声（自動で連続再生されます・途中停止はできません）</div>
+    <div class="muted" id="mockAudioStatus" style="margin-top:6px">再生を準備中…</div></div>`;
+
+  const items=listeningItems();
+  const allHaveAudio = items.length>0 && items.every(it=>it.set.audio_url);
+  if(allHaveAudio){
+    playAudioQueue(items.map(it=>it.set.audio_url));
+  }else{
+    // 一部でもmp3が無ければ Web Speech フォールバックで台本を順に読み上げ
+    speakScriptQueue(items);
+  }
+}
+
+function playAudioQueue(urls){
+  let i=0;
+  const status=document.getElementById("mockAudioStatus");
+  mockAudio=new Audio();
+  mockAudio.preload="auto";
+  const playNext=()=>{
+    if(i>=urls.length){ if(status) status.textContent="リスニング音声は以上です。解答を提出してください。"; return; }
+    if(status) status.textContent=`再生中… (${i+1}/${urls.length})`;
+    mockAudio.src=urls[i]; i++;
+    mockAudio.play().catch(()=>{ if(status) status.textContent="自動再生がブロックされました。画面をタップしてから再度お試しください。"; });
+  };
+  mockAudio.onended=playNext;
+  mockAudio.onerror=()=>{ if(status) status.textContent="音声の読み込みに失敗しました。"; };
+  playNext();
+}
+
+function speakScriptQueue(items){
+  const status=document.getElementById("mockAudioStatus");
+  if(!("speechSynthesis" in window)){ if(status) status.textContent="この端末は音声非対応です。台本表示で対応してください。"; return; }
+  const scripts=[];
+  items.forEach(it=> it.passages.forEach(p=>{ if(p.audio_script) scripts.push(p.audio_script); }));
+  if(!scripts.length){ if(status) status.textContent="音声・台本が登録されていません。"; return; }
+  window.speechSynthesis.cancel();
+  let i=0;
+  const speakNext=()=>{
+    if(i>=scripts.length){ if(status) status.textContent="リスニングは以上です。解答を提出してください。"; return; }
+    if(status) status.textContent=`再生中…（簡易読み上げ ${i+1}/${scripts.length}）`;
+    const u=new SpeechSynthesisUtterance(scripts[i]); i++;
+    u.lang="en-US"; u.rate=0.9; u.onend=speakNext;
+    window.speechSynthesis.speak(u);
+  };
+  speakNext();
+}
+
+function mockStopAudio(){
+  if(mockAudio){ try{ mockAudio.pause(); }catch(e){} mockAudio.onended=null; mockAudio=null; }
+  if(window.speechSynthesis) window.speechSynthesis.cancel();
+}
+
+async function submitMockListening(){
+  mockStopAudio();
+  let s=0; mockListen.perQ.forEach(x=>{ if(mockListen.answers[x.qid]===x.correct_index) s++; });
+  window._mockListenScore={s, t:mockListen.perQ.length};
+  document.getElementById("take-mock-listening").classList.add("hidden");
+  await finalizeMock(mkMode==="listening"?"listening_only":"complete");
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+/* ================= 採点・保存・結果 ================= */
+function computeWeak(perQ){
+  const byType={};
+  perQ.forEach(x=>{ (byType[x.qtype]=byType[x.qtype]||{s:0,t:0}); byType[x.qtype].t++; if(x._correct) byType[x.qtype].s++; });
+  return Object.entries(byType)
+    .map(([qt,v])=>({qtype:qt, t:QTYPES[qt]?QTYPES[qt].t:qt, rate:v.t?v.s/v.t:1, s:v.s, tot:v.t}))
+    .filter(x=>x.rate<0.6)
+    .sort((a,b)=>a.rate-b.rate);
+}
+function verdictOf(rRate,lRate){
+  const vals=[rRate,lRate].filter(v=>v!==null);
+  const overall=vals.length?Math.round(vals.reduce((a,b)=>a+b,0)/vals.length):0;
+  let level,msg;
+  if(overall>=70){ level="good"; msg="合格ライン到達の見込みです。この調子で仕上げましょう。"; }
+  else if(overall>=55){ level="border"; msg="あと一歩で合格ライン。弱点を対策すれば十分狙えます。"; }
+  else { level="warn"; msg="今のままだと合格は厳しめ。早めの対策をおすすめします。"; }
+  return {overall,level,msg};
+}
+
+async function finalizeMock(status){
+  const taker=window._mkTaker;
+  // perQに正誤を付与
+  const allPerQ=[];
+  const attach=(store)=>store.perQ.forEach(x=>{ x._correct=(store.answers[x.qid]===x.correct_index); allPerQ.push(x); });
+  const rDone = (status==="reading_only"||status==="complete");
+  const lDone = (status==="listening_only"||status==="complete");
+  if(rDone) attach(mockRead);
+  if(lDone) attach(mockListen);
+
+  const rS = rDone? (window._mockReadScore||{s:0,t:mockRead.perQ.length}) : null;
+  const lS = lDone? (window._mockListenScore||{s:0,t:mockListen.perQ.length}) : null;
+  const rRate = rS && rS.t? Math.round(rS.s/rS.t*100) : null;
+  const lRate = lS && lS.t? Math.round(lS.s/lS.t*100) : null;
+
+  const weak=computeWeak(allPerQ);
+  const v=verdictOf(rRate,lRate);
+
+  // answers詳細（C表示・後分析用）
+  const answersDetail={};
+  allPerQ.forEach(x=>{ answersDetail[x.qid]={picked: (rDone&&mockRead.answers[x.qid]!==undefined?mockRead.answers[x.qid]:(mockListen.answers[x.qid])), correct:x.correct_index, ok:x._correct, qtype:x.qtype}; });
+
+  const totS=(rS?rS.s:0)+(lS?lS.s:0), totMax=(rS?rS.t:0)+(lS?lS.t:0);
+
+  // 保存
+  const row={
+    exam_id:mkExam.id, grade:mkExam.grade,
+    taker_type:taker.taker_type, student_email:taker.student_email,
+    ext_school:taker.ext_school, ext_name:taker.ext_name, ext_grade:taker.ext_grade,
+    reading_score:rS?rS.s:null, reading_total:rS?rS.t:null,
+    listening_score:lS?lS.s:null, listening_total:lS?lS.t:null,
+    total_score:totMax?totS:null, total_max:totMax||null,
+    answers:answersDetail, weak_qtypes:weak.map(w=>({qtype:w.qtype,t:w.t,rate:Math.round(w.rate*100)})),
+    status,
+    reading_done_at: rDone? new Date().toISOString():null,
+    listening_done_at: lDone? new Date().toISOString():null
+  };
+  try{ await sbPost("eiken_exam_results", row); }catch(e){ console.warn("mock result save failed",e); }
+
+  // 結果表示
+  window._mockReview={perQ:allPerQ, rMode:rDone, lMode:lDone};
+  renderMockResult({rS,lS,rRate,lRate,weak,v,status});
+}
+
+function renderMockResult({rS,lS,rRate,lRate,weak,v,status}){
+  document.getElementById("take-mock-result").classList.remove("hidden");
+  const levelLabel={good:"🟢 合格見込み", border:"🟡 ボーダー", warn:"🔴 要対策"}[v.level];
+  document.getElementById("mockVerdictLevel").textContent=levelLabel;
+  document.getElementById("mockScoreTotal").textContent=v.overall+"%";
+  document.getElementById("mockVerdictMsg").textContent=v.msg;
+
+  let lr="";
+  if(rS) lr+=`<div class="b"><div class="k">筆記(R)</div><div class="v">${rS.s}/${rS.t}<span class="muted"> (${rRate}%)</span></div></div>`;
+  if(lS) lr+=`<div class="b"><div class="k">リスニング(L)</div><div class="v">${lS.s}/${lS.t}<span class="muted"> (${lRate}%)</span></div></div>`;
+  document.getElementById("mockScoreLR").innerHTML=lr;
+
+  const wb=document.getElementById("mockWeakBox");
+  if(weak.length){
+    wb.innerHTML=`<div class="card" style="background:#fff7f5;border-color:#f2c6ba">
+      <b>強化したい大問</b>
+      <ul class="points-list" style="margin-top:6px">`+
+      weak.map(w=>`<li>${esc(w.t)}（正答率 ${Math.round(w.rate*100)}%）</li>`).join("")+
+      `</ul>
+      <p class="muted" style="margin-top:6px">総合学習塾fitの英検対策で、弱点を集中的にトレーニングできます。</p></div>`;
+  }else{
+    wb.innerHTML=`<div class="card" style="background:#f2fbf6;border-color:#bfe6cf"><b>目立った弱点はありませんでした。よく仕上がっています。</b></div>`;
+  }
+  document.getElementById("mockReviewBody").classList.add("hidden");
+  document.getElementById("mockReviewBody").innerHTML="";
+}
+
+function toggleMockReview(){
+  const rb=document.getElementById("mockReviewBody");
+  if(!rb.classList.contains("hidden")){ rb.classList.add("hidden"); return; }
+  rb.classList.remove("hidden");
+  const {perQ}=window._mockReview;
+  const letters=["1","2","3","4"];
+  let html="<div class='card'><h2 class='sec'>問題ごとの正誤・解説</h2>";
+  perQ.forEach((x,gi)=>{
+    const q=x.q;
+    const picked = (mockRead.answers[x.qid]!==undefined?mockRead.answers[x.qid]:mockListen.answers[x.qid]);
+    const choices=Array.isArray(q.choices)?q.choices:[];
+    const mark = x._correct? "✅":"❌";
+    html+=`<div class="q-block"><div class="q-text"><span class="q-num">Q${gi+1}</span>${mark} ${q.question_text?esc(q.question_text):""}</div>`;
+    choices.forEach((c,i)=>{
+      let cls="choice";
+      if(i===q.correct_index) cls+=" correct";
+      else if(i===picked) cls+=" wrong";
+      html+=`<div class="${cls}"><span class="ltr">${letters[i]}</span><span>${esc(c)}</span></div>`;
+    });
+    if(q.explanation) html+=`<div class="expl">💡 ${esc(q.explanation)}</div>`;
+    html+="</div>";
+  });
+  html+="</div>";
+  rb.innerHTML=html;
+}
+
+/* ================= 管理: 模試を組む ================= */
+let exSetsCache=[]; // 選択式set一覧（グレード別で絞り込み）
+
+async function exInit(){
+  document.getElementById("exTime").value = READING_TIME_DEFAULT[document.getElementById("exGrade").value]||80;
+  await exBuildItemsUI();
+  loadExamList();
+}
+function exOnGradeChange(){
+  document.getElementById("exTime").value = READING_TIME_DEFAULT[document.getElementById("exGrade").value]||80;
+  exBuildItemsUI();
+}
+
+async function exBuildItemsUI(){
+  const grade=document.getElementById("exGrade").value;
+  const area=document.getElementById("exItemsArea");
+  area.innerHTML="<p class='muted'>読み込み中…</p>";
+  // その級の選択式setを取得
+  let sets=[];
+  try{ sets=await sbGet("eiken_sets",`grade=eq.${grade}&is_active=eq.true&order=created_at.desc`); }
+  catch(e){ area.innerHTML="<p class='muted'>テストの読み込みに失敗しました。</p>"; return; }
+  exSetsCache=sets;
+  const struct=examStructure(grade);
+  area.innerHTML="";
+  struct.forEach((st,idx)=>{
+    const cand=sets.filter(s=>s.qtype===st.qtype);
+    const row=document.createElement("div"); row.className="set-row";
+    let opts="<option value=''>（含めない）</option>";
+    cand.forEach(s=>{ opts+=`<option value="${s.id}">${esc(s.title)}</option>`; });
+    // 標準構成: 各大問の候補が1つだけなら自動選択
+    row.innerHTML=`<div><b>${esc(st.no)}</b><div class="meta">${esc(QTYPES[st.qtype].t)}</div></div>
+      <select data-seq="${idx}" data-qtype="${st.qtype}" class="exItemSel">${opts}</select>`;
+    area.appendChild(row);
+    const sel=row.querySelector("select");
+    if(cand.length===1) sel.value=cand[0].id;   // プリセット自動投入
+  });
+}
+
+async function createExam(){
+  const grade=document.getElementById("exGrade").value;
+  const title=document.getElementById("exTitle").value.trim();
+  const time=parseInt(document.getElementById("exTime").value,10)||READING_TIME_DEFAULT[grade]||80;
+  const by=document.getElementById("exBy").value.trim();
+  const out=document.getElementById("exCreateResult");
+  if(!title){ toast("タイトルを入力してください"); return; }
+  const sels=[...document.querySelectorAll(".exItemSel")].filter(s=>s.value);
+  if(!sels.length){ toast("少なくとも1つの大問を割り当ててください"); return; }
+  out.textContent="作成中…";
+  try{
+    const exRows=await sbPostReturn("eiken_exams",{grade,title,reading_time_min:time,created_by:by||null});
+    const examId=exRows[0].id;
+    const items=sels.map(s=>({exam_id:examId, set_id:s.value, seq:parseInt(s.getAttribute("data-seq"),10)}));
+    await sbPost("eiken_exam_items", items);
+    out.textContent="✅ 作成しました。";
+    document.getElementById("exTitle").value=""; document.getElementById("exBy").value="";
+    loadExamList();
+    renderExamGrid();
+  }catch(e){ out.textContent="失敗: "+e.message; }
+}
+
+async function loadExamList(){
+  const list=document.getElementById("examList");
+  list.innerHTML="<p class='muted'>読み込み中…</p>";
+  try{
+    const exams=await sbGet("eiken_exams","order=created_at.desc");
+    if(!exams.length){ list.innerHTML="<p class='muted'>まだ模試がありません。</p>"; return; }
+    list.innerHTML="";
+    exams.forEach(ex=>{
+      const row=document.createElement("div"); row.className="set-row";
+      row.innerHTML=`<div><b>${esc(ex.title)}</b><div class="meta">${esc(GRADES[ex.grade]?GRADES[ex.grade].label:ex.grade)}・筆記${ex.reading_time_min}分・${new Date(ex.created_at).toLocaleDateString('ja-JP')}</div></div>`;
+      const t=document.createElement("button"); t.className="btn sm"+(ex.is_active?"":" ghost");
+      t.textContent=ex.is_active?"公開中":"非公開";
+      t.onclick=async()=>{ try{ await sbPatch("eiken_exams","id=eq."+ex.id,{is_active:!ex.is_active}); loadExamList(); renderExamGrid(); }catch(e){ toast(e.message); } };
+      row.appendChild(t); list.appendChild(row);
+    });
+  }catch(e){ list.innerHTML="<p class='muted'>失敗: "+esc(e.message)+"</p>"; }
+}
+
+/* ================= 管理: 模試成績 ================= */
+async function loadExamResults(){
+  const list=document.getElementById("examResultsList");
+  const sum=document.getElementById("erSummary");
+  list.innerHTML="<p class='muted'>読み込み中…</p>"; sum.textContent="";
+  const ftype=document.getElementById("erFilterType").value;
+  const fgrade=document.getElementById("erFilterGrade").value;
+  let q="order=taken_at.desc&limit=300";
+  if(ftype!=="all") q+=`&taker_type=eq.${ftype}`;
+  if(fgrade!=="all") q+=`&grade=eq.${fgrade}`;
+  try{
+    const rows=await sbGet("eiken_exam_results",q);
+    let exams={};
+    try{(await sbGet("eiken_exams","select=id,title")).forEach(e=>exams[e.id]=e.title);}catch(e){}
+    if(!rows.length){ list.innerHTML="<p class='muted'>該当する結果がありません。</p>"; return; }
+    // サマリ
+    const scored=rows.filter(r=>r.total_max);
+    const avg=scored.length? Math.round(scored.reduce((a,r)=>a+r.total_score/r.total_max*100,0)/scored.length):0;
+    sum.textContent=`件数 ${rows.length} 件 / 完了 ${scored.length} 件 / 平均正答率 ${avg}%`;
+    list.innerHTML="";
+    rows.forEach(r=>{
+      const who = r.taker_type==="external"
+        ? `${esc(r.ext_name||"?")}（${esc(r.ext_school||"?")}${r.ext_grade?" "+esc(r.ext_grade):""}）`
+        : esc(r.student_email||"（塾生）");
+      const badge = r.taker_type==="external"?"<span class='badge write'>外部</span>":"<span class='badge read'>塾生</span>";
+      const rate = r.total_max? Math.round(r.total_score/r.total_max*100):null;
+      const parts=[];
+      if(r.reading_total!=null) parts.push(`R ${r.reading_score}/${r.reading_total}`);
+      if(r.listening_total!=null) parts.push(`L ${r.listening_score}/${r.listening_total}`);
+      const stLabel={reading_only:"筆記のみ",listening_only:"L のみ",complete:"完了"}[r.status]||r.status;
+      const row=document.createElement("div"); row.className="set-row";
+      row.innerHTML=`<div>${badge} <b>${who}</b>
+        <div class="meta">${esc(exams[r.exam_id]||"?")} · ${esc(GRADES[r.grade]?GRADES[r.grade].label:r.grade)} · ${stLabel} · ${new Date(r.taken_at).toLocaleString('ja-JP')}</div>
+        <div class="meta">${parts.join(" ／ ")}</div></div>
+        <div style="text-align:right"><div style="font-weight:800;color:var(--navy)">${rate!=null?rate+"%":"—"}</div></div>`;
+      list.appendChild(row);
+    });
+  }catch(e){ list.innerHTML="<p class='muted'>失敗: "+esc(e.message)+"</p>"; }
+}
+
+
 /* ---------- バージョン照合 ---------- */
 async function checkVersion(){
   try{
@@ -1149,6 +1896,7 @@ async function checkVersion(){
   if(vf) vf.innerHTML=`<span class="dot"></span>version ${APP_VERSION}`;
   if(!isConfigured()) document.getElementById("configWarn").classList.remove("hidden");
   renderGradeGrid();
+  renderExamGrid();
   acRefreshQtypes();
   awRefreshQtypes();
   checkVersion();
