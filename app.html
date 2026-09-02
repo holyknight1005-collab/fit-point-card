@@ -4892,8 +4892,23 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <button id="line-filter-all" onclick="setLineFilter('all')" class="line-fbtn" style="flex:1;padding:8px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1px solid var(--border);background:var(--surface);color:var(--muted)">すべて</button>
       </div>
 
-      <!-- 購読フォルダバー（自分専用） -->
-      <div id="line-folder-bar" style="display:flex;gap:6px;overflow-x:auto;margin-bottom:10px;padding-bottom:2px"></div>
+      <!-- dlm138: 受信箱ビュー切替（学校ビュー / フォルダ） -->
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <button id="line-view-school" onclick="setLineView('school')" style="flex:1;padding:7px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff">🏫 学校ビュー</button>
+        <button id="line-view-folder" onclick="setLineView('folder')" style="flex:1;padding:7px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;border:1.5px solid var(--border);background:var(--surface);color:var(--muted)">📁 マイフォルダ</button>
+      </div>
+
+      <!-- 学校ビュー：学校タブ（横並び・折返し）＋ 区分/学年サブフィルタ -->
+      <div id="line-school-view">
+        <div id="line-school-tabs" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
+        <div id="line-school-subfilter" style="display:none;flex-direction:column;gap:6px;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:8px">
+          <div id="line-sub-kind" style="display:flex;gap:6px"></div>
+          <div id="line-sub-grade" style="display:flex;flex-wrap:wrap;gap:5px"></div>
+        </div>
+      </div>
+
+      <!-- 購読フォルダバー（マイフォルダビュー時のみ表示） -->
+      <div id="line-folder-bar" style="display:none;gap:6px;overflow-x:auto;margin-bottom:10px;padding-bottom:2px"></div>
 
       <div id="line-contact-list" style="display:flex;flex-direction:column;gap:8px"></div>
     </div>
@@ -6481,7 +6496,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm135';
+const APP_VERSION = '20260702dlm138';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -28711,6 +28726,10 @@ function openStaffCalModal(dateISO, simple) {
       const _editBtn = _mine
         ? '<button onclick="editEventFromModal(\'' + escapeAttr(String(ev.id)) + '\')" style="margin-left:auto;flex:none;background:none;border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:10px;font-weight:700;padding:2px 8px;cursor:pointer;font-family:inherit">✏️編集</button>'
         : '';
+      // dlm137: 作成者本人だけに「🗑削除」も表示（編集の隣）。編集が無い場合はこちらが右端に寄る。
+      const _delBtn = _mine
+        ? '<button onclick="deleteEventFromModal(\'' + escapeAttr(String(ev.id)) + '\')" style="' + (_editBtn ? '' : 'margin-left:auto;') + 'flex:none;background:none;border:1px solid var(--border);border-radius:6px;color:var(--red);font-size:10px;font-weight:700;padding:2px 8px;cursor:pointer;font-family:inherit">🗑削除</button>'
+        : '';
       // dlm133: 保護者面談は 👥 バッジ＋時刻を出す
       const _pmBadge = (ev.scope === 'parent_meeting') ? '<span style="font-size:9px;background:#9B59B6;color:#fff;padding:1px 6px;border-radius:10px;margin-left:6px">👥面談</span>' : '';
       // dlm135: 個人予定・学校担当も種別バッジを出す
@@ -28723,7 +28742,7 @@ function openStaffCalModal(dateISO, simple) {
       const _pmSch = (ev.scope === 'parent_meeting') ? (ev.target_schools || '').split(',').filter(Boolean).join('・') : '';
       body += '<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid ' + (ev.color || '#F5A623') + ';border-radius:8px;padding:8px 10px;margin-bottom:6px">' +
         '<div style="display:flex;align-items:center;gap:6px">' +
-          '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(ev.title) + _scBadge + _pmBadge + '</div>' + _editBtn +
+          '<div style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(ev.title) + _scBadge + _pmBadge + '</div>' + _editBtn + _delBtn +
         '</div>' +
         (_pmTime || _pmSch ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + escapeHtml(_pmTime) + (_pmSch ? '　🏫' + escapeHtml(_pmSch) : '') + '</div>' : '') +
         (ev.detail ? '<div style="font-size:11px;color:var(--muted);margin-top:2px;white-space:pre-wrap">' + escapeHtml(ev.detail) + '</div>' : '') +
@@ -29723,6 +29742,24 @@ async function editEventFromModal(id) {
   closeStaffCalModal();
   await openCalendarReg();
   await editCalRegEvent(id);
+}
+
+// dlm137: 日別モーダルから予定を直接削除。削除後は同じ日のモーダルを開き直す。
+async function deleteEventFromModal(id) {
+  if (!confirm('この予定を削除しますか？')) return;
+  const _d = staffCalModalDate; // 削除後に開き直す日付を退避
+  showLoading('削除中...');
+  try {
+    await sbDelete('events', 'id=eq.' + encodeURIComponent(id));
+    hideLoading();
+    showToast('削除しました', 'success');
+    // ホームカレンダー・予定登録リストを再描画
+    if (typeof loadStaffHomeCalendar === 'function') loadStaffHomeCalendar();
+    if (typeof loadCalRegList === 'function') { try { loadCalRegList(); } catch(e){} }
+    // 同じ日のモーダルを開き直す（削除済みが消えた状態で再表示）
+    if (_d && typeof openStaffCalModal === 'function') openStaffCalModal(_d);
+    else closeStaffCalModal();
+  } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
 }
 
 // 予定表モーダル → 報告書入力へ遷移
@@ -40333,6 +40370,45 @@ function linyRowHtml(kind, i, r, badge, color, checkable, student, done, multiHi
 // ============================================================
 var LINE_FOLDER_SCHOOLS = ['松山東','松山南','松山北','松山中央','松山西','愛大附属','済美','SSS','その他'];
 var LINE_FOLDER_GRADES = ['1年','2年','3年','中1','中2','中3'];
+
+// ============================================================
+// dlm138: 学校ビュー（Gmail風）
+//   学校グループを縦軸に、区分(生徒/保護者/卒業生)×学年を横軸フィルタにする。
+//   卒業生など未紐付けの接点は tags[] の学校タグで各校に振り分ける。
+//   タグも紐付けも無い接点は「その他」へ。
+// ============================================================
+// 学校グループ定義：{ key:内部キー, label:表示, schools:[students.school の表記ゆれ全部], tag:タグ名 }
+var LINE_SCHOOL_GROUPS = [
+  { key:'east',   label:'東',   schools:['松山東','東'],            tag:'東' },
+  { key:'south',  label:'南',   schools:['松山南','南','南第二','南第2'], tag:'南' },
+  { key:'north',  label:'北',   schools:['松山北','北'],            tag:'北' },
+  { key:'central',label:'中央', schools:['松山中央','中央'],         tag:'中央' },
+  { key:'west',   label:'西',   schools:['松山西','西','県西'],       tag:'西' },
+  { key:'fuzoku', label:'愛附', schools:['愛大附属','附属','愛媛大学附属','愛媛大学附属高校'], tag:'愛附' },
+  { key:'saibi',  label:'済美', schools:['済美','済美平成'],         tag:'済美' },
+  { key:'jhs',    label:'中学', schools:[], grades:['中1','中2','中3'], tag:'中学' },
+  { key:'other',  label:'その他', schools:[], isOther:true,          tag:'その他' },
+];
+var LINE_SCHOOL_TAGS = LINE_SCHOOL_GROUPS.map(g => g.tag); // タグ選択肢
+var lineView = 'school';       // 'school' | 'folder'
+var lineSchoolKey = null;      // 選択中の学校グループkey（null=未選択）
+var lineSubKind = 'all';       // 'all' | 'student' | 'parent' | 'grad'（卒業生）
+var lineSubGrade = 'all';      // 'all' | '1年' | ... 
+var _lineSchoolLinyCache = {}; // { groupKey: {student:Set, parent:Set} } 紐付け生徒由来のliny_id
+
+// students.school → 学校グループkey（表記ゆれ吸収）。該当なしは null。
+// 学年が中学(中1〜3)なら学校名より「中学」グループを優先（中学生は高校名で登録されないが安全策）。
+function lineSchoolGroupOf(school, grade) {
+  const sc = String(school || '').trim();
+  const gr = String(grade || '').trim();
+  const jhs = LINE_SCHOOL_GROUPS.find(g => g.key === 'jhs');
+  if (jhs && jhs.grades && jhs.grades.includes(gr)) return 'jhs'; // 中学学年を最優先
+  for (const g of LINE_SCHOOL_GROUPS) {
+    if (g.isOther || g.key === 'jhs') continue;
+    if (g.schools && g.schools.includes(sc)) return g.key;
+  }
+  return null; // どのグループにも該当しない
+}
 var lineFolders = [];          // 自分のフォルダ一覧
 var lineFolderId = null;       // 選択中フォルダid（null=フォルダ絞りなし）
 var lineFolderLinySet = null;  // 選択中フォルダの対象liny_idセット（null=絞りなし）
@@ -40394,6 +40470,127 @@ async function selectLineFolder(fid) {
   renderLineFolderBar();
   renderLineContacts();
 }
+
+// ============================================================
+// dlm138: 学校ビューのロジック
+// ============================================================
+// ビュー切替（学校ビュー ⇄ マイフォルダ）
+function setLineView(v) {
+  lineView = v;
+  const sv = document.getElementById('line-school-view');
+  const bar = document.getElementById('line-folder-bar');
+  const bS = document.getElementById('line-view-school');
+  const bF = document.getElementById('line-view-folder');
+  const onCss = 'border:1.5px solid #2D6CB6;background:#2D6CB6;color:#fff';
+  const offCss = 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)';
+  if (v === 'school') {
+    if (sv) sv.style.display = 'block';
+    if (bar) bar.style.display = 'none';
+    if (bS) bS.style.cssText = 'flex:1;padding:7px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' + onCss;
+    if (bF) bF.style.cssText = 'flex:1;padding:7px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' + offCss;
+    // 学校ビューではフォルダ絞りを解除
+    lineFolderId = null; lineFolderLinySet = null;
+    renderLineSchoolTabs();
+    renderLineContacts();
+  } else {
+    if (sv) sv.style.display = 'none';
+    if (bar) bar.style.display = 'flex';
+    if (bS) bS.style.cssText = 'flex:1;padding:7px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' + offCss;
+    if (bF) bF.style.cssText = 'flex:1;padding:7px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' + onCss;
+    // 学校選択を解除、フォルダビューは全体表示
+    lineSchoolKey = null;
+    renderLineContacts();
+  }
+}
+
+// 接点が属する学校グループkeyを返す（紐付け生徒→学校、未紐付け→tags）。該当なし→'other'
+function lineContactSchoolKey(c) {
+  // 1) 紐付け生徒があれば students.school/grade で判定
+  if (c.student_id && lineStudentMap[c.student_id]) {
+    const stu = lineStudentMap[c.student_id];
+    const k = lineSchoolGroupOf(stu.school, stu.grade);
+    if (k) return k;
+  }
+  // 2) タグがあれば最初に一致した学校タグ
+  if (Array.isArray(c.tags)) {
+    for (const g of LINE_SCHOOL_GROUPS) {
+      if (g.isOther) continue;
+      if (c.tags.includes(g.tag)) return g.key;
+    }
+  }
+  // 3) どれにも該当しない → その他
+  return 'other';
+}
+
+// 各学校グループの件数を数える
+function lineSchoolCounts() {
+  const counts = {};
+  LINE_SCHOOL_GROUPS.forEach(g => counts[g.key] = 0);
+  (lineContacts || []).forEach(r => {
+    const k = lineContactSchoolKey(r.contact);
+    counts[k] = (counts[k] || 0) + 1;
+  });
+  return counts;
+}
+
+// 学校タブを描画
+function renderLineSchoolTabs() {
+  const el = document.getElementById('line-school-tabs');
+  if (!el) return;
+  const counts = lineSchoolCounts();
+  el.innerHTML = LINE_SCHOOL_GROUPS.map(g => {
+    const on = (lineSchoolKey === g.key);
+    const n = counts[g.key] || 0;
+    const bg = on ? (g.isOther ? '#8A6D3B' : '#2D6CB6') : 'var(--surface)';
+    const col = on ? '#fff' : (n ? 'var(--text)' : 'var(--muted)');
+    const bd = on ? bg : 'var(--border)';
+    return '<button onclick="selectLineSchool(\'' + g.key + '\')" style="flex:none;padding:6px 12px;border-radius:16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;border:1.5px solid ' + bd + ';background:' + bg + ';color:' + col + '">' +
+      (g.isOther ? '📦 ' : '') + escapeHtml(g.label) + ' <span style="font-size:10px;opacity:.8">' + n + '</span></button>';
+  }).join('');
+  renderLineSubFilter();
+}
+
+// 区分・学年サブフィルタを描画
+function renderLineSubFilter() {
+  const wrap = document.getElementById('line-school-subfilter');
+  const kEl = document.getElementById('line-sub-kind');
+  const gEl = document.getElementById('line-sub-grade');
+  if (!wrap || !kEl || !gEl) return;
+  if (lineSchoolKey == null) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'flex';
+  const grp = LINE_SCHOOL_GROUPS.find(x => x.key === lineSchoolKey);
+  // 区分：全部/生徒/保護者/卒業生
+  const kinds = [['all','すべて'],['student','生徒'],['parent','保護者'],['grad','卒業生']];
+  kEl.innerHTML = kinds.map(([v,lab]) => {
+    const on = (lineSubKind === v);
+    return '<button onclick="setLineSubKind(\'' + v + '\')" style="flex:1;padding:6px;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;border:1.5px solid ' +
+      (on ? '#6B4FA0;background:#6B4FA0;color:#fff' : 'var(--border);background:var(--surface);color:var(--muted)') + '">' + lab + '</button>';
+  }).join('');
+  // 学年：中学グループなら中1-3、それ以外は1-3年。その他は学年フィルタ非表示
+  let grades = ['all'];
+  if (grp && grp.key === 'jhs') grades = ['all','中1','中2','中3'];
+  else if (grp && grp.isOther) grades = ['all'];
+  else grades = ['all','1年','2年','3年'];
+  if (grades.length <= 1) { gEl.innerHTML = ''; }
+  else {
+    gEl.innerHTML = grades.map(v => {
+      const on = (lineSubGrade === v);
+      const lab = v === 'all' ? '全学年' : v;
+      return '<button onclick="setLineSubGrade(\'' + v + '\')" style="flex:none;padding:5px 11px;border-radius:14px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;border:1.5px solid ' +
+        (on ? '#1E8449;background:var(--green-l);color:var(--green-d)' : 'var(--border);background:var(--surface);color:var(--muted)') + '">' + lab + '</button>';
+    }).join('');
+  }
+}
+
+function selectLineSchool(key) {
+  lineSchoolKey = (lineSchoolKey === key) ? null : key; // 再タップで解除
+  lineSubKind = 'all';
+  lineSubGrade = 'all';
+  renderLineSchoolTabs();
+  renderLineContacts();
+}
+function setLineSubKind(v) { lineSubKind = v; renderLineSubFilter(); renderLineContacts(); }
+function setLineSubGrade(v) { lineSubGrade = v; renderLineSubFilter(); renderLineContacts(); }
 
 // rules → 対象生徒のliny_id/parent_liny_idの Set を返す
 // dlm127: rules.kind（'both'|'student'|'parent'）で生徒本人/保護者を絞る。既定は 'both'（後方互換）。
@@ -40934,8 +41131,8 @@ async function initLineInbox() {
   const sids = contacts.map(c => c.student_id).filter(Boolean);
   if (sids.length) {
     try {
-      const studs = await sbGet('students', 'id=in.(' + sids.join(',') + ')&select=id,name,school') || [];
-      studs.forEach(s => { lineStudentMap[s.id] = { name: s.name, school: s.school || '' }; });
+      const studs = await sbGet('students', 'id=in.(' + sids.join(',') + ')&select=id,name,school,grade') || [];
+      studs.forEach(s => { lineStudentMap[s.id] = { name: s.name, school: s.school || '', grade: s.grade || '' }; });
     } catch (e) {}
   }
 
@@ -40959,6 +41156,8 @@ async function initLineInbox() {
     }
   } catch (e) {}
 
+  // dlm138: 学校ビューを初期化（既定は学校ビュー）
+  setLineView(lineView || 'school');
   renderLineContacts();
 }
 
@@ -40979,16 +41178,37 @@ function renderLineContacts() {
   if (!el) return;
   const myId = currentStaff ? currentStaff.staff_id : null;
   let rows = lineContacts;
-  // 購読フォルダで絞り込み（選択中フォルダの対象liny_idのみ）
-  if (lineFolderLinySet) {
-    rows = rows.filter(r => r.contact && r.contact.liny_id && lineFolderLinySet.has(String(r.contact.liny_id)));
+  // dlm138: 学校ビュー時は学校グループ＋区分＋学年で絞り込む
+  if (lineView === 'school') {
+    if (lineSchoolKey != null) {
+      rows = rows.filter(r => lineContactSchoolKey(r.contact) === lineSchoolKey);
+      // 区分フィルタ
+      if (lineSubKind === 'student') rows = rows.filter(r => r.contact.contact_kind === 'student');
+      else if (lineSubKind === 'parent') rows = rows.filter(r => r.contact.contact_kind === 'parent');
+      else if (lineSubKind === 'grad') rows = rows.filter(r => !r.contact.student_id); // 卒業生＝未紐付け
+      // 学年フィルタ（紐付け生徒のみ学年判定可能）
+      if (lineSubGrade !== 'all') {
+        rows = rows.filter(r => {
+          const c = r.contact;
+          if (!c.student_id || !lineStudentMap[c.student_id]) return false;
+          return lineStudentMap[c.student_id].grade === lineSubGrade;
+        });
+      }
+    }
+    // 学校未選択時は全接点を表示（従来どおり）
+  } else {
+    // マイフォルダビュー：購読フォルダで絞り込み
+    if (lineFolderLinySet) {
+      rows = rows.filter(r => r.contact && r.contact.liny_id && lineFolderLinySet.has(String(r.contact.liny_id)));
+    }
   }
   if (lineFilter === 'unreplied') rows = rows.filter(r => r.unreplied > 0);
   else if (lineFilter === 'mine') rows = rows.filter(r => r.contact.assigned_staff_id && r.contact.assigned_staff_id === myId);
 
   if (!rows.length) {
     el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px;background:#fff;border:1px dashed var(--border);border-radius:8px">' +
-      (lineFolderId != null ? 'このフォルダに該当する相手はいません'
+      (lineView === 'school' && lineSchoolKey != null ? 'この学校に該当する相手はいません'
+        : lineFolderId != null ? 'このフォルダに該当する相手はいません'
         : lineFilter === 'unreplied' ? '要対応のメッセージはありません' : '該当する相手はいません') + '</div>';
     return;
   }
@@ -41009,12 +41229,22 @@ function renderLineContacts() {
     const parentTag = lab.isParent ? '<span style="font-size:9px;background:#FCE9E7;color:#C0392B;border:1px solid #E0A0A0;border-radius:8px;padding:1px 6px;margin-left:4px;white-space:nowrap">保護者</span>' : '';
     const avatar = '<div style="width:40px;height:40px;border-radius:50%;background:' + (lab.isParent ? '#C0392B' : '#06C755') + ';display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px;flex-shrink:0">' + (lab.isParent ? '親' : 'L') + '</div>';
     const method = c.last_reply_kind === 'phone' ? '📞' : (c.last_reply_kind === 'line' ? '💬' : '');
+    // dlm138: 「その他」ビューで未紐付けの相手には、その場で学校タグを付けられるクイックチップを出す
+    const showQuickTag = (lineView === 'school' && lineSchoolKey === 'other' && !c.student_id);
+    const quickTags = showQuickTag
+      ? '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px">' +
+          LINE_SCHOOL_TAGS.filter(t => t !== 'その他').map(t =>
+            '<button onclick="event.stopPropagation();lineToggleTag(' + c.id + ',\'' + t + '\')" style="flex:none;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid var(--border);background:var(--surface2);color:var(--muted)">＋' + escapeHtml(t) + '</button>'
+          ).join('') +
+        '</div>'
+      : '';
     return '<div onclick="openLineThread(' + c.id + ')" style="background:#fff;border:1.5px solid ' + borderColor + ';border-radius:10px;padding:11px 12px;display:flex;gap:10px;align-items:center;cursor:pointer">' +
       avatar +
       '<div style="flex:1;min-width:0">' +
         '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap"><span style="font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(lab.main) + '</span>' + parentTag + '</div>' +
         '<div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + dirMark + preview + '</div>' +
         (assignee ? '<div style="font-size:10px;color:var(--orange-d)">担当: ' + escapeHtml(assignee) + (method ? ' ・ 最終' + method : '') + '</div>' : (method ? '<div style="font-size:10px;color:var(--muted)">最終' + method + '</div>' : '')) +
+        quickTags +
       '</div>' +
       '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">' + badge + '<span style="font-size:10px;color:var(--muted)">' + when + '</span>' +
         (r.unreplied > 0 ? '<button onclick="lineMarkHandledFromList(' + c.id + ',event)" style="margin-top:2px;font-size:10px;font-weight:700;padding:4px 9px;border:1px solid var(--green-d);background:var(--green-l);color:var(--green-d);border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">✓ 処理済</button>' : '') +
@@ -41084,6 +41314,17 @@ async function openLineThread(contactId) {
         '<label style="color:var(--muted)">担当</label>' +
         '<select onchange="lineSetAssignee(' + c.id + ',this.value)" style="font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px"><option value="">（未割当）</option>' + staffOpts + '</select>' +
       '</div>' +
+      // dlm138: 学校タグ（卒業生など未紐付けの相手を学校フォルダに振り分けるため）
+      '<div style="margin-bottom:10px">' +
+        '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">🏷 学校タグ' + (c.student_id ? '（紐付け済みは学校から自動判定）' : '（卒業生等はここで学校を指定）') + '</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:5px">' +
+          LINE_SCHOOL_TAGS.filter(t => t !== 'その他').map(t => {
+            const on = Array.isArray(c.tags) && c.tags.includes(t);
+            return '<button onclick="lineToggleTag(' + c.id + ',\'' + t + '\')" style="flex:none;padding:5px 11px;border-radius:14px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;border:1.5px solid ' +
+              (on ? '#2D6CB6;background:#2D6CB6;color:#fff' : 'var(--border);background:var(--surface);color:var(--muted)') + '">' + escapeHtml(t) + '</button>';
+          }).join('') +
+        '</div>' +
+      '</div>' +
       '<div style="display:flex;flex-direction:column;gap:6px;max-height:40vh;overflow-y:auto;padding:8px;background:#EDE7DE;border-radius:10px">' + (bubbles || '<div style="font-size:12px;color:var(--muted);text-align:center;padding:12px">メッセージはありません</div>') + '</div>' +
       // 対応アクション
       '<div style="margin-top:12px;display:flex;gap:8px">' +
@@ -41116,6 +41357,26 @@ async function lineSetAssignee(contactId, staffId) {
   const entry = lineContacts.find(r => r.contact.id === contactId);
   if (entry) entry.contact.assigned_staff_id = staffId || null;
   try { await sbPatch('line_contacts', 'id=eq.' + contactId, { assigned_staff_id: staffId || null }); showToast('担当を設定しました', 'success'); renderLineContacts(); } catch (e) { showToast('失敗しました', 'error'); }
+}
+// dlm138: 学校タグをトグル（卒業生等の学校フォルダ振り分け用）。tags列が無い環境ではエラーを案内。
+async function lineToggleTag(contactId, tag) {
+  const entry = lineContacts.find(r => r.contact.id === contactId);
+  if (!entry) return;
+  const c = entry.contact;
+  const cur = Array.isArray(c.tags) ? c.tags.slice() : [];
+  const idx = cur.indexOf(tag);
+  if (idx >= 0) cur.splice(idx, 1); else cur.push(tag);
+  try {
+    await sbPatch('line_contacts', 'id=eq.' + contactId, { tags: cur });
+    c.tags = cur;
+    showToast(idx >= 0 ? 'タグ「' + tag + '」を外しました' : 'タグ「' + tag + '」を付けました', 'success');
+    // スレッドのタグUIと一覧・学校タブを再描画
+    openLineThread(contactId);
+    if (lineView === 'school') renderLineSchoolTabs();
+    renderLineContacts();
+  } catch (e) {
+    showToast('タグ保存に失敗（add_line_contacts_tags.sql 未実行かも）', 'error');
+  }
 }
 
 // 対応済にする（LINE返信 or 電話）。未返信inを返信済に、対応記録(out)を残す。
@@ -51658,10 +51919,10 @@ async function renderEnrollmentTrend() {
     // 退塾判定：(1)退塾確定 または (2)is_active=false（退塾・卒業済み）なら「退塾扱い」。
     // 退塾日は 発効日 → inactive_at の順で確定する。どちらも無い＝退塾時期不明 →
     // 「今月退塾」のような誤表示を避けるため推移から完全に除外する（在籍にも退塾フローにも出さない）。
-    const isWithdrawn = (s.withdraw_status === '確定') || (s.is_active === false);
+    const isWithdrawn = (s.withdraw_status === '確定' || s.withdraw_status === '退塾') || (s.is_active === false);
     let withdraw = null;
     if (isWithdrawn) {
-      if (s.withdraw_status === '確定' && s.withdraw_effective_date) {
+      if ((s.withdraw_status === '確定' || s.withdraw_status === '退塾') && s.withdraw_effective_date) {
         withdraw = s.withdraw_effective_date;                 // 発効日が最優先
       } else if (s.inactive_at) {
         withdraw = toJSTDateStr(new Date(s.inactive_at));     // 操作日（卒業・退塾の登録日）
@@ -52098,10 +52359,10 @@ async function svEnsureTrendData() {
   const persons = [];
   stu.forEach(s => {
     let enroll = s.enroll_date || null;
-    const isWithdrawn = (s.withdraw_status === '確定') || (s.is_active === false);
+    const isWithdrawn = (s.withdraw_status === '確定' || s.withdraw_status === '退塾') || (s.is_active === false);
     let withdraw = null;
     if (isWithdrawn) {
-      if (s.withdraw_status === '確定' && s.withdraw_effective_date) withdraw = s.withdraw_effective_date;
+      if ((s.withdraw_status === '確定' || s.withdraw_status === '退塾') && s.withdraw_effective_date) withdraw = s.withdraw_effective_date;
       else if (s.inactive_at) withdraw = toJSTDateStr(new Date(s.inactive_at));
       else return;
     }
@@ -54494,13 +54755,13 @@ async function renderSvInout() {
     .sort((a, b) => (b.enroll_date || '').localeCompare(a.enroll_date || ''));
   // 退塾（students：正式登録の退塾）
   // ①is_active=false & inactive_reason='退塾'（正式にストップ済み）
-  // ②withdraw_status='確定' で発効日が到来済み（is_active はまだ true のままだが退塾確定）
+  // ②withdraw_status='確定'or'退塾' で発効日が到来済み（is_active はまだ true のままだが退塾確定）dlm136で'退塾'追加
   //   ②は①の落とし込み前の状態。退塾申請だけ確定して is_active を落としていない子を拾う。
   const _leftIds = new Set();
   let left = [];
   students.forEach(s => {
     const byStop = (s.is_active === false && s.inactive_reason === '退塾' && inRange(s.withdraw_effective_date));
-    const byConfirm = (s.withdraw_status === '確定' && s.withdraw_effective_date && s.withdraw_effective_date <= todayStr && inRange(s.withdraw_effective_date));
+    const byConfirm = ((s.withdraw_status === '確定' || s.withdraw_status === '退塾') && s.withdraw_effective_date && s.withdraw_effective_date <= todayStr && inRange(s.withdraw_effective_date));
     if ((byStop || byConfirm) && !_leftIds.has(s.id)) {
       _leftIds.add(s.id);
       left.push(Object.assign({}, s, { _fromRoster: false }));
@@ -56766,7 +57027,7 @@ async function loadStudentAnalysis() {
   let q = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason,withdraw_status,withdraw_effective_date,membership_status,division';
   // is_active=eq.true だけだと、退塾処理で is_active=false にした「発効日前の退塾確定生」を取りこぼす。
   // 退塾確定生も取得し、後段の isEnrolledNow（発効日ベース）で正しく在籍判定させる。
-  if (!includeInactive) q += '&or=(is_active.eq.true,withdraw_status.eq.' + encodeURIComponent('確定') + ')';
+  if (!includeInactive) q += '&or=(is_active.eq.true,withdraw_status.eq.' + encodeURIComponent('確定') + ',withdraw_status.eq.' + encodeURIComponent('退塾') + ')';
   q += '&division=eq.' + encodeURIComponent(currentDivision);
   let studentsRaw;
   try {
@@ -56774,7 +57035,7 @@ async function loadStudentAnalysis() {
   } catch (eMem) {
     // membership_status 列が無い旧環境フォールバック
     let q2 = 'select=id,name,gender,school,grade,course_track,univ1,univ2,univ3,desired_subjects,is_active,inactive_reason,withdraw_status,withdraw_effective_date,division';
-    if (!includeInactive) q2 += '&or=(is_active.eq.true,withdraw_status.eq.' + encodeURIComponent('確定') + ')';
+    if (!includeInactive) q2 += '&or=(is_active.eq.true,withdraw_status.eq.' + encodeURIComponent('確定') + ',withdraw_status.eq.' + encodeURIComponent('退塾') + ')';
     q2 += '&division=eq.' + encodeURIComponent(currentDivision);
     studentsRaw = await sbGet('students', q2) || [];
   }
