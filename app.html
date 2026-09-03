@@ -4178,6 +4178,16 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
     </div>
 
+    <!-- 学校テンプレ呼び出し（選ぶと科目が自動で並ぶ） -->
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;padding:8px;background:var(--surface2);border-radius:8px">
+      <span style="font-size:11px;font-weight:700;color:var(--muted);flex:0 0 auto">📋 学校テンプレ</span>
+      <select class="form-select" id="exam-template-sel" onchange="applyExamTemplateToModal()" style="flex:1;min-width:0;font-size:12px">
+        <option value="">選択して科目を呼び出し</option>
+      </select>
+    </div>
+    <!-- テンプレにテスト回名がある場合の候補（dlm150で使用） -->
+    <div id="exam-name-suggest" style="display:none;font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.6"></div>
+
     <!-- 教科行 -->
     <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">教科ごとの点数</div>
     <div id="exam-rows"></div>
@@ -5706,6 +5716,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <button onclick="deleteExamTemplate()" title="選択中のテンプレを削除" style="padding:5px 10px;background:#FBEAEA;border:1px solid #E0A0A0;border-radius:7px;color:#B03030;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">🗑 削除</button>
       </div>
 
+      <!-- テスト回名（テンプレに保存すると、個別カルテで候補チップとして出せる） -->
+      <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">テスト回名（任意・テンプレ保存用）</div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:4px">「4月実力テスト,1学期期末テスト,…」のようにカンマ区切りで。個別カルテの成績追加でワンタップ候補になります。</div>
+      <input class="form-input-sm" id="bexam-exam-names" type="text" placeholder="例：4月実力テスト,1学期期末テスト,2学期中間テスト" style="width:100%;margin-bottom:10px">
+
       <!-- 科目行（表示名＋教科グループ） -->
       <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:4px">科目（表示名）と教科グループ</div>
       <div style="font-size:10px;color:var(--muted);margin-bottom:6px">「数学①」「数学②」のように分かれても、教科グループを「数学」にすると後で比較でまとめられます。</div>
@@ -6502,7 +6517,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm148';
+const APP_VERSION = '20260702dlm151';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -45354,7 +45369,9 @@ async function karteLoadExams(sid) {
     const scoresByExam = {};
     allScores.forEach(s => { (scoresByExam[s.exam_id] = scoresByExam[s.exam_id] || []).push(s); });
 
-    const inner = exams.map(ex => karteExamCard(ex, scoresByExam[ex.id] || [])).join('');
+    // dlm151: 推移グラフ（定期=合計点 / 模試=偏差値平均）をカード群の上に表示
+    const trends = karteExamTrends(exams, scoresByExam);
+    const inner = trends + exams.map(ex => karteExamCard(ex, scoresByExam[ex.id] || [])).join('');
     el.innerHTML = karteSecShell('📈 成績 ' + addBtn, inner);
   } catch (e) {
     el.innerHTML = karteSecShell('📈 成績 ' + addBtn, '<div style="font-size:12px;color:var(--muted)">読み込みに失敗しました。</div>');
@@ -45362,6 +45379,72 @@ async function karteLoadExams(sid) {
 }
 
 // 1テスト分のカード（折りたたみ：ヘッダ＝集計、タップで教科別テーブル展開）
+// dlm151: 成績推移グラフ（インラインSVG折れ線）。外部ライブラリ不使用。
+// points: [{label, value}] を古い順で受け取り、折れ線＋点＋値ラベルを描く。
+function karteTrendSvg(points, opts) {
+  opts = opts || {};
+  const color = opts.color || '#2D5FA6';
+  const unit = opts.unit || '';
+  if (!points || points.length < 2) return '';
+  const W = 300, H = 120, padL = 8, padR = 8, padT = 16, padB = 26;
+  const vals = points.map(p => p.value);
+  let vmin = Math.min.apply(null, vals), vmax = Math.max.apply(null, vals);
+  if (vmin === vmax) { vmin -= 5; vmax += 5; }
+  const range = vmax - vmin;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = points.length;
+  const x = i => padL + (n === 1 ? plotW / 2 : (plotW * i / (n - 1)));
+  const y = v => padT + plotH - ((v - vmin) / range) * plotH;
+  let path = '';
+  points.forEach((p, i) => { path += (i === 0 ? 'M' : 'L') + x(i).toFixed(1) + ' ' + y(p.value).toFixed(1) + ' '; });
+  let dots = '', labels = '', xlabels = '';
+  points.forEach((p, i) => {
+    dots += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(p.value).toFixed(1) + '" r="3" fill="' + color + '"/>';
+    labels += '<text x="' + x(i).toFixed(1) + '" y="' + (y(p.value) - 6).toFixed(1) + '" text-anchor="middle" font-size="10" font-weight="700" fill="' + color + '">' + (Math.round(p.value * 10) / 10) + '</text>';
+    xlabels += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="middle" font-size="9" fill="#999">' + escapeHtml(String(p.label || '').slice(0, 6)) + '</text>';
+  });
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-width:340px;height:auto;display:block">' +
+    '<path d="' + path.trim() + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>' +
+    dots + labels + xlabels + '</svg>';
+}
+
+// dlm151: exams（新しい順で渡る）から推移グラフHTMLを組み立て。
+// 定期テスト=合計点の推移 / 模試=偏差値平均の推移。同名テスト回はまとめず時系列で。
+function karteExamTrends(exams, scoresByExam) {
+  const sortAsc = exams.slice().sort((a, b) => {
+    const da = a.exam_date || '', db = b.exam_date || '';
+    if (da && db) return da < db ? -1 : (da > db ? 1 : 0);
+    return (a.created_at || '') < (b.created_at || '') ? -1 : 1;
+  });
+  // 定期(teiki)＋実力(jitsuryoku)：合計点
+  const teikiPts = [], moshiPts = [];
+  sortAsc.forEach(ex => {
+    const sc = scoresByExam[ex.id] || [];
+    const t = ex.exam_type;
+    if (t === 'teiki' || t === 'jitsuryoku') {
+      let sum = 0, cnt = 0;
+      sc.forEach(s => { if (s.score != null && s.score !== '') { sum += Number(s.score); cnt++; } });
+      if (cnt) teikiPts.push({ label: ex.exam_name || '', value: sum });
+    } else if (t === 'moshi' || t === 'kyotsu') {
+      let sum = 0, cnt = 0;
+      sc.forEach(s => { if (s.deviation != null && s.deviation !== '') { sum += Number(s.deviation); cnt++; } });
+      if (cnt) moshiPts.push({ label: ex.exam_name || '', value: Math.round(sum / cnt * 10) / 10 });
+    }
+  });
+  let html = '';
+  const teikiSvg = karteTrendSvg(teikiPts, { color: '#2D5FA6' });
+  const moshiSvg = karteTrendSvg(moshiPts, { color: '#8B2D8B' });
+  if (teikiSvg) {
+    html += '<div style="margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:8px">' +
+      '<div style="font-size:11px;font-weight:700;color:#2D5FA6;margin-bottom:2px">📊 定期テスト 合計点の推移</div>' + teikiSvg + '</div>';
+  }
+  if (moshiSvg) {
+    html += '<div style="margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:8px">' +
+      '<div style="font-size:11px;font-weight:700;color:#8B2D8B;margin-bottom:2px">📈 模試 偏差値の推移（平均）</div>' + moshiSvg + '</div>';
+  }
+  return html;
+}
+
 function karteExamCard(ex, scores) {
   const meta = examTypeMeta(ex.exam_type);
   // ステータスバッジ（依頼中／生徒提出済／確定）
@@ -45459,12 +45542,18 @@ function openExamModal(examId) {
   document.getElementById('exam-rank-of').value = '';
   document.getElementById('exam-rows').innerHTML = '';
   examRowSeq = 0;
+  // dlm149: テンプレ選択をリセット＋一覧読み込み。テスト回候補も隠す。
+  const tsel = document.getElementById('exam-template-sel');
+  if (tsel) tsel.value = '';
+  const nsug = document.getElementById('exam-name-suggest');
+  if (nsug) { nsug.style.display = 'none'; nsug.innerHTML = ''; }
+  loadExamTemplatesForModal();
   document.getElementById('exam-modal').style.display = 'flex';
 
   if (examEditId) {
     loadExamForEdit(examEditId);
   } else {
-    // 新規：英国数の3行を初期表示
+    // 新規：英国数の3行を初期表示（テンプレ選択で差し替え可）
     quickAddSubjects(['英語', '国語', '数学']);
   }
 }
@@ -45530,6 +45619,62 @@ function addExamRow(s) {
 }
 function quickAddSubjects(list) {
   list.forEach(name => addExamRow({ subject: name }));
+}
+
+// dlm149: 個別成績モーダルのテンプレ選択を読み込む。window._examTemplates を共用。
+async function loadExamTemplatesForModal() {
+  const sel = document.getElementById('exam-template-sel');
+  if (!sel) return;
+  try {
+    let rows = window._examTemplates;
+    if (!rows) {
+      rows = await sbGet('exam_templates', 'select=*&order=created_at.desc') || [];
+      window._examTemplates = rows;
+    }
+    sel.innerHTML = '<option value="">選択して科目を呼び出し</option>' +
+      rows.map(t => '<option value="' + t.id + '">' + escapeHtml(t.name) + (t.school ? '（' + escapeHtml(t.school) + '）' : '') + '</option>').join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">（テンプレ未対応）</option>';
+  }
+}
+
+// dlm149: テンプレを選ぶと、科目行を差し替え＋項目トグルを合わせる。
+// dlm150: テンプレにテスト回名(exam_names)があれば候補として表示。
+function applyExamTemplateToModal() {
+  const id = document.getElementById('exam-template-sel').value;
+  if (!id || !window._examTemplates) return;
+  const t = window._examTemplates.find(x => x.id === id);
+  if (!t) return;
+  // 項目トグルをテンプレに合わせる
+  document.getElementById('exam-use-average').checked = t.use_average !== false;
+  document.getElementById('exam-use-deviation').checked = !!t.use_deviation;
+  document.getElementById('exam-use-rank').checked = !!t.use_rank;
+  // 科目を差し替え
+  let subs = [];
+  try { subs = Array.isArray(t.subjects) ? t.subjects : JSON.parse(t.subjects || '[]'); } catch (e) { subs = []; }
+  document.getElementById('exam-rows').innerHTML = '';
+  examRowSeq = 0;
+  if (subs.length) subs.forEach(s => addExamRow({ subject: s.subject }));
+  else addExamRow();
+  renderExamRows();
+  // テスト回名の候補（あれば）
+  renderExamNameSuggest(t);
+  showToast('テンプレ「' + t.name + '」を読み込みました', 'info');
+}
+
+// dlm150: テンプレの exam_names（テスト回名リスト）を、押すとテスト名欄に入る候補チップとして表示
+function renderExamNameSuggest(t) {
+  const box = document.getElementById('exam-name-suggest');
+  if (!box) return;
+  let names = [];
+  try { names = Array.isArray(t.exam_names) ? t.exam_names : JSON.parse(t.exam_names || '[]'); } catch (e) { names = []; }
+  if (!names.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = 'block';
+  box.innerHTML = 'テスト回：' + names.map(n =>
+    '<span onclick="document.getElementById(\'exam-name\').value=' + JSON.stringify(escapeHtml(n)).replace(/"/g, '&quot;') + '" ' +
+    'style="display:inline-block;margin:2px;padding:3px 8px;background:var(--orange-l);border:1px solid var(--orange);border-radius:6px;color:var(--orange-d);cursor:pointer;font-weight:700">' +
+    escapeHtml(n) + '</span>'
+  ).join('');
 }
 
 // トグルに応じて 平均/偏差/順位 の列を表示/非表示
@@ -45786,6 +45931,13 @@ function applyExamTemplate() {
   try { subs = Array.isArray(t.subjects) ? t.subjects : JSON.parse(t.subjects || '[]'); } catch (e) { subs = []; }
   if (subs.length) subs.forEach(s => bexamAddSubject(s.subject, s.group));
   else bexamAddSubject();
+  // dlm150: テスト回名も復元
+  const enEl = document.getElementById('bexam-exam-names');
+  if (enEl) {
+    let names = [];
+    try { names = Array.isArray(t.exam_names) ? t.exam_names : JSON.parse(t.exam_names || '[]'); } catch (e) { names = []; }
+    enEl.value = names.join(',');
+  }
   showToast('テンプレ「' + t.name + '」を読み込みました', 'info');
 }
 async function deleteExamTemplate() {
@@ -45812,10 +45964,14 @@ async function saveExamTemplate() {
   const defName = (document.getElementById('bexam-school').value || '') + ' テンプレ';
   const name = prompt('テンプレ名を入力してください', defName.trim() || 'テンプレ');
   if (!name) return;
+  // dlm150: テスト回名（カンマ/読点区切り）を配列化してテンプレに保存
+  const examNamesRaw = (document.getElementById('bexam-exam-names') || {}).value || '';
+  const examNames = examNamesRaw.split(/[,、]/).map(s => s.trim()).filter(Boolean);
   const body = {
     name: name,
     school: document.getElementById('bexam-school').value || null,
     subjects: subs.map(s => ({ subject: s.subject, group: s.group })),
+    exam_names: examNames,
     use_average: document.getElementById('bexam-use-average').checked,
     use_deviation: document.getElementById('bexam-use-deviation').checked,
     use_rank: document.getElementById('bexam-use-rank').checked,
