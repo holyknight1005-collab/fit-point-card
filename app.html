@@ -6502,7 +6502,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm144';
+const APP_VERSION = '20260702dlm146';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -6634,13 +6634,30 @@ async function sbGetAll(table, query, pageSize) {
   const size = pageSize || 1000;
   let offset = 0;
   let all = [];
+  // dlm146: order 未指定の offset ページングは PostgREST がページ境界で行順を保証せず、
+  //   複数ページになると行の重複取得＝別の行の欠落が起きる（実測で出席表の出欠が抜けた）。
+  //   query に order が無ければ安定ソート(&order=id)を補う。id 列が無いテーブルで 400 に
+  //   なった場合は order 無しにフォールバックする（1ページで収まる想定のクエリが大半）。
+  const hasOrder = /(^|&)order=/.test(query);
+  let orderSuffix = hasOrder ? '' : '&order=id';
   // 無限ループ防止に上限（100ページ=最大10万行）
   for (let page = 0; page < 100; page++) {
-    const url = SB_URL + '/rest/v1/' + table + '?' + query + '&limit=' + size + '&offset=' + offset;
+    const url = SB_URL + '/rest/v1/' + table + '?' + query + orderSuffix + '&limit=' + size + '&offset=' + offset;
     const res = await fetch(url, {
       headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY }
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+      // order=id を補った初回のみ、id 列が無い等の 400 なら order 無しで一度だけ再試行
+      if (orderSuffix && offset === 0) {
+        const txt = await res.text().catch(() => '');
+        if (/order|column|42703|does not exist|400/i.test(txt) || res.status === 400) {
+          orderSuffix = '';
+          continue;
+        }
+        throw new Error(txt);
+      }
+      throw new Error(await res.text());
+    }
     const batch = await res.json();
     if (!Array.isArray(batch) || batch.length === 0) break;
     all = all.concat(batch);
@@ -31877,6 +31894,7 @@ async function deleteNormaTemplate(id) {
 let attRosterRows = [];      // [{student, status, note, checkinTime, noteOpen}]
 let attSelectedClassId = null;
 let attSelectedSession = null; // {session_date, period}
+let attCurrentSessionIsMakeup = false; // dlm145: 選択中の授業回が補習回か（記録なしボタン表示・初期値判定用）
 
 // ============================================================
 // 小テスト状況：授業タップ → 配信ごとの受験結果
@@ -32811,10 +32829,13 @@ async function loadAttSheet() {
     // 出欠記録（夏期は全期間・通常等は当月）
     // ※ 授業数×生徒数が増えると当月でも1000行を超える（sbGetは先頭1000行で打ち切られ、
     //   こぼれた授業は全生徒が「―」になる）。sbGetAll でページング全件取得する。
+    // ※ dlm146: order 必須。order 無しの offset ページングは PostgREST がページ境界で
+    //   行順を保証せず、重複取得＝別の行の欠落が起きる（実測：1279件中162件が重複し、
+    //   その分の出欠が全て「―」になっていた）。安定ソート(id)で欠落を防ぐ。
     const atts = await sbGetAll('session_attendance',
       'class_master_id=in.(' + classIds.join(',') + ')' +
       dateFilter +
-      '&select=class_master_id,session_date,period,student_id,status') || [];
+      '&select=class_master_id,session_date,period,student_id,status&order=id') || [];
 
     // 生徒（デモ除外）
     let stuIds = [...new Set(enrolls.map(e => e.student_id))];
@@ -32882,6 +32903,14 @@ async function loadAttSheet() {
             status: status
           };
         });
+        // dlm146: 誤登録対策。この生徒×この授業に出欠が1件も無ければ（＝一度も出席/欠席/補習の
+        //   記録が無い実質未受講）、夏期・講習シートでは科目ごと隠す。欠席(absent)等が1つでも
+        //   あれば残す。通常シート(normal)は9月開始などで出欠ゼロが正常なため対象外。
+        const isNormalSheet0 = (category === 'normal');
+        if (!isNormalSheet0) {
+          const hasAnyAtt = days.some(d => d.status && d.status !== 'none');
+          if (!hasAnyAtt) return;
+        }
         subjects.push({ name: m.name, days: days });
       });
       // 当月授業日がゼロの生徒の扱い：
@@ -38686,6 +38715,16 @@ async function loadAttendanceRoster() {
   const period = periodStr ? parseInt(periodStr) : null;
   attSelectedSession = { session_date: sdate, period: period };
   loadClassReport(classId, sdate); // 授業報告（授業×日付）を読み込み
+  // dlm145: この授業回が補習回(is_makeup)かを先に取得。補習回は「来ない子＝欠」ではなく
+  //  初期値を「記録なし(none)」にする（補習は出る必要がない子まで自動で欠にしないため）。
+  let attSessionIsMakeup = false;
+  try {
+    let qm = 'class_master_id=eq.' + classId + '&session_date=eq.' + sdate;
+    qm += (period === null) ? '&period=is.null' : '&period=eq.' + period;
+    const mrows = await sbGet('class_sessions', qm + '&select=is_makeup&limit=1') || [];
+    attSessionIsMakeup = !!(mrows[0] && mrows[0].is_makeup);
+  } catch (e) { attSessionIsMakeup = false; }
+  attCurrentSessionIsMakeup = attSessionIsMakeup;
   // 授業回数（何月何回目）バッジを表示
   (async () => {
     try {
@@ -38779,6 +38818,10 @@ async function loadAttendanceRoster() {
       } else if (makeupSet.has(sid)) {
         status = 'makeup';
         note = '';
+      } else if (attSessionIsMakeup) {
+        // dlm145: 補習回は「来ていない＝欠」にしない。来塾していれば present、いなければ記録なし(none)。
+        status = inTime ? 'present' : 'none';
+        note = '';
       } else {
         status = inTime ? 'present' : 'absent';
         note = '';
@@ -38836,6 +38879,8 @@ function renderAttendanceRoster() {
     const presentBtn = btn('present', '◯', '出席', 'background:var(--green-l);color:var(--green-d);border:1px solid #A8D891');
     const makeupBtn  = btn('makeup',  '●', '補習', 'background:#EDE7F8;color:#6B4FA0;border:1px solid #C3B2E6');
     const absentBtn  = btn('absent',  '×', '欠席', 'background:var(--red-l);color:var(--red);border:1px solid #F5BABA');
+    // dlm145: 記録なし(―)。補習で出る必要がない子や、誤って付けた出欠を「無記録」に戻す。保存時に既存レコードを削除。
+    const noneBtn    = btn('none',    '―', '記録なし', 'background:#ECECEC;color:#666;border:1px solid #CCC');
     const noteBadge = row.note ? '<span style="font-size:9px;color:var(--orange-d)">●</span>' : '';
     const noteArea = row.noteOpen
       ? '<input type="text" value="' + (row.note||'').replace(/"/g,'&quot;') + '" oninput="setAttNote(' + i + ',this.value)" placeholder="メモ・欠席理由" style="width:100%;margin-top:8px;font-size:12px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;box-sizing:border-box">'
@@ -38851,7 +38896,7 @@ function renderAttendanceRoster() {
         linyContactBtns(s, {small:true}) +
       '</div>' +
       reviewRow +
-      '<div style="display:flex;gap:6px;margin-top:10px">' + presentBtn + makeupBtn + absentBtn + '</div>' +
+      '<div style="display:flex;gap:5px;margin-top:10px;flex-wrap:wrap">' + presentBtn + makeupBtn + absentBtn + noneBtn + '</div>' +
       '<div style="margin-top:6px"><span onclick="toggleAttNote(' + i + ')" style="font-size:11px;color:var(--muted);cursor:pointer">📝 メモ' + (row.noteOpen ? ' ▲' : ' ▼') + '</span></div>' +
       noteArea +
     '</div>';
@@ -39109,7 +39154,7 @@ async function saveAttendance() {
       attRosterRows.map(r => r.student.id)
     );
     hideLoading();
-    showToast('出欠を保存しました（出席' + attRosterRows.filter(r=>r.status==='present').length + '・補習' + attRosterRows.filter(r=>r.status==='makeup').length + '・欠席' + attRosterRows.filter(r=>r.status==='absent').length + '）', 'success');
+    showToast('出欠を保存しました（出席' + attRosterRows.filter(r=>r.status==='present').length + '・補習' + attRosterRows.filter(r=>r.status==='makeup').length + '・欠席' + attRosterRows.filter(r=>r.status==='absent').length + '・記録なし' + attRosterRows.filter(r=>r.status==='none').length + '）', 'success');
   } catch(e) {
     hideLoading();
     showToast('エラー: ' + e.message, 'error');
