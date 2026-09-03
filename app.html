@@ -5092,6 +5092,12 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <option value="all">👥 全学校を表示</option>
           <option value="mine">🙋 自分の担当分のみ</option>
         </select>
+        <select class="form-select" id="as-cmtfilter-select" onchange="asOnCmtFilterChange()" title="コメント状態で絞り込み" style="font-size:12px;padding:6px 8px;min-width:150px">
+          <option value="all">📋 すべて表示</option>
+          <option value="missing">🟡 未入力のみ</option>
+          <option value="unconfirmed">✎ 未確認のみ</option>
+          <option value="hold">⏸ 保留のみ</option>
+        </select>
         <span id="as-comment-status" style="font-size:11px;color:var(--muted)"></span>
       </div>
       <div id="as-body"><div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">「更新」で読み込みます。</div></div>
@@ -6496,7 +6502,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm141';
+const APP_VERSION = '20260702dlm142';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32726,7 +32732,20 @@ function initAttSheet() {
     }
     msel.innerHTML = opts;
   }
+  // コメント状態フィルタの選択をlocalStorageから復元
+  const cmtFilterSel = document.getElementById('as-cmtfilter-select');
+  if (cmtFilterSel) {
+    const saved = localStorage.getItem('fit_as_cmt_filter');
+    if (saved && ['all', 'missing', 'unconfirmed', 'hold'].includes(saved)) cmtFilterSel.value = saved;
+  }
   if (!_asLoaded) { _asLoaded = true; loadAttSheet(); }
+}
+
+// コメント状態フィルタ変更：選択を保存して再描画
+function asOnCmtFilterChange() {
+  const sel = document.getElementById('as-cmtfilter-select');
+  if (sel) localStorage.setItem('fit_as_cmt_filter', sel.value);
+  loadAttSheet();
 }
 
 async function loadAttSheet() {
@@ -32955,6 +32974,29 @@ async function loadAttSheet() {
       viewStudents = students.filter(st => myIds.has(st.id));
       if (!viewStudents.length) {
         body.innerHTML = html + '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">あなたの担当授業を受講中の生徒は、この月・種別にいません。</div>';
+        return;
+      }
+    }
+
+    // コメント状態フィルタ（通常のみ）：未入力/未確認/保留 で絞り込み。localStorageで維持。
+    // missing=コメント空欄かつ保留でない ／ unconfirmed=入力済だが未確認かつ保留でない ／ hold=保留中
+    let cmtFilter = 'all';
+    const cmtFilterSel = document.getElementById('as-cmtfilter-select');
+    if (isNormal && cmtFilterSel) {
+      cmtFilter = cmtFilterSel.value || 'all';
+    }
+    if (isNormal && cmtFilter !== 'all') {
+      viewStudents = viewStudents.filter(st => {
+        const m = _asMeta[st.id] || {};
+        const has = _asComments[st.id] && _asComments[st.id].trim();
+        if (cmtFilter === 'hold') return !!m.on_hold;
+        if (cmtFilter === 'missing') return !m.on_hold && !has;
+        if (cmtFilter === 'unconfirmed') return !m.on_hold && has && !m.confirmed;
+        return true;
+      });
+      if (!viewStudents.length) {
+        const flabel = { missing: '未入力', unconfirmed: '未確認', hold: '保留中' }[cmtFilter] || '';
+        body.innerHTML = html + '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">「' + flabel + '」に該当する生徒はいません。🎉</div>';
         return;
       }
     }
