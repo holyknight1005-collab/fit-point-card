@@ -6502,7 +6502,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm147';
+const APP_VERSION = '20260702dlm148';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32824,7 +32824,7 @@ async function loadAttSheet() {
     const enrolls = await sbGetAll('class_enrollments',
       'class_master_id=in.(' + classIds.join(',') + ')' +
       '&or=(ended_on.is.null,ended_on.gte.' + enrollLowerBound + ')' +
-      '&select=class_master_id,student_id,ended_on') || [];
+      '&select=class_master_id,student_id,ended_on,preferred_period') || [];
 
     // 出欠記録（夏期は全期間・通常等は当月）
     // ※ 授業数×生徒数が増えると当月でも1000行を超える（sbGetは先頭1000行で打ち切られ、
@@ -32856,6 +32856,10 @@ async function loadAttSheet() {
 
     // 生徒 -> 受講クラス（classId -> ended_on）。ended_on は日付カット用（null=継続中）。
     const classesByStu = {};
+    // dlm148: 生徒×クラスの preferred_period（受講コマ）。長文読解のように1日に5限・6限の
+    //   両方が開講される授業で、生徒が受講しているコマだけを出席表に出すために使う。
+    //   キー: 'studentId|classId' → period(数値) / 未設定(null)なら従来どおり全コマ表示。
+    const prefPeriodByStuClass = {};
     enrolls.forEach(e => {
       if (!stuSet.has(e.student_id)) return;
       const mp = classesByStu[e.student_id] || (classesByStu[e.student_id] = {});
@@ -32867,6 +32871,10 @@ async function loadAttSheet() {
         const prev = mp[e.class_master_id];
         if (prev === null || e.ended_on == null) mp[e.class_master_id] = null;
         else if (e.ended_on > prev) mp[e.class_master_id] = e.ended_on;
+      }
+      // preferred_period は継続行を優先。複数行あれば非nullを採用（最後勝ちで十分）。
+      if (e.preferred_period != null) {
+        prefPeriodByStuClass[e.student_id + '|' + e.class_master_id] = e.preferred_period;
       }
     });
 
@@ -32885,6 +32893,15 @@ async function loadAttSheet() {
         // dlm121: 月途中退会（ended_on あり）は、在籍最終日を過ぎた回を出席表から除外。
         //   ended_on 当日は在籍扱いで残す（例：ended_on=9/7 → 9/7は表示、9/14以降は非表示）。
         if (endedOn) csess = csess.filter(s => s.session_date <= endedOn);
+        // dlm148: この生徒がこの授業で受講コマ(preferred_period)を持つなら、そのコマの回だけ表示。
+        //   長文読解のように1日に5限・6限が両方開講される授業で、5限受講の子は5限だけ／
+        //   6限受講の子は6限だけを出す。preferred_period 未設定(null)の授業は従来どおり全コマ表示。
+        const prefPer = prefPeriodByStuClass[sid + '|' + m.id];
+        if (prefPer != null) {
+          const filtered = csess.filter(s => s.period === prefPer);
+          // 万一この生徒のコマの回が1つも無い場合は、絞らず従来表示にフォールバック（空欄化を防ぐ）。
+          if (filtered.length) csess = filtered;
+        }
         if (!csess.length) return;
         const days = csess.map(s => {
           const d = new Date(s.session_date + 'T00:00:00+09:00');
