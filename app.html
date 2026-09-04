@@ -6517,7 +6517,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm163';
+const APP_VERSION = '20260702dlm164';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -37224,12 +37224,17 @@ async function svLoadDecide() {
     const teacherByClass = {}; cmRows.forEach(cm => { teacherByClass[cm.id] = cm.teacher_staff_id; });
     const csess = await sbGetAll('class_sessions',
       'session_date=gte.' + fromIso + '&session_date=lte.' + toIso +
-      '&select=class_master_id,session_date,period') || [];
+      '&select=class_master_id,session_date,period,start_time') || [];
     csess.forEach(s => {
       const uuid = teacherByClass[s.class_master_id];
       const code = uuid ? codeByUuid[uuid] : null;
-      if (!code || s.period == null) return;
-      (classByStaff[code] || (classByStaff[code] = new Set())).add(s.session_date + '|' + s.period);
+      if (!code) return;
+      // dlm164: 限(period)未設定のイレギュラー時間授業は開始時刻から最寄りの限に寄せる。
+      //   週間グリッドと同じ nearestPeriodFromTime を使い、監督不可判定の漏れを防ぐ。
+      //   （例: 石井中2国語 18:40-20:00 は period=null のため従来はブロックされず監督可能に化けていた）
+      const p = (s.period != null) ? s.period : nearestPeriodFromTime(s.start_time);
+      if (p == null) return;
+      (classByStaff[code] || (classByStaff[code] = new Set())).add(s.session_date + '|' + p);
     });
   } catch (e) { /* 取得失敗時は授業セルなしで続行 */ }
 

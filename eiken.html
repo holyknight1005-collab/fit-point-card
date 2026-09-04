@@ -523,7 +523,7 @@ const SUPABASE_URL      = "https://jkkfdvvbpzkagbtpqkzp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "eiken-20260902d";
+const APP_VERSION = "eiken-20260902e";
 
 /* ---- 級の定義 ---- */
 const GRADES = {
@@ -1137,12 +1137,67 @@ async function renderEditorPassages(){
         Q${q.seq}. ${esc(q.question_text||"（設問文なし）")} <span style="color:var(--ok)">正解: ${letters[q.correct_index]}</span></div>`;
     });
     div.innerHTML=inner;
+
+    // ── 点検トグル（台本全文＋設問・選択肢・正解・解説を並べる） ──
+    const chkWrap=document.createElement("div"); chkWrap.style.marginTop="8px";
+    const chkBtn=document.createElement("button"); chkBtn.className="btn ghost sm";
+    chkBtn.textContent="🔍 台本・設問を並べて点検";
+    const chkBody=document.createElement("div"); chkBody.className="hidden"; chkBody.style.marginTop="10px";
+    chkBtn.onclick=()=>{
+      if(!chkBody.classList.contains("hidden")){ chkBody.classList.add("hidden"); return; }
+      chkBody.classList.remove("hidden");
+      chkBody.innerHTML=buildCheckHtml(pas,qs);
+    };
+    chkWrap.appendChild(chkBtn); chkWrap.appendChild(chkBody);
+    div.appendChild(chkWrap);
     const addBtn=document.createElement("button");addBtn.className="btn ghost sm";addBtn.style.marginTop="8px";
     addBtn.textContent="＋このグループに設問を追加";
     addBtn.onclick=()=>showAddQuestion(pas,div);
     div.appendChild(addBtn);
     box.appendChild(div);
   }
+}
+
+function buildCheckHtml(pas,qs){
+  const letters=["1","2","3","4"];
+  let h="<div class='card' style='background:#fbfdfc'>";
+  // 台本 / 長文 / 画像
+  if(pas.audio_script){
+    h+=`<div class="muted">🎧 リスニング台本</div>
+      <div class="passage-text" style="white-space:pre-wrap">${esc(pas.audio_script)}</div>`;
+  }
+  if(pas.passage_text){
+    h+=`<div class="muted" style="margin-top:8px">📄 本文</div>
+      <div class="passage-text" style="white-space:pre-wrap">${esc(pas.passage_text)}</div>`;
+  }
+  if(pas.image_url){
+    h+=`<div class="muted" style="margin-top:8px">🖼 画像</div><img class="q-img" src="${esc(pas.image_url)}" alt="画像">`;
+  }
+  if(!pas.audio_script && !pas.passage_text && !pas.image_url){
+    h+=`<div class="muted">（台本・本文・画像はありません。空所補充など本文なしの大問です）</div>`;
+  }
+  // 設問・選択肢・正解・解説
+  if(!qs.length){
+    h+=`<div class="muted" style="margin-top:10px">設問が登録されていません。</div>`;
+  }
+  qs.forEach(q=>{
+    const ch=Array.isArray(q.choices)?q.choices:[];
+    h+=`<div class="q-block"><div class="q-text"><span class="q-num">Q${q.seq}</span>${q.question_text?esc(q.question_text):"（設問文なし）"}</div>`;
+    ch.forEach((c,i)=>{
+      const isCorrect=(i===q.correct_index);
+      h+=`<div class="choice ${isCorrect?'correct':''}">
+        <span class="ltr">${letters[i]}</span><span>${esc(c)}</span>
+        ${isCorrect?'<span style="margin-left:auto;color:var(--ok);font-weight:700">✓ 正解</span>':''}</div>`;
+    });
+    // 正解indexが選択肢範囲外なら警告
+    if(q.correct_index==null || q.correct_index<0 || q.correct_index>=ch.length){
+      h+=`<div class="expl" style="background:var(--ngbg);color:var(--ng)">⚠ 正解インデックスが選択肢の範囲外です（correct_index=${q.correct_index}, 選択肢${ch.length}件）</div>`;
+    }
+    if(q.explanation) h+=`<div class="expl">💡 ${esc(q.explanation)}</div>`;
+    h+=`</div>`;
+  });
+  h+="</div>";
+  return h;
 }
 
 function choiceInputs(nChoices,prefix){
