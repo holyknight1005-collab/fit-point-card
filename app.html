@@ -6517,7 +6517,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm157';
+const APP_VERSION = '20260702dlm158';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -33298,15 +33298,15 @@ async function loadAttSheet() {
       '<button onclick="openAttSheetBulk()" style="padding:7px 16px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange);color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 選択した子を印刷</button>' +
       '</div>';
 
-    // 学年ごとにまとめて印刷（1年生のみ等）。表示中の生徒に含まれる学年ぶんだけボタンを出す。
-    //   学年は gradeSortKey 昇順、ラベルは fmtGrade。人数も添える。通常授業は確認済みの子のみ数える。
+    // 学年ごとにまとめてチェック（1年生のみ等）。表示中の生徒に含まれる学年ぶんだけボタンを出す。
+    //   ボタンを押すとその学年の印刷可能な子（通常授業は確認済み）にチェックが入る。
+    //   数人だけ外して「選択した子を印刷」で出す運用。学年は gradeSortKey 昇順、ラベルは fmtGrade。
     {
       const isNormalG = (category === 'normal');
       const gmap = {}; // gradeKey -> { label, count }
       viewStudents.forEach(st => {
         const gk = gradeSortKey(st.grade);
-        // 印刷できる子＝通常授業は「確認済み」の子（保留は除く）。夏期等は全員。
-        //   ※以前は手動チェック(_asPrintSel)で数えていたため確認済でも0名になっていた。
+        // チェックできる子＝通常授業は「確認済み」の子（保留は除く）。夏期等は全員。
         const meta = _asMeta[st.id] || {};
         const printable = !isNormalG || (meta.confirmed && !meta.on_hold);
         if (!gmap[gk]) gmap[gk] = { label: fmtGrade(st.grade) || '(学年未設定)', count: 0 };
@@ -33315,13 +33315,13 @@ async function loadAttSheet() {
       const gkeys = Object.keys(gmap).map(Number).sort((a, b) => a - b);
       if (gkeys.length > 1) {  // 学年が2つ以上あるときだけ出す（1学年しかなければ不要）
         html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;padding:8px 10px;border:1px dashed var(--orange);border-radius:10px;background:var(--orange-l)">' +
-          '<span style="font-size:11px;font-weight:700;color:var(--orange-d)">学年ごとにまとめて印刷：</span>' +
+          '<span style="font-size:11px;font-weight:700;color:var(--orange-d)">学年ごとにまとめてチェック：</span>' +
           gkeys.map(gk =>
-            '<button onclick="openAttSheetBulk(' + gk + ')"' +
+            '<button onclick="asSelectGradePrint(' + gk + ')"' +
             (gmap[gk].count ? '' : ' disabled') +
-            ' style="padding:6px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--surface);color:var(--orange-d);cursor:' + (gmap[gk].count ? 'pointer' : 'not-allowed') + ';opacity:' + (gmap[gk].count ? '1' : '0.45') + ';font-family:\'Noto Sans JP\',sans-serif">🖨 ' + escapeHtml(gmap[gk].label) + '（' + gmap[gk].count + '名）</button>'
+            ' style="padding:6px 12px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--surface);color:var(--orange-d);cursor:' + (gmap[gk].count ? 'pointer' : 'not-allowed') + ';opacity:' + (gmap[gk].count ? '1' : '0.45') + ';font-family:\'Noto Sans JP\',sans-serif">☑ ' + escapeHtml(gmap[gk].label) + '（' + gmap[gk].count + '名）</button>'
           ).join('') +
-          (isNormalG ? '<span style="font-size:10px;color:var(--muted)">※通常授業は確認済みの子のみ</span>' : '') +
+          '<span style="font-size:10px;color:var(--muted)">チェック後、数人外して「選択した子を印刷」' + (isNormalG ? '／確認済みのみ' : '') + '</span>' +
           '</div>';
       }
     }
@@ -34444,7 +34444,26 @@ function asSelectAllPrint(on) {
   asUpdatePrintSelCount();
 }
 
-// 選択件数の表示更新
+// 学年ごとに「印刷チェックを入れる」（まとめてチェック）。
+//   その学年の印刷可能な子（通常授業は確認済みのみ／disabledはスキップ）にチェックを付ける。
+//   付けたあと数人だけ手でチェックを外して「選択した子を印刷」で出す運用。
+function asSelectGradePrint(gradeKey) {
+  if (!_asData) return;
+  const list = (_asData.viewStudents && _asData.viewStudents.length) ? _asData.viewStudents : (_asData.students || []);
+  let n = 0, skipped = 0;
+  list.forEach(st => {
+    if (gradeSortKey(st.grade) !== gradeKey) return;
+    const chk = document.getElementById('as-prtsel-' + st.id);
+    if (!chk) return;
+    if (chk.disabled) { skipped++; return; } // 未確認などでチェック不可はスキップ
+    chk.checked = true;
+    _asPrintSel[st.id] = true;
+    n++;
+  });
+  asUpdatePrintSelCount();
+  if (n) showToast(n + '名にチェックを入れました' + (skipped ? '（未確認' + skipped + '名は対象外）' : ''), 'info');
+  else showToast('チェックできる子がいません（通常授業は確認済みの子のみ）', 'info');
+}
 function asUpdatePrintSelCount() {
   const el = document.getElementById('as-prtsel-count');
   if (el) {
