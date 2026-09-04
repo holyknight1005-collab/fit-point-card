@@ -6517,7 +6517,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm160';
+const APP_VERSION = '20260702dlm161';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -25526,10 +25526,22 @@ async function runSessionCountCheck() {
   const res = document.getElementById('sc-result');
   if (res) res.innerHTML = '<span style="color:var(--muted)">集計中…</span>';
 
-  // 対象講座：現在の一覧（自分の担当／管理者は全部）から、total_sessions 未設定＝通常講座のみ
-  // 対象講座：total_sessions 未設定（＝通常講座）かつ 高卒(kosotsu) 以外。
-  // 高卒生の講座は規定回数が決まっていないため、回数チェックの対象外。
-  const targets = (classMasterList || []).filter(c => !c.total_sessions && (c.category || 'normal') !== 'kosotsu');
+  // 対象講座：現在の部門(currentDivision)の通常講座を「その場で全取得」する。
+  //   dlm161: 従来は classMasterList（授業マスター画面の表示状態＝自分の担当のみ等で絞られた
+  //   一覧）に依存していたため、担当外の講座が丸ごと集計対象から漏れていた（対象8講座しか
+  //   出ない等）。回数チェックは部門の全通常講座を見るべきなので、画面状態に依存せず取得する。
+  //   条件：division=現在の部門／category=normal／total_sessions 未設定／is_active／高卒(kosotsu)以外。
+  //   年間固定講座（超感覚英語・長文読解）も除外せず全部チェックする方針。
+  let targets = [];
+  try {
+    targets = await sbGet('class_master',
+      'is_active=eq.true&category=eq.normal&total_sessions=is.null' +
+      '&division=eq.' + encodeURIComponent(currentDivision) +
+      '&select=id,name,subject&order=subject,name') || [];
+  } catch (e) {
+    if (res) res.innerHTML = '<span style="color:#B84A4A">講座の取得に失敗しました：' + escapeHtml(e.message || String(e)) + '</span>';
+    return;
+  }
   if (!targets.length) {
     if (res) res.innerHTML = '<span style="color:var(--muted)">対象の通常講座がありません。</span>';
     return;
