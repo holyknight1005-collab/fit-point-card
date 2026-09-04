@@ -6517,7 +6517,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm159';
+const APP_VERSION = '20260702dlm160';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32889,12 +32889,12 @@ async function loadAttSheet() {
       enrolls = await sbGetAll('class_enrollments',
         'class_master_id=in.(' + classIds.join(',') + ')' +
         '&or=(ended_on.is.null,ended_on.gte.' + enrollLowerBound + ')' +
-        '&select=class_master_id,student_id,ended_on,started_on,preferred_period,start_cycle_year,start_cycle_month,start_cycle_no,lap_done') || [];
+        '&select=class_master_id,student_id,ended_on,preferred_period,start_cycle_year,start_cycle_month,start_cycle_no,lap_done') || [];
     } catch (e) {
       enrolls = await sbGetAll('class_enrollments',
         'class_master_id=in.(' + classIds.join(',') + ')' +
         '&or=(ended_on.is.null,ended_on.gte.' + enrollLowerBound + ')' +
-        '&select=class_master_id,student_id,ended_on,started_on,preferred_period') || [];
+        '&select=class_master_id,student_id,ended_on,preferred_period') || [];
     }
 
     // 出欠記録（夏期は全期間・通常等は当月）
@@ -32934,10 +32934,6 @@ async function loadAttSheet() {
     // dlm152: 2周目判定用。'studentId|classId' → 起点回(cyc) / lap_done。
     const startCycByStuClass = {};   // key → {year,month,no}
     const lapDoneByStuClass = {};    // key → true（1周完了フラグが立っている）
-    // dlm159: 受講開始日(started_on)。開始日より前の授業日を出席表から除外するため。
-    //   'studentId|classId' → 'YYYY-MM-DD'（最も早い開始日）。null（開始日未設定）は
-    //   「いつからでも表示」の意味なので、その場合はキーを立てない＝カットしない。
-    const startedOnByStuClass = {};
     enrolls.forEach(e => {
       if (!stuSet.has(e.student_id)) return;
       const mp = classesByStu[e.student_id] || (classesByStu[e.student_id] = {});
@@ -32961,15 +32957,6 @@ async function loadAttSheet() {
       }
       // lap_done：1行でも true があれば true。
       if (e.lap_done === true) lapDoneByStuClass[scKey] = true;
-      // started_on：複数行あれば「最も早い開始日」を採用。ただし1行でも null（開始日未設定）が
-      //   あれば、その生徒はいつからでも表示＝カットしないため、キーを null 扱いで固定する。
-      if (scKey in startedOnByStuClass && startedOnByStuClass[scKey] === null) {
-        // すでに「カットしない」で確定 → 何もしない
-      } else if (e.started_on == null) {
-        startedOnByStuClass[scKey] = null;   // 開始日未設定＝カットしない
-      } else if (!(scKey in startedOnByStuClass) || e.started_on < startedOnByStuClass[scKey]) {
-        startedOnByStuClass[scKey] = e.started_on;
-      }
     });
 
     // dlm152: 超感覚英語・長文読解（1年継続後は無料の講座）で「2周目」に達した生徒は、
@@ -33020,11 +33007,6 @@ async function loadAttSheet() {
         // dlm121: 月途中退会（ended_on あり）は、在籍最終日を過ぎた回を出席表から除外。
         //   ended_on 当日は在籍扱いで残す（例：ended_on=9/7 → 9/7は表示、9/14以降は非表示）。
         if (endedOn) csess = csess.filter(s => s.session_date <= endedOn);
-        // dlm159: 受講開始日(started_on)より前の授業日は、その生徒の授業ではないので除外。
-        //   間違えて登録→取り消し（開始日=終了日）した子が、開始前の回で出てしまうのを防ぐ。
-        //   started_on が未設定(null)の受講はカットしない（従来どおり全授業表示）。
-        const startedOn = startedOnByStuClass[sid + '|' + m.id];
-        if (startedOn) csess = csess.filter(s => s.session_date >= startedOn);
         // dlm148: この生徒がこの授業で受講コマ(preferred_period)を持つなら、そのコマの回だけ表示。
         //   長文読解のように1日に5限・6限が両方開講される授業で、5限受講の子は5限だけ／
         //   6限受講の子は6限だけを出す。preferred_period 未設定(null)の授業は従来どおり全コマ表示。
@@ -33083,11 +33065,60 @@ async function loadAttSheet() {
     // 並び替え（as-sort-select）：school=学校別 / grade=学年順 / kana=五十音順（氏名）
     const sortSel = document.getElementById('as-sort-select');
     const sortMode = sortSel ? sortSel.value : 'school';
-    // 五十音順は必ず「ふりがな(name_kana)」優先で比較する。漢字名(name)で localeCompare すると
-    // 読みではなく漢字コード順に近い並びになり、途中から五十音が崩れる。dlm38で修正。
-    const byName = (a, b) =>
-      String((a && a.name_kana) || (a && a.name) || '')
-        .localeCompare(String((b && b.name_kana) || (b && b.name) || ''), 'ja');
+    // 五十音順は「ふりがな(name_kana)」優先。さらに dlm160 で「苗字→名前」の2段階比較にし、
+    //   ひらがな/カタカナ・全角/半角・区切り空白のゆれを吸収して並びが崩れないようにする。
+    //   ・ひらがな→カタカナに統一（localeCompare のひら/カナ差で順が乱れるのを防ぐ）
+    //   ・空白（全角/半角）や「？」等のノイズを除去してから姓・名に分割
+    //   ・姓が同じときだけ名で比較。名の違いによる細かな入れ替えは手動修正で対応。
+    const asKanaNorm = (s) => String(s || '')
+      .replace(/[ぁ-ゖ]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60)) // ひらがな→カタカナ
+      .replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)); // 全角英数→半角
+    // 五十音の辞書順キー。localeCompare は「ジョ」を「シ」より前に置くなど清濁の並びが直感と
+    //   ずれるため、各カナを「基音の位置＋清濁ランク＋大小ランク」に分解した数値列で比較する。
+    //   基音: 清音の並び順（ア=1…）。濁音/半濁音は同じ基音で清音の後（清0<濁1<半濁2）。
+    //   小書き（ァ等）は大書きの後（大0<小1）。長音符/中黒等はまとめて末尾側に寄せる。
+    const AS_KANA_BASE = (function(){
+      // 清音の並び（濁点・半濁点を外した基準）
+      const order = 'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヰヱヲンヴ';
+      const map = {};
+      // 濁音・半濁音・小書きを、対応する基準カナ＋ランクにマップ
+      const dakuten = {ガ:'カ',ギ:'キ',グ:'ク',ゲ:'ケ',ゴ:'コ',ザ:'サ',ジ:'シ',ズ:'ス',ゼ:'セ',ゾ:'ソ',ダ:'タ',ヂ:'チ',ヅ:'ツ',デ:'テ',ド:'ト',バ:'ハ',ビ:'ヒ',ブ:'フ',ベ:'ヘ',ボ:'ホ',ヴ:'ウ'};
+      const handaku = {パ:'ハ',ピ:'ヒ',プ:'フ',ペ:'ヘ',ポ:'ホ'};
+      const small = {ァ:'ア',ィ:'イ',ゥ:'ウ',ェ:'エ',ォ:'オ',ッ:'ツ',ャ:'ヤ',ュ:'ユ',ョ:'ヨ',ヮ:'ワ'};
+      for (let i = 0; i < order.length; i++) map[order[i]] = { pos: i + 1, dk: 0, sm: 0 };
+      Object.keys(dakuten).forEach(k => { const b = map[dakuten[k]]; if (b) map[k] = { pos: b.pos, dk: 1, sm: 0 }; });
+      Object.keys(handaku).forEach(k => { const b = map[handaku[k]]; if (b) map[k] = { pos: b.pos, dk: 2, sm: 0 }; });
+      Object.keys(small).forEach(k => { const b = map[small[k]]; if (b) map[k] = { pos: b.pos, dk: (k==='ッ'?0:0), sm: 1 }; });
+      return map;
+    })();
+    // カナ文字列 → 比較用キー文字列。1文字ごとに pos(3桁)+dk+sm の5桁を連結。未知文字は末尾側(999)。
+    const asKanaKey = (s) => {
+      const norm = asKanaNorm(s).replace(/[\s　ー・－\-]/g, ''); // 空白・長音・中黒は無視
+      let out = '';
+      for (const ch of norm) {
+        const e = AS_KANA_BASE[ch];
+        if (e) out += String(e.pos).padStart(3,'0') + e.dk + e.sm;
+        else out += '999' + '9' + '9'; // カナ以外（漢字残り等）は末尾へ
+      }
+      return out;
+    };
+    // 姓・名に分割（最初の空白で区切る。全角/半角空白どちらも対応）。空白が無ければ全体を姓に。
+    const asSplitName = (raw) => {
+      const norm = asKanaNorm(raw);
+      const m = norm.match(/^([^\s　]+)[\s　]+(.+)$/);
+      if (m) return { sei: m[1], mei: m[2] };
+      return { sei: norm.replace(/[\s　]/g, ''), mei: '' };
+    };
+    const asNameParts = (x) => asSplitName((x && x.name_kana) || (x && x.name) || '');
+    const byName = (a, b) => {
+      const pa = asNameParts(a), pb = asNameParts(b);
+      // 姓 → 名 の順で、辞書順キー（清音→濁音）で比較。キーが同値なら念のため元文字で補助比較。
+      const sa = asKanaKey(pa.sei), sb = asKanaKey(pb.sei);
+      if (sa !== sb) return sa < sb ? -1 : 1;
+      const ma = asKanaKey(pa.mei), mb = asKanaKey(pb.mei);
+      if (ma !== mb) return ma < mb ? -1 : 1;
+      return String(pa.sei + pa.mei).localeCompare(String(pb.sei + pb.mei), 'ja');
+    };
     if (sortMode === 'grade' || sortMode === 'gradeschool') {
       students.sort((a, b) => {
         const ga = gradeSortKey(a.grade), gb = gradeSortKey(b.grade);
