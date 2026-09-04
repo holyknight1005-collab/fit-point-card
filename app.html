@@ -6517,7 +6517,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm154';
+const APP_VERSION = '20260702dlm155';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -33305,7 +33305,10 @@ async function loadAttSheet() {
       const gmap = {}; // gradeKey -> { label, count }
       viewStudents.forEach(st => {
         const gk = gradeSortKey(st.grade);
-        const printable = !isNormalG || _asPrintSel[st.id];
+        // 印刷できる子＝通常授業は「確認済み」の子（保留は除く）。夏期等は全員。
+        //   ※以前は手動チェック(_asPrintSel)で数えていたため確認済でも0名になっていた。
+        const meta = _asMeta[st.id] || {};
+        const printable = !isNormalG || (meta.confirmed && !meta.on_hold);
         if (!gmap[gk]) gmap[gk] = { label: fmtGrade(st.grade) || '(学年未設定)', count: 0 };
         if (printable) gmap[gk].count++;
       });
@@ -34458,10 +34461,15 @@ function openAttSheetBulk(gradeKey) {
   const all = (_asData.viewStudents && _asData.viewStudents.length) ? _asData.viewStudents : (_asData.students || []);
   let list;
   if (gradeKey != null) {
-    // 学年ごと印刷：その学年の生徒。通常授業は「印刷対象にできる子（確認済み）」に限定する
-    //   ため _asPrintSel を条件に含める。夏期等は全員対象（_asPrintSel は全員 true 相当）。
+    // 学年ごと印刷：その学年の生徒。通常授業は「確認済み（保留でない）」の子に限定する。
+    //   夏期等は全員対象。
     const isNormal = (_asData.category === 'normal');
-    list = all.filter(st => gradeSortKey(st.grade) === gradeKey && (!isNormal || _asPrintSel[st.id]));
+    list = all.filter(st => {
+      if (gradeSortKey(st.grade) !== gradeKey) return false;
+      if (!isNormal) return true;
+      const meta = _asMeta[st.id] || {};
+      return meta.confirmed && !meta.on_hold;
+    });
     if (!list.length) {
       showToast(isNormal ? 'この学年で印刷できる子がいません（通常授業は確認済みの子のみ）' : 'この学年の対象の生徒がいません', 'info');
       return;
