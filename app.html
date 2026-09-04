@@ -6517,7 +6517,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm152';
+const APP_VERSION = '20260702dlm153';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -26628,10 +26628,55 @@ async function loadSessionList() {
 }
 
 async function deleteSession(id) {
-  if (!confirm('この授業日を削除しますか？\n\n※出席の記録がすでにある場合、その記録は残る可能性があります（間違えて登録しただけならそのまま削除でOK）。')) return;
+  // dlm153: 削除で回番号が飛ぶのを防ぐため、削除後にその回より「後」の同じ授業を
+  //   続きの番号に詰め直す（B案：月をまたいで玉突きで繰り上げ）。
+  //   既存の回数編集(saveSessionCycle)の cascade と同じロジックを使う。
+  //   まず削除対象の情報を取得（classId・回・コマ・補習か）してから確認・削除する。
+  let target = null;
+  try {
+    const rows = await sbGet('class_sessions',
+      'id=eq.' + id +
+      '&select=class_master_id,session_date,period,cycle_year,cycle_month,cycle_no,is_makeup') || [];
+    target = rows[0] || null;
+  } catch (e) { /* 取れなくても従来どおり削除は続行 */ }
+
+  // 詰め直しの対象になるか：通常授業の回（補習でなく cycle_no がある）だけ。
+  //   補習・回番号なしの回は、削除しても連番に影響しないのでそのまま削除する。
+  const willRenumber = !!(target && !target.is_makeup && target.cycle_no != null);
+
+  const baseMsg = 'この授業日を削除しますか？\n\n※出席の記録がすでにある場合、その記録は残る可能性があります（間違えて登録しただけならそのまま削除でOK）。';
+  const renumMsg = willRenumber
+    ? '\n\n🔢 この回（' + (target.cycle_month != null ? target.cycle_month + '月' : '') + target.cycle_no + '回目）を削除し、これより後の同じ授業を続きの番号に自動で詰め直します（前の回は変更しません）。'
+    : '';
+  if (!confirm(baseMsg + renumMsg)) return;
+
   try {
     await sbDelete('class_sessions', 'id=eq.' + id);
-    showToast('削除しました', 'info');
+
+    if (willRenumber && target) {
+      // その授業が通常か講習か（cycleNext の繰り上がり方が変わる）。
+      let isNormal = true;
+      try {
+        const cm = await sbGet('class_master', 'id=eq.' + target.class_master_id + '&select=category') || [];
+        isNormal = isNormalCategory(cm[0] ? cm[0].category : 'normal');
+      } catch (e) {}
+      // 削除した回より「後」の同じ授業を、削除された回の番号から順に振り直す。
+      //   前（過去方向）は一切触らない＝既存の回番号を壊さない（編集後を揃える設計と同じ）。
+      const later = await sbGet('class_sessions',
+        'class_master_id=eq.' + target.class_master_id + '&session_date=gt.' + target.session_date +
+        '&select=id,session_date,period,is_makeup&order=session_date,period') || [];
+      // 起点は「削除された回の番号」。最初の後続回がこの番号を引き継ぎ、以降 cycleNext で連番。
+      let cyc = { year: target.cycle_year, month: isNormal ? target.cycle_month : null, no: target.cycle_no };
+      let first = true;
+      for (const s of later) {
+        if (s.is_makeup) continue; // 補習は番号なしのまま飛ばす
+        if (!first) cyc = cycleNext(cyc, isNormal);
+        first = false;
+        await sbPatch('class_sessions', 'id=eq.' + s.id, { cycle_year: cyc.year, cycle_month: cyc.month, cycle_no: cyc.no });
+      }
+    }
+
+    showToast(willRenumber ? '削除し、以降の回数を詰めました' : '削除しました', 'info');
     loadSessionList();
   } catch (e) {
     showToast('削除に失敗しました：' + (e && e.message ? e.message : e), 'error');
