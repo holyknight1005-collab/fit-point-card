@@ -6517,7 +6517,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm161';
+const APP_VERSION = '20260702dlm162';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -33002,6 +33002,18 @@ async function loadAttSheet() {
     };
 
     const wlabels = ['日', '月', '火', '水', '木', '金', '土'];
+
+    // dlm162: 超感覚演習は自前の授業日を持たない特殊講座。受講生は超感覚英語(2、3年)の
+    //   2周目にいて、その授業に出る（出たいものだけ出てよい）。出席表は超感覚英語(2、3年)の
+    //   授業日×出欠を映す。表記は 出席=◯ / 欠席=― / 未登録=― （通常の「欠」「空欄」と異なる）。
+    //   → 対象の class_master を名前で特定しておく。
+    const enshuMaster = masters.find(m => (m.name || '').indexOf('超感覚演習') === 0);
+    //   映し元＝超感覚英語(2、3年)。名前完全一致優先、無ければ「超感覚英語(2」で前方一致。
+    let enshuSrcMaster = masters.find(m => m.name === '超感覚英語(2、3年)');
+    if (!enshuSrcMaster) enshuSrcMaster = masters.find(m => (m.name || '').indexOf('超感覚英語(2') === 0);
+    const enshuId = enshuMaster ? enshuMaster.id : null;
+    const enshuSrcId = enshuSrcMaster ? enshuSrcMaster.id : null;
+
     // 生徒ごとに帳票データを組む
     const students = [];
     Object.keys(classesByStu).forEach(sid => {
@@ -33014,8 +33026,12 @@ async function loadAttSheet() {
         // dlm152: 超感覚英語・長文読解が2周目の生徒は、その科目行を出さない
         //   （基本的に出席しないため）。他の受講科目はそのまま表示する。
         if (isFreeAfterLapClass(m.name) && isSecondLap(sid, m.id)) return;
+        // dlm162: 超感覚演習の判定と、出欠を映す元クラス。演習なら超感覚英語(2、3年)から拾う。
+        const isEnshu = (enshuId && m.id === enshuId);
+        //   映し元クラスID：演習ならsrc、それ以外は自クラス。
+        const srcId = (isEnshu && enshuSrcId) ? enshuSrcId : m.id;
         const endedOn = cidMap[m.id]; // null=継続中 / 'YYYY-MM-DD'=在籍最終日
-        let csess = (sessByClass[m.id] || []);
+        let csess = (sessByClass[srcId] || []);
         // dlm121: 月途中退会（ended_on あり）は、在籍最終日を過ぎた回を出席表から除外。
         //   ended_on 当日は在籍扱いで残す（例：ended_on=9/7 → 9/7は表示、9/14以降は非表示）。
         if (endedOn) csess = csess.filter(s => s.session_date <= endedOn);
@@ -33031,7 +33047,8 @@ async function loadAttSheet() {
         if (!csess.length) return;
         const days = csess.map(s => {
           const d = new Date(s.session_date + 'T00:00:00+09:00');
-          const status = attMap[m.id + '|' + s.session_date + '|' + (s.period || '') + '|' + sid] || '';
+          // 出欠も映し元(srcId)から拾う（演習は超感覚英語(2、3年)の出欠）。
+          const status = attMap[srcId + '|' + s.session_date + '|' + (s.period || '') + '|' + sid] || '';
           // 回数ラベル：補習=🔁／通常(月あり)=「8-③」／講習・夏期(月なし)=「③」／未登録=空
           let cyc = '';
           if (s.is_makeup) cyc = '🔁';
@@ -33043,7 +33060,8 @@ async function loadAttSheet() {
             wd: wlabels[d.getDay()],
             per: s.period || '',
             cyc: cyc,
-            status: status
+            status: status,
+            enshu: isEnshu   // dlm162: 演習は 欠席・未登録とも「―」で表記
           };
         });
         // dlm146: 誤登録対策。この生徒×この授業に出欠が1件も無ければ（＝一度も出席/欠席/補習の
@@ -34343,10 +34361,13 @@ function toggleAsSchool(gi) {
 }
 
 // 出欠マーク → 表示セル
-function asMarkCell(status, w, maxw) {
+function asMarkCell(status, w, maxw, enshu) {
   let wpx = w ? (';width:' + w + 'px') : '';
   if (maxw) wpx += ';max-width:' + maxw + 'px';
   if (status === 'present') return '<td style="border:1px solid #bbb;text-align:center;padding:5px 2px;font-size:13pt;color:#1A7340;font-weight:700' + wpx + '">◯</td>';
+  // dlm162: 超感覚演習は「出席=◯／それ以外（欠席・未登録・補習）は―」で表記する特例。
+  //   出たいものだけ出る講座のため、欠席や未登録も「―」で統一する。
+  if (enshu) return '<td style="border:1px solid #bbb;text-align:center;padding:5px 2px;font-size:11pt;color:#aaa' + wpx + '">―</td>';
   if (status === 'absent') return '<td style="border:1px solid #bbb;text-align:center;padding:5px 2px;font-size:11pt;color:#C0392B;font-weight:700' + wpx + '">欠</td>';
   if (status === 'makeup') return '<td style="border:1px solid #bbb;text-align:center;padding:3px 2px;font-size:8.5pt;color:#2D6CB6;font-weight:700;line-height:1.15' + wpx + '">ビデオ<br>補習</td>';
   // 出席未登録（status なし）は空欄で返す（あとで手書き対応するため）。
@@ -34407,7 +34428,7 @@ function buildAttSheetDocHtml(st) {
       if (!d) { dayHead.push('<td style="border:1px solid #bbb;' + HATCH + '"></td>'); marks.push('<td style="border:1px solid #bbb;' + HATCH + '"></td>'); }
       else {
         dayHead.push('<td style="border:1px solid #bbb;text-align:center;font-size:8.5pt;color:#555;padding:2px 0;background:#faf8f2">' + d.md + '<br><span style="font-size:7.5pt;color:#888">' + d.wd + '</span>' + (d.cyc ? '<br><span style="font-size:7.5pt;color:#B5721B;font-weight:700">' + d.cyc + '</span>' : '') + '</td>');
-        marks.push(asMarkCell(d.status, null, null));
+        marks.push(asMarkCell(d.status, null, null, d.enshu));
       }
     }
     return '<tr><td rowspan="2" style="border:1px solid #bbb;padding:4px 6px;font-size:9pt;font-weight:700;background:#f7f4ec;text-align:center;white-space:normal;word-break:break-all;overflow-wrap:anywhere;line-height:1.35">' + escapeHtml(sub.name) + '</td>' + dayHead.join('') + '</tr>' +
