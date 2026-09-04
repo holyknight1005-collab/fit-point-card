@@ -6517,7 +6517,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm151';
+const APP_VERSION = '20260702dlm152';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32836,10 +32836,21 @@ async function loadAttSheet() {
       const minSess = sessions.reduce((a, s) => (s.session_date < a ? s.session_date : a), sessions[0].session_date);
       enrollLowerBound = minSess;
     }
-    const enrolls = await sbGetAll('class_enrollments',
-      'class_master_id=in.(' + classIds.join(',') + ')' +
-      '&or=(ended_on.is.null,ended_on.gte.' + enrollLowerBound + ')' +
-      '&select=class_master_id,student_id,ended_on,preferred_period') || [];
+    // dlm152: 超感覚英語・長文読解の「2周目」の子は科目行を出さないため、
+    //   start_cycle_*（起点回）と lap_done（1周完了フラグ）も取得する。
+    //   これらは das で追加した列で、SQL未適用環境では 400 になるため従来 select にフォールバック。
+    let enrolls;
+    try {
+      enrolls = await sbGetAll('class_enrollments',
+        'class_master_id=in.(' + classIds.join(',') + ')' +
+        '&or=(ended_on.is.null,ended_on.gte.' + enrollLowerBound + ')' +
+        '&select=class_master_id,student_id,ended_on,preferred_period,start_cycle_year,start_cycle_month,start_cycle_no,lap_done') || [];
+    } catch (e) {
+      enrolls = await sbGetAll('class_enrollments',
+        'class_master_id=in.(' + classIds.join(',') + ')' +
+        '&or=(ended_on.is.null,ended_on.gte.' + enrollLowerBound + ')' +
+        '&select=class_master_id,student_id,ended_on,preferred_period') || [];
+    }
 
     // 出欠記録（夏期は全期間・通常等は当月）
     // ※ 授業数×生徒数が増えると当月でも1000行を超える（sbGetは先頭1000行で打ち切られ、
@@ -32875,6 +32886,9 @@ async function loadAttSheet() {
     //   両方が開講される授業で、生徒が受講しているコマだけを出席表に出すために使う。
     //   キー: 'studentId|classId' → period(数値) / 未設定(null)なら従来どおり全コマ表示。
     const prefPeriodByStuClass = {};
+    // dlm152: 2周目判定用。'studentId|classId' → 起点回(cyc) / lap_done。
+    const startCycByStuClass = {};   // key → {year,month,no}
+    const lapDoneByStuClass = {};    // key → true（1周完了フラグが立っている）
     enrolls.forEach(e => {
       if (!stuSet.has(e.student_id)) return;
       const mp = classesByStu[e.student_id] || (classesByStu[e.student_id] = {});
@@ -32891,7 +32905,44 @@ async function loadAttSheet() {
       if (e.preferred_period != null) {
         prefPeriodByStuClass[e.student_id + '|' + e.class_master_id] = e.preferred_period;
       }
+      const scKey = e.student_id + '|' + e.class_master_id;
+      // 起点回：非nullの行を優先（複数行あれば最後勝ちで十分）。
+      if (e.start_cycle_no != null && e.start_cycle_year != null) {
+        startCycByStuClass[scKey] = { year: e.start_cycle_year, month: e.start_cycle_month, no: e.start_cycle_no };
+      }
+      // lap_done：1行でも true があれば true。
+      if (e.lap_done === true) lapDoneByStuClass[scKey] = true;
     });
+
+    // dlm152: 超感覚英語・長文読解（1年継続後は無料の講座）で「2周目」に達した生徒は、
+    //   その科目行を出席表に出さない（基本的に出席しないため）。
+    //   判定は「lap_done が立っている」または「起点回から実施48回超」のどちらか。
+    //   起点回が未設定の生徒は自動判定できないため、lap_done のみで判定する。
+    const lapTargetClassIds = masters.filter(m => isFreeAfterLapClass(m.name)).map(m => m.id);
+    const lapSessByClass = {};   // classId → 実施済み(補習除く・cycle_noあり)セッション配列
+    if (lapTargetClassIds.length) {
+      try {
+        const todayStr = getTodayJST();
+        const lapSess = await sbGetAll('class_sessions',
+          'class_master_id=in.(' + lapTargetClassIds.join(',') + ')' +
+          '&session_date=lte.' + todayStr +
+          '&is_makeup=not.eq.true&cycle_no=not.is.null' +
+          '&select=class_master_id,cycle_year,cycle_month,cycle_no&order=session_date') || [];
+        lapSess.forEach(s => { (lapSessByClass[s.class_master_id] || (lapSessByClass[s.class_master_id] = [])).push(s); });
+      } catch (e) { /* 取れなくても lap_done だけで判定 */ }
+    }
+    // 生徒×クラスが2周目か判定するヘルパ。isFreeAfterLapClass 対象クラスのみ意味を持つ。
+    const isSecondLap = (sid, classId) => {
+      const key = sid + '|' + classId;
+      if (lapDoneByStuClass[key]) return true;
+      const cyc = startCycByStuClass[key];
+      const sess = lapSessByClass[classId];
+      if (cyc && sess) {
+        const lap = countLapFrom(sess, cyc);
+        if (lap && lap.lap >= 2) return true;
+      }
+      return false;
+    };
 
     const wlabels = ['日', '月', '火', '水', '木', '金', '土'];
     // 生徒ごとに帳票データを組む
@@ -32903,6 +32954,9 @@ async function loadAttSheet() {
       // 授業（クラス）ごとに、その生徒の授業日×出欠
       masters.forEach(m => {
         if (!(m.id in cidMap)) return;
+        // dlm152: 超感覚英語・長文読解が2周目の生徒は、その科目行を出さない
+        //   （基本的に出席しないため）。他の受講科目はそのまま表示する。
+        if (isFreeAfterLapClass(m.name) && isSecondLap(sid, m.id)) return;
         const endedOn = cidMap[m.id]; // null=継続中 / 'YYYY-MM-DD'=在籍最終日
         let csess = (sessByClass[m.id] || []);
         // dlm121: 月途中退会（ended_on あり）は、在籍最終日を過ぎた回を出席表から除外。
