@@ -1647,8 +1647,9 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </select>
       <div id="svedit-exclude-note" style="display:none;font-size:10px;color:#A04040;background:#FDF2F2;border:1px solid #E8B4B4;border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.5">「除外」にすると、名簿・全集計・出欠・売上などすべてから完全に隠れます。データは残り、管理者の「デモ確認」タブから確認・復籍できます。</div>
       <div id="svedit-withdraw-fields" style="display:none">
-        <div id="svedit-withdraw-date-auto" style="font-size:11px;color:#8A2A2A;background:#FDECEC;border:1px solid #E8B4B4;border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.6">在籍最終日は<b>登録した月の月末</b>に自動設定されます。<br>月末まで在籍・月謝が続き、翌月8日を過ぎると生徒一覧から退塾者名簿へ移ります（本人は翌月8日までログイン可）。</div>
-        <input type="hidden" id="svedit-withdraw-date">
+        <div id="svedit-withdraw-date-auto" style="font-size:11px;color:#8A2A2A;background:#FDECEC;border:1px solid #E8B4B4;border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.6">在籍最終日は通常<b>登録した月の月末</b>です。過去に退塾した子など日付が違う場合は、下の欄で直接指定できます（空のままなら今月末を自動設定）。<br>この日まで在籍・月謝が続き、翌月8日を過ぎると生徒一覧から退塾者名簿へ移ります（本人は翌月8日までログイン可）。</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:3px">在籍最終日（退塾日）</div>
+        <input type="date" class="form-select" id="svedit-withdraw-date" style="width:100%;font-size:13px;margin-bottom:8px">
         <div style="font-size:11px;color:var(--muted);margin-bottom:3px">退塾時の学年 <span id="svedit-wgrade-hint" style="color:var(--muted);font-weight:400"></span></div>
         <select class="form-select" id="svedit-withdraw-grade" style="width:100%;font-size:13px;margin-bottom:8px">
           <option value="">（自動：退塾日から推定）</option>
@@ -6544,7 +6545,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm174';
+const APP_VERSION = '20260702dlm175';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -54403,6 +54404,11 @@ function svEditStatusChange() {
   const v = document.getElementById('svedit-status').value;
   // 退塾のときだけ退塾日・理由を表示（卒業は日付欄不要）
   document.getElementById('svedit-withdraw-fields').style.display = (v === '退塾') ? 'block' : 'none';
+  // dlm175: 退塾に切り替えた時、日付が空なら今月末をデフォルト表示（過去日にしたい場合は手で変更）
+  if (v === '退塾') {
+    const wd = document.getElementById('svedit-withdraw-date');
+    if (wd && !wd.value) { try { wd.value = monthEndJST(new Date(getTodayJST() + 'T00:00:00+09:00')); } catch (e) {} }
+  }
   const note = document.getElementById('svedit-exclude-note');
   if (note) note.style.display = (v === '除外') ? 'block' : 'none';
 }
@@ -54513,7 +54519,8 @@ async function saveSvEdit() {
     body.is_active = true; body.inactive_reason = null; body.inactive_at = null;
     body.withdraw_status = '退塾';
     body.withdraw_requested_at = getTodayJST();
-    body.withdraw_effective_date = monthEndJST(new Date(getTodayJST() + 'T00:00:00+09:00'));
+    // dlm175: 手入力された退塾日(wdate)を優先。空なら従来どおり今月末。過去に退塾した子の日付訂正に対応。
+    body.withdraw_effective_date = wdate || monthEndJST(new Date(getTodayJST() + 'T00:00:00+09:00'));
     body.withdraw_reason = wreason || null;
     body.withdraw_reason_note = wnote || null;
     body.withdraw_grade_adj = wgrade || null;
@@ -54535,9 +54542,10 @@ async function saveSvEdit() {
     if (wasActive && status !== 'active') {
       if (status === '退塾') {
         // dlm115: 発効日=登録月の月末を明示。在籍・月謝は月末まで継続、翌月8日で名簿へ、本人は翌月8日までログイン可。
-        const eff = monthEndJST(new Date(getTodayJST() + 'T00:00:00+09:00'));
+        // dlm175: 手入力された退塾日があればそれを確認文にも反映。
+        const eff = wdate || monthEndJST(new Date(getTodayJST() + 'T00:00:00+09:00'));
         const effLabel = eff.slice(0,4) + '/' + eff.slice(5,7) + '/' + eff.slice(8,10);
-        if (!confirm((cur.name || 'この生徒') + 'さんを退塾登録します。\n\n' + effLabel + '（' + eff.slice(5,7) + '月末）付けの退塾になります。\n在籍・月謝はその月末まで続き、翌月8日を過ぎると生徒一覧から退塾者名簿へ移ります。\n本人は翌月8日までログインできます。\n\n本当に退塾登録にしますか？')) return;
+        if (!confirm((cur.name || 'この生徒') + 'さんを退塾登録します。\n\n在籍最終日：' + effLabel + ' 付けの退塾になります。\nこの日まで在籍・月謝が続き、翌月8日を過ぎると生徒一覧から退塾者名簿へ移ります。\n本人は翌月8日までログインできます。\n\n本当に退塾登録にしますか？')) return;
       } else {
         if (!confirm((cur.name || 'この生徒') + 'さんを「' + status + '」にします。よろしいですか？')) return;
       }
