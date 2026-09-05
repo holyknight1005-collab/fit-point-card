@@ -5991,6 +5991,13 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <!-- スタッフ一覧 -->
         <div class="section-title">登録スタッフ一覧</div>
         <div id="sm-staff-list" style="display:flex;flex-direction:column;gap:8px"></div>
+        <!-- dlm167: 表示ルール検査 -->
+        <div class="section-title" style="margin-top:8px">🔎 表示ルール検査</div>
+        <div class="card-box" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
+          <div style="font-size:12px;color:var(--muted)">各予定スコープ(scope)が、生徒・保護者・スタッフそれぞれにどう見えるかを一覧検査します。<b>生徒・保護者に「all／学校学年(該当)／個別指定(本人)」以外が表示されたら不具合</b>です。新しい scope を足したら、このボタンで再検査してください。</div>
+          <button onclick="runVisibilityRuleCheck()" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:var(--radius-sm);color:white;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">表示ルールを検査する</button>
+          <div id="vischeck-result"></div>
+        </div>
       </div>
 
       <!-- 管理者：スタッフ状況確認 -->
@@ -6517,7 +6524,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm166';
+const APP_VERSION = '20260702dlm167';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -16401,6 +16408,61 @@ async function deleteAnnouncement(id) {
     showToast('削除しました', 'success');
     loadAnnouncementsStaff();
   } catch(e) { hideLoading(); showToast('エラー: ' + e.message, 'error'); }
+}
+
+// dlm167: 表示ルール検査。isEventVisibleTo を各 scope × viewer種で実行し、
+//   生徒・保護者への可視性が「all / school_grade(該当) / target(本人)」だけに保たれているか一括検証する。
+function runVisibilityRuleCheck() {
+  const el = document.getElementById('vischeck-result');
+  if (!el) return;
+  const viewers = [
+    { key:'stuY', label:'生徒(該当)',       v:{ kind:'student', id:'STU_MATCH', school:'松山南', grade:'2年' } },
+    { key:'stuN', label:'生徒(非該当)',     v:{ kind:'student', id:'STU_OTHER', school:'松山東', grade:'1年' } },
+    { key:'par',  label:'保護者',           v:{ kind:'parent',  id:'PAR1' } },
+    { key:'stfC', label:'スタッフ(担当)',   v:{ kind:'staff', id:'STF_CHARGE', admin:false, chargeSchools:['松山南'] } },
+    { key:'stfO', label:'スタッフ(非担当)', v:{ kind:'staff', id:'STF_OTHER',  admin:false, chargeSchools:['松山東'] } },
+    { key:'adm',  label:'管理者',           v:{ kind:'staff', id:'ADMIN1', admin:true, chargeSchools:[] } }
+  ];
+  const rows = [
+    { sc:'all',            label:'all（全員向け）',              ev:{ scope:'all' } },
+    { sc:'school_grade',   label:'school_grade（学校/学年）',    ev:{ scope:'school_grade', target_schools:'松山南', target_grades:'2' } },
+    { sc:'target',         label:'target（個別指定）',           ev:{ scope:'target', target_ids:'STU_MATCH,STF_CHARGE' } },
+    { sc:'parent_meeting', label:'parent_meeting（保護者面談）', ev:{ scope:'parent_meeting' } },
+    { sc:'personal',       label:'personal（個人の予定）',       ev:{ scope:'personal', created_by:'STF_CHARGE' } },
+    { sc:'school_staff',   label:'school_staff（学校担当）',     ev:{ scope:'school_staff', target_schools:'松山南', created_by:'ADMIN1' } },
+    { sc:'__future__',     label:'（新規scope例・未定義）',      ev:{ scope:'__future_scope__' } }
+  ];
+  // 生徒・保護者に◯でよいのは all / school_grade(該当生徒) / target(本人) のみ
+  function allowedForNonStaff(sc, key) {
+    if (sc === 'all') return true;
+    if (sc === 'school_grade') return key === 'stuY';
+    if (sc === 'target') return true;
+    return false;
+  }
+  let leak = false;
+  let html = '<div style="overflow-x:auto;margin-top:6px"><table style="border-collapse:collapse;width:100%;font-size:11px">';
+  html += '<tr><th style="text-align:left;padding:4px 6px;border-bottom:1px solid var(--border)">scope＼viewer</th>';
+  viewers.forEach(function(vw){ html += '<th style="padding:4px 6px;border-bottom:1px solid var(--border);white-space:nowrap">' + vw.label + '</th>'; });
+  html += '</tr>';
+  rows.forEach(function(r){
+    html += '<tr><td style="padding:4px 6px;border-bottom:1px solid var(--border);white-space:nowrap">' + r.label + '</td>';
+    viewers.forEach(function(vw){
+      let vis = false;
+      try { vis = !!isEventVisibleTo(r.ev, vw.v); } catch (e) { vis = false; }
+      const nonStaff = (vw.v.kind !== 'staff');
+      const unexpected = vis && nonStaff && !allowedForNonStaff(r.sc, vw.key);
+      if (unexpected) leak = true;
+      const bg = unexpected ? '#d32f2f' : 'transparent';
+      const color = unexpected ? '#fff' : (vis ? 'var(--green-d,#1E8449)' : 'var(--muted)');
+      html += '<td style="text-align:center;padding:4px 6px;border-bottom:1px solid var(--border);background:' + bg + ';color:' + color + ';font-weight:700">' + (vis ? '◯' : '×') + '</td>';
+    });
+    html += '</tr>';
+  });
+  html += '</table></div>';
+  const verdict = leak
+    ? '<div style="margin-top:8px;padding:8px;border-radius:6px;background:#fdecea;color:#c0392b;font-weight:800;font-size:12px">⚠️ 生徒・保護者に許可外のscopeが表示されています（赤セル）。至急ご確認ください。</div>'
+    : '<div style="margin-top:8px;padding:8px;border-radius:6px;background:#eafaf1;color:#1E8449;font-weight:800;font-size:12px">✓ 生徒・保護者に見えるのは all／学校学年(該当)／個別指定(本人) のみ。ルール正常です。</div>';
+  el.innerHTML = verdict + html + '<div style="font-size:10px;color:var(--muted);margin-top:6px">◯=表示／×=非表示。生徒・保護者列で◯になってよいのは all・school_grade(該当)・target(本人)だけです。</div>';
 }
 
 function loadSettingsTab() {
