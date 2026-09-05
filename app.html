@@ -1647,9 +1647,9 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </select>
       <div id="svedit-exclude-note" style="display:none;font-size:10px;color:#A04040;background:#FDF2F2;border:1px solid #E8B4B4;border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.5">「除外」にすると、名簿・全集計・出欠・売上などすべてから完全に隠れます。データは残り、管理者の「デモ確認」タブから確認・復籍できます。</div>
       <div id="svedit-withdraw-fields" style="display:none">
-        <div id="svedit-withdraw-date-auto" style="font-size:11px;color:#8A2A2A;background:#FDECEC;border:1px solid #E8B4B4;border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.6">在籍最終日は通常<b>登録した月の月末</b>です。過去に退塾した子など日付が違う場合は、下の欄で直接指定できます（空のままなら今月末を自動設定）。<br>この日まで在籍・月謝が続き、翌月8日を過ぎると生徒一覧から退塾者名簿へ移ります（本人は翌月8日までログイン可）。</div>
-        <div style="font-size:11px;color:var(--muted);margin-bottom:3px">在籍最終日（退塾日）</div>
-        <input type="date" class="form-select" id="svedit-withdraw-date" style="width:100%;font-size:13px;margin-bottom:8px">
+        <div id="svedit-withdraw-date-auto" style="font-size:11px;color:#8A2A2A;background:#FDECEC;border:1px solid #E8B4B4;border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.6">退塾する<b>月</b>を選んでください。その月の<b>月末</b>が在籍最終日になります。過去に退塾した子は過去の月を選べます（空のままなら今月末）。<br>選んだ月末まで在籍・月謝が続き、翌月8日を過ぎると生徒一覧から退塾者名簿へ移ります（本人は翌月8日までログイン可）。</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:3px">退塾する月（在籍最終日＝その月末）</div>
+        <input type="month" class="form-select" id="svedit-withdraw-date" style="width:100%;font-size:13px;margin-bottom:8px">
         <div style="font-size:11px;color:var(--muted);margin-bottom:3px">退塾時の学年 <span id="svedit-wgrade-hint" style="color:var(--muted);font-weight:400"></span></div>
         <select class="form-select" id="svedit-withdraw-grade" style="width:100%;font-size:13px;margin-bottom:8px">
           <option value="">（自動：退塾日から推定）</option>
@@ -54207,7 +54207,11 @@ function svOpenEditStudent(id) {
   }
   document.getElementById('svedit-status').value = status;
   // 退塾日・理由（roster は withdraw_date / withdraw_reason(旧note)、students は withdraw_effective_date / withdraw_reason）
-  document.getElementById('svedit-withdraw-date').value = isRoster ? (s.withdraw_date || '') : (s.withdraw_effective_date || '');
+  // dlm175: 退塾日はYYYY-MM(月)入力。既存のYYYY-MM-DDは先頭7文字(YYYY-MM)に切り出して表示。
+  {
+    const _wd = isRoster ? (s.withdraw_date || '') : (s.withdraw_effective_date || '');
+    document.getElementById('svedit-withdraw-date').value = _wd ? _wd.slice(0, 7) : '';
+  }
   document.getElementById('svedit-withdraw-reason').value = s.withdraw_reason || '';
   // 退塾時学年：保存済み手動調整値を初期表示。ヒントに逆算値を出す。
   svFillGradeSelect('svedit-withdraw-grade', svDiv, s.withdraw_grade_adj || '', '<option value="">（自動：退塾日から推定）</option>');
@@ -54404,10 +54408,10 @@ function svEditStatusChange() {
   const v = document.getElementById('svedit-status').value;
   // 退塾のときだけ退塾日・理由を表示（卒業は日付欄不要）
   document.getElementById('svedit-withdraw-fields').style.display = (v === '退塾') ? 'block' : 'none';
-  // dlm175: 退塾に切り替えた時、日付が空なら今月末をデフォルト表示（過去日にしたい場合は手で変更）
+  // dlm175: 退塾に切り替えた時、月が空なら今月をデフォルト表示（過去月にしたい場合は手で変更）
   if (v === '退塾') {
     const wd = document.getElementById('svedit-withdraw-date');
-    if (wd && !wd.value) { try { wd.value = monthEndJST(new Date(getTodayJST() + 'T00:00:00+09:00')); } catch (e) {} }
+    if (wd && !wd.value) { try { wd.value = getTodayJST().slice(0, 7); } catch (e) {} }
   }
   const note = document.getElementById('svedit-exclude-note');
   if (note) note.style.display = (v === '除外') ? 'block' : 'none';
@@ -54424,7 +54428,15 @@ async function saveSvEdit() {
   const membership = document.getElementById('svedit-membership').value;
   const enroll = document.getElementById('svedit-enroll').value || null;
   const status = document.getElementById('svedit-status').value;
-  const wdate = document.getElementById('svedit-withdraw-date').value || null;
+  // dlm175: 退塾日は「月(YYYY-MM)」入力。選んだ月の月末(YYYY-MM-DD)に変換。空ならnull（後段で今月末フォールバック）。
+  const wdateRaw = document.getElementById('svedit-withdraw-date').value || '';
+  let wdate = null;
+  if (/^\d{4}-\d{2}$/.test(wdateRaw)) {
+    const _y = parseInt(wdateRaw.slice(0, 4), 10), _m = parseInt(wdateRaw.slice(5, 7), 10);
+    wdate = toJSTDateStr(new Date(_y, _m, 0)); // _m月末（new Date(y, m, 0)=m月の最終日）
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(wdateRaw)) {
+    wdate = wdateRaw; // 旧形式が万一入っていればそのまま
+  }
   const wreason = document.getElementById('svedit-withdraw-reason').value.trim();
   const wgradeEl = document.getElementById('svedit-withdraw-grade');
   const wgrade = wgradeEl ? wgradeEl.value.trim() : '';
