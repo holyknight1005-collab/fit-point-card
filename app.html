@@ -6545,7 +6545,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm176';
+const APP_VERSION = '20260702dlm177';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -34801,6 +34801,18 @@ function rbCycleLabelRange(sess, cat, startSeq, nComa) {
 let _bcYear = null, _bcMonth = null;     // 表示中の対象年月
 let _bcChecked = {};                     // "studentId::classId" -> billing_checks 行（該当月）
 
+// dlm177: ふりがなを五十音ソート用に正規化。カタカナ→ひらがな、全角/半角スペース・記号除去、
+//   長音・濁点半濁点はそのまま活かす。空なら null を返す（呼び出し側で漢字末尾送りに使う）。
+function kanaSortKey(kana) {
+  if (!kana) return null;
+  let s = String(kana);
+  // カタカナ(ァ-ヶ)→ひらがな
+  s = s.replace(/[\u30A1-\u30F6]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x60));
+  // 半角カタカナは考慮外だが、空白・記号類は除去して比較を安定化
+  s = s.replace(/[\s\u3000・．.，,「」『』？?]/g, '');
+  return s || null;
+}
+
 function bcInitMonth() {
   if (_bcYear != null && _bcMonth != null) return;
   const t = getTodayJST();               // 'YYYY-MM-DD'
@@ -34962,8 +34974,14 @@ async function loadBillCheck() {
       const ca = _bcChecked[a.id + '::' + cid] && _bcChecked[a.id + '::' + cid].checked ? 1 : 0;
       const cb = _bcChecked[b.id + '::' + cid] && _bcChecked[b.id + '::' + cid].checked ? 1 : 0;
       if (ca !== cb) return ca - cb;
-      const ka = (a.name_kana || a.name || ''), kb = (b.name_kana || b.name || '');
-      return ka < kb ? -1 : ka > kb ? 1 : 0;
+      // dlm177: ふりがなをカタカナ/ひらがな・空白差を吸収して五十音順。
+      //   ふりがな有りを先に、無し(漢字のみ)は末尾へ。安藤(アンドウ)等が正しくア行に来る。
+      const ka = kanaSortKey(a.name_kana), kb = kanaSortKey(b.name_kana);
+      if (ka && kb) return ka < kb ? -1 : ka > kb ? 1 : 0;
+      if (ka && !kb) return -1;
+      if (!ka && kb) return 1;
+      const na = (a.name || ''), nb = (b.name || '');
+      return na < nb ? -1 : na > nb ? 1 : 0;
     });
     const clsDone = rows.filter(s => !_bcLap[s.id + '::' + cid] && _bcChecked[s.id + '::' + cid] && _bcChecked[s.id + '::' + cid].checked).length;
     const clsBillable = rows.filter(s => !_bcLap[s.id + '::' + cid]).length;
