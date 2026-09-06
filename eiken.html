@@ -123,6 +123,30 @@
   <!-- ========== 受験ビュー ========== -->
   <div id="view-take">
 
+    <div id="inviteBanner" class="hidden"></div>
+
+    <!-- 紹介リンク発行ページ（?issue=1 で表示。内部生も利用可） -->
+    <div id="take-issue" class="hidden">
+      <div class="card">
+        <h2 class="sec">🎟 紹介リンクを発行する</h2>
+        <p class="muted">お友だちに渡すと、その子が1回だけおためし受験できます。1つのリンクは1人ぶん。別の子にはもう一度発行してください。</p>
+        <label class="fld">あなたの名前（紹介者）</label>
+        <input type="text" id="issueName" placeholder="例: 山田太郎">
+        <label class="fld" style="margin-top:10px">紹介者コード（任意）</label>
+        <input type="text" id="issueCode" placeholder="塾生番号など（空欄でも可）">
+        <label class="fld" style="margin-top:10px">対象の級（任意）</label>
+        <select id="issueGrade">
+          <option value="">指定しない</option>
+          <option value="pre2">準2級</option>
+          <option value="2">2級</option>
+        </select>
+        <div class="flex-end" style="margin-top:16px">
+          <button class="btn accent" onclick="issueInvite()">リンクを発行する</button>
+        </div>
+        <div id="issueResult" class="hidden" style="margin-top:16px"></div>
+      </div>
+    </div>
+
     <!-- 級選択 -->
     <div id="take-grades">
       <div class="card">
@@ -532,7 +556,7 @@ const SUPABASE_URL      = "https://jkkfdvvbpzkagbtpqkzp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "eiken-20260906b";
+const APP_VERSION = "eiken-20260906c";
 
 /* ---- 級の定義 ---- */
 const GRADES = {
@@ -632,6 +656,101 @@ function isAdminUnlocked(){
 function applyAdminVisibility(){
   const btn=document.getElementById("navAdmin");
   if(btn) btn.style.display = isAdminUnlocked() ? "" : "none";
+}
+
+/* ===== 紹介リンク（招待トークン） ===== */
+let inviteState=null;  // {token, referrer_name, grade} 有効な招待で入った時だけ入る
+function getInviteToken(){
+  try{ return new URLSearchParams(location.search).get("invite"); }catch(e){ return null; }
+}
+async function verifyInvite(){
+  const token=getInviteToken();
+  if(!token) return null;
+  try{
+    const rows=await sbGet("eiken_invites",`token=eq.${encodeURIComponent(token)}&select=token,referrer_name,grade,status`);
+    if(!rows.length){ return {token, error:"リンクが見つかりません。発行者に確認してください。"}; }
+    const inv=rows[0];
+    if(inv.status!=="active"){ return {token, error:"このリンクは既に使用済みか、無効になっています。"}; }
+    return {token, referrer_name:inv.referrer_name, grade:inv.grade};
+  }catch(e){ return {token, error:"リンクの確認中にエラーが発生しました。"}; }
+}
+/* 受験開始時にトークンを無効化（受験開始時に即無効化の方針） */
+async function consumeInvite(usedByName){
+  if(!inviteState || !inviteState.token) return;
+  try{
+    await sbPatch("eiken_invites",`token=eq.${encodeURIComponent(inviteState.token)}&status=eq.active`,
+      {status:"used", used_at:new Date().toISOString(), used_by_name:usedByName||null});
+  }catch(e){ console.warn("consumeInvite failed",e); }
+}
+
+/* 招待リンク経由なら、専用の案内を出す。無効なら理由を表示。 */
+async function initInviteMode(){
+  // 発行ページ ?issue=1
+  try{
+    if(new URLSearchParams(location.search).get("issue")==="1"){
+      document.getElementById("take-grades").classList.add("hidden");
+      document.getElementById("take-issue").classList.remove("hidden");
+    }
+  }catch(e){}
+
+  const token=getInviteToken();
+  if(!token) return;  // 通常アクセス
+  const res=await verifyInvite();
+  const banner=document.getElementById("inviteBanner");
+  if(!banner) return;
+  if(res && !res.error){
+    inviteState=res;
+    banner.className="card";
+    banner.style.cssText="background:#eefaf2;border-color:#bfe6cf;margin-bottom:12px";
+    banner.innerHTML=`<b>🎟 紹介リンクで受験できます</b>
+      <p class="muted" style="margin:6px 0 0">紹介者：${esc(res.referrer_name)} さん${res.grade?`（${GRADES[res.grade]?GRADES[res.grade].label:res.grade}）`:""}<br>
+      下の模試から受験を始めてください。<span style="color:#c8102e">受験を開始するとこのリンクは使えなくなります。</span></p>`;
+    banner.classList.remove("hidden");
+  }else{
+    inviteState=null;
+    banner.className="card";
+    banner.style.cssText="background:#fff7f5;border-color:#f2c6ba;margin-bottom:12px";
+    banner.innerHTML=`<b>⚠ このリンクは使用できません</b>
+      <p class="muted" style="margin:6px 0 0">${esc((res&&res.error)||"無効なリンクです。")}</p>`;
+    banner.classList.remove("hidden");
+  }
+}
+
+/* ランダムなトークン生成 */
+function genToken(){
+  const a=new Uint8Array(16);
+  (crypto.getRandomValues?crypto.getRandomValues(a):a.forEach((_,i)=>a[i]=Math.floor(Math.random()*256)));
+  return Array.from(a).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+/* 紹介リンクを発行してDBに登録し、共有URLを表示 */
+async function issueInvite(){
+  const name=document.getElementById("issueName").value.trim();
+  const code=document.getElementById("issueCode").value.trim();
+  const grade=document.getElementById("issueGrade").value;
+  if(!name){ toast("あなたの名前を入力してください"); return; }
+  const token=genToken();
+  const row={ token, referrer_name:name, referrer_code:code||null, grade:grade||null, status:"active" };
+  try{
+    await sbPost("eiken_invites", row);
+  }catch(e){ toast("発行に失敗しました: "+e.message); return; }
+  const base=location.origin+location.pathname;
+  const url=`${base}?invite=${token}`;
+  const box=document.getElementById("issueResult");
+  box.className="card"; box.style.cssText="background:#eefaf2;border-color:#bfe6cf";
+  box.innerHTML=`<b>✅ リンクを発行しました</b>
+    <p class="muted" style="margin:6px 0">このURLをお友だち1人に渡してください（1人ぶん・受験開始で無効）。</p>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input type="text" id="issuedUrl" value="${esc(url)}" readonly style="flex:1;min-width:220px">
+      <button class="btn ghost sm" onclick="copyIssuedUrl()">コピー</button>
+    </div>
+    <p class="muted" style="margin-top:8px">別の子にはもう一度「リンクを発行する」を押してください。</p>`;
+  box.classList.remove("hidden");
+}
+function copyIssuedUrl(){
+  const el=document.getElementById("issuedUrl");
+  el.select();
+  try{ navigator.clipboard.writeText(el.value); toast("コピーしました"); }
+  catch(e){ document.execCommand("copy"); toast("コピーしました"); }
 }
 function showView(v){
   if(v==="admin" && !isAdminUnlocked()){ v="take"; }  // 未解錠なら受験画面へ
@@ -1555,6 +1674,13 @@ async function loadMockItems(){
 
 async function startMock(){
   const taker=collectTaker(); if(!taker) return;
+  // 招待リンク経由なら紹介者名を付与し、受験開始と同時にトークンを無効化
+  if(inviteState){
+    taker.referrer_name = inviteState.referrer_name;
+    const usedBy = taker.ext_name || taker.student_email || null;
+    await consumeInvite(usedBy);
+    inviteState = null;  // 二重消費防止
+  }
   window._mkTaker=taker;
   try{
     mkItems = await loadMockItems();
@@ -1797,6 +1923,7 @@ async function finalizeMock(status){
     exam_id:mkExam.id, grade:mkExam.grade,
     taker_type:taker.taker_type, student_email:taker.student_email,
     ext_school:taker.ext_school, ext_name:taker.ext_name, ext_grade:taker.ext_grade,
+    referrer_name: taker.referrer_name || null,
     reading_score:rS?rS.s:null, reading_total:rS?rS.t:null,
     listening_score:lS?lS.s:null, listening_total:lS?lS.t:null,
     total_score:totMax?totS:null, total_max:totMax||null,
@@ -2022,6 +2149,7 @@ async function checkVersion(){
   acRefreshQtypes();
   awRefreshQtypes();
   checkVersion();
+  initInviteMode();  // 招待リンク経由の受験判定
 })();
 </script>
 </body>
