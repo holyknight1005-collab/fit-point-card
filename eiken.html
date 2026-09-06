@@ -130,10 +130,19 @@
         <p class="muted">リーディングは制限時間つき、リスニングは自動で連続再生。提出後にくわしい結果と解説を確認できます。</p>
         <div id="examGrid" class="grid grade-grid"><p class="muted">読み込み中…</p></div>
       </div>
-      <div class="card">
+      <div class="card" id="practiceCard">
         <h2 class="sec">大問ごとに練習する</h2>
         <p class="muted">大問を1つずつ選んで、その場で採点・解説を確認できます。</p>
-        <div class="grid grade-grid" id="gradeGrid"></div>
+        <div id="practiceLocked">
+          <div class="card" style="background:#f7f8f7;border-style:dashed;text-align:center;padding:20px">
+            <div style="font-size:28px">🔒</div>
+            <p style="margin:8px 0 4px"><b>まずはミニテストを受けましょう</b></p>
+            <p class="muted" style="margin:0">上の「模試（本番形式の通しテスト）」を1回提出すると、大問ごとの練習が使えるようになります。</p>
+          </div>
+        </div>
+        <div id="practiceUnlocked" class="hidden">
+          <div class="grid grade-grid" id="gradeGrid"></div>
+        </div>
       </div>
     </div>
 
@@ -523,7 +532,7 @@ const SUPABASE_URL      = "https://jkkfdvvbpzkagbtpqkzp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "eiken-20260906a";
+const APP_VERSION = "eiken-20260906b";
 
 /* ---- 級の定義 ---- */
 const GRADES = {
@@ -640,6 +649,21 @@ function goHome(){
 let curGrade=null, curStruct=null, curSet=null, curPassages=[], curQuestions={}, examAnswers={};
 let curQtype=null, showScript=false, curWriting=null;
 
+/* 大問別練習の開放制御: 同一セッション内でミニテストを提出したら開放。
+   ページ再読み込みでリセット（sessionではなくメモリ保持）。管理解錠時は常に開放。 */
+let practiceUnlocked = false;
+function unlockPractice(){
+  practiceUnlocked = true;
+  applyPracticeLock();
+}
+function applyPracticeLock(){
+  const open = practiceUnlocked || isAdminUnlocked();
+  const lockedEl=document.getElementById("practiceLocked");
+  const openEl=document.getElementById("practiceUnlocked");
+  if(lockedEl) lockedEl.classList.toggle("hidden", open);
+  if(openEl) openEl.classList.toggle("hidden", !open);
+}
+
 function renderGradeGrid(){
   const g=document.getElementById("gradeGrid"); g.innerHTML="";
   Object.keys(GRADES).forEach(key=>{
@@ -689,6 +713,7 @@ function practiceWeak(gradeKey, qtype){
   if(!struct){ return; }
   const item = struct.find(x=>x.qtype===qtype);
   if(!item){ return; }
+  unlockPractice();
   // ミニテスト結果画面など受験系ビューを一旦全て閉じてから該当級を開く
   showView("take");
   ["take-mock-result","take-mock-setup","take-mock-reading","take-mock-listening",
@@ -1784,6 +1809,7 @@ async function finalizeMock(status){
 
   // 結果表示
   window._mockReview={perQ:allPerQ, rMode:rDone, lMode:lDone};
+  unlockPractice();  // ミニテスト提出により大問別練習を開放
   renderMockResult({rS,lS,rRate,lRate,weak,v,status});
 }
 
@@ -1990,6 +2016,7 @@ async function checkVersion(){
   if(vf) vf.innerHTML=`<span class="dot"></span>version ${APP_VERSION}`;
   if(!isConfigured()) document.getElementById("configWarn").classList.remove("hidden");
   applyAdminVisibility();
+  applyPracticeLock();
   renderGradeGrid();
   renderExamGrid();
   acRefreshQtypes();
