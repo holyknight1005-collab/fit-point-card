@@ -612,10 +612,20 @@
    別プロジェクトにする場合はここを書き換える
    ========================================================= */
 const SUPABASE_URL      = "https://jkkfdvvbpzkagbtpqkzp.supabase.co";
+/* 模試（通しテスト）専用：各大問(qtype)冒頭に流す日本語アナウンス音声。
+   grade+"|"+qtype をキーに、日本語アナウンスmp3のURLを指定。
+   練習（大問別）では使わない。未設定(空)ならアナウンスなしで英語のみ再生。 */
+const MOCK_JP_ANNOUNCE = {
+  "2|l_conv":       "https://jkkfdvvbpzkagbtpqkzp.supabase.co/storage/v1/object/public/eiken-audio/anno_g2_l_conv.mp3",
+  "2|l_passage":    "https://jkkfdvvbpzkagbtpqkzp.supabase.co/storage/v1/object/public/eiken-audio/anno_g2_l_passage.mp3",
+  "pre2|l_response":"https://jkkfdvvbpzkagbtpqkzp.supabase.co/storage/v1/object/public/eiken-audio/anno_pre2_l_response.mp3",
+  "pre2|l_conv":    "https://jkkfdvvbpzkagbtpqkzp.supabase.co/storage/v1/object/public/eiken-audio/anno_pre2_l_conv.mp3",
+  "pre2|l_passage": "https://jkkfdvvbpzkagbtpqkzp.supabase.co/storage/v1/object/public/eiken-audio/anno_pre2_l_passage.mp3",
+};
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "eiken-20260906k";
+const APP_VERSION = "eiken-20260907a";
 
 /* ---- 級の定義 ---- */
 const GRADES = {
@@ -2000,22 +2010,37 @@ function beginMockListening(){
   const items=listeningItems();
   const allHaveAudio = items.length>0 && items.every(it=>it.set.audio_url);
   if(allHaveAudio){
-    playAudioQueue(items.map(it=>it.set.audio_url));
+    // 模試では各大問の英語音声の前に、その大問(qtype)の日本語アナウンスを挿入する。
+    // queue の各要素: {url, jp:true/false}  jp=日本語アナウンス, false=英語本編
+    const queue=[];
+    items.forEach(it=>{
+      const key=it.set.grade+"|"+it.set.qtype;
+      const anno=MOCK_JP_ANNOUNCE[key];
+      if(anno){ queue.push({url:anno, jp:true}); }
+      queue.push({url:it.set.audio_url, jp:false});
+    });
+    playAudioQueue(queue);
   }else{
     // 一部でもmp3が無ければ Web Speech フォールバックで台本を順に読み上げ
     speakScriptQueue(items);
   }
 }
 
-function playAudioQueue(urls){
+function playAudioQueue(queue){
+  // queue は {url, jp} の配列。英語本編(jp=false)だけを進捗カウント対象にする。
   let i=0;
+  const totalEn=queue.filter(q=>!q.jp).length;
   const status=document.getElementById("mockAudioStatus");
   mockAudio=new Audio();
   mockAudio.preload="auto";
   const playNext=()=>{
-    if(i>=urls.length){ if(status) status.textContent="リスニング音声は以上です。解答を提出してください。"; return; }
-    if(status) status.textContent=`再生中… (${i+1}/${urls.length})`;
-    mockAudio.src=urls[i]; i++;
+    if(i>=queue.length){ if(status) status.textContent="リスニング音声は以上です。解答を提出してください。"; return; }
+    const cur=queue[i];
+    if(status){
+      if(cur.jp){ status.textContent="案内を再生中…"; }
+      else{ const enDone=queue.slice(0,i).filter(q=>!q.jp).length; status.textContent=`再生中… (${enDone+1}/${totalEn})`; }
+    }
+    mockAudio.src=cur.url; i++;
     mockAudio.play().catch(()=>{ if(status) status.textContent="自動再生がブロックされました。画面をタップしてから再度お試しください。"; });
   };
   mockAudio.onended=playNext;
