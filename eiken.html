@@ -128,7 +128,8 @@
     <!-- 紹介リンク発行ページ（?issue=1 で表示。内部生も利用可） -->
     <div id="take-issue" class="hidden">
       <div class="card">
-        <h2 class="sec">🎟 紹介リンクを発行する</h2>
+        <button class="btn ghost sm" onclick="backToGrades()">← 戻る</button>
+        <h2 class="sec" style="margin-top:14px">🎟 紹介リンクを発行する</h2>
         <p class="muted">お友だちに渡すと、その子が1回だけおためし受験できます。1つのリンクは1人ぶん。別の子にはもう一度発行してください。</p>
         <label class="fld">あなたの名前（紹介者）</label>
         <input type="text" id="issueName" placeholder="例: 山田太郎">
@@ -167,6 +168,12 @@
         <div id="practiceUnlocked" class="hidden">
           <div class="grid grade-grid" id="gradeGrid"></div>
         </div>
+      </div>
+
+      <div class="card">
+        <h2 class="sec">🎟 友だちを紹介する</h2>
+        <p class="muted">お友だちに1回だけおためし受験できるリンクを発行できます。</p>
+        <button class="btn accent" onclick="goToIssue()">紹介リンクを発行する</button>
       </div>
     </div>
 
@@ -252,38 +259,36 @@
         <h2 class="sec" style="margin-top:14px" id="mockSetupTitle">模試を受ける</h2>
         <p class="muted" id="mockSetupInfo"></p>
 
-        <label class="fld">受験区分</label>
-        <div class="pill-tabs" style="margin-bottom:12px">
-          <button type="button" id="mkTakerInternal" class="on" onclick="mockSetTaker('internal')">塾生（内部）</button>
-          <button type="button" id="mkTakerExternal" onclick="mockSetTaker('external')">おためし（外部）</button>
+        <!-- 受験者情報: 状態により自動で切り替わる -->
+        <div id="mkLoggedIn" class="hidden">
+          <div class="card" style="background:#eefaf2;border-color:#bfe6cf">
+            <b>👤 <span id="mkLoggedName"></span> さんとして受験します</b>
+            <p class="muted" id="mkLoggedMeta" style="margin:4px 0 0"></p>
+          </div>
         </div>
 
-        <div id="mkInternalFields">
+        <div id="mkInternalManual" class="hidden">
           <label class="fld">メールアドレス（塾生ID）</label>
           <input type="text" id="mkEmail" placeholder="例: taro@example.com">
+          <label class="fld" style="margin-top:10px">学校</label>
+          <input type="text" id="mkSchoolManual" placeholder="例: ○○中学校">
+          <label class="fld" style="margin-top:10px">名前</label>
+          <input type="text" id="mkNameManual" placeholder="例: 山田太郎">
         </div>
+
         <div id="mkExternalFields" class="hidden">
-          <div class="row2">
-            <div>
-              <label class="fld">学校</label>
-              <select id="mkSchool"></select>
-            </div>
-            <div>
-              <label class="fld">学年</label>
-              <select id="mkGradeYear">
-                <option value="">選択</option>
-                <option>中1</option><option>中2</option><option>中3</option>
-                <option>高1</option><option>高2</option><option>高3</option>
-                <option>その他</option>
-              </select>
-            </div>
-          </div>
-          <div id="mkSchoolOther" class="hidden">
-            <label class="fld">学校名（自由入力）</label>
-            <input type="text" id="mkSchoolOtherInput" placeholder="学校名を入力">
-          </div>
-          <label class="fld">名前</label>
-          <input type="text" id="mkName" placeholder="例: 山田花子">
+          <p class="muted" id="mkInviteNote" style="margin-bottom:8px"></p>
+          <label class="fld">学校</label>
+          <input type="text" id="mkExtSchool" placeholder="例: ○○高校">
+          <label class="fld" style="margin-top:10px">学年</label>
+          <select id="mkExtGrade">
+            <option value="">選択</option>
+            <option>中1</option><option>中2</option><option>中3</option>
+            <option>高1</option><option>高2</option><option>高3</option>
+            <option>その他</option>
+          </select>
+          <label class="fld" style="margin-top:10px">名前</label>
+          <input type="text" id="mkExtName" placeholder="例: 山田花子">
         </div>
 
         <label class="fld" style="margin-top:14px">受験方式</label>
@@ -556,7 +561,7 @@ const SUPABASE_URL      = "https://jkkfdvvbpzkagbtpqkzp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "eiken-20260906c";
+const APP_VERSION = "eiken-20260906d";
 
 /* ---- 級の定義 ---- */
 const GRADES = {
@@ -650,6 +655,28 @@ function isConfigured(){return !SUPABASE_URL.includes("YOUR-PROJECT") && !SUPABA
 /* 管理画面アクセス制御: URLに ?admin=<合言葉> がある時のみ管理を許可。
    生徒には合言葉なしのURLを渡す。合言葉なしでは管理ボタンが出ず、adminビューも開けない。 */
 const ADMIN_SECRET = "fit-admin-2026";  // ← 合言葉。変更する場合はここを書き換える。
+
+/* ===== fit塾アプリ(app.html)との連携 =====
+   同一ドメイン配下なので localStorage(fit_email/fit_pin) を共有できる。
+   塩DB(students)から名前・学校・学年を照合する。塩DBは英検DBとは別プロジェクト。 */
+const JUKU_URL = "https://bqdvmfskpnlshqljwhqz.supabase.co";
+const JUKU_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU";
+let jukuStudent = null;  // {email,name,school,grade} ログイン済み内部生
+
+function getJukuLoginEmail(){
+  try{ return localStorage.getItem("fit_email"); }catch(e){ return null; }
+}
+/* 塩DBの students からメールで生徒を照合。見つかれば {email,name,school,grade} を返す。 */
+async function fetchJukuStudent(email){
+  if(!email) return null;
+  try{
+    const url=`${JUKU_URL}/rest/v1/students?email=eq.${encodeURIComponent(email.toLowerCase())}&is_active=eq.true&select=email,name,school,grade`;
+    const r=await fetch(url,{headers:{apikey:JUKU_KEY,Authorization:"Bearer "+JUKU_KEY}});
+    if(!r.ok) return null;
+    const rows=await r.json();
+    return rows.length? rows[0] : null;
+  }catch(e){ return null; }
+}
 function isAdminUnlocked(){
   try{ return new URLSearchParams(location.search).get("admin") === ADMIN_SECRET; }catch(e){ return false; }
 }
@@ -719,8 +746,19 @@ async function initInviteMode(){
 /* ランダムなトークン生成 */
 function genToken(){
   const a=new Uint8Array(16);
-  (crypto.getRandomValues?crypto.getRandomValues(a):a.forEach((_,i)=>a[i]=Math.floor(Math.random()*256)));
+  if(crypto && crypto.getRandomValues){ crypto.getRandomValues(a); }
+  else { for(let i=0;i<a.length;i++) a[i]=Math.floor(Math.random()*256); }
   return Array.from(a).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+/* ホームの紹介ボタンから発行ページを表示 */
+function goToIssue(){
+  document.getElementById("take-grades").classList.add("hidden");
+  ["take-parts","take-sets","take-exam","take-writing","take-result",
+   "take-mock-setup","take-mock-reading","take-mock-listening","take-mock-result"]
+    .forEach(id=>{ const el=document.getElementById(id); if(el) el.classList.add("hidden"); });
+  document.getElementById("take-issue").classList.remove("hidden");
+  const box=document.getElementById("issueResult"); if(box) box.classList.add("hidden");
+  window.scrollTo({top:0,behavior:"smooth"});
 }
 /* 紹介リンクを発行してDBに登録し、共有URLを表示 */
 async function issueInvite(){
@@ -796,7 +834,7 @@ function renderGradeGrid(){
 }
 function backToGrades(){
   ["take-parts","take-sets","take-exam","take-writing","take-result",
-   "take-mock-setup","take-mock-reading","take-mock-listening","take-mock-result"]
+   "take-mock-setup","take-mock-reading","take-mock-listening","take-mock-result","take-issue"]
     .forEach(id=>document.getElementById(id).classList.add("hidden"));
   document.getElementById("take-grades").classList.remove("hidden");
   stopMockTimer();
@@ -1555,7 +1593,7 @@ function examStructure(grade){
 /* ================= 受験: 導線 ================= */
 let mockExams = [];        // 一覧キャッシュ
 let mkExam=null;           // 選択中の模試
-let mkTaker="internal", mkMode="through";
+let mkMode="through";
 let mkItems=[];            // [{seq, set, questions:{pid:[q]}, passages:[]}]  受験時に展開
 let mockRead={perQ:[], answers:{}}, mockListen={perQ:[], answers:{}};
 let mkReadingResultId=null; // 分割受験でR提出後のresult行id（L提出時にUPDATE）
@@ -1587,28 +1625,38 @@ async function renderExamGrid(){
 }
 
 async function openMockSetup(ex){
-  mkExam=ex; mkTaker="internal"; mkMode="through";
+  mkExam=ex; mkMode="through";
   document.getElementById("take-grades").classList.add("hidden");
   document.getElementById("take-mock-setup").classList.remove("hidden");
   document.getElementById("mockSetupTitle").textContent=ex.title;
   document.getElementById("mockSetupInfo").textContent=
     `${GRADES[ex.grade]?GRADES[ex.grade].label:ex.grade}・筆記制限時間 ${ex.reading_time_min}分`;
-  // 受験区分・方式を初期表示に
-  mockSetTaker("internal"); mockSetMode("through");
-  // 内部生メール自動補完
-  try{ const em=localStorage.getItem("fit_email"); if(em) document.getElementById("mkEmail").value=em; }catch(e){}
-  // 学校プルダウン
-  await fillSchoolOptions();
+  mockSetMode("through");
+
+  const loggedIn=document.getElementById("mkLoggedIn");
+  const manual=document.getElementById("mkInternalManual");
+  const ext=document.getElementById("mkExternalFields");
+  loggedIn.classList.add("hidden"); manual.classList.add("hidden"); ext.classList.add("hidden");
+
+  if(inviteState){
+    // 紹介リンク経由 → 外部生（メールなし・学校＋名前）
+    ext.classList.remove("hidden");
+    document.getElementById("mkInviteNote").textContent=
+      `紹介者：${inviteState.referrer_name} さん　※おためし受験です`;
+  }else if(jukuStudent){
+    // 塾アプリでログイン済み内部生 → 自動
+    loggedIn.classList.remove("hidden");
+    document.getElementById("mkLoggedName").textContent=jukuStudent.name||jukuStudent.email;
+    document.getElementById("mkLoggedMeta").textContent=
+      [jukuStudent.school,jukuStudent.grade].filter(Boolean).join(" ")+"（塾生）";
+  }else{
+    // 未ログインの内部生 → メール＋学校＋名前を手入力
+    manual.classList.remove("hidden");
+    try{ const em=getJukuLoginEmail(); if(em) document.getElementById("mkEmail").value=em; }catch(e){}
+  }
   window.scrollTo({top:0,behavior:"smooth"});
 }
 
-function mockSetTaker(t){
-  mkTaker=t;
-  document.getElementById("mkTakerInternal").classList.toggle("on",t==="internal");
-  document.getElementById("mkTakerExternal").classList.toggle("on",t==="external");
-  document.getElementById("mkInternalFields").classList.toggle("hidden",t!=="internal");
-  document.getElementById("mkExternalFields").classList.toggle("hidden",t!=="external");
-}
 function mockSetMode(m){
   mkMode=m;
   document.getElementById("mkModeThrough").classList.toggle("on",m==="through");
@@ -1622,32 +1670,29 @@ function mockSetMode(m){
   document.getElementById("mkModeHint").textContent=hint;
 }
 
-async function fillSchoolOptions(){
-  const sel=document.getElementById("mkSchool");
-  sel.innerHTML="<option value=''>選択</option>";
-  try{
-    const rows=await sbGet("schools","select=name&order=name.asc");
-    rows.forEach(s=>{ const o=document.createElement("option"); o.value=s.name; o.textContent=s.name; sel.appendChild(o); });
-  }catch(e){ /* schoolsが無い/権限無い環境でも自由入力で継続 */ }
-  const other=document.createElement("option"); other.value="__other__"; other.textContent="その他（自由入力）"; sel.appendChild(other);
-  sel.onchange=()=>{ document.getElementById("mkSchoolOther").classList.toggle("hidden", sel.value!=="__other__"); };
-}
-
-/* 受験者情報の検証と取り出し */
+/* 受験者情報の検証と取り出し（招待/ログイン済み/手入力の3状態） */
 function collectTaker(){
-  if(mkTaker==="internal"){
-    const email=document.getElementById("mkEmail").value.trim();
-    if(!email){ toast("メールアドレスを入力してください"); return null; }
-    return {taker_type:"internal", student_email:email, ext_school:null, ext_name:null, ext_grade:null};
-  }else{
-    let school=document.getElementById("mkSchool").value;
-    if(school==="__other__") school=document.getElementById("mkSchoolOtherInput").value.trim();
-    const name=document.getElementById("mkName").value.trim();
-    const gy=document.getElementById("mkGradeYear").value;
-    if(!school){ toast("学校を選択・入力してください"); return null; }
+  if(inviteState){
+    // 紹介リンク経由の外部生
+    const school=document.getElementById("mkExtSchool").value.trim();
+    const name=document.getElementById("mkExtName").value.trim();
+    const gy=document.getElementById("mkExtGrade").value;
+    if(!school){ toast("学校を入力してください"); return null; }
     if(!name){ toast("名前を入力してください"); return null; }
     return {taker_type:"external", student_email:null, ext_school:school, ext_name:name, ext_grade:gy||null};
   }
+  if(jukuStudent){
+    // 塾ログイン済み内部生（自動）
+    return {taker_type:"internal", student_email:jukuStudent.email,
+            ext_school:jukuStudent.school||null, ext_name:jukuStudent.name||null, ext_grade:jukuStudent.grade||null};
+  }
+  // 未ログイン内部生（手入力：メール＋学校＋名前）
+  const email=document.getElementById("mkEmail").value.trim();
+  const school=document.getElementById("mkSchoolManual").value.trim();
+  const name=document.getElementById("mkNameManual").value.trim();
+  if(!email){ toast("メールアドレスを入力してください"); return null; }
+  if(!name){ toast("名前を入力してください"); return null; }
+  return {taker_type:"internal", student_email:email, ext_school:school||null, ext_name:name, ext_grade:null};
 }
 
 /* 模試の明細(set)を展開して問題を読み込む */
@@ -2150,6 +2195,12 @@ async function checkVersion(){
   awRefreshQtypes();
   checkVersion();
   initInviteMode();  // 招待リンク経由の受験判定
+  // 塾アプリでログイン済みなら塩DBから生徒情報を照合（招待経由でない時のみ）
+  (async ()=>{
+    if(getInviteToken()) return;  // 紹介リンク時は内部生照合しない
+    const em=getJukuLoginEmail();
+    if(em){ jukuStudent = await fetchJukuStudent(em); }
+  })();
 })();
 </script>
 </body>
