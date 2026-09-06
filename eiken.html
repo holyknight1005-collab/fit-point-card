@@ -268,12 +268,29 @@
         </div>
 
         <div id="mkInternalManual" class="hidden">
-          <label class="fld">メールアドレス（塾生ID）</label>
-          <input type="text" id="mkEmail" placeholder="例: taro@example.com">
-          <label class="fld" style="margin-top:10px">学校</label>
-          <input type="text" id="mkSchoolManual" placeholder="例: ○○中学校">
-          <label class="fld" style="margin-top:10px">名前</label>
-          <input type="text" id="mkNameManual" placeholder="例: 山田太郎">
+          <div class="card" style="background:#f7f9fb;border-color:#cdd8e6">
+            <b>塾生ログイン</b>
+            <p class="muted" style="margin:4px 0 10px">塾アプリと同じメールアドレスとPIN（5桁）でログインすると、お名前が自動で入ります。</p>
+            <label class="fld">メールアドレス</label>
+            <input type="text" id="mkLoginEmail" placeholder="例: taro@example.com">
+            <label class="fld" style="margin-top:8px">PIN（5桁）</label>
+            <input type="password" id="mkLoginPin" inputmode="numeric" maxlength="5" placeholder="・・・・・">
+            <div class="flex-end" style="margin-top:12px">
+              <button class="btn" onclick="mkDoLogin()">ログイン</button>
+            </div>
+            <p id="mkLoginErr" class="muted" style="color:#c8102e;margin-top:8px;display:none"></p>
+          </div>
+          <details style="margin-top:10px">
+            <summary class="muted" style="cursor:pointer">ログインせずに受験する（お名前を手入力）</summary>
+            <div style="margin-top:10px">
+              <label class="fld">メールアドレス（塾生ID）</label>
+              <input type="text" id="mkEmail" placeholder="例: taro@example.com">
+              <label class="fld" style="margin-top:10px">学校</label>
+              <input type="text" id="mkSchoolManual" placeholder="例: ○○中学校">
+              <label class="fld" style="margin-top:10px">名前</label>
+              <input type="text" id="mkNameManual" placeholder="例: 山田太郎">
+            </div>
+          </details>
         </div>
 
         <div id="mkExternalFields" class="hidden">
@@ -561,7 +578,7 @@ const SUPABASE_URL      = "https://jkkfdvvbpzkagbtpqkzp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "eiken-20260906d";
+const APP_VERSION = "eiken-20260906e";
 
 /* ---- 級の定義 ---- */
 const GRADES = {
@@ -676,6 +693,30 @@ async function fetchJukuStudent(email){
     const rows=await r.json();
     return rows.length? rows[0] : null;
   }catch(e){ return null; }
+}
+
+/* メール+PINで塾生ログイン。成功したら jukuStudent をセットし自動表示に切替。 */
+async function mkDoLogin(){
+  const email=(document.getElementById("mkLoginEmail").value||"").trim().toLowerCase();
+  const pin=(document.getElementById("mkLoginPin").value||"").trim();
+  const err=document.getElementById("mkLoginErr");
+  err.style.display="none";
+  if(!email||!pin){ err.textContent="メールアドレスとPINを入力してください。"; err.style.display="block"; return; }
+  try{
+    const url=`${JUKU_URL}/rest/v1/students?email=eq.${encodeURIComponent(email)}&pin=eq.${encodeURIComponent(pin)}&is_active=eq.true&select=email,name,school,grade`;
+    const r=await fetch(url,{headers:{apikey:JUKU_KEY,Authorization:"Bearer "+JUKU_KEY}});
+    const rows=r.ok? await r.json():[];
+    if(!rows.length){ err.textContent="メールアドレスまたはPINが正しくありません。"; err.style.display="block"; return; }
+    jukuStudent=rows[0];
+    try{ localStorage.setItem("fit_email", jukuStudent.email); }catch(e){}
+    // 自動表示に切替
+    document.getElementById("mkInternalManual").classList.add("hidden");
+    const li=document.getElementById("mkLoggedIn");
+    li.classList.remove("hidden");
+    document.getElementById("mkLoggedName").textContent=jukuStudent.name||jukuStudent.email;
+    document.getElementById("mkLoggedMeta").textContent=
+      [jukuStudent.school,jukuStudent.grade].filter(Boolean).join(" ")+"（塾生）";
+  }catch(e){ err.textContent="ログイン中にエラーが発生しました。"; err.style.display="block"; }
 }
 function isAdminUnlocked(){
   try{ return new URLSearchParams(location.search).get("admin") === ADMIN_SECRET; }catch(e){ return false; }
