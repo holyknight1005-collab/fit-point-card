@@ -615,7 +615,7 @@ const SUPABASE_URL      = "https://jkkfdvvbpzkagbtpqkzp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "eiken-20260906i";
+const APP_VERSION = "eiken-20260906j";
 
 /* ---- 級の定義 ---- */
 const GRADES = {
@@ -775,13 +775,14 @@ async function verifyInvite(){
     const rows=await sbGet("eiken_invites",`token=eq.${encodeURIComponent(token)}&select=token,referrer_name,grade,status`);
     if(!rows.length){ return {token, error:"リンクが見つかりません。発行者に確認してください。"}; }
     const inv=rows[0];
-    if(inv.status!=="active"){ return {token, error:"このリンクは既に使用済みか、無効になっています。"}; }
-    return {token, referrer_name:inv.referrer_name, grade:inv.grade};
+    if(inv.status!=="active" && inv.status!=="preview"){ return {token, error:"このリンクは既に使用済みか、無効になっています。"}; }
+    return {token, referrer_name:inv.referrer_name, grade:inv.grade, isPreview: inv.status==="preview"};
   }catch(e){ return {token, error:"リンクの確認中にエラーが発生しました。"}; }
 }
-/* 受験開始時にトークンを無効化（受験開始時に即無効化の方針） */
+/* 受験開始時にトークンを無効化（受験開始時に即無効化の方針）。previewは無効化しない。 */
 async function consumeInvite(usedByName){
   if(!inviteState || !inviteState.token) return;
+  if(inviteState.isPreview) return;  // 確認用リンクは消費しない
   try{
     await sbPatch("eiken_invites",`token=eq.${encodeURIComponent(inviteState.token)}&status=eq.active`,
       {status:"used", used_at:new Date().toISOString(), used_by_name:usedByName||null});
@@ -1834,9 +1835,14 @@ async function startMock(){
   // 招待リンク経由なら紹介者名を付与し、受験開始と同時にトークンを無効化
   if(inviteState){
     taker.referrer_name = inviteState.referrer_name;
-    const usedBy = taker.ext_name || taker.student_email || null;
-    await consumeInvite(usedBy);
-    inviteState = null;  // 二重消費防止
+    if(inviteState.isPreview){
+      taker._preview = true;  // 確認用: 成績を保存しない
+      // previewは消費せず inviteState も保持（何度でも受験可）
+    }else{
+      const usedBy = taker.ext_name || taker.student_email || null;
+      await consumeInvite(usedBy);
+      inviteState = null;  // 二重消費防止
+    }
   }
   window._mkTaker=taker;
   try{
@@ -2089,7 +2095,7 @@ async function finalizeMock(status){
     reading_done_at: rDone? new Date().toISOString():null,
     listening_done_at: lDone? new Date().toISOString():null
   };
-  try{ await sbPost("eiken_exam_results", row); }catch(e){ console.warn("mock result save failed",e); }
+  try{ if(!(taker&&taker._preview)) await sbPost("eiken_exam_results", row); }catch(e){ console.warn("mock result save failed",e); }
 
   // 結果表示
   window._mockReview={perQ:allPerQ, rMode:rDone, lMode:lDone};
