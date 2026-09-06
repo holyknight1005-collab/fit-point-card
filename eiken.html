@@ -109,7 +109,7 @@
   <div class="nav">
     <button id="navHome" onclick="goHome()">🏠 ホーム</button>
     <button id="navTake" class="on" onclick="showView('take')">受験</button>
-    <button id="navAdmin" onclick="showView('admin')">管理</button>
+    <button id="navAdmin" onclick="showView('admin')" style="display:none">管理</button>
   </div>
 </header>
 
@@ -523,7 +523,7 @@ const SUPABASE_URL      = "https://jkkfdvvbpzkagbtpqkzp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "eiken-20260902e";
+const APP_VERSION = "eiken-20260906a";
 
 /* ---- 級の定義 ---- */
 const GRADES = {
@@ -614,7 +614,18 @@ function toast(msg){const t=document.getElementById("toast");t.textContent=msg;t
 function esc(s){return (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 function isConfigured(){return !SUPABASE_URL.includes("YOUR-PROJECT") && !SUPABASE_ANON_KEY.includes("YOUR_ANON");}
 
+/* 管理画面アクセス制御: URLに ?admin=<合言葉> がある時のみ管理を許可。
+   生徒には合言葉なしのURLを渡す。合言葉なしでは管理ボタンが出ず、adminビューも開けない。 */
+const ADMIN_SECRET = "fit-admin-2026";  // ← 合言葉。変更する場合はここを書き換える。
+function isAdminUnlocked(){
+  try{ return new URLSearchParams(location.search).get("admin") === ADMIN_SECRET; }catch(e){ return false; }
+}
+function applyAdminVisibility(){
+  const btn=document.getElementById("navAdmin");
+  if(btn) btn.style.display = isAdminUnlocked() ? "" : "none";
+}
 function showView(v){
+  if(v==="admin" && !isAdminUnlocked()){ v="take"; }  // 未解錠なら受験画面へ
   ["take","admin"].forEach(x=>document.getElementById("view-"+x).classList.toggle("hidden",x!==v));
   document.getElementById("navTake").classList.toggle("on",v==="take");
   document.getElementById("navAdmin").classList.toggle("on",v==="admin");
@@ -670,6 +681,21 @@ function backToParts(){
   ["take-sets","take-exam","take-writing","take-result"].forEach(id=>document.getElementById(id).classList.add("hidden"));
   document.getElementById("take-parts").classList.remove("hidden");
   if(window.speechSynthesis) window.speechSynthesis.cancel();
+}
+
+/* ミニテスト結果の弱点大問から、その大問の練習(テスト選択)へ直接移動 */
+function practiceWeak(gradeKey, qtype){
+  const struct = GRADE_STRUCTURE[gradeKey];
+  if(!struct){ return; }
+  const item = struct.find(x=>x.qtype===qtype);
+  if(!item){ return; }
+  // ミニテスト結果画面など受験系ビューを一旦全て閉じてから該当級を開く
+  showView("take");
+  ["take-mock-result","take-mock-setup","take-mock-reading","take-mock-listening",
+   "take-exam","take-writing","take-result","take-sets"]
+    .forEach(id=>{ const el=document.getElementById(id); if(el) el.classList.add("hidden"); });
+  curGrade = gradeKey; curStruct = struct;
+  openPart(item);  // 該当大問のテスト一覧へ
 }
 
 async function openPart(item){
@@ -1775,10 +1801,14 @@ function renderMockResult({rS,lS,rRate,lRate,weak,v,status}){
 
   const wb=document.getElementById("mockWeakBox");
   if(weak.length){
+    const gradeKey = (typeof mkExam!=="undefined" && mkExam && mkExam.grade) ? mkExam.grade : null;
     wb.innerHTML=`<div class="card" style="background:#fff7f5;border-color:#f2c6ba">
       <b>強化したい大問</b>
       <ul class="points-list" style="margin-top:6px">`+
-      weak.map(w=>`<li>${esc(w.t)}（正答率 ${Math.round(w.rate*100)}%）</li>`).join("")+
+      weak.map(w=>`<li style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+          <span>${esc(w.t)}（正答率 ${Math.round(w.rate*100)}%）</span>
+          ${gradeKey?`<button class="btn ghost sm" onclick="practiceWeak('${gradeKey}','${w.qtype}')">この大問を練習する →</button>`:""}
+        </li>`).join("")+
       `</ul>
       <p class="muted" style="margin-top:6px">総合学習塾fitの英検対策で、弱点を集中的にトレーニングできます。</p></div>`;
   }else{
@@ -1959,6 +1989,7 @@ async function checkVersion(){
   const vf=document.getElementById("verFooter");
   if(vf) vf.innerHTML=`<span class="dot"></span>version ${APP_VERSION}`;
   if(!isConfigured()) document.getElementById("configWarn").classList.remove("hidden");
+  applyAdminVisibility();
   renderGradeGrid();
   renderExamGrid();
   acRefreshQtypes();

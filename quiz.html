@@ -247,7 +247,7 @@
 // デプロイのたびにこの値を上げ、quiz_version.txt の中身と一致させること。
 // app.html とは独立管理（quiz_version.txt を参照）。app側の更新で quiz が巻き込まれない。
 // ============================================================
-const QUIZ_VERSION = '20260702h';
+const QUIZ_VERSION = '20260702i';
 
 // quiz_version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkQuizVersion(){
@@ -768,11 +768,50 @@ async function copyForChatGPT(){
   const ok = await copyToClipboard(prompt);
   showToast(ok ? 'ChatGPT用の文をコピーしました。貼り付けて使えます' : 'コピーに失敗しました', ok ? 'success' : 'error');
 }
+// 貼り付けJSONの自動修復：GPT等が返す崩れ（全角引用符・コードブロック・不可視文字・
+//   末尾カンマ・URLエンコード残り）を安全に直してからパースする。誰でも使えるようにするための保険。
+function sanitizeQuizJson(raw){
+  let s = String(raw==null?'':raw);
+  // 1) 不可視・特殊空白を除去/正規化（BOM, ZWSP, word-joiner, NBSP など）
+  s = s.replace(/^\uFEFF/, '');
+  s = s.replace(/[\u200B\u200C\u200D\u2060\uFEFF]/g, '');
+  s = s.replace(/[\u00A0\u2007\u202F]/g, ' ');
+  // 2) コードブロック記号を除去（```json … ``` で囲ってくるケース）
+  s = s.replace(/```[a-zA-Z]*\s*/g, '').replace(/```/g, '');
+  // 3) 全角の波括弧・角括弧を半角へ（構造記号のみ）
+  s = s.replace(/[｛]/g,'{').replace(/[｝]/g,'}').replace(/[［]/g,'[').replace(/[］]/g,']');
+  // 4) スマートクォート／全角引用符 → 半角ストレートに統一
+  //    ダブル: “ ” 〝 〞 ＂  → "
+  s = s.replace(/[\u201C\u201D\u301D\u301E\uFF02]/g, '"');
+  //    シングル: ‘ ’ ＇ → '   （キー/値の囲みには使わない前提だが崩れ対策）
+  s = s.replace(/[\u2018\u2019\uFF07]/g, "'");
+  // 5) URLエンコード残り（^ の %5E だけは数式で頻出なので戻す。他は触らない）
+  s = s.replace(/%5[eE]/g, '^');
+  // 6) 先頭/末尾の {…} 以外のゴミ（前置き文など）を落とす：最初の { と最後の } で挟む
+  const first = s.indexOf('{'), last = s.lastIndexOf('}');
+  if(first > 0 || (last >= 0 && last < s.length-1)){
+    if(first !== -1 && last !== -1 && last > first) s = s.slice(first, last+1);
+  }
+  // 7) 末尾カンマ（ },] や ,} ）を除去
+  s = s.replace(/,\s*([}\]])/g, '$1');
+  return s.trim();
+}
+
 function importJson(){
   const raw = document.getElementById('cr-json').value.trim();
   if(!raw){ showToast('JSONを貼り付けてください','error'); return; }
   let obj;
-  try{ obj = JSON.parse(raw); }catch(e){ showToast('JSONの形式が正しくありません','error'); return; }
+  // まず素直にパース。失敗したら自動修復して再挑戦（誰でも貼れるように）。
+  try{
+    obj = JSON.parse(raw);
+  }catch(e1){
+    try{
+      obj = JSON.parse(sanitizeQuizJson(raw));
+    }catch(e2){
+      showToast('JSONの形式が正しくありません（引用符や記号をご確認ください）','error');
+      return;
+    }
+  }
   const qs = Array.isArray(obj) ? obj : obj.questions;
   if(!Array.isArray(qs) || !qs.length){ showToast('questions が見つかりません','error'); return; }
   if(obj.title && !document.getElementById('cr-title').value) document.getElementById('cr-title').value = obj.title;
