@@ -5365,6 +5365,24 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         </div>
         <div id="sv-view-body"><div style="font-size:12px;color:var(--muted)">読み込み中...</div></div>
       </div>
+
+      <!-- セクション5: 監督報告一覧（全員閲覧可）dlm179 -->
+      <div style="background:linear-gradient(135deg,#FDF4EA,#FFFFFF);border:1.5px solid #E8C79C;border-radius:var(--radius);padding:14px 16px;margin-top:16px">
+        <div style="font-size:14px;font-weight:700;color:#B87A2D;margin-bottom:8px">📋 監督報告一覧</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px">確定した監督コマの報告（自習の様子・引き継ぎ）を新しい順に一覧します。期間を絞って確認できます（全員が見られます）。</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+          <span style="font-size:11px;color:var(--muted);white-space:nowrap">月で絞る</span>
+          <input type="month" id="svrl-month" onchange="svReportListByMonth(this.value)" class="form-input" style="font-size:12px;padding:5px 8px;width:auto">
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+          <span style="font-size:11px;color:var(--muted);white-space:nowrap">日付範囲</span>
+          <input type="date" id="svrl-from" class="form-input" style="font-size:12px;padding:5px 8px;width:auto">
+          <span style="font-size:11px;color:var(--muted)">〜</span>
+          <input type="date" id="svrl-to" class="form-input" style="font-size:12px;padding:5px 8px;width:auto">
+          <button onclick="svLoadReportList()" style="font-size:12px;font-weight:700;background:#B87A2D;color:#fff;border:none;border-radius:8px;padding:7px 16px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">表示</button>
+        </div>
+        <div id="svrl-body"><div style="font-size:12px;color:var(--muted)">月を選ぶか、日付範囲を指定して「表示」を押してください。</div></div>
+      </div>
     </div>
 
     <!-- 時間割かぶり + 長文読解コマ割り振りタブ -->
@@ -6545,7 +6563,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260702dlm178';
+const APP_VERSION = '20260702dlm179';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -11375,6 +11393,62 @@ function openUnfilledSupervision() {
 function closeUnfilledSupervision() {
   const m = document.getElementById('unfilled-sv-modal');
   if (m) m.style.display = 'none';
+}
+
+// ===== 監督報告一覧（自習監督タブ・セクション5）dlm179 =====
+// 月選択：その月の1日〜末日を from/to に入れて表示。
+function svReportListByMonth(ym) {
+  if (!ym) return;
+  const parts = ym.split('-');
+  const y = parseInt(parts[0], 10), m = parseInt(parts[1], 10);
+  const from = ym + '-01';
+  const last = new Date(y, m, 0).getDate();   // 月末日
+  const to = ym + '-' + String(last).padStart(2, '0');
+  const fEl = document.getElementById('svrl-from');
+  const tEl = document.getElementById('svrl-to');
+  if (fEl) fEl.value = from;
+  if (tEl) tEl.value = to;
+  svLoadReportList();
+}
+
+// from/to（未指定は当日をカバー）で確定監督コマの報告を新しい順に一覧。
+async function svLoadReportList() {
+  const body = document.getElementById('svrl-body');
+  if (!body) return;
+  const from = (document.getElementById('svrl-from') || {}).value || '';
+  const to = (document.getElementById('svrl-to') || {}).value || '';
+  if (!from && !to) { body.innerHTML = '<div style="font-size:12px;color:var(--muted)">月を選ぶか、日付範囲を指定して「表示」を押してください。</div>'; return; }
+  body.innerHTML = '<div style="font-size:12px;color:var(--muted)">読み込み中...</div>';
+  let q = 'cancelled=eq.false&select=sv_date,period,staff_name,report_text,handover_text&order=sv_date.desc,period.asc';
+  if (from) q += '&sv_date=gte.' + from;
+  if (to) q += '&sv_date=lte.' + to;
+  let rows = [];
+  try { rows = await sbGetAll('supervision_assignments', q) || []; }
+  catch (e) { body.innerHTML = '<div style="font-size:12px;color:var(--red)">読み込みに失敗しました。</div>'; return; }
+  // 報告（自習の様子 or 引き継ぎ）が1つでもあるコマのみ表示。
+  const filled = rows.filter(r => (r.report_text && r.report_text.trim()) || (r.handover_text && r.handover_text.trim()));
+  if (!filled.length) {
+    body.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">この期間に記入済みの監督報告はありません。</div>';
+    return;
+  }
+  const WD = ['日','月','火','水','木','金','土'];
+  const html = filled.map(r => {
+    const d = new Date(r.sv_date + 'T00:00:00+09:00');
+    const dateLabel = (d.getMonth() + 1) + '/' + d.getDate() + '（' + WD[d.getDay()] + '）';
+    const per = r.period ? r.period + '限' : '';
+    const rep = (r.report_text && r.report_text.trim()) ? r.report_text.trim() : '';
+    const han = (r.handover_text && r.handover_text.trim()) ? r.handover_text.trim() : '';
+    return '<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fff">' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">' +
+        '<span style="font-size:13px;font-weight:700;color:var(--orange-d)">' + dateLabel + '</span>' +
+        (per ? '<span style="font-size:11px;color:var(--muted)">' + per + '</span>' : '') +
+        '<span style="font-size:11px;color:#41618C;background:#F3F6FA;border:1px solid #C7D3E0;border-radius:10px;padding:1px 8px;font-weight:700">' + escapeHtml(r.staff_name || '（担当不明）') + '</span>' +
+      '</div>' +
+      (rep ? '<div style="font-size:13px;color:var(--text);line-height:1.6;white-space:pre-wrap;margin-bottom:' + (han ? '6px' : '0') + '">' + escapeHtml(rep) + '</div>' : '') +
+      (han ? '<div style="font-size:12px;color:var(--muted);line-height:1.6;white-space:pre-wrap;background:var(--surface2);border-radius:8px;padding:6px 8px"><b style="color:#41618C">引き継ぎ：</b>' + escapeHtml(han) + '</div>' : '') +
+    '</div>';
+  }).join('');
+  body.innerHTML = '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + filled.length + '件</div>' + html;
 }
 // モーダル内の保存。成功したらその行を未記入リストから外し、今日の予定を再集計。
 async function svSaveReportFromModal(id) {
