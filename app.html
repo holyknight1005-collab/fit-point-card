@@ -6658,7 +6658,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260908vid02';
+const APP_VERSION = '20260908vid03';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -22384,7 +22384,8 @@ function renderCmList() {
       const enrollBadge = (enrollN != null)
         ? '<span style="font-size:10px;background:#EAF3FB;color:#1A4D80;border:1px solid #6FA8E0;padding:1px 7px;border-radius:10px;margin-left:6px;font-weight:700">👥 ' + enrollN + '人</span>'
         : '';
-      return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:4px;flex-wrap:wrap">' +
+      return '<div style="margin-bottom:4px">' +
+        '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;flex-wrap:wrap">' +
         '<span style="flex:0 0 auto;width:14px;height:14px;border-radius:4px;background:' + classColorOf(c) + ';border:1px solid rgba(0,0,0,0.1)"></span>' +
         '<div style="flex:1;min-width:120px"><div onclick="openClassKarte(\'' + c.id + '\')" style="font-size:13px;font-weight:600;color:var(--orange-d);cursor:pointer;text-decoration:underline;text-decoration-color:rgba(0,0,0,0.15);text-underline-offset:2px">' + c.name + classCategoryBadge(c) + gradeBadge + totalBadge + enrollBadge + '</div>' +
         '<div style="font-size:10px;color:var(--muted)">' + ((cmTeacherNames[c.id] && cmTeacherNames[c.id].length) ? cmTeacherNames[c.id].join('・') : '担当未設定') + '</div></div>' +
@@ -22392,11 +22393,14 @@ function renderCmList() {
         '<button onclick="openClassAttendanceLatest(\'' + c.id + '\')" style="padding:3px 8px;background:#EAF2FB;border:1px solid #9CC0E8;border-radius:6px;color:#2D5FA6;font-size:10px;font-weight:700;cursor:pointer">🗓 出欠</button>' +
         '<button onclick="openClassNorma(\'' + c.id + '\')" style="padding:3px 8px;background:#FBF1E6;border:1px solid #E0A96F;border-radius:6px;color:#9A5A1A;font-size:10px;font-weight:700;cursor:pointer">📌 ノルマ</button>' +
         '<button onclick="openEnrollStudents(\'' + c.id + '\')" style="padding:3px 8px;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:6px;color:#1A4D80;font-size:10px;font-weight:700;cursor:pointer">👥 受講生</button>' +
+        '<button id="cm-videobtn-' + c.id + '" onclick="toggleClassVideoAcc(\'' + c.id + '\')" style="padding:3px 8px;background:#F3E6F7;border:1px solid #D9AEE3;border-radius:6px;color:#7B2D8B;font-size:10px;font-weight:700;cursor:pointer">📺 動画</button>' +
         '<button onclick="openClassEdit(\'' + c.id + '\')" style="padding:3px 8px;background:#F3ECFB;border:1px solid #B99CE0;border-radius:6px;color:#6B3FA0;font-size:10px;font-weight:700;cursor:pointer">✏️ 編集</button>' +
         '<button onclick="openClassColorPicker(\'' + c.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">色</button>' +
         '<button onclick="setClassGrade(\'' + c.id + '\',\'' + (c.grade_level||'') + '\',\'' + (c.division||'高校部') + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">学年</button>' +
         '<button onclick="setClassTeacher(\'' + c.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">担当</button>' +
         '<button onclick="deleteClassMaster(\'' + c.id + '\')" style="padding:3px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">削除</button>' +
+        '</div>' +
+        '<div id="cm-video-acc-' + c.id + '" style="display:none;padding:8px 10px 4px"></div>' +
       '</div>';
     }).join('') +
     '</div>'
@@ -23251,6 +23255,82 @@ function openVideoLessonForSession(classId, sessionDate) {
   }
   openVideoLessonModal(classId, sessionDate || '', title);
 }
+
+// ===== 授業管理タブ：授業カード直下のコマ一覧アコーディオン（方式B-2）=====
+// カードの「📺 動画」で開閉。開いたらその授業のコマ一覧を遅延ロードし、各コマに「＋動画」を出す。
+// 登録済みのコマには「📺 動画あり／非公開」バッジを付ける。video_lessons は1回でまとめて取得（N+1回避）。
+let cmVideoAccOpen = {}; // classId -> bool（開閉状態の保持）
+
+function toggleClassVideoAcc(classId) {
+  const box = document.getElementById('cm-video-acc-' + classId);
+  const btn = document.getElementById('cm-videobtn-' + classId);
+  if (!box) return;
+  const willOpen = (box.style.display === 'none' || !box.style.display);
+  box.style.display = willOpen ? 'block' : 'none';
+  cmVideoAccOpen[classId] = willOpen;
+  if (btn) {
+    btn.style.background = willOpen ? '#7B2D8B' : '#F3E6F7';
+    btn.style.color = willOpen ? '#fff' : '#7B2D8B';
+  }
+  if (willOpen) loadClassVideoAcc(classId);
+}
+
+async function loadClassVideoAcc(classId) {
+  const box = document.getElementById('cm-video-acc-' + classId);
+  if (!box) return;
+  box.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:6px 2px">読み込み中...</div>';
+  try {
+    // その授業の今日以降のコマを対象（過去分まで出すと長くなるため）。
+    const today = getTodayJST();
+    const sessions = await sbGet('class_sessions',
+      'class_master_id=eq.' + classId + '&session_date=gte.' + today +
+      '&order=session_date,period&select=id,class_master_id,session_date,period,cycle_year,cycle_month,cycle_no,is_makeup&limit=40') || [];
+    if (!sessions.length) {
+      box.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:6px 2px;line-height:1.5">今日以降の授業日がありません。授業日を登録すると、ここからコマごとに動画をはめ込めます。</div>';
+      return;
+    }
+    // 動画の有無を1回でまとめて取得（class_master_id + session_date キー）。
+    const videoKey = {};
+    try {
+      const dates = Array.from(new Set(sessions.map(s => s.session_date))).filter(Boolean);
+      if (dates.length) {
+        const vids = await sbGet('video_lessons',
+          'class_master_id=eq.' + classId + '&session_date=in.(' + dates.map(d => '"' + d + '"').join(',') +
+          ')&select=session_date,is_active') || [];
+        vids.forEach(v => {
+          const k = v.session_date;
+          if (!videoKey[k]) videoKey[k] = { any: false, active: false };
+          videoKey[k].any = true;
+          if (v.is_active) videoKey[k].active = true;
+        });
+      }
+    } catch (e) { /* 動画なし扱いで続行 */ }
+    const weekNames = ['日','月','火','水','木','金','土'];
+    box.innerHTML = sessions.map(s => {
+      const [sy, sm, sd] = s.session_date.split('-').map(Number);
+      const wd = weekNames[new Date(sy, sm-1, sd).getDay()];
+      const vk = videoKey[s.session_date];
+      let videoBadge = '';
+      if (vk && vk.any) {
+        videoBadge = vk.active
+          ? '<span style="font-size:9px;font-weight:700;color:#7B2D8B;background:#F3E6F7;border:1px solid #D9AEE3;border-radius:10px;padding:0 6px;margin-left:5px">📺 動画あり</span>'
+          : '<span style="font-size:9px;font-weight:700;color:#888;background:#EEE;border:1px solid #DDD;border-radius:10px;padding:0 6px;margin-left:5px">📺 非公開</span>';
+      }
+      const cycleBadge = s.is_makeup
+        ? '<span style="font-size:9px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:10px;padding:0 6px;margin-left:5px">🔁 補習</span>'
+        : (s.cycle_no ? '<span style="font-size:9px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);border-radius:10px;padding:0 6px;margin-left:5px">' + sessionCycleLabel(s) + '</span>' : '');
+      const btnLabel = (vk && vk.any) ? '📺 動画' : '＋ 動画';
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:5px 0;border-top:1px solid var(--border)">' +
+        '<div style="font-size:11px;color:var(--text);display:flex;align-items:center;flex-wrap:wrap">' +
+          '<span>' + sm + '/' + sd + '（' + wd + '）　' + s.period + '限</span>' + cycleBadge + videoBadge +
+        '</div>' +
+        '<button onclick="openVideoLessonForSession(\'' + s.class_master_id + '\',\'' + s.session_date + '\')" style="padding:2px 10px;font-size:10px;font-weight:700;color:#7B2D8B;background:#F3E6F7;border:1px solid #D9AEE3;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;flex-shrink:0">' + btnLabel + '</button>' +
+      '</div>';
+    }).join('');
+  } catch (e) {
+    box.innerHTML = '<div style="font-size:11px;color:#C75050;padding:6px 2px">コマを読み込めませんでした：' + escapeHtml(e && e.message ? e.message : String(e)) + '</div>';
+  }
+}
 function closeVideoLessonModal() {
   document.getElementById('video-lesson-modal').style.display = 'none';
 }
@@ -23282,6 +23362,8 @@ async function submitVideoLesson() {
     // 対象要素が無い画面では何も起きない（安全）。
     if (document.getElementById('ck-videos')) loadKarteVideos(vlmClassId);
     if (document.getElementById('cs-list') && typeof loadSessionList === 'function') { try { loadSessionList(); } catch(e) {} }
+    // 授業管理タブのアコーディオンが開いていればバッジ更新。
+    if (document.getElementById('cm-video-acc-' + vlmClassId) && typeof loadClassVideoAcc === 'function') { try { loadClassVideoAcc(vlmClassId); } catch(e) {} }
   } catch(e) {
     hideLoading();
     showToast('エラー: ' + (e.message || e), 'error');
