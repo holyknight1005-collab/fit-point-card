@@ -4794,6 +4794,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.5">家から視聴したい生徒に、期限つきの臨時パスワードを発行します。生徒はアプリの動画で「アプリ内で見る」を押し、このパスワードを入力すると視聴できます（塾でチェックイン済みの生徒はパスワード不要）。</div>
       <div style="background:var(--surface,#fff);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px">
         <div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:4px">生徒</div>
+        <input type="text" id="vta-filter" oninput="filterVtaStudents()" placeholder="学校・学年・名前で絞り込み（例：東 中3）" class="form-select" style="width:100%;box-sizing:border-box;margin-bottom:6px">
         <select id="vta-student" class="form-select" style="width:100%;box-sizing:border-box;margin-bottom:10px"><option value="">生徒を選んでください</option></select>
         <div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:4px">有効期限</div>
         <select id="vta-expiry" class="form-select" style="width:100%;box-sizing:border-box;margin-bottom:10px">
@@ -6658,7 +6659,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260908vid03';
+const APP_VERSION = '20260908vid04';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -15823,13 +15824,32 @@ async function loadTempAccessUI() {
   // 生徒select
   try {
     if (!staffStudents.length) staffStudents = await sbGet('students', 'select=*&order=school,grade,name') || [];
-    const sel = document.getElementById('vta-student');
-    if (sel) {
-      sel.innerHTML = '<option value="">生徒を選んでください</option>' +
-        (staffStudents || []).map(s => '<option value="' + s.id + '">' + escapeHtml(s.name) + '（' + escapeHtml(s.school||'') + ' ' + escapeHtml(s.grade||'') + '）</option>').join('');
-    }
+    renderVtaStudentOptions('');
   } catch(e) {}
   loadActiveTempAccess();
+}
+
+// 学校・学年・名前のキーワードで生徒selectを絞り込む（スペース区切りAND）。
+function filterVtaStudents() {
+  const q = (document.getElementById('vta-filter') || {}).value || '';
+  renderVtaStudentOptions(q);
+}
+
+// 生徒selectのoptionを（絞り込みキーワードに応じて）描画する。
+function renderVtaStudentOptions(keyword) {
+  const sel = document.getElementById('vta-student');
+  if (!sel) return;
+  const prev = sel.value;
+  const terms = (keyword || '').trim().split(/\s+/).filter(Boolean);
+  const matched = (staffStudents || []).filter(s => {
+    if (!terms.length) return true;
+    const hay = ((s.name||'') + ' ' + (s.school||'') + ' ' + (s.grade||'')).toLowerCase();
+    return terms.every(t => hay.includes(t.toLowerCase()));
+  });
+  sel.innerHTML = '<option value="">生徒を選んでください' + (terms.length ? '（該当 ' + matched.length + '名）' : '') + '</option>' +
+    matched.map(s => '<option value="' + s.id + '">' + escapeHtml(s.name) + '（' + escapeHtml(s.school||'') + ' ' + escapeHtml(s.grade||'') + '）</option>').join('');
+  // 直前の選択が絞り込み後も存在すれば維持する。
+  if (prev && matched.some(s => String(s.id) === String(prev))) sel.value = prev;
 }
 
 // 発行中（有効）の臨時パスワード一覧
@@ -32169,7 +32189,8 @@ async function startVideoPlayback(lesson, classId, dateISO, method) {
   const wrap = document.getElementById('vp-frame-wrap');
   // YouTube 限定公開の埋め込み。将来 bunny 対応する場合はここで source_type 分岐。
   if (lesson.source_type === 'youtube') {
-    const src = 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(lesson.source_id) + '?rel=0&modestbranding=1';
+    const src = 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(lesson.source_id) +
+      '?rel=0&modestbranding=1&controls=1&fs=1&cc_load_policy=0&iv_load_policy=3&playsinline=0&hl=ja';
     wrap.innerHTML = '<iframe src="' + src + '" style="position:absolute;inset:0;width:100%;height:100%;border:0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>';
   } else {
     wrap.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px">この動画形式にはまだ対応していません</div>';
