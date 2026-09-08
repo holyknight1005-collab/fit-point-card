@@ -23229,15 +23229,27 @@ async function loadKarteVideos(classId) {
 }
 
 // 登録モーダルを開く
-function openVideoLessonModal(classId) {
+function openVideoLessonModal(classId, presetDate, presetTitle) {
   vlmClassId = classId;
   const cm = (classMasterList || []).find(c => c.id === classId);
   document.getElementById('vlm-classlabel').textContent = cm ? ('📋 ' + cm.name) : '';
-  document.getElementById('vlm-date').value = '';
-  document.getElementById('vlm-title').value = '';
+  // コマの「＋動画」から開いた場合は授業日を自動セット（手打ち不要）。
+  document.getElementById('vlm-date').value = presetDate || '';
+  document.getElementById('vlm-title').value = presetTitle || '';
   document.getElementById('vlm-url').value = '';
   document.getElementById('vlm-idpreview').textContent = '';
   document.getElementById('video-lesson-modal').style.display = 'flex';
+}
+// コマ行の「＋動画」ボタンから開く。日付は class_sessions の session_date を渡す。
+// タイトル初期値は「M/D」。授業名はモーダル上部の vlm-classlabel に表示されるので引数に取らない
+// （onclick 引数にコマ名を渡すとクォート破損のリスクがあるため意図的に避ける）。
+function openVideoLessonForSession(classId, sessionDate) {
+  let title = '';
+  if (sessionDate) {
+    const p = sessionDate.split('-').map(Number);
+    if (p.length === 3) title = p[1] + '/' + p[2];
+  }
+  openVideoLessonModal(classId, sessionDate || '', title);
 }
 function closeVideoLessonModal() {
   document.getElementById('video-lesson-modal').style.display = 'none';
@@ -23266,7 +23278,10 @@ async function submitVideoLesson() {
     hideLoading();
     closeVideoLessonModal();
     showToast('📺 動画を登録しました', 'success');
-    loadKarteVideos(vlmClassId);
+    // カルテから開いた場合はカルテ側を、コマ一覧から開いた場合はコマ一覧のバッジを更新。
+    // 対象要素が無い画面では何も起きない（安全）。
+    if (document.getElementById('ck-videos')) loadKarteVideos(vlmClassId);
+    if (document.getElementById('cs-list') && typeof loadSessionList === 'function') { try { loadSessionList(); } catch(e) {} }
   } catch(e) {
     hideLoading();
     showToast('エラー: ' + (e.message || e), 'error');
@@ -27588,6 +27603,23 @@ async function loadSessionList() {
     el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">' + (sessionFilterClassId ? 'この授業の授業日はまだ登録されていません' : '登録済みの授業日がありません') + '</div>';
     return;
   }
+  // 表示するコマに動画が登録済みか判定するため、video_lessons を1回だけまとめて取得する（N+1回避）。
+  // キーは class_master_id + '|' + session_date。取得失敗（テーブル未作成等）は動画なし扱いで続行。
+  const videoKey = {};
+  try {
+    const dates = Array.from(new Set(sessions.map(s => s.session_date))).filter(Boolean);
+    if (dates.length) {
+      const vq = 'session_date=in.(' + dates.map(d => '"' + d + '"').join(',') +
+        ')&select=class_master_id,session_date,is_active';
+      const vids = await sbGet('video_lessons', vq) || [];
+      vids.forEach(v => {
+        const k = v.class_master_id + '|' + v.session_date;
+        if (!videoKey[k]) videoKey[k] = { any: false, active: false };
+        videoKey[k].any = true;
+        if (v.is_active) videoKey[k].active = true;
+      });
+    }
+  } catch (e) { /* 動画なし扱いで続行 */ }
   const weekNames = ['日','月','火','水','木','金','土'];
   const grouped = {};
   sessions.forEach(s => {
@@ -27599,22 +27631,35 @@ async function loadSessionList() {
     const sDate = new Date(sy, sm-1, sd);
     return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:4px">' +
       '<div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">' + sm + '/' + sd + '（' + weekNames[sDate.getDay()] + '）</div>' +
-      list.map(s =>
-        '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 0;border-top:1px solid var(--border)">' +
+      list.map(s => {
+        const vk = videoKey[s.class_master_id + '|' + date];
+        const cmName = (s.class_master?.name || '');
+        // 動画バッジ：公開中の動画があれば「📺 動画あり」、非公開のみなら「📺 非公開」。
+        let videoBadge = '';
+        if (vk && vk.any) {
+          videoBadge = vk.active
+            ? '<span style="font-size:9px;font-weight:700;color:#7B2D8B;background:#F3E6F7;border:1px solid #D9AEE3;border-radius:10px;padding:0 6px">📺 動画あり</span>'
+            : '<span style="font-size:9px;font-weight:700;color:#888;background:#EEE;border:1px solid #DDD;border-radius:10px;padding:0 6px">📺 非公開</span>';
+        }
+        // 「＋動画」：登録済みなら「📺 動画」（=追加/差し替えの導線）に見た目を寄せる。
+        const videoBtnLabel = (vk && vk.any) ? '📺 動画' : '＋ 動画';
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 0;border-top:1px solid var(--border)">' +
           '<div style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:5px;flex-wrap:wrap">' +
-            '<span>' + s.period + '限　' + (s.class_master?.name||'') + '</span>' +
+            '<span>' + s.period + '限　' + cmName + '</span>' +
             (s.is_makeup
               ? '<span style="font-size:9px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:10px;padding:0 6px">🔁 補習</span>'
               : (s.cycle_no
                   ? '<span style="font-size:9px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);border-radius:10px;padding:0 6px">' + sessionCycleLabel(s) + '</span>'
                   : '')) +
+            videoBadge +
           '</div>' +
           '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">' +
+            '<button onclick="openVideoLessonForSession(\'' + s.class_master_id + '\',\'' + date + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;color:#7B2D8B;background:#F3E6F7;border:1px solid #D9AEE3;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + videoBtnLabel + '</button>' +
             '<button onclick="toggleSessionMakeup(\'' + s.class_master_id + '\',\'' + date + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.is_makeup ? '1' : '0') + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (s.is_makeup ? '↩ 通常に戻す' : '🔁 補習にする') + '</button>' +
             '<button onclick="deleteSession(\'' + s.id + '\')" style="padding:2px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">削除</button>' +
           '</div>' +
-        '</div>'
-      ).join('') +
+        '</div>';
+      }).join('') +
     '</div>';
   }).join('');
 }
