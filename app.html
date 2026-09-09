@@ -6753,7 +6753,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260909onl02';
+const APP_VERSION = '20260909onl03';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -43506,14 +43506,51 @@ async function olLoadStudents() {
     const rows = await sbGet('online_students', 'select=*&order=created_at.desc');
     olStudentsCache = rows;
     if (!rows.length) { box.innerHTML = '<div style="color:var(--muted);font-size:13px">まだ受講者がいません</div>'; return; }
-    box.innerHTML = rows.map(s =>
-      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">'
-      + '<div style="font-weight:700;font-size:14px">' + olEsc(s.name) + '</div>'
+    box.innerHTML = rows.map(s => {
+      const active = (s.is_active !== false);
+      const badge = active
+        ? '<span style="font-size:9px;background:#E8F6EE;color:#1E6B3F;padding:2px 7px;border-radius:9px;font-weight:700">利用中</span>'
+        : '<span style="font-size:9px;background:#FDECEA;color:#943126;padding:2px 7px;border-radius:9px;font-weight:700">停止中</span>';
+      const copyText = 'ログインID：' + s.login_id + '\\nパスワード：' + s.password;
+      return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;opacity:' + (active ? '1' : '0.6') + '">'
+      + '<div style="font-weight:700;font-size:14px">' + olEsc(s.name) + '　' + badge + '</div>'
       + '<div style="font-size:12px;color:var(--muted);margin-top:2px">' + olEsc(s.high_school) + '／' + olEsc(s.prefecture) + '</div>'
       + '<div style="font-size:12px;color:var(--text);margin-top:6px">ID：<b>' + olEsc(s.login_id) + '</b>　PW：<b>' + olEsc(s.password) + '</b></div>'
-      + '</div>'
-    ).join('');
+      + '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+      + '<button onclick="olCopyLogin(' + s.id + ')" style="padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:#EAF2FB;color:#1E4276;font-size:12px;font-weight:700;cursor:pointer">📋 ID/PWコピー</button>'
+      + '<button onclick="olResetPassword(' + s.id + ')" style="padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:#FEF9E7;color:#7D6608;font-size:12px;font-weight:700;cursor:pointer">🔑 PW再発行</button>'
+      + '<button onclick="olToggleStudentActive(' + s.id + ',' + (active ? 'false' : 'true') + ')" style="padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:' + (active ? '#FDECEA' : '#E8F6EE') + ';color:' + (active ? '#943126' : '#1E6B3F') + ';font-size:12px;font-weight:700;cursor:pointer">' + (active ? '利用停止' : '再開') + '</button>'
+      + '</div></div>';
+    }).join('');
   } catch (e) { box.innerHTML = '<div style="color:#C0392B;font-size:12px">読み込み失敗: ' + olEsc(e.message) + '</div>'; }
+}
+
+async function olToggleStudentActive(id, next) {
+  if (!next && !confirm('この受講者を利用停止にしますか？（ログインできなくなります）')) return;
+  try { await sbPatch('online_students', 'id=eq.' + id, { is_active: next }); olLoadStudents(); }
+  catch (e) { alert('更新に失敗しました: ' + e.message); }
+}
+
+function olCopyLogin(id) {
+  const s = (olStudentsCache || []).find(x => x.id === id);
+  if (!s) return;
+  const txt = 'ログインID：' + s.login_id + '\nパスワード：' + s.password;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(
+      () => alert('コピーしました：\n' + txt),
+      () => prompt('この内容をコピーしてください', txt)
+    );
+  } else { prompt('この内容をコピーしてください', txt); }
+}
+
+async function olResetPassword(id) {
+  if (!confirm('パスワードを新しく作り直しますか？（今のパスワードは使えなくなります）')) return;
+  const pw = olGenPassword();
+  try {
+    await sbPatch('online_students', 'id=eq.' + id, { password: pw });
+    olLoadStudents();
+    alert('新しいパスワード：' + pw + '\n受講者に伝えてください。');
+  } catch (e) { alert('再発行に失敗しました: ' + e.message); }
 }
 
 // ---------- 受講権 ----------
