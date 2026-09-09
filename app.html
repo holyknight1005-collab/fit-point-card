@@ -468,6 +468,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <!-- プレーヤー領域（解錠後にiframeを挿入） -->
     <div id="vp-gate" style="display:none"></div>
     <div id="vp-player" style="display:none">
+      <div id="vp-parts" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
       <div style="position:relative;width:100%;padding-top:56.25%;background:#000;border-radius:10px;overflow:hidden">
         <div id="vp-frame-wrap" style="position:absolute;inset:0"></div>
       </div>
@@ -6659,7 +6660,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260908vid04';
+const APP_VERSION = '20260909vid05';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -32097,7 +32098,8 @@ async function openClassRepModal(classId, className) {
 let dayVideoMap = {};          // openDayModal の日ごと動画マップ  classId -> lesson
 let vpCurrent = null;          // 再生中: { lesson, classId, dateISO }
 
-// その日の各コマに紐づく動画をまとめて取得（公開中のみ、コマごと最新1件）。openDayModal から呼ぶ。
+// その日の各コマに紐づく動画をまとめて取得（公開中のみ、コマごとに配列で保持）。openDayModal から呼ぶ。
+// 1コマに複数動画（授業が前半・後半に分かれる等）がある場合、全部を登録順で並べる。
 async function loadDayVideos(classIds, dateISO) {
   dayVideoMap = {};
   if (!classIds || !classIds.length) return;
@@ -32105,10 +32107,10 @@ async function loadDayVideos(classIds, dateISO) {
     const inList = '(' + classIds.map(id => '"' + id + '"').join(',') + ')';
     const rows = await sbGet('video_lessons',
       'class_master_id=in.' + inList + '&session_date=eq.' + dateISO +
-      '&is_active=eq.true&select=*&order=created_at.desc') || [];
+      '&is_active=eq.true&select=*&order=created_at.asc') || [];
     rows.forEach(r => {
-      // 同コマ複数登録は最新（created_at降順の先頭）を優先
-      if (!dayVideoMap[r.class_master_id]) dayVideoMap[r.class_master_id] = r;
+      if (!dayVideoMap[r.class_master_id]) dayVideoMap[r.class_master_id] = [];
+      dayVideoMap[r.class_master_id].push(r);
     });
   } catch(e) { dayVideoMap = {}; }
 }
@@ -32139,8 +32141,9 @@ async function hasValidTempAccess(lessonId) {
 
 // 生徒がコマの「▶ アプリ内で見る」を押したとき
 async function openVideoLessonForStudent(classId, dateISO) {
-  const lesson = dayVideoMap[classId];
-  if (!lesson) { showToast('動画が見つかりませんでした', 'error'); return; }
+  const lessons = dayVideoMap[classId];
+  if (!lessons || !lessons.length) { showToast('動画が見つかりませんでした', 'error'); return; }
+  const lesson = lessons[0]; // 解錠判定・臨時パスワード判定は代表（先頭）で行う
   showLoading('確認中...');
   // 解錠判定：チェックイン or 臨時パスワード
   let method = null;
@@ -32153,7 +32156,7 @@ async function openVideoLessonForStudent(classId, dateISO) {
     promptTempPassword(classId, dateISO, lesson);
     return;
   }
-  startVideoPlayback(lesson, classId, dateISO, method);
+  startVideoPlayback(lesson, classId, dateISO, method, lessons);
 }
 
 // 臨時パスワード入力（家庭視聴）
@@ -32175,7 +32178,7 @@ async function promptTempPassword(classId, dateISO, lesson) {
     // 初回使用時刻を記録（最初の1件）
     try { await sbPatch('video_temp_access', 'id=eq.' + rows[0].id, { used_at: nowISO }); } catch(e) {}
     hideLoading();
-    startVideoPlayback(lesson, classId, dateISO, 'temp_password');
+    startVideoPlayback(lesson, classId, dateISO, 'temp_password', dayVideoMap[classId] || [lesson]);
   } catch(e) {
     hideLoading();
     showToast('エラー: ' + (e.message || e), 'error');
@@ -32183,25 +32186,38 @@ async function promptTempPassword(classId, dateISO, lesson) {
 }
 
 // プレーヤーを開いて再生開始＋視聴ログ記録
-async function startVideoPlayback(lesson, classId, dateISO, method) {
-  vpCurrent = { lesson, classId, dateISO, method };
+// lessons: そのコマの全動画（配列）。省略時は [lesson] 扱い。複数なら切り替えタブを出す。
+async function startVideoPlayback(lesson, classId, dateISO, method, lessons) {
+  const list = (lessons && lessons.length) ? lessons : [lesson];
+  vpCurrent = { lesson, classId, dateISO, method, lessons: list };
   document.getElementById('vp-title').textContent = lesson.title || 'ビデオ補習';
-  const wrap = document.getElementById('vp-frame-wrap');
-  // YouTube 限定公開の埋め込み。将来 bunny 対応する場合はここで source_type 分岐。
-  if (lesson.source_type === 'youtube') {
-    const src = 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(lesson.source_id) +
-      '?rel=0&modestbranding=1&controls=1&fs=1&cc_load_policy=0&iv_load_policy=3&playsinline=0&hl=ja';
-    wrap.innerHTML = '<iframe src="' + src + '" style="position:absolute;inset:0;width:100%;height:100%;border:0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>';
-  } else {
-    wrap.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px">この動画形式にはまだ対応していません</div>';
+
+  // 複数動画なら切り替えタブを描画（1本なら非表示）
+  const partsEl = document.getElementById('vp-parts');
+  if (partsEl) {
+    if (list.length > 1) {
+      partsEl.style.display = 'flex';
+      partsEl.innerHTML = list.map((v, i) =>
+        '<button id="vp-part-btn-' + i + '" onclick="switchVideoPart(' + i + ')" style="padding:7px 12px;border-radius:8px;border:1.5px solid #7B2D8B;background:#fff;color:#7B2D8B;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' +
+        '▶ ' + escapeHtml(v.title || ('動画' + (i+1))) + '</button>'
+      ).join('');
+    } else {
+      partsEl.style.display = 'none';
+      partsEl.innerHTML = '';
+    }
   }
+
   document.getElementById('vp-hint').textContent =
     (method === 'checkin' ? '塾でチェックイン中のため視聴できます。' : '臨時パスワードで視聴中です。') +
-    ' 最後まで見たら「完了報告」を押してね。スタッフ確認で +2pt。';
+    (list.length > 1 ? ' この授業は動画が' + list.length + '本に分かれています。全部見たら「完了報告」を押してね。' : ' 最後まで見たら「完了報告」を押してね。') +
+    ' スタッフ確認で +2pt。';
   document.getElementById('vp-player').style.display = 'block';
   document.getElementById('video-player-modal').style.display = 'flex';
 
-  // 視聴ログ（video_views）：あれば last_viewed_at 更新、なければ新規（既存の分岐パターンに合わせる）
+  // 最初の動画を再生
+  renderVideoPart(0);
+
+  // 視聴ログ（video_views）：コマ単位で代表（先頭）動画のログを記録
   try {
     const existing = await sbGet('video_views',
       'student_id=eq.' + currentStudent.id + '&video_lesson_id=eq.' + lesson.id + '&select=id&limit=1') || [];
@@ -32220,10 +32236,40 @@ async function startVideoPlayback(lesson, classId, dateISO, method) {
   } catch(e) { /* ログ失敗は視聴を妨げない */ }
 }
 
+// 切り替えタブで動画を選んだとき
+function switchVideoPart(idx) {
+  renderVideoPart(idx);
+}
+
+// idx番目の動画をプレーヤーに描画し、タブの見た目（選択中）を更新する
+function renderVideoPart(idx) {
+  if (!vpCurrent || !vpCurrent.lessons) return;
+  const v = vpCurrent.lessons[idx];
+  if (!v) return;
+  const wrap = document.getElementById('vp-frame-wrap');
+  if (v.source_type === 'youtube') {
+    const src = 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(v.source_id) +
+      '?rel=0&modestbranding=1&controls=1&fs=1&cc_load_policy=0&iv_load_policy=3&playsinline=0&hl=ja';
+    wrap.innerHTML = '<iframe src="' + src + '" style="position:absolute;inset:0;width:100%;height:100%;border:0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>';
+  } else {
+    wrap.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px">この動画形式にはまだ対応していません</div>';
+  }
+  // タブの選択状態を更新
+  (vpCurrent.lessons || []).forEach((_, i) => {
+    const btn = document.getElementById('vp-part-btn-' + i);
+    if (!btn) return;
+    const on = (i === idx);
+    btn.style.background = on ? '#7B2D8B' : '#fff';
+    btn.style.color = on ? '#fff' : '#7B2D8B';
+  });
+}
+
 function closeVideoPlayer() {
   // iframe を消して再生を止める
   const wrap = document.getElementById('vp-frame-wrap');
   if (wrap) wrap.innerHTML = '';
+  const partsEl = document.getElementById('vp-parts');
+  if (partsEl) { partsEl.style.display = 'none'; partsEl.innerHTML = ''; }
   document.getElementById('video-player-modal').style.display = 'none';
   document.getElementById('vp-player').style.display = 'none';
   vpCurrent = null;
