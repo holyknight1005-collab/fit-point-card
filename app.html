@@ -6097,6 +6097,17 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <input id="ol-les-title" type="text" placeholder="動画タイトル（例：第1回 長文読解の型）" style="padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:'Noto Sans JP',sans-serif">
           <input id="ol-les-vid" type="text" placeholder="YouTube動画ID または URL（限定公開）" style="padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:'Noto Sans JP',sans-serif">
           <div style="font-size:11px;color:var(--muted);line-height:1.6">URLを貼ってもID部分を自動で抜き出します（youtu.be / watch?v= 両対応）</div>
+          <label style="font-size:12px;color:var(--muted);font-weight:600;margin-top:4px">開放時間枠（この時間だけ受講者が視聴できます／空欄なら常時開放）</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <div style="flex:1;min-width:140px">
+              <div style="font-size:11px;color:var(--muted);margin-bottom:3px">開始</div>
+              <input id="ol-les-from" type="datetime-local" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:'Noto Sans JP',sans-serif">
+            </div>
+            <div style="flex:1;min-width:140px">
+              <div style="font-size:11px;color:var(--muted);margin-bottom:3px">終了</div>
+              <input id="ol-les-until" type="datetime-local" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:'Noto Sans JP',sans-serif">
+            </div>
+          </div>
           <button onclick="olAddLesson()" class="primary-btn" style="padding:11px;border:none;border-radius:8px;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;font-weight:700;font-size:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋ 動画を追加</button>
         </div>
         <div class="section-title">この講座の動画</div>
@@ -43640,6 +43651,37 @@ function olExtractYouTubeId(raw) {
   return s; // 判別不能ならそのまま保存（後で直せる）
 }
 
+// datetime-local の値(ローカル=JST運用)を timestamptz(+09:00)へ。空なら null。
+function olLocalToTs(v) {
+  if (!v) return null;
+  // "YYYY-MM-DDTHH:MM" を JST として明示し、確実に +09:00 を付与
+  return v.length === 16 ? v + ':00+09:00' : v + '+09:00';
+}
+
+// timestamptz を datetime-local 入力用の "YYYY-MM-DDTHH:MM"(JST) へ
+function olTsToLocal(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d)) return '';
+  const p = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(d).reduce((o,x)=>(o[x.type]=x.value,o),{});
+  return p.year + '-' + p.month + '-' + p.day + 'T' + p.hour + ':' + p.minute;
+}
+
+// timestamptz を JST "M/D HH:MM" 表示へ
+function olFmtJST(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d)) return '';
+  const p = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(d).reduce((o,x)=>(o[x.type]=x.value,o),{});
+  return p.month + '/' + p.day + ' ' + p.hour + ':' + p.minute;
+}
+
 async function olAddLesson() {
   const cid = document.getElementById('ol-les-course').value;
   const title = (document.getElementById('ol-les-title').value || '').trim();
@@ -43647,6 +43689,11 @@ async function olAddLesson() {
   if (!cid) { alert('講座を選んでください'); return; }
   if (!title) { alert('動画タイトルを入力してください'); return; }
   if (!vid) { alert('YouTube動画IDまたはURLを入力してください'); return; }
+  const fromTs = olLocalToTs(document.getElementById('ol-les-from').value);
+  const untilTs = olLocalToTs(document.getElementById('ol-les-until').value);
+  if (fromTs && untilTs && new Date(fromTs) >= new Date(untilTs)) {
+    alert('開放の終了は開始より後にしてください'); return;
+  }
   // 既存の最大 sort_order + 1
   let nextOrder = 0;
   try {
@@ -43659,31 +43706,102 @@ async function olAddLesson() {
       sort_order: nextOrder,
       title: title,
       source_type: 'youtube',
-      source_id: vid
+      source_id: vid,
+      available_from: fromTs,
+      available_until: untilTs
     });
     document.getElementById('ol-les-title').value = '';
     document.getElementById('ol-les-vid').value = '';
+    document.getElementById('ol-les-from').value = '';
+    document.getElementById('ol-les-until').value = '';
     olLoadLessons();
   } catch (e) { alert('追加に失敗しました: ' + e.message); }
 }
 
+let olLessonCache = {};
 async function olLoadLessons() {
   const box = document.getElementById('ol-lesson-list');
   if (!box) return;
   const cid = document.getElementById('ol-les-course').value;
   if (!cid) { box.innerHTML = '<div style="color:var(--muted);font-size:13px">講座を選んでください</div>'; return; }
   try {
-    const rows = await sbGet('online_lessons', 'select=*&online_course_id=eq.' + cid + '&order=sort_order.asc');
+    const rows = await sbGet('online_lessons', 'select=*&online_course_id=eq.' + cid + '&is_active=not.is.false&order=sort_order.asc');
     if (!rows.length) { box.innerHTML = '<div style="color:var(--muted);font-size:13px">この講座にはまだ動画がありません</div>'; return; }
-    box.innerHTML = rows.map((l, i) =>
-      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;align-items:center;gap:10px">'
-      + '<div style="font-weight:700;color:var(--orange-d);font-size:13px;min-width:28px">' + (i+1) + '.</div>'
-      + '<div style="flex:1">'
-      + '<div style="font-weight:700;font-size:14px">' + olEsc(l.title) + '</div>'
-      + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + olEsc(l.source_type) + ' : ' + olEsc(l.source_id || '(未設定)') + '</div>'
-      + '</div></div>'
-    ).join('');
+    olLessonCache = {};
+    box.innerHTML = rows.map((l, i) => {
+      olLessonCache[l.id] = l;
+      let win;
+      if (l.available_from || l.available_until) {
+        win = '<span style="color:var(--orange-d);font-weight:700">' + olEsc(olFmtJST(l.available_from) || '—') + ' 〜 ' + olEsc(olFmtJST(l.available_until) || '') + '</span>';
+      } else {
+        win = '<span style="color:var(--green-d)">常時開放</span>';
+      }
+      return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;align-items:flex-start;gap:10px">'
+        + '<div style="font-weight:700;color:var(--orange-d);font-size:13px;min-width:28px">' + (i+1) + '.</div>'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-weight:700;font-size:14px">' + olEsc(l.title) + '</div>'
+        + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + olEsc(l.source_type) + ' : ' + olEsc(l.source_id || '(未設定)') + '</div>'
+        + '<div style="font-size:12px;margin-top:4px">🕒 ' + win + '</div>'
+        + '<div style="display:flex;gap:8px;margin-top:8px">'
+        + '<button onclick="olEditLesson(' + l.id + ')" style="padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">✎ 時間枠・内容を編集</button>'
+        + '<button onclick="olDeleteLesson(' + l.id + ')" style="padding:6px 12px;border:1px solid #E6B0AA;border-radius:8px;background:#FDECEA;color:#943126;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">🗑 削除</button>'
+        + '</div>'
+        + '<div id="ol-les-edit-' + l.id + '"></div>'
+        + '</div></div>';
+    }).join('');
   } catch (e) { box.innerHTML = '<div style="color:#C0392B;font-size:12px">読み込み失敗: ' + olEsc(e.message) + '</div>'; }
+}
+
+// インライン編集フォームを開く
+function olEditLesson(id) {
+  const l = olLessonCache[id];
+  const slot = document.getElementById('ol-les-edit-' + id);
+  if (!l || !slot) return;
+  if (slot.innerHTML) { slot.innerHTML = ''; return; } // トグル
+  slot.innerHTML =
+    '<div style="border-top:1px dashed var(--border);margin-top:8px;padding-top:10px;display:flex;flex-direction:column;gap:8px">'
+    + '<label style="font-size:11px;color:var(--muted);font-weight:600">タイトル</label>'
+    + '<input id="ol-edit-title-' + id + '" type="text" value="' + olEsc(l.title || '') + '" style="padding:9px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit">'
+    + '<label style="font-size:11px;color:var(--muted);font-weight:600">YouTube動画ID / URL</label>'
+    + '<input id="ol-edit-vid-' + id + '" type="text" value="' + olEsc(l.source_id || '') + '" style="padding:9px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit">'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    + '<div style="flex:1;min-width:130px"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">開放 開始</div>'
+    + '<input id="ol-edit-from-' + id + '" type="datetime-local" value="' + olTsToLocal(l.available_from) + '" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit"></div>'
+    + '<div style="flex:1;min-width:130px"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">開放 終了</div>'
+    + '<input id="ol-edit-until-' + id + '" type="datetime-local" value="' + olTsToLocal(l.available_until) + '" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit"></div>'
+    + '</div>'
+    + '<div style="display:flex;gap:8px">'
+    + '<button onclick="olSaveLesson(' + id + ')" style="flex:1;padding:9px;border:none;border-radius:8px;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit">保存</button>'
+    + '<button onclick="document.getElementById(\'ol-les-edit-' + id + '\').innerHTML=\'\'" style="padding:9px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--muted);font-weight:700;font-size:13px;cursor:pointer;font-family:inherit">閉じる</button>'
+    + '</div>'
+    + '<div style="font-size:11px;color:var(--muted)">開放時間を両方空にすると「常時開放」になります。</div>'
+    + '</div>';
+}
+
+async function olSaveLesson(id) {
+  const title = (document.getElementById('ol-edit-title-' + id).value || '').trim();
+  const vid = olExtractYouTubeId(document.getElementById('ol-edit-vid-' + id).value);
+  const fromTs = olLocalToTs(document.getElementById('ol-edit-from-' + id).value);
+  const untilTs = olLocalToTs(document.getElementById('ol-edit-until-' + id).value);
+  if (!title) { alert('タイトルを入力してください'); return; }
+  if (fromTs && untilTs && new Date(fromTs) >= new Date(untilTs)) { alert('開放の終了は開始より後にしてください'); return; }
+  try {
+    await sbPatch('online_lessons', 'id=eq.' + id, {
+      title: title, source_id: vid,
+      available_from: fromTs, available_until: untilTs
+    });
+    olLoadLessons();
+  } catch (e) { alert('保存に失敗しました: ' + e.message); }
+}
+
+// 論理削除（anon DELETE不可のため is_active=false）
+async function olDeleteLesson(id) {
+  const l = olLessonCache[id];
+  if (!confirm('「' + (l ? l.title : 'この動画') + '」を削除しますか？\n（受講者の一覧から見えなくなります）')) return;
+  try {
+    await sbPatch('online_lessons', 'id=eq.' + id, { is_active: false });
+    olLoadLessons();
+  } catch (e) { alert('削除に失敗しました: ' + e.message); }
 }
 
 function switchManageTab(tab, el) {

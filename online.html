@@ -112,9 +112,64 @@ async function sbGet(table, query) {
   return res.json();
 }
 
+async function sbPost(table, body, prefer) {
+  const res = await fetch(SB_URL + '/rest/v1/' + table, {
+    method: 'POST',
+    headers: {
+      apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY,
+      'Content-Type': 'application/json',
+      Prefer: prefer || 'return=representation'
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error('登録エラー(' + res.status + ')');
+  const txt = await res.text();
+  return txt ? JSON.parse(txt) : null;
+}
+
+async function sbPatch(table, query, body) {
+  const res = await fetch(SB_URL + '/rest/v1/' + table + '?' + query, {
+    method: 'PATCH',
+    headers: {
+      apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation'
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error('更新エラー(' + res.status + ')');
+  const txt = await res.text();
+  return txt ? JSON.parse(txt) : null;
+}
+
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+// timestamptz を JST の「M/D HH:MM」で表示（UTCドリフト回避）
+function fmtJST(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d)) return '';
+  const p = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(d).reduce((o,x)=>(o[x.type]=x.value,o),{});
+  return p.month + '/' + p.day + ' ' + p.hour + ':' + p.minute;
+}
+
+// YouTube ID の抽出（生ID / URL / 短縮URL いずれでも）
+function extractYouTubeId(v) {
+  if (!v) return '';
+  const s = String(v).trim();
+  if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
+  const m = s.match(/(?:youtu\.be\/|v=|embed\/|shorts\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : '';
+}
+
 let currentOnlineStudent = null;
+let myEnrollments = [];
+let currentCourse = null;
+let currentEnrollment = null;
+let currentViewId = null;
 
 // ---- ログイン ----
 async function doLogin() {
@@ -182,23 +237,22 @@ async function loadMyCourses() {
       area.innerHTML = '<div class="empty">受講できる講座はまだありません。<br>入金確認後に塾が受講権を付与すると、ここに表示されます。</div>';
       return;
     }
+    myEnrollments = enrolls;
     area.innerHTML = enrolls.map(en => {
       const c = en.online_courses || {};
-      // 視聴可否のAND判定（ガワ版：実際の視聴導線は次回）
-      const reasons = viewability(en, c);
-      const canView = reasons.ok;
+      // 講座レベルの可否（受講権/個別スイッチ/講座スイッチ/期限）。時間枠はコマ単位で判定する。
+      const cs = courseAccess(en, c);
       const chips = [];
-      chips.push('<span class="chip info">視聴 ' + (en.consumed_views||0) + '/' + (en.max_views||1) + '回</span>');
-      if (en.expires_at) chips.push('<span class="chip info">期限 ' + String(en.expires_at).slice(0,10) + '</span>');
-      chips.push(canView ? '<span class="chip ok">視聴できます</span>'
-                         : '<span class="chip lock">' + esc(reasons.label) + '</span>');
+      if (en.expires_at) chips.push('<span class="chip info">受講期限 ' + esc(String(en.expires_at).slice(0,10)) + '</span>');
+      chips.push(cs.ok ? '<span class="chip ok">受講中</span>'
+                       : '<span class="chip lock">' + esc(cs.label) + '</span>');
       return '<div class="course">'
         + '<h3>' + esc(c.title || '(講座)') + '</h3>'
         + (c.description ? '<div class="desc">' + esc(c.description) + '</div>' : '')
         + '<div class="meta">' + chips.join('') + '</div>'
-        + '<button class="btn" ' + (canView ? '' : 'disabled style="opacity:.5;cursor:not-allowed"')
+        + '<button class="btn" ' + (cs.ok ? '' : 'disabled style="opacity:.5;cursor:not-allowed"')
         + ' onclick="openCourse(' + (c.id||0) + ')">'
-        + (canView ? '▶ 受講する' : '視聴できません') + '</button>'
+        + (cs.ok ? '講座を開く' : '受講できません') + '</button>'
         + '</div>';
     }).join('');
   } catch (e) {
@@ -206,23 +260,179 @@ async function loadMyCourses() {
   }
 }
 
-// AND判定（スタッフ側で設計した6条件のうち、この画面で判断できる分）
-// 受講権 AND 個別スイッチ AND 講座スイッチ AND 期限 AND 回数 AND 時間帯
-function viewability(en, course) {
+// --- 講座レベルの可否（受講権 AND 個別スイッチ AND 講座スイッチ AND 受講期限）---
+function courseAccess(en, course) {
   const now = new Date();
   if (en.is_unlocked === false) return { ok:false, label:'停止中' };
   if (course.is_active === false) return { ok:false, label:'休止中' };
   if (course.is_streaming === false) return { ok:false, label:'配信停止中' };
-  if (en.expires_at && new Date(en.expires_at) < now) return { ok:false, label:'期限切れ' };
-  if ((en.consumed_views||0) >= (en.max_views||1)) return { ok:false, label:'視聴回数の上限' };
-  if (en.available_from && new Date(en.available_from) > now) return { ok:false, label:'視聴開始前' };
-  if (en.available_until && new Date(en.available_until) < now) return { ok:false, label:'視聴期間終了' };
+  if (en.expires_at && new Date(en.expires_at) < now) return { ok:false, label:'受講期限切れ' };
   return { ok:true, label:'' };
 }
 
-// 受講画面へ（次回：動画プレーヤー＋感想提出＋consumed_views+1 を実装）
-function openCourse(courseId) {
-  alert('受講画面は準備中です。\n（次回：動画の視聴・感想の提出をここに実装します）');
+// --- コマ単位の時間枠判定（開放時間だけ視聴できる）---
+function lessonWindow(lesson) {
+  const now = new Date();
+  const from = lesson.available_from ? new Date(lesson.available_from) : null;
+  const until = lesson.available_until ? new Date(lesson.available_until) : null;
+  if (from && from > now)  return { ok:false, state:'before', label:fmtJST(from) + ' から視聴できます' };
+  if (until && until < now) return { ok:false, state:'ended', label:'視聴期間が終了しました' };
+  // from/until 未設定のコマは常時開放扱い
+  return { ok:true, state:'open', label:'視聴できます' };
+}
+
+// ---- 講座を開く：コマ一覧を表示 ----
+async function openCourse(courseId) {
+  const en = myEnrollments.find(e => (e.online_courses||{}).id === courseId);
+  const c = en ? en.online_courses : null;
+  if (!en || !c) return;
+  currentCourse = c;
+  currentEnrollment = en;
+
+  const area = document.getElementById('course-area');
+  area.innerHTML =
+    '<div class="card">'
+    + '<button class="btn ghost" style="width:auto;margin-top:0;padding:8px 14px;font-size:12px" onclick="loadMyCourses()">← 講座一覧へ</button>'
+    + '<h2 style="margin-top:12px">' + esc(c.title || '') + '</h2>'
+    + (c.description ? '<p class="sub">' + esc(c.description) + '</p>' : '')
+    + '</div>'
+    + '<div id="lesson-area"><div class="loading">読み込み中…</div></div>';
+
+  const la = document.getElementById('lesson-area');
+  try {
+    const lessons = await sbGet('online_lessons',
+      'online_course_id=eq.' + c.id + '&is_active=not.is.false&select=*&order=sort_order.asc,id.asc');
+    if (!lessons.length) {
+      la.innerHTML = '<div class="empty">この講座にはまだ授業が登録されていません。</div>';
+      return;
+    }
+    // 視聴済み（completed）を取得してバッジに反映
+    let doneIds = {};
+    try {
+      const views = await sbGet('online_views',
+        'online_student_id=eq.' + currentOnlineStudent.id +
+        '&completed=eq.true&select=online_lesson_id');
+      views.forEach(v => { doneIds[v.online_lesson_id] = true; });
+    } catch(e){ /* バッジ表示だけの用途なので失敗しても続行 */ }
+
+    la.innerHTML = lessons.map((ls, i) => {
+      const w = lessonWindow(ls);
+      const chips = [];
+      if (ls.available_from || ls.available_until) {
+        chips.push('<span class="chip info">' +
+          esc(fmtJST(ls.available_from) || '—') + '〜' + esc(fmtJST(ls.available_until) || '') + '</span>');
+      }
+      if (doneIds[ls.id]) chips.push('<span class="chip ok">受講済み</span>');
+      chips.push(w.ok ? '<span class="chip ok">視聴できます</span>'
+                      : '<span class="chip lock">' + esc(w.label) + '</span>');
+      return '<div class="course">'
+        + '<h3>' + (i+1) + '. ' + esc(ls.title || '(授業)') + '</h3>'
+        + '<div class="meta">' + chips.join('') + '</div>'
+        + '<button class="btn" ' + (w.ok ? '' : 'disabled style="opacity:.5;cursor:not-allowed"')
+        + ' onclick="openLesson(' + ls.id + ')">'
+        + (w.ok ? '▶ 視聴する' : (w.state==='before' ? '公開前' : '公開終了')) + '</button>'
+        + '</div>';
+    }).join('');
+  } catch (e) {
+    la.innerHTML = '<div class="empty">授業一覧の読み込みに失敗しました。<br>時間をおいて開き直してください。</div>';
+  }
+}
+
+// ---- コマを開く：動画プレーヤー + 感想提出 ----
+async function openLesson(lessonId) {
+  const area = document.getElementById('course-area');
+  area.innerHTML = '<div class="loading">読み込み中…</div>';
+  let ls;
+  try {
+    const rows = await sbGet('online_lessons', 'id=eq.' + lessonId + '&select=*&limit=1');
+    ls = rows && rows[0];
+  } catch(e){ ls = null; }
+  if (!ls) { area.innerHTML = '<div class="empty">授業が見つかりませんでした。</div>'; return; }
+
+  // 時間枠を再判定（一覧表示から時間が経っている可能性に備える）
+  const w = lessonWindow(ls);
+  if (!w.ok) {
+    area.innerHTML =
+      '<div class="card"><button class="btn ghost" style="width:auto;margin-top:0;padding:8px 14px;font-size:12px" onclick="openCourse(' + ls.online_course_id + ')">← 授業一覧へ</button>'
+      + '<div class="empty" style="margin-top:14px">' + esc(w.label) + '</div></div>';
+    return;
+  }
+
+  const vid = (ls.source_type === 'youtube') ? extractYouTubeId(ls.source_id) : '';
+  const player = vid
+    ? '<div style="position:relative;width:100%;padding-top:56.25%;border-radius:12px;overflow:hidden;background:#000">'
+      + '<iframe src="https://www.youtube.com/embed/' + esc(vid) + '?rel=0&modestbranding=1" '
+      + 'style="position:absolute;inset:0;width:100%;height:100%;border:0" '
+      + 'allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" '
+      + 'allowfullscreen></iframe></div>'
+    : '<div class="empty">この授業の動画はまだ準備中です。</div>';
+
+  area.innerHTML =
+    '<div class="card">'
+    + '<button class="btn ghost" style="width:auto;margin-top:0;padding:8px 14px;font-size:12px" onclick="openCourse(' + ls.online_course_id + ')">← 授業一覧へ</button>'
+    + '<h2 style="margin-top:12px">' + esc(ls.title || '') + '</h2>'
+    + '</div>'
+    + '<div class="card">' + player + '</div>'
+    + '<div class="card">'
+    + '<h2>感想の提出</h2>'
+    + '<p class="sub">授業を見終えたら、学んだこと・質問などを書いて提出してください。</p>'
+    + '<textarea id="reflection" rows="5" style="width:100%;padding:13px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:15px;font-family:inherit;background:var(--bg);resize:vertical" placeholder="今日の授業でわかったこと・質問など"></textarea>'
+    + '<button class="btn" id="submit-reflection" onclick="submitReflection(' + ls.id + ')">感想を提出する</button>'
+    + '<div id="reflection-msg" class="err" style="background:#E8F6EE;border-color:#A9DFBF;color:#1E6B3F;display:none"></div>'
+    + '</div>';
+
+  // 視聴レコードを作成（未完了で記録。感想提出で completed=true に更新）
+  ensureView(ls.id);
+}
+
+// 視聴レコードの用意（既存があれば流用、なければ作成）
+async function ensureView(lessonId) {
+  try {
+    const rows = await sbGet('online_views',
+      'online_student_id=eq.' + currentOnlineStudent.id +
+      '&online_lesson_id=eq.' + lessonId + '&select=id,completed&limit=1');
+    if (rows && rows[0]) { currentViewId = rows[0].id; return; }
+    const created = await sbPost('online_views', {
+      online_student_id: currentOnlineStudent.id,
+      online_lesson_id: lessonId,
+      completed: false
+    });
+    currentViewId = created && created[0] ? created[0].id : null;
+  } catch(e){ currentViewId = null; }
+}
+
+// 感想提出 → completed=true + reflection 保存
+async function submitReflection(lessonId) {
+  const btn = document.getElementById('submit-reflection');
+  const msg = document.getElementById('reflection-msg');
+  const text = (document.getElementById('reflection').value || '').trim();
+  msg.style.display = 'none';
+  if (!text) {
+    msg.textContent = '感想を入力してください。'; msg.style.color = '#943126';
+    msg.style.background = '#FDECEA'; msg.style.borderColor = '#E6B0AA'; msg.style.display = 'block';
+    return;
+  }
+  btn.disabled = true; btn.textContent = '送信中…';
+  try {
+    const payload = { completed: true, reflection: text, completed_at: new Date().toISOString() };
+    if (currentViewId) {
+      await sbPatch('online_views', 'id=eq.' + currentViewId, payload);
+    } else {
+      // 念のため：レコードが無ければ作成
+      await sbPost('online_views', Object.assign({
+        online_student_id: currentOnlineStudent.id, online_lesson_id: lessonId
+      }, payload));
+    }
+    msg.textContent = '感想を提出しました。お疲れさまでした！';
+    msg.style.color = '#1E6B3F'; msg.style.background = '#E8F6EE'; msg.style.borderColor = '#A9DFBF';
+    msg.style.display = 'block';
+    btn.textContent = '提出済み';
+  } catch(e) {
+    btn.disabled = false; btn.textContent = '感想を提出する';
+    msg.textContent = '送信に失敗しました。時間をおいて試してください。';
+    msg.style.color = '#943126'; msg.style.background = '#FDECEA'; msg.style.borderColor = '#E6B0AA';
+    msg.style.display = 'block';
+  }
 }
 
 // 起動時
