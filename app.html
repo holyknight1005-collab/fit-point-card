@@ -6032,6 +6032,8 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <button class="tab-btn" id="ol-subtab-students" onclick="olSwitchSub('students',this)">👤 受講者</button>
         <button class="tab-btn" id="ol-subtab-enroll" onclick="olSwitchSub('enroll',this)">🎫 受講権</button>
         <button class="tab-btn" id="ol-subtab-lessons" onclick="olSwitchSub('lessons',this)">🎥 動画登録</button>
+        <button class="tab-btn" id="ol-subtab-reflections" onclick="olSwitchSub('reflections',this)">💬 感想</button>
+        <button class="tab-btn" id="ol-subtab-progress" onclick="olSwitchSub('progress',this)">📊 進捗</button>
       </div>
 
       <!-- ========== 講座 ========== -->
@@ -6112,6 +6114,28 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         </div>
         <div class="section-title">この講座の動画</div>
         <div id="ol-lesson-list" style="display:flex;flex-direction:column;gap:8px"><div style="color:var(--muted);font-size:13px">講座を選んでください</div></div>
+      </div>
+
+      <!-- ========== 感想 ========== -->
+      <div id="ol-sub-reflections" style="display:none">
+        <div class="section-title">💬 受講者の感想</div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;display:flex;flex-direction:column;gap:10px">
+          <label style="font-size:12px;color:var(--muted);font-weight:600">講座でしぼり込み</label>
+          <select id="ol-ref-course" onchange="olLoadReflections()" style="padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:'Noto Sans JP',sans-serif"></select>
+          <div style="font-size:11px;color:var(--muted);line-height:1.6">受講者が提出した感想を、新しい順に表示します。</div>
+        </div>
+        <div id="ol-reflection-list" style="display:flex;flex-direction:column;gap:10px"><div style="color:var(--muted);font-size:13px">読み込み中…</div></div>
+      </div>
+
+      <!-- ========== 進捗 ========== -->
+      <div id="ol-sub-progress" style="display:none">
+        <div class="section-title">📊 視聴の進捗</div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px;display:flex;flex-direction:column;gap:10px">
+          <label style="font-size:12px;color:var(--muted);font-weight:600">講座を選択</label>
+          <select id="ol-prog-course" onchange="olLoadProgress()" style="padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:'Noto Sans JP',sans-serif"></select>
+          <div style="font-size:11px;color:var(--muted);line-height:1.6">受講権を持つ受講者 × この講座の各コマの視聴進捗です。<b>未</b>＝未着手（開いていない）。％は視聴到達位置。</div>
+        </div>
+        <div id="ol-progress-area" style="overflow-x:auto"><div style="color:var(--muted);font-size:13px">講座を選んでください</div></div>
       </div>
 
     </div>
@@ -43398,7 +43422,7 @@ async function initOnlineTab() {
 }
 
 function olSwitchSub(sub, el) {
-  ['courses','students','enroll','lessons'].forEach(s => {
+  ['courses','students','enroll','lessons','reflections','progress'].forEach(s => {
     const c = document.getElementById('ol-sub-' + s);
     if (c) c.style.display = 'none';
     const b = document.getElementById('ol-subtab-' + s);
@@ -43411,6 +43435,8 @@ function olSwitchSub(sub, el) {
   if (sub === 'students') olLoadStudents();
   if (sub === 'enroll') olLoadEnrollUI();
   if (sub === 'lessons') olLoadLessonCourseSelect();
+  if (sub === 'reflections') olLoadReflectionCourseSelect();
+  if (sub === 'progress') olLoadProgressCourseSelect();
 }
 
 function olEsc(s) {
@@ -43802,6 +43828,142 @@ async function olDeleteLesson(id) {
     await sbPatch('online_lessons', 'id=eq.' + id, { is_active: false });
     olLoadLessons();
   } catch (e) { alert('削除に失敗しました: ' + e.message); }
+}
+
+// ---------- 感想閲覧 ----------
+async function olLoadReflectionCourseSelect() {
+  try {
+    const courses = await sbGet('online_courses', 'select=id,title&order=created_at.desc');
+    const sel = document.getElementById('ol-ref-course');
+    if (sel) {
+      sel.innerHTML = '<option value="">すべての講座</option>'
+        + courses.map(c => '<option value="' + c.id + '">' + olEsc(c.title) + '</option>').join('');
+    }
+  } catch (e) {}
+  olLoadReflections();
+}
+
+async function olLoadReflections() {
+  const box = document.getElementById('ol-reflection-list');
+  if (!box) return;
+  box.innerHTML = '<div style="color:var(--muted);font-size:13px">読み込み中…</div>';
+  const cid = document.getElementById('ol-ref-course') ? document.getElementById('ol-ref-course').value : '';
+  try {
+    // 感想が提出された（completed=true かつ reflection あり）ものを取得。2階層ネストで生徒名・コマ名・講座名まで。
+    let q = 'select=*,online_students(name,login_id),online_lessons(title,sort_order,online_course_id,online_courses(title))'
+          + '&completed=eq.true&reflection=not.is.null&order=completed_at.desc';
+    let rows = await sbGetAll('online_views', q);
+    // 講座で絞り込み（クライアント側：ネスト先の course_id で）
+    if (cid) {
+      rows = rows.filter(r => r.online_lessons && String(r.online_lessons.online_course_id) === String(cid));
+    }
+    if (!rows.length) {
+      box.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px">まだ感想の提出はありません。</div>';
+      return;
+    }
+    box.innerHTML = rows.map(r => {
+      const stu = r.online_students || {};
+      const les = r.online_lessons || {};
+      const crs = (les.online_courses) || {};
+      const when = r.completed_at ? olFmtJSTFull(r.completed_at) : '';
+      return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px">'
+        + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap">'
+        + '<div style="font-weight:700;font-size:14px">' + olEsc(stu.name || '(不明な受講者)') + '</div>'
+        + '<div style="font-size:11px;color:var(--muted)">' + olEsc(when) + '</div>'
+        + '</div>'
+        + '<div style="font-size:11px;color:var(--orange-d);font-weight:700;margin-top:3px">'
+        + olEsc(crs.title || '(講座不明)') + ' ／ ' + olEsc(les.title || '(コマ不明)') + '</div>'
+        + '<div style="font-size:14px;line-height:1.7;margin-top:8px;white-space:pre-wrap;border-top:1px dashed var(--border);padding-top:8px">'
+        + olEsc(r.reflection || '') + '</div>'
+        + '</div>';
+    }).join('');
+  } catch (e) {
+    box.innerHTML = '<div style="color:#C0392B;font-size:12px">読み込み失敗: ' + olEsc(e.message) + '</div>';
+  }
+}
+
+// timestamptz を JST「M/D(曜) HH:MM」表示へ
+function olFmtJSTFull(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d)) return '';
+  const p = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', weekday: 'short',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(d).reduce((o,x)=>(o[x.type]=x.value,o),{});
+  return p.month + '/' + p.day + '(' + p.weekday + ') ' + p.hour + ':' + p.minute;
+}
+
+// ---------- 視聴進捗（受講者 × コマ のマトリクス）----------
+async function olLoadProgressCourseSelect() {
+  try {
+    const courses = await sbGet('online_courses', 'select=id,title&order=created_at.desc');
+    const sel = document.getElementById('ol-prog-course');
+    if (sel) sel.innerHTML = courses.map(c => '<option value="' + c.id + '">' + olEsc(c.title) + '</option>').join('') || '<option value="">講座なし</option>';
+  } catch (e) {}
+  olLoadProgress();
+}
+
+async function olLoadProgress() {
+  const box = document.getElementById('ol-progress-area');
+  if (!box) return;
+  const cid = document.getElementById('ol-prog-course') ? document.getElementById('ol-prog-course').value : '';
+  if (!cid) { box.innerHTML = '<div style="color:var(--muted);font-size:13px">講座を選んでください</div>'; return; }
+  box.innerHTML = '<div style="color:var(--muted);font-size:13px">読み込み中…</div>';
+  try {
+    // コマ（この講座・有効なもの）
+    const lessons = await sbGet('online_lessons', 'select=id,title,sort_order&online_course_id=eq.' + cid + '&is_active=not.is.false&order=sort_order.asc');
+    if (!lessons.length) { box.innerHTML = '<div style="color:var(--muted);font-size:13px">この講座にはまだ動画がありません</div>'; return; }
+    // 受講権を持つ受講者（この講座）
+    const enrolls = await sbGetAll('online_enrollments', 'select=online_student_id,online_students(name)&online_course_id=eq.' + cid);
+    if (!enrolls.length) { box.innerHTML = '<div style="color:var(--muted);font-size:13px">この講座の受講者（受講権）がまだいません</div>'; return; }
+    // 重複受講権を排除
+    const stuMap = {};
+    enrolls.forEach(e => { if (e.online_student_id && !stuMap[e.online_student_id]) stuMap[e.online_student_id] = (e.online_students && e.online_students.name) || '(不明)'; });
+    const stuIds = Object.keys(stuMap);
+    // 視聴レコード（この講座のコマに対する、対象受講者の分）
+    const lessonIds = lessons.map(l => l.id);
+    const views = await sbGetAll('online_views',
+      'select=online_student_id,online_lesson_id,progress_pct,completed,last_viewed_at,first_viewed_at'
+      + '&online_lesson_id=in.(' + lessonIds.join(',') + ')'
+      + '&online_student_id=in.(' + stuIds.join(',') + ')');
+    // 索引化: key = studentId + ':' + lessonId
+    const vmap = {};
+    views.forEach(v => { vmap[v.online_student_id + ':' + v.online_lesson_id] = v; });
+
+    // テーブル生成
+    let html = '<table style="border-collapse:collapse;font-size:12px;min-width:100%">';
+    html += '<thead><tr><th style="position:sticky;left:0;background:var(--bg);border:1px solid var(--border);padding:8px;text-align:left;min-width:110px">受講者</th>';
+    lessons.forEach((l,i) => { html += '<th style="border:1px solid var(--border);padding:8px;min-width:64px" title="' + olEsc(l.title) + '">' + (i+1) + '</th>'; });
+    html += '</tr></thead><tbody>';
+    stuIds.forEach(sid => {
+      html += '<tr><td style="position:sticky;left:0;background:var(--surface);border:1px solid var(--border);padding:8px;font-weight:700">' + olEsc(stuMap[sid]) + '</td>';
+      lessons.forEach(l => {
+        const v = vmap[sid + ':' + l.id];
+        let cell, bg, fg = '#3B342B';
+        if (!v || (!v.first_viewed_at && !v.progress_pct)) { cell = '未'; bg = '#F2ECE0'; fg = '#9A8F7D'; }
+        else {
+          const pct = v.progress_pct || 0;
+          cell = pct + '%' + (v.completed ? '<br><span style="font-size:9px">提出済</span>' : '');
+          if (pct >= 90) { bg = '#E8F6EE'; fg = '#1E6B3F'; }
+          else if (pct >= 40) { bg = '#FEF6E6'; fg = '#8A6D1F'; }
+          else { bg = '#FDECEA'; fg = '#943126'; }
+        }
+        html += '<td style="border:1px solid var(--border);padding:6px;text-align:center;background:' + bg + ';color:' + fg + ';font-weight:700">' + cell + '</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    html += '<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.8">'
+      + '列番号 = コマの順番（見出しにマウスを乗せるとタイトル表示）。'
+      + '<span style="background:#E8F6EE;color:#1E6B3F;padding:1px 6px;border-radius:6px;font-weight:700">90%〜</span> '
+      + '<span style="background:#FEF6E6;color:#8A6D1F;padding:1px 6px;border-radius:6px;font-weight:700">40〜89%</span> '
+      + '<span style="background:#FDECEA;color:#943126;padding:1px 6px;border-radius:6px;font-weight:700">〜39%</span> '
+      + '<span style="background:#F2ECE0;color:#9A8F7D;padding:1px 6px;border-radius:6px;font-weight:700">未着手</span></div>';
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = '<div style="color:#C0392B;font-size:12px">読み込み失敗: ' + olEsc(e.message) + '</div>';
+  }
 }
 
 function switchManageTab(tab, el) {

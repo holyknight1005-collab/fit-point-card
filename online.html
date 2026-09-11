@@ -170,6 +170,13 @@ let myEnrollments = [];
 let currentCourse = null;
 let currentEnrollment = null;
 let currentViewId = null;
+let currentLesson = null;
+let ytPlayer = null;
+let ytApiLoading = false;
+let progressTimer = null;
+let maxWatchedSec = 0;
+let lessonDurationSec = 0;
+let viewHadFirst = false;
 
 // ---- ログイン ----
 async function doLogin() {
@@ -361,15 +368,12 @@ async function openLesson(lessonId) {
   const vid = (ls.source_type === 'youtube') ? extractYouTubeId(ls.source_id) : '';
   const player = vid
     ? '<div style="position:relative;width:100%;padding-top:56.25%;border-radius:12px;overflow:hidden;background:#000">'
-      + '<iframe src="https://www.youtube.com/embed/' + esc(vid) + '?rel=0&modestbranding=1" '
-      + 'style="position:absolute;inset:0;width:100%;height:100%;border:0" '
-      + 'allow="accelerometer;autoplay;clipboard-write;encrypted-media;gyroscope;picture-in-picture" '
-      + 'allowfullscreen></iframe></div>'
+      + '<div id="yt-player" style="position:absolute;inset:0;width:100%;height:100%"></div></div>'
     : '<div class="empty">この授業の動画はまだ準備中です。</div>';
 
   area.innerHTML =
     '<div class="card">'
-    + '<button class="btn ghost" style="width:auto;margin-top:0;padding:8px 14px;font-size:12px" onclick="openCourse(' + ls.online_course_id + ')">← 授業一覧へ</button>'
+    + '<button class="btn ghost" style="width:auto;margin-top:0;padding:8px 14px;font-size:12px" onclick="leaveLesson(' + ls.online_course_id + ')">← 授業一覧へ</button>'
     + '<h2 style="margin-top:12px">' + esc(ls.title || '') + '</h2>'
     + '</div>'
     + '<div class="card">' + player + '</div>'
@@ -381,24 +385,106 @@ async function openLesson(lessonId) {
     + '<div id="reflection-msg" class="err" style="background:#E8F6EE;border-color:#A9DFBF;color:#1E6B3F;display:none"></div>'
     + '</div>';
 
-  // 視聴レコードを作成（未完了で記録。感想提出で completed=true に更新）
-  ensureView(ls.id);
+  // 視聴レコードを用意 → プレーヤー起動（進捗記録）
+  currentLesson = ls;
+  await ensureView(ls.id);
+  if (vid) startPlayer(vid);
 }
 
 // 視聴レコードの用意（既存があれば流用、なければ作成）
 async function ensureView(lessonId) {
+  maxWatchedSec = 0;
+  lessonDurationSec = (currentLesson && currentLesson.duration_sec) ? currentLesson.duration_sec : 0;
   try {
     const rows = await sbGet('online_views',
       'online_student_id=eq.' + currentOnlineStudent.id +
-      '&online_lesson_id=eq.' + lessonId + '&select=id,completed&limit=1');
-    if (rows && rows[0]) { currentViewId = rows[0].id; return; }
+      '&online_lesson_id=eq.' + lessonId + '&select=id,completed,watched_sec,first_viewed_at&limit=1');
+    if (rows && rows[0]) {
+      currentViewId = rows[0].id;
+      maxWatchedSec = rows[0].watched_sec || 0;   // 前回までの到達点を引き継ぐ
+      viewHadFirst = !!rows[0].first_viewed_at;
+      return;
+    }
     const created = await sbPost('online_views', {
       online_student_id: currentOnlineStudent.id,
       online_lesson_id: lessonId,
       completed: false
     });
     currentViewId = created && created[0] ? created[0].id : null;
+    viewHadFirst = false;
   } catch(e){ currentViewId = null; }
+}
+
+// ---- YouTube IFrame API プレーヤー＋進捗記録 ----
+function startPlayer(vid) {
+  function create() {
+    ytPlayer = new YT.Player('yt-player', {
+      videoId: vid,
+      playerVars: { rel:0, modestbranding:1, playsinline:1 },
+      events: { onReady: onPlayerReady, onStateChange: onPlayerState }
+    });
+  }
+  if (window.YT && window.YT.Player) { create(); return; }
+  // APIコールバックを登録
+  window.onYouTubeIframeAPIReady = create;
+  if (!ytApiLoading) {
+    ytApiLoading = true;
+    const tag = document.createElement('script');
+    tag.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(tag);
+  }
+}
+
+function onPlayerReady() {
+  // 総尺を取得し、未登録なら online_lessons.duration_sec を補完
+  try {
+    const dur = Math.floor(ytPlayer.getDuration() || 0);
+    if (dur > 0) {
+      lessonDurationSec = dur;
+      if (currentLesson && !currentLesson.duration_sec) {
+        currentLesson.duration_sec = dur;
+        sbPatch('online_lessons', 'id=eq.' + currentLesson.id, { duration_sec: dur }).catch(()=>{});
+      }
+    }
+  } catch(e){}
+  // 初回視聴時刻
+  if (currentViewId && !viewHadFirst) {
+    viewHadFirst = true;
+    sbPatch('online_views', 'id=eq.' + currentViewId, { first_viewed_at: new Date().toISOString() }).catch(()=>{});
+  }
+}
+
+function onPlayerState(ev) {
+  // 1=再生中：定期保存を開始 / それ以外：停止して1回保存
+  if (ev.data === YT.PlayerState.PLAYING) {
+    if (!progressTimer) progressTimer = setInterval(tickProgress, 15000); // 15秒ごと
+  } else {
+    if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+    tickProgress(); // 一時停止・終了・離脱直前に確定保存
+  }
+}
+
+function tickProgress() {
+  if (!ytPlayer || !currentViewId) return;
+  let cur = 0;
+  try { cur = Math.floor(ytPlayer.getCurrentTime() || 0); } catch(e){ return; }
+  if (cur > maxWatchedSec) maxWatchedSec = cur;
+  const pct = lessonDurationSec > 0
+    ? Math.min(100, Math.round(maxWatchedSec / lessonDurationSec * 100)) : 0;
+  sbPatch('online_views', 'id=eq.' + currentViewId, {
+    watched_sec: maxWatchedSec,
+    progress_pct: pct,
+    last_viewed_at: new Date().toISOString()
+  }).catch(()=>{});
+}
+
+// 授業一覧へ戻る（プレーヤー破棄＋最終保存）
+function leaveLesson(courseId) {
+  if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+  tickProgress();
+  try { if (ytPlayer && ytPlayer.destroy) ytPlayer.destroy(); } catch(e){}
+  ytPlayer = null;
+  openCourse(courseId);
 }
 
 // 感想提出 → completed=true + reflection 保存
@@ -434,6 +520,12 @@ async function submitReflection(lessonId) {
     msg.style.display = 'block';
   }
 }
+
+// タブを閉じる/バックグラウンド化する直前に進捗を確定保存（モバイル対策）
+document.addEventListener('visibilitychange', function(){
+  if (document.visibilityState === 'hidden') tickProgress();
+});
+window.addEventListener('pagehide', function(){ tickProgress(); });
 
 // 起動時
 tryAutoLogin();
