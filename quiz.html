@@ -257,7 +257,7 @@
 // デプロイのたびにこの値を上げ、quiz_version.txt の中身と一致させること。
 // app.html とは独立管理（quiz_version.txt を参照）。app側の更新で quiz が巻き込まれない。
 // ============================================================
-const QUIZ_VERSION = '20260913k';
+const QUIZ_VERSION = '20260913l';
 
 // quiz_version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkQuizVersion(){
@@ -1199,7 +1199,7 @@ function genNumberChoices(answer){
 let markState = null;
 
 // qs: mini_quiz_questions の生配列（section/points/combo_group/choice_min/choice_max 付き）
-function startMarkExam(assignId, setId, title, qs, preview){
+function startMarkExam(assignId, setId, title, qs, preview, prior){
   // 大問ごとにグルーピング（section昇順、各section内はq_order昇順）
   const secMap = {};
   qs.slice().sort((a,b)=>(a.q_order-b.q_order)).forEach(q=>{
@@ -1212,7 +1212,20 @@ function startMarkExam(assignId, setId, title, qs, preview){
     const maxpt = items.reduce((sum,q)=>sum+(q.points||0),0);
     return { section:s, items:items, maxPoints:maxpt };
   });
-  markState = { assignId, setId, title, preview:!!preview, sections, results:{}, startedAt:Date.now() };
+  markState = { assignId, setId, title, preview:!!preview, sections, results:{}, startedAt:Date.now(), resultId:null };
+
+  // 既存結果があれば、送信済み大問と選択を復元（続きから）
+  if(!preview && prior){
+    markState.resultId = prior.id || null;
+    const bySec = {}; (prior.section_breakdown||[]).forEach(b=>{ bySec[b.section]=b; });
+    // 選択の復元
+    (prior.answers||[]).forEach(a=>{ if(a.given!=null) markState['pick_'+a.question_id]=String(a.given); });
+    // 送信済み大問の結果を復元（detailは表示用に再構築不要＝件数/点数のみ使う）
+    sections.forEach(sec=>{
+      const b = bySec[sec.section];
+      if(b){ markState.results[sec.section] = { correct:b.correct, total:b.total, score:b.score, maxPoints:sec.maxPoints, detail:[] }; }
+    });
+  }
 
   document.getElementById('solve-title').textContent = title + (preview?'（プレビュー）':'');
   document.getElementById('solve-timer').style.display='none';
@@ -1329,9 +1342,62 @@ function markSubmit(section){
 
   st.results[section] = { correct, total, score, maxPoints:sec.maxPoints, detail };
   renderMark();
-  // 全大問送信済みなら保存へ
-  const allDone = st.sections.every(x=> st.results[x.section] );
-  if(allDone){ finishMarkExam(); }
+  // 送信のたびにDBへ保存（初回POST・以降PATCH）。プレビューは保存しない。
+  persistMarkResult(section);
+}
+
+// 送信済みの大問だけを集計してDBに反映（案B：都度保存）
+async function persistMarkResult(justSubmittedSection){
+  const st = markState;
+  updateMarkTotal();
+  if(st.preview){ showToast('第'+justSubmittedSection+'問 採点（プレビュー・保存なし）','info'); return; }
+
+  // 送信済み大問だけで全体を再集計
+  let score=0, maxp=0, correct=0, total=0;
+  const answers=[]; const breakdown=[];
+  st.sections.forEach(sec=>{
+    maxp += sec.maxPoints; // 満点は全大問ぶん（未送信も含む＝100点満点で見せる）
+    const r = st.results[sec.section];
+    if(!r) return; // 未送信の大問は保存対象外
+    score+=r.score; correct+=r.correct; total+=r.total;
+    breakdown.push({section:sec.section, correct:r.correct, total:r.total, score:r.score, max:sec.maxPoints});
+    sec.items.forEach(q=>{
+      answers.push({ question_id:q.id, q_no:q.text, given:(st['pick_'+q.id]||null), correct:(st['pick_'+q.id]===String(q.answer)) });
+    });
+  });
+  const elapsed = Math.round((Date.now()-st.startedAt)/1000);
+  const submittedCount = st.sections.filter(x=>st.results[x.section]).length;
+  const allDone = submittedCount===st.sections.length;
+  const payload = {
+    quiz_assignment_id: st.assignId,
+    student_id: currentStudent.id,
+    answers: answers,
+    correct_count: correct,
+    total_count: total,
+    score: score,
+    max_score: maxp,
+    section_breakdown: breakdown,
+    elapsed_sec: elapsed
+  };
+  try{
+    if(st.resultId){
+      // 既存行を更新
+      await sbPatch('mini_quiz_results','id=eq.'+st.resultId, payload);
+    } else {
+      // 初回：既存行があればそれを使い、無ければ作成
+      const exist = await sbGet('mini_quiz_results','quiz_assignment_id=eq.'+st.assignId+'&student_id=eq.'+currentStudent.id+'&select=id');
+      if(exist && exist.length){
+        st.resultId = exist[0].id;
+        await sbPatch('mini_quiz_results','id=eq.'+st.resultId, payload);
+      } else {
+        const created = await sbPost('mini_quiz_results', payload, 'return=representation');
+        if(created && created[0]) st.resultId = created[0].id;
+      }
+    }
+    showToast(allDone ? ('全問提出しました（'+score+'点 / '+maxp+'点）') : ('第'+justSubmittedSection+'問を送信しました'), 'success');
+  }catch(e){
+    showToast('保存に失敗：'+(e&&e.message?e.message:e),'error');
+  }
 }
 
 function updateMarkTotal(){
@@ -1356,58 +1422,24 @@ function updateMarkTotal(){
     + '</div>';
 }
 
-async function finishMarkExam(){
-  const st = markState;
-  updateMarkTotal();
-  if(st.preview){ showToast('プレビュー完了（保存しません）','info'); return; }
-  // 保存：answers に各問の選択と正誤、section_breakdown に大問別、score/max_score
-  let score=0, maxp=0, correct=0, total=0;
-  const answers=[]; const breakdown=[];
-  st.sections.forEach(sec=>{
-    const r = st.results[sec.section];
-    score+=r.score; maxp+=sec.maxPoints; correct+=r.correct; total+=r.total;
-    breakdown.push({section:sec.section, correct:r.correct, total:r.total, score:r.score, max:sec.maxPoints});
-    sec.items.forEach(q=>{
-      answers.push({ question_id:q.id, q_no:q.text, given:(st['pick_'+q.id]||null), correct:(st['pick_'+q.id]===String(q.answer)) });
-    });
-  });
-  const elapsed = Math.round((Date.now()-st.startedAt)/1000);
-  showLoading('保存中...');
-  try{
-    await sbPost('mini_quiz_results', {
-      quiz_assignment_id: st.assignId,
-      student_id: currentStudent.id,
-      answers: answers,
-      correct_count: correct,
-      total_count: total,
-      score: score,
-      max_score: maxp,
-      section_breakdown: breakdown,
-      elapsed_sec: elapsed
-    }, 'return=minimal');
-    hideLoading();
-    showToast('提出しました（'+score+'点 / '+maxp+'点）','success');
-  }catch(e){
-    hideLoading();
-    showToast('保存に失敗：'+(e&&e.message?e.message:e),'error');
-  }
-}
-
 async function startSolve(assignId, setId){
   showLoading('読み込み中...');
   try{
-    // 二重提出ガード（最新確認）
-    const exist = await sbGet('mini_quiz_results','quiz_assignment_id=eq.'+assignId+'&student_id=eq.'+currentStudent.id+'&select=id');
-    if(exist && exist.length){ hideLoading(); showToast('この小テストは提出済みです','info'); loadStudentQuizzes(); return; }
     const qs = await sbGet('mini_quiz_questions','quiz_set_id=eq.'+setId+'&order=q_order&select=*');
     if(!qs.length){ hideLoading(); showToast('問題がありません','error'); return; }
     const set = await sbGet('mini_quiz_sets','id=eq.'+setId+'&select=title,time_mode,time_limit_sec,exam_type,total_points');
-    // マーク模試は専用画面へ（大問ごとに番号を選んで送信・正解番号は非表示）
+    // マーク模試は専用画面へ（大問ごとに送信・都度保存・続きから再開OK）
     if(set[0] && set[0].exam_type==='mark'){
+      // 既存の途中/完了結果があれば復元して続きから
+      let prior=null;
+      try{ const ex=await sbGet('mini_quiz_results','quiz_assignment_id=eq.'+assignId+'&student_id=eq.'+currentStudent.id+'&select=*'); if(ex&&ex.length) prior=ex[0]; }catch(e){}
       hideLoading();
-      startMarkExam(assignId, setId, (set[0].title||'マーク模試'), qs, false);
+      startMarkExam(assignId, setId, (set[0].title||'マーク模試'), qs, false, prior);
       return;
     }
+    // 通常小テストは二重提出ガード
+    const exist = await sbGet('mini_quiz_results','quiz_assignment_id=eq.'+assignId+'&student_id=eq.'+currentStudent.id+'&select=id');
+    if(exist && exist.length){ hideLoading(); showToast('この小テストは提出済みです','info'); loadStudentQuizzes(); return; }
     const timeMode = (set[0] && set[0].time_mode) || 'none';
     const totalLimitSec = (set[0] && set[0].time_limit_sec) || null;
     solveState={ assignId, setId, timeMode, totalLimitSec, startedAt: Date.now(), questions: qs.map(q=>{
