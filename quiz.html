@@ -81,6 +81,9 @@
   .choice-opt.sel{border-color:var(--green);background:var(--green-l);font-weight:700}
   .choice-opt.correct{border-color:var(--green-ok);background:var(--green-ok-l)}
   .choice-opt.wrong{border-color:var(--red);background:var(--red-l)}
+  .mark-row{display:flex;flex-wrap:wrap;gap:8px}
+  .mark-opt{width:44px;height:44px;display:flex;align-items:center;justify-content:center;border:1.5px solid var(--border);border-radius:10px;font-size:16px;font-weight:700;cursor:pointer;background:var(--surface);color:var(--ink);user-select:none}
+  .mark-opt.sel{border-color:var(--green);background:var(--green,#2d6db5);color:#fff}
   .bar-bg{height:8px;background:var(--bg);border-radius:4px;overflow:hidden}
   .bar-fill{height:100%;border-radius:4px}
   /* 数式そのものは途中改行で崩さない。ただし問題文（日本語＋数式）は折り返せるようにする。
@@ -145,10 +148,17 @@
         <div id="solve-timer-fill" style="height:100%;width:100%;background:var(--green-ok);border-radius:5px;transition:width 1s linear,background .3s"></div>
       </div>
     </div>
-    <div id="solve-progress" class="muted" style="margin-bottom:10px"></div>
-    <div id="solve-questions"></div>
-    <button id="solve-submit" class="btn btn-primary btn-block" style="margin-top:8px" onclick="onSolveSubmitClick()">答え合わせ</button>
-    <div id="solve-result" style="display:none;margin-top:14px"></div>
+    <div id="solve-normal">
+      <div id="solve-progress" class="muted" style="margin-bottom:10px"></div>
+      <div id="solve-questions"></div>
+      <button id="solve-submit" class="btn btn-primary btn-block" style="margin-top:8px" onclick="onSolveSubmitClick()">答え合わせ</button>
+      <div id="solve-result" style="display:none;margin-top:14px"></div>
+    </div>
+    <div id="solve-mark" style="display:none">
+      <div id="mark-intro" class="muted" style="margin-bottom:10px"></div>
+      <div id="mark-sections"></div>
+      <div id="mark-total" style="display:none;margin-top:14px"></div>
+    </div>
   </div>
 </div>
 
@@ -247,7 +257,7 @@
 // デプロイのたびにこの値を上げ、quiz_version.txt の中身と一致させること。
 // app.html とは独立管理（quiz_version.txt を参照）。app側の更新で quiz が巻き込まれない。
 // ============================================================
-const QUIZ_VERSION = '20260702i';
+const QUIZ_VERSION = '20260913j';
 
 // quiz_version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkQuizVersion(){
@@ -1180,6 +1190,209 @@ function genNumberChoices(answer){
   return shuffle([...set].slice(0,6));
 }
 
+// ============================================================
+// マーク模試モード（exam_type='mark'）
+//   大問ごとに解答番号を選んで「送信」→ 件数と点数だけ表示（正解番号は非表示）。
+//   完解グループ(combo_group)は全問正解で代表問の points を加点。
+//   送信は大問ごとに1回きり。全大問送信で mini_quiz_results に保存。
+// ============================================================
+let markState = null;
+
+// qs: mini_quiz_questions の生配列（section/points/combo_group/choice_min/choice_max 付き）
+function startMarkExam(assignId, setId, title, qs, preview){
+  // 大問ごとにグルーピング（section昇順、各section内はq_order昇順）
+  const secMap = {};
+  qs.slice().sort((a,b)=>(a.q_order-b.q_order)).forEach(q=>{
+    const s = q.section || 1;
+    if(!secMap[s]) secMap[s]=[];
+    secMap[s].push(q);
+  });
+  const sections = Object.keys(secMap).map(k=>parseInt(k,10)).sort((a,b)=>a-b).map(s=>{
+    const items = secMap[s];
+    const maxpt = items.reduce((sum,q)=>sum+(q.points||0),0);
+    return { section:s, items:items, maxPoints:maxpt };
+  });
+  markState = { assignId, setId, title, preview:!!preview, sections, results:{}, startedAt:Date.now() };
+
+  document.getElementById('solve-title').textContent = title + (preview?'（プレビュー）':'');
+  document.getElementById('solve-timer').style.display='none';
+  document.getElementById('solve-normal').style.display='none';
+  document.getElementById('solve-mark').style.display='block';
+  document.getElementById('mark-total').style.display='none';
+  document.getElementById('mark-intro').textContent =
+    (preview?'【プレビュー】':'') + '全'+qs.length+'問　問題冊子を解いてから、大問ごとに解答番号を選んで送信してください';
+  renderMark();
+  showScreen('screen-solve');
+  window.scrollTo(0,0);
+}
+
+function renderMark(){
+  const st = markState;
+  const html = st.sections.map(sec=>{
+    const r = st.results[sec.section];
+    const locked = !!r;
+    // 各問のボタン列
+    const itemsHtml = sec.items.map(q=>{
+      const lo = (q.choice_min!=null?q.choice_min:1);
+      const hi = (q.choice_max!=null?q.choice_max:6);
+      let btns='';
+      for(let v=lo; v<=hi; v++){
+        const selp = (st['pick_'+q.id]===String(v))?' sel':'';
+        const dis = locked ? ' style="pointer-events:none;opacity:.55"' : '';
+        btns += '<div class="mark-opt'+selp+'"'+dis+' onclick="markPick(\''+q.id+'\',\''+v+'\')" '
+             + 'data-qid="'+esc(q.id)+'" data-val="'+v+'">'+v+'</div>';
+      }
+      const comboTag = q.combo_group ? '<span style="font-size:10px;color:var(--muted);margin-left:6px">完解</span>' : '';
+      return '<div style="margin-bottom:10px">'
+        + '<div style="font-size:12px;font-weight:700;color:var(--ink);margin-bottom:5px">問'+esc(q.text)+comboTag+'</div>'
+        + '<div class="mark-row">'+btns+'</div>'
+        + '</div>';
+    }).join('');
+
+    let resultHtml='';
+    if(locked){
+      resultHtml = '<div style="margin-top:8px;padding:10px;background:var(--surface,#f5f7fa);border-radius:10px">'
+        + '<span style="font-size:15px;font-weight:800;color:var(--ink)">'+r.total+'問中 '+r.correct+'問正解</span>'
+        + '<span style="font-size:13px;color:var(--muted);margin-left:8px">（'+r.score+'点 / '+sec.maxPoints+'点）</span>'
+        + '</div>';
+    }
+
+    return '<div class="card" data-sec="'+sec.section+'">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+      +   '<span style="font-size:15px;font-weight:800;color:var(--ink)">第'+sec.section+'問</span>'
+      +   '<span style="font-size:12px;color:var(--muted)">'+sec.maxPoints+'点</span>'
+      + '</div>'
+      + itemsHtml
+      + '<div class="mark-err muted" data-sec="'+sec.section+'" style="color:var(--red);font-size:12px;min-height:0"></div>'
+      + (locked ? '' : '<button class="btn btn-primary btn-block" style="margin-top:6px" onclick="markSubmit('+sec.section+')">第'+sec.section+'問を送信</button>')
+      + resultHtml
+      + '</div>';
+  }).join('');
+  document.getElementById('mark-sections').innerHTML = html;
+  updateMarkTotal();
+}
+
+function markPick(qid, val){
+  const st = markState;
+  if(st['pick_'+qid]===String(val)) { st['pick_'+qid]=null; } // 再タップで解除
+  else { st['pick_'+qid]=String(val); }
+  // 該当ボタン行だけ塗り替え
+  document.querySelectorAll('.mark-opt[data-qid="'+cssEsc(qid)+'"]').forEach(el=>{
+    el.classList.toggle('sel', el.getAttribute('data-val')===st['pick_'+qid]);
+  });
+  // エラー消去
+  const card = document.querySelector('.card[data-sec] .mark-opt[data-qid="'+cssEsc(qid)+'"]');
+  if(card){ const c=card.closest('.card'); const e=c && c.querySelector('.mark-err'); if(e) e.textContent=''; }
+}
+
+// CSS属性セレクタ用の簡易エスケープ（uuidは英数と-のみなので実質そのまま）
+function cssEsc(s){ return String(s).replace(/"/g,'\\"'); }
+
+function markSubmit(section){
+  const st = markState;
+  const sec = st.sections.filter(x=>x.section===section)[0];
+  if(!sec) return;
+  const card = document.querySelector('.card[data-sec="'+section+'"]');
+  const errEl = card ? card.querySelector('.mark-err') : null;
+  // 全問入力チェック
+  const missing = sec.items.some(q=> st['pick_'+q.id]==null );
+  if(missing){ if(errEl) errEl.textContent='すべての問題に解答を選んでください'; return; }
+
+  // 採点：単独問と完解グループを分けて集計
+  let correct=0, total=0, score=0, detail=[];
+  const comboSeen = {};
+  // 完解グループの正誤を先に判定
+  const comboOK = {}; const comboPts = {};
+  sec.items.forEach(q=>{
+    if(q.combo_group){
+      if(comboOK[q.combo_group]===undefined) comboOK[q.combo_group]=true;
+      const ok = (st['pick_'+q.id]===String(q.answer));
+      if(!ok) comboOK[q.combo_group]=false;
+      comboPts[q.combo_group] = (comboPts[q.combo_group]||0) + (q.points||0);
+    }
+  });
+  sec.items.forEach(q=>{
+    if(q.combo_group){
+      if(comboSeen[q.combo_group]) return; // グループは1回だけ集計
+      comboSeen[q.combo_group]=true;
+      total++;
+      const ok = comboOK[q.combo_group];
+      if(ok){ correct++; score += comboPts[q.combo_group]; }
+      detail.push({label:q.combo_group, ok:ok, combo:true});
+    } else {
+      total++;
+      const ok = (st['pick_'+q.id]===String(q.answer));
+      if(ok){ correct++; score += (q.points||0); }
+      detail.push({qid:q.id, label:q.text, ok:ok, combo:false});
+    }
+  });
+
+  st.results[section] = { correct, total, score, maxPoints:sec.maxPoints, detail };
+  renderMark();
+  // 全大問送信済みなら保存へ
+  const allDone = st.sections.every(x=> st.results[x.section] );
+  if(allDone){ finishMarkExam(); }
+}
+
+function updateMarkTotal(){
+  const st = markState;
+  const box = document.getElementById('mark-total');
+  const done = st.sections.filter(x=>st.results[x.section]);
+  if(!done.length){ box.style.display='none'; return; }
+  let score=0, maxp=0, correct=0, total=0;
+  st.sections.forEach(x=>{
+    const r = st.results[x.section];
+    if(r){ score+=r.score; correct+=r.correct; total+=r.total; }
+    maxp += x.maxPoints;
+  });
+  const allDone = done.length===st.sections.length;
+  box.style.display='block';
+  box.innerHTML = '<div class="card" style="background:var(--surface,#f5f7fa)">'
+    + '<div style="display:flex;justify-content:space-between;align-items:baseline">'
+    +   '<span style="font-size:13px;color:var(--muted)">'+(allDone?'総得点':'ここまでの得点')+'</span>'
+    +   '<span style="font-size:22px;font-weight:900;color:var(--ink)">'+score+' / '+maxp+'</span>'
+    + '</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-top:4px">正答 '+correct+' / '+total+' 問</div>'
+    + '</div>';
+}
+
+async function finishMarkExam(){
+  const st = markState;
+  updateMarkTotal();
+  if(st.preview){ showToast('プレビュー完了（保存しません）','info'); return; }
+  // 保存：answers に各問の選択と正誤、section_breakdown に大問別、score/max_score
+  let score=0, maxp=0, correct=0, total=0;
+  const answers=[]; const breakdown=[];
+  st.sections.forEach(sec=>{
+    const r = st.results[sec.section];
+    score+=r.score; maxp+=sec.maxPoints; correct+=r.correct; total+=r.total;
+    breakdown.push({section:sec.section, correct:r.correct, total:r.total, score:r.score, max:sec.maxPoints});
+    sec.items.forEach(q=>{
+      answers.push({ question_id:q.id, q_no:q.text, given:(st['pick_'+q.id]||null), correct:(st['pick_'+q.id]===String(q.answer)) });
+    });
+  });
+  const elapsed = Math.round((Date.now()-st.startedAt)/1000);
+  showLoading('保存中...');
+  try{
+    await sbPost('mini_quiz_results', {
+      quiz_assignment_id: st.assignId,
+      student_id: currentStudent.id,
+      answers: answers,
+      correct_count: correct,
+      total_count: total,
+      score: score,
+      max_score: maxp,
+      section_breakdown: breakdown,
+      elapsed_sec: elapsed
+    }, 'return=minimal');
+    hideLoading();
+    showToast('提出しました（'+score+'点 / '+maxp+'点）','success');
+  }catch(e){
+    hideLoading();
+    showToast('保存に失敗：'+(e&&e.message?e.message:e),'error');
+  }
+}
+
 async function startSolve(assignId, setId){
   showLoading('読み込み中...');
   try{
@@ -1188,7 +1401,13 @@ async function startSolve(assignId, setId){
     if(exist && exist.length){ hideLoading(); showToast('この小テストは提出済みです','info'); loadStudentQuizzes(); return; }
     const qs = await sbGet('mini_quiz_questions','quiz_set_id=eq.'+setId+'&order=q_order&select=*');
     if(!qs.length){ hideLoading(); showToast('問題がありません','error'); return; }
-    const set = await sbGet('mini_quiz_sets','id=eq.'+setId+'&select=title,time_mode,time_limit_sec');
+    const set = await sbGet('mini_quiz_sets','id=eq.'+setId+'&select=title,time_mode,time_limit_sec,exam_type,total_points');
+    // マーク模試は専用画面へ（大問ごとに番号を選んで送信・正解番号は非表示）
+    if(set[0] && set[0].exam_type==='mark'){
+      hideLoading();
+      startMarkExam(assignId, setId, (set[0].title||'マーク模試'), qs, false);
+      return;
+    }
     const timeMode = (set[0] && set[0].time_mode) || 'none';
     const totalLimitSec = (set[0] && set[0].time_limit_sec) || null;
     solveState={ assignId, setId, timeMode, totalLimitSec, startedAt: Date.now(), questions: qs.map(q=>{
@@ -1314,8 +1533,14 @@ async function previewSet(setId, title){
   showLoading('読み込み中...');
   try{
     const qs = await sbGet('mini_quiz_questions','quiz_set_id=eq.'+setId+'&order=q_order&select=*');
+    const set = await sbGet('mini_quiz_sets','id=eq.'+setId+'&select=exam_type,title');
     hideLoading();
     if(!qs.length){ showToast('問題がありません','error'); return; }
+    // マーク模試は専用画面でプレビュー（保存なし）
+    if(set[0] && set[0].exam_type==='mark'){
+      startMarkExam(null, setId, (title||set[0].title||'マーク模試'), qs, true);
+      return;
+    }
     const questions = qs.map(q=>({ id:q.id, type:q.q_type, text:q.text, answer:q.answer, choices:q.choices }));
     openPreview(title, questions, true);
   }catch(e){ hideLoading(); showToast('読み込みエラー: '+e.message,'error'); }
@@ -1544,7 +1769,17 @@ async function viewMyResult(assignId){
   }catch(e){ hideLoading(); showToast('エラー: '+e.message,'error'); }
 }
 
-function backToStudent(){ clearQuizTimer(); document.getElementById('solve-timer').style.display='none'; if(solveState && solveState.preview){ exitPreview(); return; } solveState=null; showScreen('screen-student'); loadStudentQuizzes(); }
+function backToStudent(){ clearQuizTimer(); document.getElementById('solve-timer').style.display='none';
+  // マーク模試表示中は通常UIを復帰させてから戻る
+  if(markState){
+    const wasPreview = markState.preview;
+    markState=null;
+    document.getElementById('solve-mark').style.display='none';
+    document.getElementById('solve-normal').style.display='block';
+    if(wasPreview && isStaff){ showScreen('screen-staff'); staffTab('list'); return; }
+    showScreen('screen-student'); loadStudentQuizzes(); return;
+  }
+  if(solveState && solveState.preview){ exitPreview(); return; } solveState=null; showScreen('screen-student'); loadStudentQuizzes(); }
 
 // ============================================================
 // スタッフ：集計（正答率）
