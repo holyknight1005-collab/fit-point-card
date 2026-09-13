@@ -257,7 +257,7 @@
 // デプロイのたびにこの値を上げ、quiz_version.txt の中身と一致させること。
 // app.html とは独立管理（quiz_version.txt を参照）。app側の更新で quiz が巻き込まれない。
 // ============================================================
-const QUIZ_VERSION = '20260913j';
+const QUIZ_VERSION = '20260913k';
 
 // quiz_version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function checkQuizVersion(){
@@ -1804,6 +1804,126 @@ async function loadAssignSelectForStats(){
   }catch(e){ sel.innerHTML='<option value="">エラー</option>'; }
 }
 
+// マーク模試の集計表示（先生用：得点・大問別・問題別・生徒別を可視化）
+function renderMarkStats(body, qs, results){
+  // 問題メタ
+  const qById={}; qs.forEach(q=>qById[q.id]=q);
+  // 大問リスト
+  const secSet=[...new Set(qs.map(q=>q.section||1))].sort((a,b)=>a-b);
+  const secMax={}; secSet.forEach(s=>{ secMax[s]=qs.filter(q=>(q.section||1)===s).reduce((sum,q)=>sum+(q.points||0),0); });
+  const maxTotal = qs.reduce((sum,q)=>sum+(q.points||0),0);
+
+  // 得点集計（score優先。無ければbreakdownやanswersから算出）
+  function scoreOf(r){
+    if(r.score!=null) return r.score;
+    if(Array.isArray(r.section_breakdown)) return r.section_breakdown.reduce((s,b)=>s+(b.score||0),0);
+    return null;
+  }
+  const scored = results.map(r=>({r, sc:scoreOf(r)})).filter(x=>x.sc!=null);
+  const n = results.length;
+  const avg = scored.length ? Math.round(scored.reduce((s,x)=>s+x.sc,0)/scored.length) : null;
+  const maxSc = scored.length ? Math.max(...scored.map(x=>x.sc)) : null;
+  const minSc = scored.length ? Math.min(...scored.map(x=>x.sc)) : null;
+
+  // 大問別：平均得点／満点
+  const secAgg={}; secSet.forEach(s=>secAgg[s]={score:0,cnt:0});
+  results.forEach(r=>{
+    if(Array.isArray(r.section_breakdown)){
+      r.section_breakdown.forEach(b=>{ if(secAgg[b.section]){ secAgg[b.section].score+=(b.score||0); secAgg[b.section].cnt++; } });
+    }
+  });
+
+  // 問題別 正答率（answers.correct を集計。完解グループは代表1問で見る）
+  const perQ={}; qs.forEach(q=>{ perQ[q.id]={ok:0,total:0,label:q.text,combo:q.combo_group||null}; });
+  results.forEach(r=>{
+    (r.answers||[]).forEach(a=>{ if(perQ[a.question_id]){ perQ[a.question_id].total++; if(a.correct) perQ[a.question_id].ok++; } });
+  });
+
+  // 生徒名
+  const sids=[...new Set(results.map(r=>r.student_id))];
+
+  let html='';
+  // サマリーカード
+  html+='<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">'
+    + '<div class="card" style="flex:1;min-width:90px;text-align:center;margin:0"><div class="muted">提出</div><div style="font-size:22px;font-weight:900">'+n+'</div></div>'
+    + '<div class="card" style="flex:1;min-width:90px;text-align:center;margin:0"><div class="muted">平均点</div><div style="font-size:22px;font-weight:900;color:var(--green-ok)">'+(avg!=null?avg:'--')+'</div><div class="muted" style="font-size:10px">/ '+maxTotal+'</div></div>'
+    + '<div class="card" style="flex:1;min-width:90px;text-align:center;margin:0"><div class="muted">最高/最低</div><div style="font-size:16px;font-weight:800">'+(maxSc!=null?maxSc:'--')+' / '+(minSc!=null?minSc:'--')+'</div></div>'
+    + '</div>';
+
+  // 大問別 平均得点
+  html+='<div class="sec-title">大問別 平均得点</div>';
+  secSet.forEach(s=>{
+    const a=secAgg[s]; const av=a.cnt?Math.round(a.score/a.cnt):0; const mx=secMax[s];
+    const rate=mx?Math.round(av/mx*100):0;
+    const color = rate>=70?'var(--green-ok)':rate>=50?'var(--orange, #E0A96F)':'var(--red)';
+    html+='<div style="margin-bottom:10px">'
+      + '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span>第'+s+'問</span>'
+      + '<span style="font-weight:700;color:'+color+'">'+av+' / '+mx+'点（'+rate+'%）</span></div>'
+      + '<div class="bar-bg"><div class="bar-fill" style="width:'+rate+'%;background:'+color+'"></div></div></div>';
+  });
+
+  // 問題別 正答率
+  html+='<div class="sec-title" style="margin-top:14px">問題別 正答率</div>';
+  qs.forEach(q=>{
+    const p=perQ[q.id]; const rate=p.total?Math.round(p.ok/p.total*100):0;
+    const color = rate>=70?'var(--green-ok)':rate>=50?'var(--orange, #E0A96F)':'var(--red)';
+    const comboTag = q.combo_group ? '<span class="muted" style="font-size:10px;margin-left:4px">完解</span>' : '';
+    html+='<div style="margin-bottom:8px">'
+      + '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span>問'+esc(q.text)+comboTag+'（正解 '+esc(q.answer)+'）</span>'
+      + '<span style="font-weight:700;color:'+color+'">'+rate+'%</span></div>'
+      + '<div class="bar-bg"><div class="bar-fill" style="width:'+rate+'%;background:'+color+'"></div></div></div>';
+  });
+
+  body.innerHTML = html
+    + '<div class="sec-title" style="margin-top:14px">生徒別（点数の高い順）</div>'
+    + '<div id="mark-stu-list"><div class="muted" style="text-align:center;padding:10px">生徒名を読み込み中...</div></div>';
+
+  // 生徒名を取得して生徒別リストを描画
+  (async()=>{
+    let nameMap={};
+    if(sids.length){ try{ const stus=await sbGet('students','id=in.('+sids.join(',')+')&select=id,name'); stus.forEach(s=>nameMap[s.id]=s.name); }catch(e){} }
+    const qOrder={}; qs.forEach((q,i)=>qOrder[q.id]=i+1);
+    window._markStatCtx={results, nameMap, qById, qOrder};
+    const sorted = results.slice().sort((a,b)=>(scoreOf(b)||0)-(scoreOf(a)||0));
+    const list = sorted.map(r=>{
+      const nm=esc(nameMap[r.student_id]||'(生徒)');
+      const sc=scoreOf(r); const el=fmtElapsed(r.elapsed_sec);
+      return '<div style="border-top:1px solid var(--border,#e5e5e5)">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:7px 0;cursor:pointer" onclick="toggleMarkStu(\''+r.id+'\')">'
+        +   '<span>▸ '+nm+'</span>'
+        +   '<span style="display:flex;gap:10px;align-items:center">'
+        +     (el?'<span class="muted" style="font-size:11px">⏱ '+el+'</span>':'')
+        +     '<span style="font-weight:800">'+(sc!=null?sc:'-')+' / '+maxTotal+'</span>'
+        +   '</span>'
+        + '</div>'
+        + '<div id="markstu-'+r.id+'" style="display:none;padding:2px 0 10px"></div>'
+        + '</div>';
+    }).join('');
+    document.getElementById('mark-stu-list').innerHTML = list;
+  })();
+}
+
+// 生徒行タップ → 各問の選択と◯×（先生用に正解も表示）
+function toggleMarkStu(resultId){
+  const box=document.getElementById('markstu-'+resultId);
+  if(!box) return;
+  if(box.style.display!=='none'){ box.style.display='none'; return; }
+  const ctx=window._markStatCtx||{};
+  const r=(ctx.results||[]).find(x=>String(x.id)===String(resultId));
+  box.style.display='block';
+  if(!r || !Array.isArray(r.answers) || !r.answers.length){ box.innerHTML='<div class="muted" style="font-size:11px">各問の記録がありません</div>'; return; }
+  const ans=r.answers.slice().sort((a,b)=>(ctx.qOrder[a.question_id]||0)-(ctx.qOrder[b.question_id]||0));
+  box.innerHTML='<div style="display:flex;flex-wrap:wrap;gap:5px">'
+    + ans.map(a=>{
+        const q=ctx.qById[a.question_id]||{};
+        const ok=a.correct;
+        return '<span style="font-size:11px;padding:2px 8px;border-radius:8px;font-weight:700;background:'
+          + (ok?'var(--green-ok-l,#e8f6ee)':'var(--red-l,#fce9e7)')+';color:'+(ok?'var(--green-ok)':'var(--red)')+'">'
+          + '問'+esc(q.text||'?')+' '+(a.given!=null?a.given:'-')+(ok?'○':'×（正'+esc(q.answer||'')+'）')+'</span>';
+      }).join('')
+    + '</div>';
+}
+
 async function loadStats(){
   const v=document.getElementById('st-assign-select').value;
   const body=document.getElementById('stats-body');
@@ -1816,6 +1936,9 @@ async function loadStats(){
       sbGet('mini_quiz_results','quiz_assignment_id=eq.'+assignId+'&select=*')
     ]);
     if(!results.length){ body.innerHTML='<div class="muted" style="text-align:center;padding:16px">まだ提出がありません</div>'; return; }
+    // マーク模試判定：問題に section が付いている＝マーク模試
+    const isMark = qs.some(q=>q.section!=null);
+    if(isMark){ renderMarkStats(body, qs, results); return; }
     // 全体平均
     const avg = results.reduce((s,r)=>s+(r.total_count?r.correct_count/r.total_count:0),0)/results.length;
     // 問題別正答率
