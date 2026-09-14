@@ -5008,6 +5008,9 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
     <!-- 授業出欠タブ -->
     <div id="smcontent-attendance" style="display:none">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+        <button onclick="switchManageTab('class-master')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--muted);cursor:pointer;font-family:'Noto Sans JP',sans-serif;white-space:nowrap">📚 授業管理へ →</button>
+      </div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px">まず<b>教科</b>と<b>学年</b>で絞ると授業が探しやすくなります。授業と授業日を選ぶと名簿が表示され、来塾を初期値に、タップで出欠を切り替えて保存できます。</div>
       <div style="display:flex;gap:6px;margin-bottom:8px">
         <select class="form-select" id="att-subject-select" onchange="onAttSubjectChange()" style="flex:1;font-size:13px">
@@ -5126,6 +5129,9 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
     <!-- 出欠一望タブ（中学夏期など・全授業を教科/学年順に俯瞰） -->
     <div id="smcontent-attoverview" style="display:none">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+        <button onclick="switchManageTab('class-master')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--muted);cursor:pointer;font-family:'Noto Sans JP',sans-serif;white-space:nowrap">📚 授業管理へ →</button>
+      </div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">授業を選ばずに、対象の全授業の出欠を教科・学年順にまとめて表示します。<b>来ていない子（欠席・未記録）をぱっと確認</b>する用です。今日までの授業日だけ色が付き、これからの日は空欄です。</div>
       <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
         <select class="form-select" id="ao-division-select" onchange="loadAttOverview()" style="flex:1;min-width:110px;font-size:13px">
@@ -5148,6 +5154,9 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
     <!-- 出席表タブ -->
     <div id="smcontent-attsheet" style="display:none">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+        <button onclick="switchManageTab('class-master')" style="padding:5px 12px;font-size:11px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--muted);cursor:pointer;font-family:'Noto Sans JP',sans-serif;white-space:nowrap">📚 授業管理へ →</button>
+      </div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">生徒1人ごとに1枚の出席表を発行します。<b>種別（夏期／通常）ごとに別シート</b>です。夏期は出欠のみ、通常は<b>学校ごとにコメントを直接入力・保存</b>できます（CSV読み込みも可）。<b>✓確認済</b>で抜け漏れチェック、面談での遅延依頼は<b>⏸保留</b>にすると未入力に数えません。</div>
       <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
         <select class="form-select" id="as-division-select" onchange="loadAttSheet()" style="flex:1;min-width:100px;font-size:13px">
@@ -6872,7 +6881,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260910onl06';
+const APP_VERSION = '20260913onl08';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -26599,11 +26608,30 @@ async function saveClassEdit(classId) {
 }
 
 async function deleteClassMaster(id) {
-  if (!confirm('この授業を無効化しますか？\n（出欠も報告も無い授業回は過去分も含めて削除し、時間割・カレンダーに残らないようにします）')) return;
+  if (!confirm('この授業を無効化しますか？\n（継続中の受講登録は本日付で終了扱いにし、出欠も報告も無い授業回は過去分も含めて削除して、時間割・カレンダー・出席表に残らないようにします）')) return;
   showLoading('処理中...');
   try {
     // 1. マスターを無効化（論理削除）
     await sbPatch('class_master', 'id=eq.' + id, { is_active: false });
+
+    // 1.5 継続中の受講登録(ended_on IS NULL)を終了扱いにする。
+    //   授業を無効化しても class_enrollments が継続中のまま残ると、出席表は
+    //   is_active=true でクラスを絞るためその生徒が丸ごと消える一方、生徒詳細の
+    //   受講歴は is_active を見ずクラス名を出すため「継続中」と表示され続け、
+    //   両者が食い違う（＝出席表・コメント欄から生徒が漏れる原因になっていた）。
+    //   削除ではなく ended_on を今日でセットして「終了」にし、受講変遷を残す。
+    let endedEnroll = 0;
+    try {
+      const today = getTodayJST();
+      const openEnr = await sbGet('class_enrollments',
+        'class_master_id=eq.' + id + '&ended_on=is.null&select=id') || [];
+      if (openEnr.length) {
+        await sbPatch('class_enrollments',
+          'class_master_id=eq.' + id + '&ended_on=is.null',
+          { ended_on: today, end_reason_note: '授業無効化により自動終了' });
+        endedEnroll = openEnr.length;
+      }
+    } catch (e) { /* 受講登録の終了に失敗しても無効化自体は成立させる */ }
 
     // 2. 出欠も報告も無い授業回を物理削除（過去含む）。生徒データがある回は残す。
     let removed = 0;
@@ -26632,7 +26660,9 @@ async function deleteClassMaster(id) {
     } catch (e) { /* セッション削除に失敗しても無効化自体は成立させる */ }
 
     hideLoading();
-    showToast('無効化しました' + (removed ? '（空の授業回 ' + removed + '件を削除）' : ''), 'info');
+    showToast('無効化しました' +
+      (endedEnroll ? '（受講登録 ' + endedEnroll + '件を終了）' : '') +
+      (removed ? '（空の授業回 ' + removed + '件を削除）' : ''), 'info');
     loadClassMasterList();
   } catch (e) {
     hideLoading();
@@ -44051,6 +44081,14 @@ async function olLoadProgress() {
 }
 
 function switchManageTab(tab, el) {
+  // 他タブからのジャンプ用：el未指定なら対応するタブボタンを自動で探して渡す
+  if (!el) {
+    try {
+      const cand = Array.from(document.querySelectorAll('.manage-tab-btn'))
+        .find(b => { const oc = b.getAttribute('onclick') || ''; return oc.indexOf("switchManageTab('" + tab + "'") !== -1; });
+      if (cand) el = cand;
+    } catch (e) {}
+  }
   // manage-* 系（授業管理など）
   const manageTabs = ['class-master','check-item','mission','quiz'];
   // smcontent-* 系（小メニューから統合したタブ）
