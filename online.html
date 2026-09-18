@@ -84,6 +84,10 @@
     background:var(--bg);border:1.5px solid var(--border);border-radius:var(--radius-sm);
     padding:13px 14px;font-size:14px;font-weight:700;color:var(--text);cursor:pointer;text-decoration:none;margin-bottom:10px}
   .dl-btn:active{opacity:.85}
+  /* 感想ロック（動画視聴前） */
+  .btn.locked{opacity:.45;cursor:not-allowed}
+  #reflection:disabled{opacity:.6;cursor:not-allowed}
+  #reflection-hint.done{color:var(--accent, #C9822E)}
   @media (min-width:820px){
     body.watching .wrap{max-width:1080px}
     .watch-grid{display:grid;grid-template-columns:230px minmax(0,1fr) 250px;gap:16px;align-items:start}
@@ -211,6 +215,8 @@ let progressTimer = null;
 let maxWatchedSec = 0;
 let lessonDurationSec = 0;
 let viewHadFirst = false;
+let reflectionUnlocked = false;   // 動画を最後まで視聴したら true
+let viewAlreadyCompleted = false; // 既に提出済みの回か
 
 // ---- ログイン ----
 async function doLogin() {
@@ -402,6 +408,7 @@ async function openLesson(lessonId) {
   }
 
   const vid = (ls.source_type === 'youtube') ? extractYouTubeId(ls.source_id) : '';
+  reflectionUnlocked = !vid;   // 動画があるうちはロック。視聴完了 or 既提出で解除
   const wmName = esc((currentOnlineStudent && (currentOnlineStudent.name || currentOnlineStudent.login_id)) || '');
   const player = vid
     ? '<div class="player-wrap"><div id="yt-player"></div>'
@@ -442,9 +449,9 @@ async function openLesson(lessonId) {
     +   '<div class="card" style="margin-top:0;padding:14px">' + player + '</div>'
     +   '<div class="card">'
     +     '<h2>感想の提出</h2>'
-    +     '<p class="sub">授業を見終えたら、学んだこと・質問などを書いて提出してください。</p>'
-    +     '<textarea id="reflection" rows="5" style="width:100%;padding:13px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:15px;font-family:inherit;background:var(--bg);resize:vertical" placeholder="今日の授業でわかったこと・質問など"></textarea>'
-    +     '<button class="btn" id="submit-reflection" onclick="submitReflection(' + ls.id + ')">感想を提出する</button>'
+    +     '<p class="sub" id="reflection-hint">' + (reflectionUnlocked ? '学んだこと・質問などを書いて提出してください。' : '動画を最後まで再生すると、感想を入力できます。') + '</p>'
+    +     '<textarea id="reflection" rows="5" ' + (reflectionUnlocked ? '' : 'disabled ') + 'style="width:100%;padding:13px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:15px;font-family:inherit;background:var(--bg);resize:vertical" placeholder="今日の授業でわかったこと・質問など"></textarea>'
+    +     '<button class="btn' + (reflectionUnlocked ? '' : ' locked') + '" id="submit-reflection" ' + (reflectionUnlocked ? '' : 'disabled ') + 'onclick="submitReflection(' + ls.id + ')">感想を提出する</button>'
     +     '<div id="reflection-msg" class="err" style="background:#E8F6EE;border-color:#A9DFBF;color:#1E6B3F;display:none"></div>'
     +   '</div>'
     + '</div>'
@@ -459,7 +466,22 @@ async function openLesson(lessonId) {
   // 視聴レコードを用意 → プレーヤー起動（進捗記録）
   currentLesson = ls;
   await ensureView(ls.id);
+  if (viewAlreadyCompleted) unlockReflection();   // 既に提出済みなら再視聴を求めず解除
   if (vid) startPlayer(vid);
+}
+
+// 感想入力の解除（動画を最後まで視聴 or 既提出で呼ばれる）
+function unlockReflection() {
+  reflectionUnlocked = true;
+  const ta   = document.getElementById('reflection');
+  const btn  = document.getElementById('submit-reflection');
+  const hint = document.getElementById('reflection-hint');
+  if (ta) ta.disabled = false;
+  if (btn && btn.classList.contains('locked')) { btn.disabled = false; btn.classList.remove('locked'); }
+  if (hint && !hint.classList.contains('done')) {
+    hint.textContent = '視聴お疲れさまでした。学んだこと・質問などをどうぞ。';
+    hint.classList.add('done');
+  }
 }
 
 // 右カラム（教材）の開閉。スマホではボタンで body を出し入れ、PCはCSSで常時表示。
@@ -485,6 +507,7 @@ async function ensureView(lessonId) {
       currentViewId = rows[0].id;
       maxWatchedSec = rows[0].watched_sec || 0;   // 前回までの到達点を引き継ぐ
       viewHadFirst = !!rows[0].first_viewed_at;
+      viewAlreadyCompleted = !!rows[0].completed;
       return;
     }
     const created = await sbPost('online_views', {
@@ -494,6 +517,7 @@ async function ensureView(lessonId) {
     });
     currentViewId = created && created[0] ? created[0].id : null;
     viewHadFirst = false;
+    viewAlreadyCompleted = false;
   } catch(e){ currentViewId = null; }
 }
 
@@ -544,6 +568,7 @@ function onPlayerState(ev) {
     if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
     tickProgress(); // 一時停止・終了・離脱直前に確定保存
   }
+  if (ev.data === YT.PlayerState.ENDED) unlockReflection(); // 最後まで再生 → 感想を解除
 }
 
 function tickProgress() {
@@ -553,6 +578,7 @@ function tickProgress() {
   if (cur > maxWatchedSec) maxWatchedSec = cur;
   const pct = lessonDurationSec > 0
     ? Math.min(100, Math.round(maxWatchedSec / lessonDurationSec * 100)) : 0;
+  if (pct >= 95) unlockReflection(); // ほぼ視聴完了で解除（ENDEDの取り逃し対策）
   sbPatch('online_views', 'id=eq.' + currentViewId, {
     watched_sec: maxWatchedSec,
     progress_pct: pct,
