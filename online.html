@@ -59,6 +59,40 @@
   .loading{text-align:center;color:var(--muted);font-size:13px;padding:24px}
   .foot{text-align:center;color:var(--muted);font-size:11px;margin-top:28px}
   .hidden{display:none}
+  /* ===== 視聴画面レイアウト ===== */
+  .watch-head{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-top:16px}
+  .watch-head .crumb{font-size:11px;color:var(--muted);margin-bottom:2px}
+  .watch-head h2{font-size:17px;margin:0;font-weight:800}
+  .watch-grid{display:flex;flex-direction:column;gap:14px;margin-top:14px}
+  .watch-main{min-width:0}
+  .watch-side{min-width:0}
+  .player-wrap{position:relative;width:100%;padding-top:56.25%;border-radius:12px;overflow:hidden;background:#000}
+  .player-wrap #yt-player{position:absolute;inset:0;width:100%;height:100%}
+  .player-wm{position:absolute;left:10px;bottom:10px;z-index:5;font-size:11px;color:rgba(255,255,255,.82);
+    background:rgba(0,0,0,.34);padding:2px 8px;border-radius:5px;pointer-events:none;letter-spacing:.02em}
+  .goal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
+  .goal-box .lbl{font-size:11px;color:var(--muted);margin-bottom:5px;font-weight:700}
+  .goal-box .goal-txt{font-size:14px;line-height:1.75;color:var(--text)}
+  .goal-box .ov-txt{font-size:13px;line-height:1.75;color:var(--muted)}
+  .goal-box .divider{height:1px;background:var(--border);margin:14px 0}
+  .side-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;
+    background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    padding:13px 16px;font-size:13px;font-weight:700;color:var(--text);cursor:pointer}
+  .side-toggle .chev{transition:transform .2s;color:var(--muted)}
+  .side-toggle.open .chev{transform:rotate(180deg)}
+  .dl-btn{display:flex;align-items:center;gap:8px;width:100%;justify-content:flex-start;
+    background:var(--bg);border:1.5px solid var(--border);border-radius:var(--radius-sm);
+    padding:13px 14px;font-size:14px;font-weight:700;color:var(--text);cursor:pointer;text-decoration:none;margin-bottom:10px}
+  .dl-btn:active{opacity:.85}
+  @media (min-width:820px){
+    body.watching .wrap{max-width:1080px}
+    .watch-grid{display:grid;grid-template-columns:230px minmax(0,1fr) 250px;gap:16px;align-items:start}
+    .side-toggle{display:none}
+    #side-body{display:block !important}
+  }
+  @media (max-width:819px){
+    .watch-left:empty{display:none}
+  }
 </style>
 </head>
 <body>
@@ -234,6 +268,7 @@ function showHome() {
 
 // ---- 受講できる講座一覧（ガワ：受講権のある講座を出すところまで）----
 async function loadMyCourses() {
+  document.body.classList.remove('watching');
   const area = document.getElementById('course-area');
   area.innerHTML = '<div class="loading">読み込み中…</div>';
   try {
@@ -290,6 +325,7 @@ function lessonWindow(lesson) {
 
 // ---- 講座を開く：コマ一覧を表示 ----
 async function openCourse(courseId) {
+  document.body.classList.remove('watching');
   const en = myEnrollments.find(e => (e.online_courses||{}).id === courseId);
   const c = en ? en.online_courses : null;
   if (!en || !c) return;
@@ -366,29 +402,75 @@ async function openLesson(lessonId) {
   }
 
   const vid = (ls.source_type === 'youtube') ? extractYouTubeId(ls.source_id) : '';
+  const wmName = esc((currentOnlineStudent && (currentOnlineStudent.name || currentOnlineStudent.login_id)) || '');
   const player = vid
-    ? '<div style="position:relative;width:100%;padding-top:56.25%;border-radius:12px;overflow:hidden;background:#000">'
-      + '<div id="yt-player" style="position:absolute;inset:0;width:100%;height:100%"></div></div>'
+    ? '<div class="player-wrap"><div id="yt-player"></div>'
+      + (wmName ? '<div class="player-wm">' + wmName + '</div>' : '')
+      + '</div>'
     : '<div class="empty">この授業の動画はまだ準備中です。</div>';
 
+  // 左：目標・要旨（overview 列。空なら非表示）
+  const goalHtml = ls.overview
+    ? '<div class="goal-box"><div class="lbl">この回の目標・要旨</div>'
+      + '<div class="ov-txt">' + esc(ls.overview).replace(/\n/g,'<br>') + '</div></div>'
+    : '';
+
+  // 右：教材ダウンロード（material_url 列。空なら準備中表示）
+  const materialHtml = ls.material_url
+    ? '<a class="dl-btn" href="' + esc(ls.material_url) + '" target="_blank" rel="noopener">'
+      + '📄 レジュメをダウンロード</a>'
+    : '<div class="empty" style="margin-top:0">教材は準備中です</div>';
+
+  const sideHtml =
+    '<div class="goal-box">'
+    + '<div class="lbl">教材</div>'
+    + materialHtml
+    + '</div>';
+
+  document.body.classList.add('watching');
   area.innerHTML =
-    '<div class="card">'
-    + '<button class="btn ghost" style="width:auto;margin-top:0;padding:8px 14px;font-size:12px" onclick="leaveLesson(' + ls.online_course_id + ')">← 授業一覧へ</button>'
-    + '<h2 style="margin-top:12px">' + esc(ls.title || '') + '</h2>'
+    '<div class="watch-head">'
+    + '<button class="btn ghost" style="width:auto;margin:0 0 10px;padding:7px 13px;font-size:12px" onclick="leaveLesson(' + ls.online_course_id + ')">← 授業一覧へ</button>'
+    + '<div class="crumb">' + esc((currentCourse && currentCourse.title) || '') + '</div>'
+    + '<h2>' + esc(ls.title || '') + '</h2>'
     + '</div>'
-    + '<div class="card">' + player + '</div>'
-    + '<div class="card">'
-    + '<h2>感想の提出</h2>'
-    + '<p class="sub">授業を見終えたら、学んだこと・質問などを書いて提出してください。</p>'
-    + '<textarea id="reflection" rows="5" style="width:100%;padding:13px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:15px;font-family:inherit;background:var(--bg);resize:vertical" placeholder="今日の授業でわかったこと・質問など"></textarea>'
-    + '<button class="btn" id="submit-reflection" onclick="submitReflection(' + ls.id + ')">感想を提出する</button>'
-    + '<div id="reflection-msg" class="err" style="background:#E8F6EE;border-color:#A9DFBF;color:#1E6B3F;display:none"></div>'
+    + '<div class="watch-grid" id="watch-grid">'
+    // 左カラム：目標・要旨
+    + '<div class="watch-left">' + goalHtml + '</div>'
+    // 中央カラム：動画＋感想
+    + '<div class="watch-main">'
+    +   '<div class="card" style="margin-top:0;padding:14px">' + player + '</div>'
+    +   '<div class="card">'
+    +     '<h2>感想の提出</h2>'
+    +     '<p class="sub">授業を見終えたら、学んだこと・質問などを書いて提出してください。</p>'
+    +     '<textarea id="reflection" rows="5" style="width:100%;padding:13px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:15px;font-family:inherit;background:var(--bg);resize:vertical" placeholder="今日の授業でわかったこと・質問など"></textarea>'
+    +     '<button class="btn" id="submit-reflection" onclick="submitReflection(' + ls.id + ')">感想を提出する</button>'
+    +     '<div id="reflection-msg" class="err" style="background:#E8F6EE;border-color:#A9DFBF;color:#1E6B3F;display:none"></div>'
+    +   '</div>'
+    + '</div>'
+    // 右カラム：教材（スマホはトグルで開閉、PCは常時表示）
+    + '<div class="watch-side collapsed" id="watch-side">'
+    +   '<button class="side-toggle" id="side-toggle" onclick="toggleSide()">'
+    +     '<span>教材・資料</span><span class="chev">▾</span></button>'
+    +   '<div id="side-body" style="margin-top:10px;display:none">' + sideHtml + '</div>'
+    + '</div>'
     + '</div>';
 
   // 視聴レコードを用意 → プレーヤー起動（進捗記録）
   currentLesson = ls;
   await ensureView(ls.id);
   if (vid) startPlayer(vid);
+}
+
+// 右カラム（教材）の開閉。スマホではボタンで body を出し入れ、PCはCSSで常時表示。
+function toggleSide() {
+  const side = document.getElementById('watch-side');
+  const body = document.getElementById('side-body');
+  const btn  = document.getElementById('side-toggle');
+  if (!side || !body) return;
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'block';
+  if (btn) btn.classList.toggle('open', !open);
 }
 
 // 視聴レコードの用意（既存があれば流用、なければ作成）
@@ -480,6 +562,7 @@ function tickProgress() {
 
 // 授業一覧へ戻る（プレーヤー破棄＋最終保存）
 function leaveLesson(courseId) {
+  document.body.classList.remove('watching');
   if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
   tickProgress();
   try { if (ytPlayer && ytPlayer.destroy) ytPlayer.destroy(); } catch(e){}
