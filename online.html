@@ -71,8 +71,14 @@
   .watch-side{min-width:0}
   .player-wrap{position:relative;width:100%;padding-top:56.25%;border-radius:12px;overflow:hidden;background:#000}
   .player-wrap #yt-player{position:absolute;inset:0;width:100%;height:100%}
-  .player-wm{position:absolute;left:10px;bottom:10px;z-index:5;font-size:11px;color:rgba(255,255,255,.82);
-    background:rgba(0,0,0,.34);padding:2px 8px;border-radius:5px;pointer-events:none;letter-spacing:.02em}
+  .player-wm{position:absolute;z-index:5;font-size:11px;color:rgba(255,255,255,.8);
+    background:rgba(0,0,0,.3);padding:2px 8px;border-radius:5px;pointer-events:none;letter-spacing:.02em;
+    max-width:70%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    transition:top .8s ease,bottom .8s ease,left .8s ease,right .8s ease}
+  .player-wm.tl{top:10px;left:10px;right:auto;bottom:auto}
+  .player-wm.tr{top:10px;right:10px;left:auto;bottom:auto}
+  .player-wm.bl{bottom:10px;left:10px;right:auto;top:auto}
+  .player-wm.br{bottom:10px;right:10px;left:auto;top:auto}
   .goal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
   .goal-box .lbl{font-size:11px;color:var(--muted);margin-bottom:5px;font-weight:700}
   .goal-box .goal-txt{font-size:14px;line-height:1.75;color:var(--text)}
@@ -288,6 +294,11 @@ let lessonDurationSec = 0;
 let viewHadFirst = false;
 let reflectionUnlocked = false;   // 動画を最後まで視聴したら true
 let viewAlreadyCompleted = false; // 既に提出済みの回か
+let viewPrevReflection = '';      // 前回提出した感想（既提出の復元用）
+let viewReply = '';               // 先生からの返信本文
+let viewReplyAt = '';             // 返信日時
+let wmTimer = null;               // 透かしの巡回タイマー
+let wmCornerIdx = 0;
 
 // ---- ログイン ----
 async function doLogin() {
@@ -317,6 +328,7 @@ async function doLogin() {
 function doLogout() {
   localStorage.removeItem(LS_KEY);
   currentOnlineStudent = null;
+  stopWatermarkCycle();
   document.body.classList.remove('logged-in','watching','wide');
   document.getElementById('in-pw').value = '';
   document.getElementById('home-view').classList.add('hidden');
@@ -355,7 +367,10 @@ async function loadMyCourses() {
       'online_student_id=eq.' + currentOnlineStudent.id +
       '&select=*,online_courses(id,title,description,is_streaming,is_active)&order=granted_at.desc');
     if (!enrolls.length) {
-      area.innerHTML = '<div class="empty">受講できる講座はまだありません。<br>入金確認後に塾が受講権を付与すると、ここに表示されます。</div>';
+      area.innerHTML = '<div class="empty">受講できる講座はまだありません。<br>入金確認後に塾が受講権を付与すると、ここに表示されます。</div>'
+        + renderMeetingShell() + renderQBoxShell();
+      loadMeetings();
+      loadMyQuestions();
       return;
     }
     myEnrollments = enrolls;
@@ -375,9 +390,186 @@ async function loadMyCourses() {
         + ' onclick="openCourse(' + (c.id||0) + ')">'
         + (cs.ok ? '講座を開く' : '受講できません') + '</button>'
         + '</div>';
-    }).join('');
+    }).join('') + renderMeetingShell() + renderQBoxShell();
+    loadMeetings();
+    loadMyQuestions();
   } catch (e) {
     area.innerHTML = '<div class="empty">読み込みに失敗しました。<br>時間をおいて開き直してください。</div>';
+  }
+}
+
+// ===== 質問箱（受講者側）=====
+function renderQBoxShell() {
+  return '<div class="card" id="qbox-card">'
+    + '<h2>質問箱</h2>'
+    + '<p class="sub">授業でわからないところや相談を送れます。先生が回答するとここに表示されます。</p>'
+    + '<textarea id="q-input" rows="3" style="width:100%;padding:13px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:15px;font-family:inherit;background:var(--bg);resize:vertical" placeholder="質問・相談を入力"></textarea>'
+    + '<button class="btn" id="q-submit" onclick="submitQuestion()">質問を送る</button>'
+    + '<div id="q-msg" class="err" style="display:none"></div>'
+    + '<div id="q-list" style="margin-top:14px"></div>'
+    + '</div>';
+}
+
+async function loadMyQuestions() {
+  const box = document.getElementById('q-list');
+  if (!box || !currentOnlineStudent) return;
+  try {
+    const rows = await sbGet('online_questions',
+      'online_student_id=eq.' + currentOnlineStudent.id +
+      '&is_active=not.is.false&select=*&order=created_at.desc');
+    if (!rows.length) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:8px">これまでの質問</div>'
+      + rows.map(r => {
+        const answered = r.status === 'answered' && r.answer;
+        return '<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px">'
+          + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">'
+          +   '<div style="font-size:11px;color:var(--muted)">' + esc(fmtJST(r.created_at)) + '</div>'
+          +   (answered ? '<span class="chip ok">回答あり</span>' : '<span class="chip info">回答待ち</span>')
+          + '</div>'
+          + '<div style="font-size:14px;line-height:1.7;margin-top:6px;white-space:pre-wrap">' + esc(r.body || '') + '</div>'
+          + (answered
+              ? '<div style="margin-top:10px;border-top:1px dashed var(--border);padding-top:8px">'
+                + '<div style="font-size:11px;color:var(--green-d);font-weight:700;margin-bottom:4px">先生からの回答</div>'
+                + '<div style="font-size:14px;line-height:1.7;white-space:pre-wrap">' + esc(r.answer || '') + '</div>'
+                + '</div>'
+              : '')
+          + '</div>';
+      }).join('');
+  } catch (e) { box.innerHTML = ''; }
+}
+
+async function submitQuestion() {
+  const ta = document.getElementById('q-input');
+  const btn = document.getElementById('q-submit');
+  const msg = document.getElementById('q-msg');
+  const text = ((ta && ta.value) || '').trim();
+  if (msg) msg.style.display = 'none';
+  if (!text) {
+    if (msg) { msg.textContent = '質問を入力してください。'; msg.style.background = '#FDECEA'; msg.style.borderColor = '#E6B0AA'; msg.style.color = '#943126'; msg.style.display = 'block'; }
+    return;
+  }
+  btn.disabled = true; btn.textContent = '送信中…';
+  try {
+    await sbPost('online_questions', {
+      online_student_id: currentOnlineStudent.id,
+      body: text,
+      status: 'open'
+    });
+    ta.value = '';
+    msg.textContent = '質問を送信しました。回答をお待ちください。';
+    msg.style.background = '#E8F6EE'; msg.style.borderColor = '#A9DFBF'; msg.style.color = '#1E6B3F'; msg.style.display = 'block';
+    loadMyQuestions();
+  } catch (e) {
+    msg.textContent = '送信に失敗しました。時間をおいて試してください。';
+    msg.style.background = '#FDECEA'; msg.style.borderColor = '#E6B0AA'; msg.style.color = '#943126'; msg.style.display = 'block';
+  } finally {
+    btn.disabled = false; btn.textContent = '質問を送る';
+  }
+}
+
+// ===== 面談（受講者側）=====
+function renderMeetingShell() {
+  return '<div class="card" id="meeting-card">'
+    + '<h2>面談の予約</h2>'
+    + '<p class="sub">先生と1対1で学習の相談ができます。空いている時間から選んで予約してください。</p>'
+    + '<label for="mt-topic">相談したいこと（任意）</label>'
+    + '<textarea id="mt-topic" rows="2" style="width:100%;padding:13px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:15px;font-family:inherit;background:var(--bg);resize:vertical" placeholder="例：長文が時間内に解き終わらない"></textarea>'
+    + '<div id="mt-slot-list" style="margin-top:12px"><div class="loading">読み込み中…</div></div>'
+    + '<div id="mt-mine" style="margin-top:8px"></div>'
+    + '<div id="mt-msg" class="err" style="display:none"></div>'
+    + '</div>';
+}
+
+async function loadMeetings() {
+  const slotBox = document.getElementById('mt-slot-list');
+  const mineBox = document.getElementById('mt-mine');
+  if (!currentOnlineStudent) return;
+  try {
+    const nowIso = new Date().toISOString();
+    const [slots, mine] = await Promise.all([
+      sbGet('online_meeting_slots',
+        'status=eq.open&is_active=not.is.false&start_at=gte.' + encodeURIComponent(nowIso) + '&select=*&order=start_at.asc'),
+      sbGet('online_meetings',
+        'online_student_id=eq.' + currentOnlineStudent.id + '&is_active=not.is.false&select=*&order=scheduled_at.desc')
+    ]);
+    if (slotBox) {
+      if (!slots.length) {
+        slotBox.innerHTML = '<div class="empty" style="margin-top:0">いまは予約できる枠がありません。<br>枠が追加されるとここに表示されます。</div>';
+      } else {
+        slotBox.innerHTML = '<div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:8px">空いている時間</div>'
+          + slots.map(s => {
+            return '<div style="display:flex;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:8px;flex-wrap:wrap">'
+              + '<div style="font-weight:700;font-size:14px">' + esc(fmtJST(s.start_at)) + '</div>'
+              + '<div style="font-size:12px;color:var(--muted)">' + (s.duration_min || 30) + '分'
+              +   (s.staff_name ? ' ／ ' + esc(s.staff_name) : '') + '</div>'
+              + '<button onclick="bookSlot(' + s.id + ',\'' + s.start_at + '\')" style="margin-left:auto;padding:8px 16px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit">予約する</button>'
+              + '</div>';
+          }).join('');
+      }
+    }
+    if (mineBox) {
+      const active = mine.filter(m => m.status !== 'cancelled');
+      if (!active.length) { mineBox.innerHTML = ''; }
+      else {
+        mineBox.innerHTML = '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:14px 0 8px">あなたの面談</div>'
+          + active.map(m => {
+            const done = m.status === 'done';
+            const upcoming = new Date(m.scheduled_at) >= new Date();
+            const chip = done ? '<span class="chip ok">実施済</span>' : '<span class="chip info">予約済</span>';
+            return '<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px">'
+              + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">'
+              +   '<div style="font-weight:700;font-size:14px">' + esc(fmtJST(m.scheduled_at)) + '</div>' + chip
+              + '</div>'
+              + (m.student_topic ? '<div style="font-size:12px;color:var(--muted);margin-top:4px;white-space:pre-wrap">相談: ' + esc(m.student_topic) + '</div>' : '')
+              + (done && m.record_content ? '<div style="margin-top:8px;border-top:1px dashed var(--border);padding-top:8px"><div style="font-size:11px;color:var(--green-d);font-weight:700;margin-bottom:3px">面談の記録</div><div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + esc(m.record_content) + '</div></div>' : '')
+              + (done && m.next_homework ? '<div style="margin-top:8px"><div style="font-size:11px;color:var(--orange-d);font-weight:700;margin-bottom:3px">次回までの課題</div><div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + esc(m.next_homework) + '</div></div>' : '')
+              + (!done && upcoming ? '<button onclick="cancelMeetingStudent(' + m.id + ',' + (m.slot_id || 'null') + ')" style="margin-top:8px;padding:6px 12px;border:1.5px solid var(--border);border-radius:8px;background:transparent;color:var(--muted);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">予約をキャンセル</button>' : '')
+              + '</div>';
+          }).join('');
+      }
+    }
+  } catch (e) {
+    if (slotBox) slotBox.innerHTML = '<div class="empty" style="margin-top:0">面談情報の読み込みに失敗しました。</div>';
+  }
+}
+
+async function bookSlot(slotId, startAtIso) {
+  const topicEl = document.getElementById('mt-topic');
+  const msg = document.getElementById('mt-msg');
+  const topic = ((topicEl && topicEl.value) || '').trim();
+  if (msg) msg.style.display = 'none';
+  try {
+    // 楽観ロック：まだ open のときだけ booked に更新（同時予約対策）
+    const upd = await sbPatch('online_meeting_slots', 'id=eq.' + slotId + '&status=eq.open', { status: 'booked' });
+    if (!upd || !upd.length) {
+      if (msg) { msg.textContent = 'この時間はちょうど埋まってしまいました。別の枠を選んでください。'; msg.style.background = '#FDECEA'; msg.style.borderColor = '#E6B0AA'; msg.style.color = '#943126'; msg.style.display = 'block'; }
+      loadMeetings();
+      return;
+    }
+    await sbPost('online_meetings', {
+      online_student_id: currentOnlineStudent.id,
+      slot_id: slotId,
+      scheduled_at: startAtIso,
+      status: 'confirmed',
+      student_topic: topic || null
+    });
+    if (topicEl) topicEl.value = '';
+    if (msg) { msg.textContent = '面談を予約しました。当日はオンラインでお待ちください。'; msg.style.background = '#E8F6EE'; msg.style.borderColor = '#A9DFBF'; msg.style.color = '#1E6B3F'; msg.style.display = 'block'; }
+    loadMeetings();
+  } catch (e) {
+    try { await sbPatch('online_meeting_slots', 'id=eq.' + slotId, { status: 'open' }); } catch(_) {}
+    if (msg) { msg.textContent = '予約に失敗しました。時間をおいて試してください。'; msg.style.background = '#FDECEA'; msg.style.borderColor = '#E6B0AA'; msg.style.color = '#943126'; msg.style.display = 'block'; }
+  }
+}
+
+async function cancelMeetingStudent(meetingId, slotId) {
+  if (!confirm('この予約をキャンセルしますか？')) return;
+  try {
+    await sbPatch('online_meetings', 'id=eq.' + meetingId, { status: 'cancelled' });
+    if (slotId) await sbPatch('online_meeting_slots', 'id=eq.' + slotId, { status: 'open' });
+    loadMeetings();
+  } catch (e) {
+    alert('キャンセルに失敗しました。時間をおいて試してください。');
   }
 }
 
@@ -523,10 +715,12 @@ async function openLesson(lessonId) {
   const vid = (ls.source_type === 'youtube') ? extractYouTubeId(ls.source_id) : '';
   const hasVideo = !!vid;
   reflectionUnlocked = !hasVideo;   // 動画がある回は視聴後に感想を出す。準備中/既提出は最初から
-  const wmName = esc((currentOnlineStudent && (currentOnlineStudent.name || currentOnlineStudent.login_id)) || '');
+  const _wmN = (currentOnlineStudent && currentOnlineStudent.name) || '';
+  const _wmL = (currentOnlineStudent && currentOnlineStudent.login_id) || '';
+  const wmName = esc([_wmN, _wmL ? '(' + _wmL + ')' : ''].filter(Boolean).join(' '));
   const player = hasVideo
     ? '<div class="player-wrap"><div id="yt-player"></div>'
-      + (wmName ? '<div class="player-wm">' + wmName + '</div>' : '')
+      + (wmName ? '<div class="player-wm bl" id="player-wm">' + wmName + '</div>' : '')
       + '</div>'
       + '<div class="player-tools">'
       +   '<button class="tool-btn tool-wide" id="btn-wide" onclick="toggleWide()">⤢ 拡大</button>'
@@ -595,6 +789,8 @@ async function openLesson(lessonId) {
   currentLesson = ls;
   await ensureView(ls.id);
   if (viewAlreadyCompleted) unlockReflection();   // 既に提出済みなら再視聴を求めず解除
+  showReflectionReplyIfAny();                      // 既提出なら前回の感想を復元＋先生の返信を表示
+  startWatermarkCycle();                            // 氏名＋ID透かしの巡回を開始
   if (vid) startPlayer(vid);
 }
 
@@ -608,6 +804,52 @@ function unlockReflection() {
     card.classList.remove('reveal-hidden');
     card.classList.add('reveal-in');
   }
+}
+
+// 既に感想提出済みなら、前回の感想を復元し、先生からの返信があれば表示する
+function showReflectionReplyIfAny() {
+  const card = document.getElementById('reflection-card');
+  if (!card) return;
+  if (viewAlreadyCompleted && viewPrevReflection) {
+    const ta = document.getElementById('reflection');
+    if (ta && !ta.value) ta.value = viewPrevReflection;
+  }
+  if (viewReply) {
+    let box = document.getElementById('reflection-reply-box');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'reflection-reply-box';
+      box.style.cssText = 'margin-top:12px;border-top:1px dashed var(--border);padding-top:10px';
+      card.appendChild(box);
+    }
+    box.innerHTML =
+      '<div style="font-size:12px;color:var(--green-d);font-weight:800;margin-bottom:5px">先生からの返信'
+      + (viewReplyAt ? '<span style="color:var(--muted);font-weight:400;margin-left:6px">' + esc(fmtJST(viewReplyAt)) + '</span>' : '')
+      + '</div>'
+      + '<div style="font-size:14px;line-height:1.75;white-space:pre-wrap;background:#E8F6EE;border:1px solid #A9DFBF;border-radius:10px;padding:12px">'
+      + esc(viewReply) + '</div>';
+  }
+}
+
+// 氏名＋ID透かしを一定時間ごとに四隅へ移動（トリミング対策／視聴の邪魔にならない程度）
+const WM_CORNERS = ['bl','tr','br','tl'];  // 巡回順（対角寄りで目立ちにくく）
+function startWatermarkCycle() {
+  stopWatermarkCycle();
+  const el = document.getElementById('player-wm');
+  if (!el) return;
+  wmCornerIdx = 0;
+  el.classList.remove('tl','tr','bl','br');
+  el.classList.add(WM_CORNERS[0]);
+  wmTimer = setInterval(function(){
+    const cur = document.getElementById('player-wm');
+    if (!cur) { stopWatermarkCycle(); return; }
+    wmCornerIdx = (wmCornerIdx + 1) % WM_CORNERS.length;
+    cur.classList.remove('tl','tr','bl','br');
+    cur.classList.add(WM_CORNERS[wmCornerIdx]);
+  }, 6000);  // 約6秒ごとに移動
+}
+function stopWatermarkCycle() {
+  if (wmTimer) { clearInterval(wmTimer); wmTimer = null; }
 }
 
 // 動画の拡大（左は残して中央＝動画を右へ広げる。PC幅のみ効果）
@@ -650,16 +892,21 @@ function toggleSide() {
 // 視聴レコードの用意（既存があれば流用、なければ作成）
 async function ensureView(lessonId) {
   maxWatchedSec = 0;
+  viewPrevReflection = ''; viewReply = ''; viewReplyAt = '';
   lessonDurationSec = (currentLesson && currentLesson.duration_sec) ? currentLesson.duration_sec : 0;
   try {
     const rows = await sbGet('online_views',
       'online_student_id=eq.' + currentOnlineStudent.id +
-      '&online_lesson_id=eq.' + lessonId + '&select=id,completed,watched_sec,first_viewed_at&limit=1');
+      '&online_lesson_id=eq.' + lessonId +
+      '&select=id,completed,watched_sec,first_viewed_at,reflection,reflection_reply,reflection_replied_at&limit=1');
     if (rows && rows[0]) {
       currentViewId = rows[0].id;
       maxWatchedSec = rows[0].watched_sec || 0;   // 前回までの到達点を引き継ぐ
       viewHadFirst = !!rows[0].first_viewed_at;
       viewAlreadyCompleted = !!rows[0].completed;
+      viewPrevReflection = rows[0].reflection || '';
+      viewReply = rows[0].reflection_reply || '';
+      viewReplyAt = rows[0].reflection_replied_at || '';
       return;
     }
     const created = await sbPost('online_views', {
@@ -741,6 +988,7 @@ function tickProgress() {
 // 授業一覧へ戻る（プレーヤー破棄＋最終保存）
 function leaveLesson(courseId) {
   document.body.classList.remove('watching','wide');
+  stopWatermarkCycle();
   if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
   tickProgress();
   try { if (ytPlayer && ytPlayer.destroy) ytPlayer.destroy(); } catch(e){}
