@@ -171,6 +171,32 @@
     .reveal-in{animation:none}
     .bar-fill{transition:none}
   }
+  /* 完了証 */
+  .cert-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto}
+  .cert-sheet{background:#fff;color:#333;max-width:520px;width:100%;border-radius:14px;padding:34px 30px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.3);border:3px double var(--orange)}
+  .cert-emoji{font-size:44px;line-height:1}
+  .cert-title{font-size:26px;font-weight:800;letter-spacing:.35em;margin:10px 0 20px;color:#222}
+  .cert-name{font-size:20px;font-weight:700;margin-bottom:18px;border-bottom:1px solid #ddd;padding-bottom:14px}
+  .cert-body{font-size:15px;line-height:2;margin-bottom:22px}
+  .cert-date{font-size:13px;color:#666;margin-bottom:4px}
+  .cert-issuer{font-size:14px;font-weight:700;color:#444;margin-bottom:22px}
+  .cert-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+  @media print{
+    body.printing-cert *{visibility:hidden}
+    body.printing-cert #cert-overlay,body.printing-cert #cert-overlay *{visibility:visible}
+    body.printing-cert #cert-overlay{position:absolute;inset:0;background:#fff;padding:0}
+    body.printing-cert .cert-sheet{box-shadow:none;border-color:#c8792e}
+    body.printing-cert #cert-actions{display:none}
+  }
+  /* トースト */
+  .o-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);background:#222;color:#fff;padding:11px 18px;border-radius:999px;font-size:13px;font-weight:700;z-index:300;opacity:0;transition:opacity .3s,transform .3s;box-shadow:0 8px 24px rgba(0,0,0,.3);max-width:90%;text-align:center}
+  .o-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  /* マイページ ステータス（連続ログイン・ポイント）*/
+  .mp-stats{display:flex;gap:10px;margin:6px 0 2px}
+  .mp-stat{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 10px;text-align:center}
+  .mp-stat .v{font-size:22px;font-weight:800;color:var(--orange-d);line-height:1.1}
+  .mp-stat .l{font-size:11px;color:var(--muted);margin-top:3px}
+  .mp-badge{display:inline-block;font-size:12px;font-weight:700;color:#8a5a00;background:#FFF3DC;border:1px solid #F0D08A;border-radius:999px;padding:4px 11px;margin:0 6px 6px 0}
 </style>
 </head>
 <body>
@@ -279,6 +305,18 @@ function extractYouTubeId(v) {
 
 // 秒 → m:ss
 function fmtDur(sec){ sec=Math.max(0,Math.floor(sec||0)); const m=Math.floor(sec/60), s=sec%60; return m+':'+String(s).padStart(2,'0'); }
+// JSTの今日を 'YYYY-MM-DD' で返す
+function getTodayJST(){ return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()); }
+// 簡易トースト
+let _toastTimer=null;
+function showOnlineToast(msg){
+  let t=document.getElementById('o-toast');
+  if(!t){ t=document.createElement('div'); t.id='o-toast'; t.className='o-toast'; document.body.appendChild(t); }
+  t.textContent=msg;
+  requestAnimationFrame(function(){ t.classList.add('show'); });
+  if(_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer=setTimeout(function(){ t.classList.remove('show'); }, 3200);
+}
 
 let currentOnlineStudent = null;
 let myEnrollments = [];
@@ -348,12 +386,13 @@ async function tryAutoLogin() {
   } catch (e) { /* 失敗時はログイン画面のまま */ }
 }
 
-function showHome() {
+async function showHome() {
   document.body.classList.add('logged-in');
   document.getElementById('login-view').classList.add('hidden');
   document.getElementById('home-view').classList.remove('hidden');
   document.getElementById('who').innerHTML =
     esc(currentOnlineStudent.name) + ' さん <span>（' + esc(currentOnlineStudent.login_id) + '）</span>';
+  await updateOnlineStreak();
   loadMyCourses();
 }
 
@@ -367,14 +406,17 @@ async function loadMyCourses() {
       'online_student_id=eq.' + currentOnlineStudent.id +
       '&select=*,online_courses(id,title,description,is_streaming,is_active)&order=granted_at.desc');
     if (!enrolls.length) {
-      area.innerHTML = '<div class="empty">受講できる講座はまだありません。<br>入金確認後に塾が受講権を付与すると、ここに表示されます。</div>'
+      myEnrollments = enrolls;
+      area.innerHTML = renderMyPageShell()
+        + '<div class="empty">受講できる講座はまだありません。<br>入金確認後に塾が受講権を付与すると、ここに表示されます。</div>'
         + renderMeetingShell() + renderQBoxShell();
+      loadMyPage();
       loadMeetings();
       loadMyQuestions();
       return;
     }
     myEnrollments = enrolls;
-    area.innerHTML = enrolls.map(en => {
+    area.innerHTML = renderMyPageShell() + enrolls.map(en => {
       const c = en.online_courses || {};
       // 講座レベルの可否（受講権/個別スイッチ/講座スイッチ/期限）。時間枠はコマ単位で判定する。
       const cs = courseAccess(en, c);
@@ -391,6 +433,7 @@ async function loadMyCourses() {
         + (cs.ok ? '講座を開く' : '受講できません') + '</button>'
         + '</div>';
     }).join('') + renderMeetingShell() + renderQBoxShell();
+    loadMyPage();
     loadMeetings();
     loadMyQuestions();
   } catch (e) {
@@ -399,6 +442,224 @@ async function loadMyCourses() {
 }
 
 // ===== 質問箱（受講者側）=====
+// ===== 連続ログイン（ストリーク）＋ ログインボーナス =====
+async function updateOnlineStreak() {
+  if (!currentOnlineStudent) return;
+  const today = getTodayJST();
+  let row;
+  try {
+    const rows = await sbGet('online_students',
+      'id=eq.' + currentOnlineStudent.id + '&select=id,login_streak,last_active_date,points&limit=1');
+    row = rows && rows[0];
+  } catch (e) { return; }   // 列が未追加なら何もしない
+  if (!row) return;
+  const last = row.last_active_date || null;
+  let streak = row.login_streak || 0;
+  let points = row.points || 0;
+  currentOnlineStudent.login_streak = streak;
+  currentOnlineStudent.points = points;
+  currentOnlineStudent.last_active_date = last;
+  if (last === today) return;   // 今日はカウント済み
+  let diff = null;
+  if (last) {
+    const a = new Date(last + 'T00:00:00+09:00');
+    const b = new Date(today + 'T00:00:00+09:00');
+    diff = Math.round((b - a) / 86400000);
+  }
+  streak = (diff === 1) ? streak + 1 : 1;
+  const bonus = Math.min(streak, 3);
+  const newPoints = points + bonus;
+  try {
+    await sbPatch('online_students', 'id=eq.' + currentOnlineStudent.id,
+      { login_streak: streak, last_active_date: today, points: newPoints });
+    await sbPost('online_point_logs', {
+      online_student_id: currentOnlineStudent.id, points: bonus,
+      reason: 'ログインボーナス（連続' + streak + '日）', type: 'login_bonus'
+    });
+    currentOnlineStudent.login_streak = streak;
+    currentOnlineStudent.last_active_date = today;
+    currentOnlineStudent.points = newPoints;
+    showOnlineToast('🎁 ログインボーナス +' + bonus + 'pt（連続' + streak + '日）');
+  } catch (e) { /* 列未追加時は無視 */ }
+}
+
+// 授業を初めて完了したときの視聴ボーナス（+5pt、1コマ1回）
+async function awardLessonComplete() {
+  if (viewAlreadyCompleted) return;   // 既に完了済み → 付与しない
+  viewAlreadyCompleted = true;        // 二重付与防止
+  try {
+    const pts = 5;
+    const newPoints = ((currentOnlineStudent && currentOnlineStudent.points) || 0) + pts;
+    await sbPatch('online_students', 'id=eq.' + currentOnlineStudent.id, { points: newPoints });
+    await sbPost('online_point_logs', {
+      online_student_id: currentOnlineStudent.id, points: pts,
+      reason: '授業を完了', type: 'lesson_complete'
+    });
+    currentOnlineStudent.points = newPoints;
+    showOnlineToast('🎁 +' + pts + 'pt 授業完了ボーナス');
+  } catch (e) { /* 列未追加時は無視 */ }
+}
+
+// ===== マイページ（進捗・次にやること・完了証）=====
+function renderMyPageShell() {
+  return '<div class="card" id="mypage-card"><div id="mypage-body"><div class="loading">読み込み中…</div></div></div>';
+}
+
+async function loadMyPage() {
+  const body = document.getElementById('mypage-body');
+  if (!body || !currentOnlineStudent) return;
+  const accessible = (myEnrollments || [])
+    .filter(en => { const c = en.online_courses || {}; return c.id && courseAccess(en, c).ok; })
+    .map(en => en.online_courses);
+  if (!accessible.length) {
+    body.innerHTML = '<h2 style="margin-top:0">マイページ</h2>'
+      + '<p class="sub">受講できる講座が登録されると、ここに進捗と「次にやること」が表示されます。</p>';
+    return;
+  }
+  try {
+    const ids = accessible.map(c => c.id).join(',');
+    const [lessons, views] = await Promise.all([
+      sbGet('online_lessons', 'online_course_id=in.(' + ids + ')&is_active=not.is.false&select=id,online_course_id,title,sort_order,available_from,available_until&order=sort_order.asc,id.asc'),
+      sbGet('online_views', 'online_student_id=eq.' + currentOnlineStudent.id + '&select=online_lesson_id,completed')
+    ]);
+    const doneSet = {};
+    (views || []).forEach(v => { if (v.completed) doneSet[v.online_lesson_id] = true; });
+    const byCourse = {};
+    accessible.forEach(c => { byCourse[c.id] = { course: c, lessons: [], done: 0 }; });
+    (lessons || []).forEach(l => {
+      const g = byCourse[l.online_course_id];
+      if (!g) return;
+      g.lessons.push(l);
+      if (doneSet[l.id]) g.done++;
+    });
+    let sumTotal = 0, sumDone = 0, next = null;
+    const completedCourses = [];
+    accessible.forEach(c => {
+      const g = byCourse[c.id];
+      const total = g.lessons.length;
+      sumTotal += total; sumDone += g.done;
+      if (total > 0 && g.done >= total) completedCourses.push(c);
+      if (!next) {
+        for (let i = 0; i < g.lessons.length; i++) {
+          const l = g.lessons[i];
+          if (!doneSet[l.id] && lessonWindow(l).ok) { next = { courseId: c.id, courseTitle: c.title, lesson: l }; break; }
+        }
+      }
+    });
+    const pct = sumTotal ? Math.round(sumDone / sumTotal * 100) : 0;
+    const streak = (currentOnlineStudent && currentOnlineStudent.login_streak) || 0;
+    const points = (currentOnlineStudent && currentOnlineStudent.points) || 0;
+    // 獲得バッジ（視聴本数・連続・修了から算出）
+    const badges = [];
+    if (sumDone >= 1) badges.push('🌱 はじめの一歩');
+    if (sumDone >= 5) badges.push('📗 5本');
+    if (sumDone >= 10) badges.push('📘 10本');
+    if (sumDone >= 20) badges.push('📚 20本');
+    if (streak >= 3) badges.push('🔥 3日連続');
+    if (streak >= 7) badges.push('🔥 7日連続');
+    if (streak >= 30) badges.push('🔥 30日連続');
+    if (completedCourses.length >= 1) badges.push('🎓 講座修了');
+    // 最近のポイント履歴
+    let logs = [];
+    try {
+      logs = await sbGet('online_point_logs',
+        'online_student_id=eq.' + currentOnlineStudent.id + '&order=created_at.desc&select=points,reason,created_at&limit=6');
+    } catch (e) { logs = []; }
+
+    let html = '<h2 style="margin-top:0">マイページ</h2>';
+    html += '<div class="mp-stats">'
+      + '<div class="mp-stat"><div class="v">🔥 ' + streak + '</div><div class="l">連続ログイン</div></div>'
+      + '<div class="mp-stat"><div class="v">⭐ ' + points + '</div><div class="l">ポイント</div></div>'
+      + '</div>';
+    html += '<div class="progress-card" style="margin-top:6px">'
+      + '<div class="pc-row"><span class="pc-lbl">全体の進み具合</span>'
+      + '<span class="pc-num"><b>' + sumDone + '</b> / ' + sumTotal + ' 回</span></div>'
+      + '<div class="bar"><div class="bar-fill" style="width:' + pct + '%"></div></div>'
+      + '<div class="pct" style="text-align:right;margin-top:6px">' + pct + '%</div>'
+      + '</div>';
+    if (next) {
+      html += '<div style="margin-top:16px"><div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px">次にやること</div>'
+        + '<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px">'
+        +   '<div style="font-size:11px;color:var(--orange-d);font-weight:700">' + esc(next.courseTitle || '') + '</div>'
+        +   '<div style="font-weight:700;font-size:15px;margin:3px 0 10px">' + esc(next.lesson.title || '(授業)') + '</div>'
+        +   '<button class="btn" style="margin-top:0" onclick="goToLesson(' + next.courseId + ',' + next.lesson.id + ')">▶ 続きを見る</button>'
+        + '</div></div>';
+    } else if (sumTotal > 0) {
+      html += '<div style="margin-top:16px;background:#E8F6EE;border:1px solid #A9DFBF;border-radius:var(--radius-sm);padding:14px;text-align:center;color:#1E6B3F;font-weight:700">🎉 いまの授業はすべて視聴済みです！</div>';
+    }
+    if (completedCourses.length) {
+      html += '<div style="margin-top:16px"><div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px">完了証</div>'
+        + completedCourses.map(c =>
+            '<div style="display:flex;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:8px">'
+            + '<div style="font-size:22px">🎓</div>'
+            + '<div style="font-weight:700;font-size:14px;flex:1">' + esc(c.title || '') + '</div>'
+            + '<button class="btn" style="width:auto;margin:0;padding:8px 14px;font-size:13px" onclick="openCertificate(' + c.id + ')">完了証を見る</button>'
+            + '</div>'
+          ).join('')
+        + '</div>';
+    }
+    if (badges.length) {
+      html += '<div style="margin-top:16px"><div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px">獲得バッジ</div>'
+        + badges.map(b => '<span class="mp-badge">' + b + '</span>').join('')
+        + '</div>';
+    }
+    if (logs && logs.length) {
+      html += '<div style="margin-top:16px"><div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px">最近のポイント</div>'
+        + logs.map(l =>
+            '<div style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--border)">'
+            + '<span>' + esc(l.reason || '') + '<span style="color:var(--muted);font-size:11px;margin-left:6px">' + esc(fmtJST(l.created_at)) + '</span></span>'
+            + '<span style="font-weight:700;white-space:nowrap;color:' + ((l.points >= 0) ? '#1E6B3F' : '#943126') + '">' + (l.points >= 0 ? '+' : '') + l.points + 'pt</span>'
+            + '</div>'
+          ).join('')
+        + '</div>';
+    }
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<h2 style="margin-top:0">マイページ</h2><p class="sub">進捗の読み込みに失敗しました。</p>';
+  }
+}
+
+// 「次にやること」からコマへ直接ジャンプ
+async function goToLesson(courseId, lessonId) {
+  const en = myEnrollments.find(e => (e.online_courses || {}).id === courseId);
+  if (en) { currentCourse = en.online_courses; currentEnrollment = en; }
+  await openLesson(lessonId);
+}
+
+// 完了証
+function openCertificate(courseId) {
+  const en = myEnrollments.find(e => (e.online_courses || {}).id === courseId);
+  const title = en ? (en.online_courses.title || '') : '';
+  const name = (currentOnlineStudent && currentOnlineStudent.name) || '';
+  const t = new Date();
+  const dstr = t.getFullYear() + '年' + (t.getMonth() + 1) + '月' + t.getDate() + '日';
+  closeCertificate();
+  const ov = document.createElement('div');
+  ov.id = 'cert-overlay';
+  ov.className = 'cert-overlay';
+  ov.onclick = function (e) { if (e.target === ov) closeCertificate(); };
+  ov.innerHTML =
+    '<div class="cert-sheet">'
+    + '<div class="cert-emoji">🎓</div>'
+    + '<div class="cert-title">修了証</div>'
+    + '<div class="cert-name">' + esc(name) + ' 殿</div>'
+    + '<div class="cert-body">あなたは<br><b>「' + esc(title) + '」</b><br>の全課程を修了したことを証します。</div>'
+    + '<div class="cert-date">発行日　' + dstr + '</div>'
+    + '<div class="cert-issuer">総合学習塾fit　オンライン講座</div>'
+    + '<div id="cert-actions" class="cert-actions">'
+    +   '<button onclick="printCertificate()" class="btn" style="width:auto;margin:0;padding:10px 18px">印刷 / PDF保存</button>'
+    +   '<button onclick="closeCertificate()" class="btn ghost" style="width:auto;margin:0;padding:10px 18px">閉じる</button>'
+    + '</div>'
+    + '</div>';
+  document.body.appendChild(ov);
+}
+function closeCertificate() { const o = document.getElementById('cert-overlay'); if (o) o.remove(); }
+function printCertificate() {
+  document.body.classList.add('printing-cert');
+  window.print();
+  setTimeout(function () { document.body.classList.remove('printing-cert'); }, 400);
+}
+
 function renderQBoxShell() {
   return '<div class="card" id="qbox-card">'
     + '<h2>質問箱</h2>'
@@ -1022,6 +1283,7 @@ async function submitReflection(lessonId) {
     msg.style.color = '#1E6B3F'; msg.style.background = '#E8F6EE'; msg.style.borderColor = '#A9DFBF';
     msg.style.display = 'block';
     btn.textContent = '提出済み';
+    await awardLessonComplete();   // 初回完了なら +5pt
   } catch(e) {
     btn.disabled = false; btn.textContent = '感想を提出する';
     msg.textContent = '送信に失敗しました。時間をおいて試してください。';
