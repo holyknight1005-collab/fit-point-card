@@ -4385,6 +4385,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <button onclick="switchManageTab('makeup',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📥 承認待ち</button>
       <button onclick="switchManageTab('birthday',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🎂 誕生日</button>
       <button onclick="switchManageTab('announce',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📢 お知らせ</button>
+      <button onclick="switchManageTab('seats',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">💺 座席配置</button>
       <button onclick="switchManageTab('attendance',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📋 授業出欠</button>
       <button onclick="switchManageTab('reghistory',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">🕘 登録履歴</button>
       <button onclick="switchManageTab('attoverview',this)" class="tab-btn manage-tab-btn" style="flex:1;min-width:70px;padding:10px 4px;font-size:11px;white-space:nowrap">📅 出欠一望</button>
@@ -6280,6 +6281,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     </div>
 
     <!-- 設定タブ -->
+    <div id="smcontent-seats" style="display:none"></div>
     <div id="smcontent-settings" style="display:none">
 
       <!-- 学校マスタ（学校の追加・種別設定） -->
@@ -6927,7 +6929,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260919onl12';
+const APP_VERSION = '20260920seat1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -44440,6 +44442,189 @@ async function olLoadProgress() {
   }
 }
 
+/* ===== 座席配置（イベント座席の閲覧・スタッフ限定 / hall.html 連携） seat1 ===== */
+let seatCfg = null, seatRegs = [], seatSub = 'list', seatRefreshTimer = null, seatSearch = '';
+const SEAT_EVENT = 'main';
+
+function seatStopTimer(){ if (seatRefreshTimer) { clearInterval(seatRefreshTimer); seatRefreshTimer = null; } }
+async function seatFetchRegs(){ return (await sbGet('hall_event_regs', 'event_id=eq.' + SEAT_EVENT + '&select=*&order=registered_at.asc')) || []; }
+function seatColorForAff(affId){ const a = ((seatCfg && seatCfg.affiliations) || []).find(x => x.id === affId); return a ? a.color : '#64748b'; }
+function seatBlockName(bid){ const b = ((seatCfg && seatCfg.layout && seatCfg.layout.blocks) || []).find(x => x.id === bid); return b ? b.name : bid; }
+function seatLabelOf(r){ return seatBlockName(r.block_id) + ' ' + r.seat_row + '列' + r.seat_col + '番'; }
+
+async function initSeatView(){
+  seatStopTimer();
+  const host = document.getElementById('smcontent-seats');
+  if (!host) return;
+  host.innerHTML = '<div style="text-align:center;color:var(--muted,#6b7280);padding:16px">読み込み中…</div>';
+  try {
+    const c = await sbGet('hall_event_config', 'event_id=eq.' + SEAT_EVENT + '&select=*');
+    seatCfg = (c && c[0]) ? c[0] : null;
+    if (seatCfg) { if (!seatCfg.layout) seatCfg.layout = { blocks: [], rows: 20 }; if (!seatCfg.affiliations) seatCfg.affiliations = []; }
+    seatRegs = await seatFetchRegs();
+  } catch (e) {
+    host.innerHTML = '<div style="background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:12px;border-radius:8px">座席データを読み込めませんでした。<br>Supabase で <b>hall_event.sql</b> を実行済みかご確認ください。<br><span style="font-size:11px">' + escapeHtml(e.message || '') + '</span></div>';
+    return;
+  }
+  if (!seatCfg) { host.innerHTML = '<div style="padding:12px">設定行が見つかりません。hall.html を一度開いて初期設定してください。</div>'; return; }
+  seatRenderShell();
+  seatRefreshTimer = setInterval(async () => {
+    const vis = document.getElementById('smcontent-seats');
+    if (!vis || vis.style.display === 'none') return;
+    if (document.activeElement && document.activeElement.id === 'seat-search') return;
+    try { seatRegs = await seatFetchRegs(); if (seatSub === 'list') seatFilterList(); else seatRenderBody(); } catch (e) {}
+  }, 5000);
+}
+
+function seatRenderShell(){
+  const host = document.getElementById('smcontent-seats');
+  const tabBtn = (id, label) => '<button onclick="seatSwitchSub(\'' + id + '\')" style="flex:1;padding:9px;border:1px solid #e5e7eb;border-radius:8px;font-weight:700;cursor:pointer;background:' + (seatSub === id ? 'var(--orange,#f97316)' : '#fff') + ';color:' + (seatSub === id ? '#fff' : 'var(--muted,#6b7280)') + '">' + label + '</button>';
+  let h = '<div style="font-weight:800;font-size:18px;margin-bottom:2px">💺 座席配置 <span style="font-size:12px;font-weight:400;color:var(--muted,#6b7280)">' + escapeHtml(seatCfg.title || '') + '</span></div>';
+  h += '<div style="color:var(--muted,#6b7280);font-size:12px;margin-bottom:10px">hall.html と同じデータ・閲覧専用</div>';
+  h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">';
+  h += '<div style="display:flex;gap:6px;flex:1;min-width:220px">' + tabBtn('list', '📋 名前一覧') + tabBtn('map', '🗺 マップ') + tabBtn('tally', '📊 集計') + '</div>';
+  h += '<button onclick="seatDownloadCSV()" style="padding:9px 14px;border:1px solid #e5e7eb;background:#eef2ff;color:#1d4ed8;border-radius:8px;font-weight:700;cursor:pointer">CSV</button>';
+  h += '<button onclick="initSeatView()" style="padding:9px 14px;border:1px solid #e5e7eb;background:#f3f4f6;border-radius:8px;font-weight:700;cursor:pointer">↻ 更新</button>';
+  h += '</div><div id="seat-body"></div>';
+  host.innerHTML = h;
+  seatRenderBody();
+}
+
+function seatSwitchSub(s){ seatSub = s; seatRenderShell(); }
+function seatRenderBody(){ if (seatSub === 'map') return seatRenderMap(); if (seatSub === 'tally') return seatRenderTally(); return seatRenderList(); }
+
+function seatStat(){
+  const blocks = (seatCfg.layout.blocks) || [], rows = seatCfg.layout.rows || 20;
+  const total = blocks.reduce((s, b) => s + (b.seats || 0) * rows, 0);
+  return { total: total, taken: seatRegs.length, empty: total - seatRegs.length };
+}
+function seatStatBar(){
+  const s = seatStat();
+  const box = (n, k) => '<div style="flex:1;min-width:90px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;padding:10px;text-align:center"><div style="font-size:22px;font-weight:800">' + n + '</div><div style="font-size:11px;color:var(--muted,#6b7280)">' + k + '</div></div>';
+  return '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' + box(s.taken, '登録') + box(s.total, '総座席') + box(s.empty, '空席') + '</div>';
+}
+function seatLegend(){
+  const affs = seatCfg.affiliations || [];
+  if (!affs.length) return '';
+  return '<div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin:6px 0 10px">' + affs.map(a => '<span style="font-size:12px;display:inline-flex;align-items:center;gap:5px"><i style="width:12px;height:12px;border-radius:3px;background:' + a.color + ';display:inline-block"></i>' + escapeHtml(a.name) + '</span>').join('') + '</div>';
+}
+
+function seatRenderList(){
+  const body = document.getElementById('seat-body'); if (!body) return;
+  let h = seatStatBar();
+  h += '<input id="seat-search" type="text" value="' + escapeAttr(seatSearch) + '" placeholder="名前・所属で絞り込み" oninput="seatSearch=this.value;seatFilterList()" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:8px;margin-bottom:10px;font-size:14px">';
+  h += '<div id="seat-list-table"></div>';
+  body.innerHTML = h;
+  seatFilterList();
+}
+function seatFilterList(){
+  const wrap = document.getElementById('seat-list-table'); if (!wrap) return;
+  const rows = seatRegs.slice().sort((a, b) => ('' + a.block_id).localeCompare('' + b.block_id) || a.seat_row - b.seat_row || a.seat_col - b.seat_col);
+  const q = (seatSearch || '').trim();
+  const filt = q ? rows.filter(r => (('' + (r.name || '')) + (r.affiliation_name || '')).indexOf(q) >= 0) : rows;
+  if (!filt.length) { wrap.innerHTML = '<div style="color:var(--muted,#6b7280);padding:12px">' + (q ? '該当なし' : 'まだ登録がありません。') + '</div>'; return; }
+  let h = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:14px">';
+  h += '<tr style="color:var(--muted,#6b7280);text-align:left"><th style="padding:6px;border-bottom:1px solid #e5e7eb">席</th><th style="padding:6px;border-bottom:1px solid #e5e7eb">名前</th><th style="padding:6px;border-bottom:1px solid #e5e7eb">所属</th><th style="padding:6px;border-bottom:1px solid #e5e7eb">登録</th><th style="padding:6px;border-bottom:1px solid #e5e7eb">感想</th></tr>';
+  filt.forEach(r => {
+    const t = r.registered_at ? new Date(r.registered_at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : '';
+    h += '<tr style="cursor:pointer" onclick="seatDetailModal(' + r.id + ')">' +
+      '<td style="padding:7px 6px;border-bottom:1px solid #f1f5f9;white-space:nowrap">' + escapeHtml(seatLabelOf(r)) + '</td>' +
+      '<td style="padding:7px 6px;border-bottom:1px solid #f1f5f9;font-weight:700;font-size:15px">' + escapeHtml(r.name || '') + '</td>' +
+      '<td style="padding:7px 6px;border-bottom:1px solid #f1f5f9;white-space:nowrap"><i style="width:10px;height:10px;border-radius:3px;background:' + seatColorForAff(r.affiliation_id) + ';display:inline-block;margin-right:5px"></i>' + escapeHtml(r.affiliation_name || '') + '</td>' +
+      '<td style="padding:7px 6px;border-bottom:1px solid #f1f5f9;color:var(--muted,#6b7280);white-space:nowrap">' + t + '</td>' +
+      '<td style="padding:7px 6px;border-bottom:1px solid #f1f5f9;text-align:center">' + (r.feedback && r.feedback.trim() ? '✓' : '—') + '</td></tr>';
+  });
+  h += '</table></div>';
+  wrap.innerHTML = h;
+}
+
+function seatRenderMap(){
+  const body = document.getElementById('seat-body'); if (!body) return;
+  const blocks = (seatCfg.layout.blocks) || [], rows = seatCfg.layout.rows || 20;
+  const bySeat = {}; seatRegs.forEach(r => { bySeat[r.block_id + '-' + r.seat_row + '-' + r.seat_col] = r; });
+  let grid = '';
+  for (let r = 1; r <= rows; r++) {
+    let cells = '';
+    blocks.forEach((b, bi) => {
+      let bs = '';
+      for (let c = 1; c <= (b.seats || 0); c++) {
+        const reg = bySeat[b.id + '-' + r + '-' + c];
+        if (reg) { const col = seatColorForAff(reg.affiliation_id);
+          bs += '<div onclick="seatDetailModal(' + reg.id + ')" title="' + escapeAttr((reg.name || '') + ' / ' + (reg.affiliation_name || '')) + '" style="width:30px;height:26px;border-radius:5px;background:' + col + ';color:#fff;font-size:9px;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden;flex:0 0 auto">' + escapeHtml((reg.name || '').slice(0, 3)) + '</div>';
+        } else {
+          bs += '<div style="width:30px;height:26px;border-radius:5px;background:#f9fafb;border:1px solid #e5e7eb;color:#cbd5e1;font-size:10px;display:flex;align-items:center;justify-content:center;flex:0 0 auto">' + c + '</div>';
+        }
+      }
+      cells += '<div style="display:flex;gap:3px">' + bs + '</div>' + (bi < blocks.length - 1 ? '<div style="width:14px;flex:0 0 14px"></div>' : '');
+    });
+    grid += '<div style="display:flex;align-items:center;gap:10px;margin:3px 0;width:max-content"><div style="width:30px;text-align:center;font-size:11px;color:var(--muted,#6b7280)">' + r + '列</div>' + cells + '</div>';
+  }
+  let h = seatStatBar() + seatLegend();
+  h += '<div style="background:#111827;color:#fff;text-align:center;border-radius:8px;padding:5px;font-weight:700;letter-spacing:.3em;margin:4px 0">舞　台</div>';
+  h += '<div style="overflow-x:auto;padding:4px 2px">' + grid + '</div>';
+  h += '<div style="background:#e5e7eb;color:#374151;text-align:center;border-radius:8px;padding:5px;font-weight:700;letter-spacing:.3em;margin:8px 0">スクリーン</div>';
+  h += '<div style="text-align:center;color:var(--muted,#6b7280);font-size:12px">自動更新中（5秒）・座席タップで詳細</div>';
+  body.innerHTML = h;
+}
+
+function seatRenderTally(){
+  const body = document.getElementById('seat-body'); if (!body) return;
+  const blocks = (seatCfg.layout.blocks) || [], rows = seatCfg.layout.rows || 20, affs = seatCfg.affiliations || [];
+  const fb = seatRegs.filter(r => r.feedback && r.feedback.trim());
+  let h = seatStatBar();
+  h += '<div style="margin-bottom:12px"><b>ブロック別</b><table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:6px"><tr style="color:var(--muted,#6b7280);text-align:left"><th style="padding:6px;border-bottom:1px solid #e5e7eb">ブロック</th><th style="padding:6px;border-bottom:1px solid #e5e7eb">登録</th><th style="padding:6px;border-bottom:1px solid #e5e7eb">定員</th></tr>';
+  blocks.forEach(b => { const n = seatRegs.filter(r => r.block_id === b.id).length; h += '<tr><td style="padding:6px;border-bottom:1px solid #f1f5f9">' + escapeHtml(b.name) + '</td><td style="padding:6px;border-bottom:1px solid #f1f5f9">' + n + '</td><td style="padding:6px;border-bottom:1px solid #f1f5f9">' + ((b.seats || 0) * rows) + '</td></tr>'; });
+  h += '</table></div>';
+  if (affs.length) {
+    h += '<div style="margin-bottom:12px"><b>所属別</b><table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:6px"><tr style="color:var(--muted,#6b7280);text-align:left"><th style="padding:6px;border-bottom:1px solid #e5e7eb">所属</th><th style="padding:6px;border-bottom:1px solid #e5e7eb">登録</th></tr>';
+    affs.forEach(a => { const n = seatRegs.filter(r => r.affiliation_id === a.id).length; h += '<tr><td style="padding:6px;border-bottom:1px solid #f1f5f9"><i style="width:10px;height:10px;border-radius:3px;background:' + a.color + ';display:inline-block;margin-right:5px"></i>' + escapeHtml(a.name) + '</td><td style="padding:6px;border-bottom:1px solid #f1f5f9">' + n + '</td></tr>'; });
+    h += '</table></div>';
+  }
+  h += '<div><b>感想（' + fb.length + '件）</b>';
+  if (!fb.length) h += '<div style="color:var(--muted,#6b7280);padding:6px">まだありません。</div>';
+  else {
+    h += '<table style="width:100%;border-collapse:collapse;font-size:14px;margin-top:6px"><tr style="color:var(--muted,#6b7280);text-align:left"><th style="padding:6px;border-bottom:1px solid #e5e7eb">名前 / 所属</th><th style="padding:6px;border-bottom:1px solid #e5e7eb">感想</th></tr>';
+    fb.slice().sort((a, b) => new Date(b.feedback_at || 0) - new Date(a.feedback_at || 0)).forEach(r => { h += '<tr><td style="padding:6px;border-bottom:1px solid #f1f5f9;white-space:nowrap">' + escapeHtml(r.name || '') + '<br><span style="color:var(--muted,#6b7280);font-size:12px">' + escapeHtml(r.affiliation_name || '') + '</span></td><td style="padding:6px;border-bottom:1px solid #f1f5f9">' + escapeHtml(r.feedback) + '</td></tr>'; });
+    h += '</table>';
+  }
+  h += '</div>';
+  body.innerHTML = h;
+}
+
+function seatDetailModal(id){
+  const r = seatRegs.find(x => x.id === id); if (!r) return;
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:18px;z-index:9999';
+  ov.innerHTML = '<div style="background:#fff;border-radius:14px;padding:20px;max-width:420px;width:100%"><div style="font-weight:800;font-size:17px;margin-bottom:6px">' + escapeHtml(seatLabelOf(r)) + '</div>' +
+    '<div style="font-size:16px;font-weight:700">' + escapeHtml(r.name || '') + '</div>' +
+    '<div style="color:var(--muted,#6b7280);margin-bottom:8px">' + escapeHtml(r.affiliation_name || '') + '</div>' +
+    '<div style="color:var(--muted,#6b7280);font-size:13px;margin-bottom:8px">登録: ' + (r.registered_at ? new Date(r.registered_at).toLocaleString('ja-JP') : '') + '</div>' +
+    '<div style="margin-bottom:12px"><b>感想:</b><br>' + (r.feedback && r.feedback.trim() ? escapeHtml(r.feedback) : '<span style="color:var(--muted,#6b7280)">未入力</span>') + '</div>' +
+    '<div style="display:flex;gap:8px"><button id="seat-m-close" style="flex:1;padding:11px;border:1px solid #e5e7eb;background:#f3f4f6;border-radius:10px;font-weight:700;cursor:pointer">閉じる</button>' +
+    '<button id="seat-m-del" style="flex:1;padding:11px;border:0;background:#dc2626;color:#fff;border-radius:10px;font-weight:700;cursor:pointer">この登録を取消</button></div></div>';
+  document.body.appendChild(ov);
+  ov.onclick = e => { if (e.target === ov) ov.remove(); };
+  ov.querySelector('#seat-m-close').onclick = () => ov.remove();
+  ov.querySelector('#seat-m-del').onclick = async () => {
+    if (!confirm((r.name || '') + ' さんの登録を取り消します。よろしいですか？')) return;
+    try { await sbDelete('hall_event_regs', 'id=eq.' + r.id + '&event_id=eq.' + SEAT_EVENT); } catch (e) { alert('取消に失敗しました'); return; }
+    ov.remove();
+    try { seatRegs = await seatFetchRegs(); seatRenderBody(); } catch (e) {}
+  };
+}
+
+function seatDownloadCSV(){
+  const head = ['席', 'ブロック', '列', '番', '名前', '所属', '登録時刻', '感想', '感想時刻'];
+  const rows = seatRegs.slice().sort((a, b) => ('' + a.block_id).localeCompare('' + b.block_id) || a.seat_row - b.seat_row || a.seat_col - b.seat_col)
+    .map(r => [seatLabelOf(r), r.block_id, r.seat_row, r.seat_col, r.name, r.affiliation_name, r.registered_at ? new Date(r.registered_at).toLocaleString('ja-JP') : '', (r.feedback || ''), r.feedback_at ? new Date(r.feedback_at).toLocaleString('ja-JP') : '']);
+  const qq = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const csv = '\uFEFF' + [head].concat(rows).map(row => row.map(qq).join(',')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv' }); const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'seats_main_' + getTodayJST() + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+
 function switchManageTab(tab, el) {
   // 他タブからのジャンプ用：el未指定なら対応するタブボタンを自動で探して渡す
   if (!el) {
@@ -44452,7 +44637,7 @@ function switchManageTab(tab, el) {
   // manage-* 系（授業管理など）
   const manageTabs = ['class-master','check-item','mission','quiz'];
   // smcontent-* 系（小メニューから統合したタブ）
-  const menuTabs = ['report','todo','line','teamtask','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','attoverview','attsheet','billcheck','reportbatch','reportedit','komacount','supervision','namefix','basicedit','cyclebulk','teacherrole','timetable','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','trial','graduates','prospects','interview','examreq','shakei','studentreg','demo','revenue','tsushin','reghistory','online','akahon'];
+  const menuTabs = ['report','todo','line','teamtask','yesterday','makeup','student-view','birthday','calendar','alert','announce','attendance','attoverview','attsheet','billcheck','reportbatch','reportedit','komacount','supervision','namefix','basicedit','cyclebulk','teacherrole','timetable','settings','quizstatus','appusage','classanalysis','studentanalysis','rostercheck','trial','graduates','prospects','interview','examreq','shakei','studentreg','demo','revenue','tsushin','reghistory','online','akahon','seats'];
   manageTabs.forEach(t => {
     const el2 = document.getElementById('manage-' + t);
     if (el2) el2.style.display = 'none';
@@ -44510,6 +44695,7 @@ function switchManageTab(tab, el) {
   if (tab === 'reportedit') initReportEdit();
   if (tab === 'komacount') initKomaCount();
   if (tab === 'reghistory') loadRegHistory();
+  if (tab === 'seats') initSeatView();
   if (tab === 'supervision') initSupervision();
   if (tab === 'namefix') initNameFix();
   if (tab === 'basicedit') initBasicEdit();
