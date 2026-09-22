@@ -71,14 +71,16 @@
   .watch-side{min-width:0}
   .player-wrap{position:relative;width:100%;padding-top:56.25%;border-radius:12px;overflow:hidden;background:#000}
   .player-wrap #yt-player{position:absolute;inset:0;width:100%;height:100%}
-  .player-wm{position:absolute;z-index:5;font-size:11px;color:rgba(255,255,255,.8);
-    background:rgba(0,0,0,.3);padding:2px 8px;border-radius:5px;pointer-events:none;letter-spacing:.02em;
-    max-width:70%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-    transition:top .8s ease,bottom .8s ease,left .8s ease,right .8s ease}
-  .player-wm.tl{top:10px;left:10px;right:auto;bottom:auto}
-  .player-wm.tr{top:10px;right:10px;left:auto;bottom:auto}
-  .player-wm.bl{bottom:10px;left:10px;right:auto;top:auto}
-  .player-wm.br{bottom:10px;right:10px;left:auto;top:auto}
+  .player-wm{position:absolute;top:6%;left:4%;z-index:5;font-size:11px;color:rgba(255,255,255,.82);
+    background:rgba(0,0,0,.32);padding:2px 8px;border-radius:5px;pointer-events:none;letter-spacing:.02em;
+    max-width:55%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    animation:wm-orbit var(--wm-dur,50s) linear infinite}
+  @keyframes wm-orbit{
+    0%{top:6%;left:4%} 12.5%{top:6%;left:68%} 25%{top:44%;left:70%}
+    37.5%{top:86%;left:68%} 50%{top:88%;left:36%} 62.5%{top:86%;left:3%}
+    75%{top:44%;left:2%} 87.5%{top:22%;left:36%} 100%{top:6%;left:4%}
+  }
+  @media (prefers-reduced-motion:reduce){ .player-wm{animation-duration:150s} }
   .goal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
   .goal-box .lbl{font-size:11px;color:var(--muted);margin-bottom:5px;font-weight:700}
   .goal-box .goal-txt{font-size:14px;line-height:1.75;color:var(--text)}
@@ -148,6 +150,18 @@
   /* 動画の全画面（player-wrapを画面いっぱいに） */
   .player-wrap:fullscreen{padding-top:0;width:100vw;height:100vh;border-radius:0}
   .player-wrap:-webkit-full-screen{padding-top:0;width:100vw;height:100vh;border-radius:0}
+
+  /* 自作の動画コントロール（YouTube操作面は隠す） */
+  .pw-catch{position:absolute;inset:0;z-index:4;cursor:pointer}
+  .pv-bar{position:absolute;left:0;right:0;bottom:0;z-index:6;display:flex;align-items:center;gap:8px;padding:8px 10px;background:linear-gradient(to top,rgba(0,0,0,.78),rgba(0,0,0,0))}
+  .pv-btn{background:none;border:none;color:#fff;font-size:16px;line-height:1;cursor:pointer;padding:2px 4px;flex:none;font-family:inherit}
+  .pv-btn:active{opacity:.7}
+  .pv-time{color:#fff;font-size:11px;font-variant-numeric:tabular-nums;flex:none;min-width:32px;text-align:center}
+  .pv-seek{flex:1;min-width:40px;height:4px;accent-color:var(--orange);cursor:pointer}
+  .pv-vol{width:64px;flex:none;height:4px;accent-color:var(--orange);cursor:pointer}
+  .pv-rate{background:rgba(255,255,255,.16);color:#fff;border:none;border-radius:6px;font-size:11px;padding:3px 4px;flex:none;font-family:inherit;cursor:pointer}
+  .pv-rate option{color:#111}
+  @media (max-width:520px){ .pv-vol{display:none} }
 
   /* 感想の出現アニメーション＋完了バッジ */
   .reveal-hidden{display:none}
@@ -326,6 +340,10 @@ let currentViewId = null;
 let currentLesson = null;
 let ytPlayer = null;
 let ytApiLoading = false;
+let pvScrubbing = false;   // シークバー操作中フラグ
+let uiTimer = null;        // コントロールのUI更新タイマー
+let activeSec = 0;         // 実際に再生した累計秒（早送り/シーク対策）
+let lastActiveTs = 0;      // 直近の計測時刻
 let progressTimer = null;
 let maxWatchedSec = 0;
 let lessonDurationSec = 0;
@@ -416,7 +434,12 @@ async function loadMyCourses() {
       return;
     }
     myEnrollments = enrolls;
-    area.innerHTML = renderMyPageShell() + enrolls.map(en => {
+    // スタッフが休止(is_active=false)/配信停止(is_streaming=false)にした講座は受講者側に出さない
+    const visible = enrolls.filter(en => {
+      const c = en.online_courses || {};
+      return c.is_active !== false && c.is_streaming !== false;
+    });
+    const courseHtml = visible.length ? visible.map(en => {
       const c = en.online_courses || {};
       // 講座レベルの可否（受講権/個別スイッチ/講座スイッチ/期限）。時間枠はコマ単位で判定する。
       const cs = courseAccess(en, c);
@@ -432,7 +455,9 @@ async function loadMyCourses() {
         + ' onclick="openCourse(' + (c.id||0) + ')">'
         + (cs.ok ? '講座を開く' : '受講できません') + '</button>'
         + '</div>';
-    }).join('') + renderMeetingShell() + renderQBoxShell();
+    }).join('')
+      : '<div class="empty">表示できる講座がありません。<br>新しい講座が公開されると、ここに表示されます。</div>';
+    area.innerHTML = renderMyPageShell() + courseHtml + renderMeetingShell() + renderQBoxShell();
     loadMyPage();
     loadMeetings();
     loadMyQuestions();
@@ -981,11 +1006,18 @@ async function openLesson(lessonId) {
   const wmName = esc([_wmN, _wmL ? '(' + _wmL + ')' : ''].filter(Boolean).join(' '));
   const player = hasVideo
     ? '<div class="player-wrap"><div id="yt-player"></div>'
-      + (wmName ? '<div class="player-wm bl" id="player-wm">' + wmName + '</div>' : '')
+      + '<div class="pw-catch" id="pw-catch" onclick="pvTogglePlay()"></div>'
+      + (wmName ? '<div class="player-wm" id="player-wm">' + wmName + '</div>' : '')
+      + '<div class="pv-bar" id="pv-bar">'
+      +   '<button class="pv-btn" id="pv-play" onclick="pvTogglePlay()" aria-label="再生 / 一時停止">▶</button>'
+      +   '<span class="pv-time" id="pv-cur">0:00</span>'
+      +   '<input class="pv-seek" id="pv-seek" type="range" min="0" max="1000" value="0" oninput="pvSeekInput()" onchange="pvSeekCommit()" aria-label="再生位置">'
+      +   '<span class="pv-time" id="pv-dur">0:00</span>'
+      +   '<button class="pv-btn" id="pv-mute" onclick="pvToggleMute()" aria-label="ミュート">🔊</button>'
+      +   '<input class="pv-vol" id="pv-vol" type="range" min="0" max="100" value="100" oninput="pvVolInput()" aria-label="音量">'
+      +   '<button class="pv-btn" id="pv-wide" onclick="toggleWide()" aria-label="拡大">⤢</button>'
+      +   '<button class="pv-btn" onclick="toggleFullscreen()" aria-label="全画面">⛶</button>'
       + '</div>'
-      + '<div class="player-tools">'
-      +   '<button class="tool-btn tool-wide" id="btn-wide" onclick="toggleWide()">⤢ 拡大</button>'
-      +   '<button class="tool-btn" onclick="toggleFullscreen()">⛶ 全画面</button>'
       + '</div>'
     : '<div class="empty">この授業の動画はまだ準備中です。</div>';
 
@@ -1092,35 +1124,19 @@ function showReflectionReplyIfAny() {
   }
 }
 
-// 氏名＋ID透かしを一定時間ごとに四隅へ移動（トリミング対策／視聴の邪魔にならない程度）
-const WM_CORNERS = ['bl','tr','br','tl'];  // 巡回順（対角寄りで目立ちにくく）
-function startWatermarkCycle() {
-  stopWatermarkCycle();
-  const el = document.getElementById('player-wm');
-  if (!el) return;
-  wmCornerIdx = 0;
-  el.classList.remove('tl','tr','bl','br');
-  el.classList.add(WM_CORNERS[0]);
-  wmTimer = setInterval(function(){
-    const cur = document.getElementById('player-wm');
-    if (!cur) { stopWatermarkCycle(); return; }
-    wmCornerIdx = (wmCornerIdx + 1) % WM_CORNERS.length;
-    cur.classList.remove('tl','tr','bl','br');
-    cur.classList.add(WM_CORNERS[wmCornerIdx]);
-  }, 6000);  // 約6秒ごとに移動
-}
-function stopWatermarkCycle() {
-  if (wmTimer) { clearInterval(wmTimer); wmTimer = null; }
-}
+// 氏名＋ID透かしはCSSアニメーション(wm-orbit)で画面内をぐるぐる巡回する。
+// 呼び出し箇所を壊さないため関数は残す（実処理はCSS側）。
+function startWatermarkCycle() { /* CSSアニメーションで動くため処理不要 */ }
+function stopWatermarkCycle() { if (wmTimer) { clearInterval(wmTimer); wmTimer = null; } }
 
 // 動画の拡大（左は残して中央＝動画を右へ広げる。PC幅のみ効果）
 function toggleWide() {
   const grid = document.getElementById('watch-grid');
-  const btn  = document.getElementById('btn-wide');
+  const btn  = document.getElementById('pv-wide');
   if (!grid) return;
   const wide = grid.classList.toggle('wide');
   document.body.classList.toggle('wide', wide);
-  if (btn) btn.textContent = wide ? '⤡ 標準' : '⤢ 拡大';
+  if (btn) btn.textContent = wide ? '⤡' : '⤢';
 }
 
 // 動画の全画面表示
@@ -1153,16 +1169,18 @@ function toggleSide() {
 // 視聴レコードの用意（既存があれば流用、なければ作成）
 async function ensureView(lessonId) {
   maxWatchedSec = 0;
+  activeSec = 0; lastActiveTs = 0;
   viewPrevReflection = ''; viewReply = ''; viewReplyAt = '';
   lessonDurationSec = (currentLesson && currentLesson.duration_sec) ? currentLesson.duration_sec : 0;
   try {
     const rows = await sbGet('online_views',
       'online_student_id=eq.' + currentOnlineStudent.id +
       '&online_lesson_id=eq.' + lessonId +
-      '&select=id,completed,watched_sec,first_viewed_at,reflection,reflection_reply,reflection_replied_at&limit=1');
+      '&select=id,completed,watched_sec,active_sec,first_viewed_at,reflection,reflection_reply,reflection_replied_at&limit=1');
     if (rows && rows[0]) {
       currentViewId = rows[0].id;
       maxWatchedSec = rows[0].watched_sec || 0;   // 前回までの到達点を引き継ぐ
+      activeSec = rows[0].active_sec || 0;         // 前回までの実視聴時間を引き継ぐ
       viewHadFirst = !!rows[0].first_viewed_at;
       viewAlreadyCompleted = !!rows[0].completed;
       viewPrevReflection = rows[0].reflection || '';
@@ -1181,12 +1199,83 @@ async function ensureView(lessonId) {
   } catch(e){ currentViewId = null; }
 }
 
+// ---- 自作の動画コントロール（YT IFrame API 操作）----
+function pvTogglePlay() {
+  if (!ytPlayer) return;
+  let st = -1;
+  try { st = ytPlayer.getPlayerState(); } catch(e){}
+  try { if (st === YT.PlayerState.PLAYING) ytPlayer.pauseVideo(); else ytPlayer.playVideo(); } catch(e){}
+}
+function pvToggleMute() {
+  if (!ytPlayer) return;
+  const btn = document.getElementById('pv-mute'), vol = document.getElementById('pv-vol');
+  try {
+    if (ytPlayer.isMuted()) {
+      ytPlayer.unMute();
+      if (vol && +vol.value === 0) { vol.value = '50'; ytPlayer.setVolume(50); }
+      if (btn) btn.textContent = '🔊';
+    } else {
+      ytPlayer.mute();
+      if (btn) btn.textContent = '🔇';
+    }
+  } catch(e){}
+}
+function pvVolInput() {
+  if (!ytPlayer) return;
+  const vol = document.getElementById('pv-vol'), btn = document.getElementById('pv-mute');
+  const v = +vol.value;
+  try {
+    ytPlayer.setVolume(v);
+    if (v === 0) { ytPlayer.mute(); if (btn) btn.textContent = '🔇'; }
+    else { ytPlayer.unMute(); if (btn) btn.textContent = '🔊'; }
+  } catch(e){}
+}
+function pvSeekInput() {
+  pvScrubbing = true;
+  if (!ytPlayer) return;
+  let dur = 0; try { dur = ytPlayer.getDuration() || 0; } catch(e){}
+  const seek = document.getElementById('pv-seek'), curEl = document.getElementById('pv-cur');
+  if (curEl && dur) curEl.textContent = fmtDur((+seek.value) / 1000 * dur);
+}
+function pvSeekCommit() {
+  if (!ytPlayer) { pvScrubbing = false; return; }
+  let dur = 0; try { dur = ytPlayer.getDuration() || 0; } catch(e){}
+  const seek = document.getElementById('pv-seek');
+  try { ytPlayer.seekTo((+seek.value) / 1000 * dur, true); } catch(e){}
+  pvScrubbing = false;
+}
+function pvTick() {
+  if (!ytPlayer) return;
+  let dur = 0, cur = 0, st = -1;
+  try { dur = ytPlayer.getDuration() || 0; cur = ytPlayer.getCurrentTime() || 0; st = ytPlayer.getPlayerState(); } catch(e){ return; }
+  // 実視聴時間の積算：再生中のみカウント。1tickの加算上限を2秒にして
+  // バックグラウンド放置（タイマー間引き）や早送りでの水増しを防ぐ。
+  const now = Date.now();
+  const playing = (st === YT.PlayerState.PLAYING) && !pvScrubbing;
+  if (playing) {
+    if (lastActiveTs) activeSec += Math.min((now - lastActiveTs) / 1000, 2);
+    lastActiveTs = now;
+  } else {
+    lastActiveTs = 0;
+  }
+  // 実視聴が規定割合（85%）に達したら感想を解除。シーク／早送りでは到達しない。
+  if (dur > 0) { if (activeSec >= dur * 0.85) unlockReflection(); }
+  else if (cur > 30) { unlockReflection(); }   // 尺不明時のフォールバック
+  // 表示更新
+  const durEl = document.getElementById('pv-dur'), curEl = document.getElementById('pv-cur'), seek = document.getElementById('pv-seek');
+  if (durEl && dur) durEl.textContent = fmtDur(dur);
+  if (!pvScrubbing) {
+    if (curEl) curEl.textContent = fmtDur(cur);
+    if (seek && dur) seek.value = String(Math.round(cur / dur * 1000));
+  }
+}
+
 // ---- YouTube IFrame API プレーヤー＋進捗記録 ----
 function startPlayer(vid) {
   function create() {
     ytPlayer = new YT.Player('yt-player', {
       videoId: vid,
-      playerVars: { rel:0, modestbranding:1, playsinline:1 },
+      playerVars: { rel:0, modestbranding:1, playsinline:1, controls:0, disablekb:1, fs:0, iv_load_policy:3, cc_load_policy:0 },
       events: { onReady: onPlayerReady, onStateChange: onPlayerState }
     });
   }
@@ -1202,6 +1291,11 @@ function startPlayer(vid) {
 }
 
 function onPlayerReady() {
+  // 自作コントロールのUI更新を開始＋初期値
+  if (!uiTimer) uiTimer = setInterval(pvTick, 300);
+  try { const vEl = document.getElementById('pv-vol'); if (vEl) vEl.value = String(Math.round(ytPlayer.getVolume())); } catch(e){}
+  try { ytPlayer.setPlaybackRate(1); } catch(e){}
+  pvTick();
   // 総尺を取得し、未登録なら online_lessons.duration_sec を補完
   try {
     const dur = Math.floor(ytPlayer.getDuration() || 0);
@@ -1221,6 +1315,8 @@ function onPlayerReady() {
 }
 
 function onPlayerState(ev) {
+  const pb = document.getElementById('pv-play');
+  if (pb) pb.textContent = (ev.data === YT.PlayerState.PLAYING) ? '⏸' : '▶';
   // 1=再生中：定期保存を開始 / それ以外：停止して1回保存
   if (ev.data === YT.PlayerState.PLAYING) {
     if (!progressTimer) progressTimer = setInterval(tickProgress, 15000); // 15秒ごと
@@ -1228,7 +1324,6 @@ function onPlayerState(ev) {
     if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
     tickProgress(); // 一時停止・終了・離脱直前に確定保存
   }
-  if (ev.data === YT.PlayerState.ENDED) unlockReflection(); // 最後まで再生 → 感想を解除
 }
 
 function tickProgress() {
@@ -1238,10 +1333,10 @@ function tickProgress() {
   if (cur > maxWatchedSec) maxWatchedSec = cur;
   const pct = lessonDurationSec > 0
     ? Math.min(100, Math.round(maxWatchedSec / lessonDurationSec * 100)) : 0;
-  if (pct >= 95) unlockReflection(); // ほぼ視聴完了で解除（ENDEDの取り逃し対策）
   sbPatch('online_views', 'id=eq.' + currentViewId, {
     watched_sec: maxWatchedSec,
     progress_pct: pct,
+    active_sec: Math.round(activeSec),
     last_viewed_at: new Date().toISOString()
   }).catch(()=>{});
 }
@@ -1251,6 +1346,7 @@ function leaveLesson(courseId) {
   document.body.classList.remove('watching','wide');
   stopWatermarkCycle();
   if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+  if (uiTimer) { clearInterval(uiTimer); uiTimer = null; }
   tickProgress();
   try { if (ytPlayer && ytPlayer.destroy) ytPlayer.destroy(); } catch(e){}
   ytPlayer = null;

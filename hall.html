@@ -60,6 +60,8 @@
   .blk{display:flex;gap:5px}
   .seat{width:30px;height:26px;border-radius:5px;border:1px solid var(--empty-bd);background:var(--empty);
     display:flex;align-items:center;justify-content:center;font-size:.62rem;color:#94a3b8;flex:0 0 auto;overflow:hidden}
+  .seat.moveable{border-color:#22c55e;background:#f0fdf4;cursor:pointer}
+  .seat.moving{outline:3px solid #111827;outline-offset:1px}
   .blkgap{width:16px;flex:0 0 16px}
   .legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin:8px 0}
   .legend span{font-size:.82rem;display:inline-flex;align-items:center;gap:5px}
@@ -86,7 +88,7 @@
 <div id="app" class="wrap"><div class="card center">読み込み中…</div></div>
 <script>
 /* ===== ホール座席登録アプリ hall.html v2 ===== */
-const APP_VERSION = 'hall-2.0.0';
+const APP_VERSION = 'hall-2.1.0';
 const SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
 const REST = SB_URL + '/rest/v1/';
@@ -116,6 +118,7 @@ function fbOpen(cfg){ if(cfg.feedback_mode==='open') return true; if(cfg.feedbac
 
 const S = { role:'participant', screen:'loading', cfg:null, regs:[], form:{}, staffTab:'map', staffAuthed:false };
 let refreshTimer=null; function stopTimer(){ if(refreshTimer){ clearInterval(refreshTimer); refreshTimer=null; } }
+let seatMoveId=null;
 
 async function loadCfg(){ const d=await sbGet('hall_event_config','event_id=eq.'+EVENT+'&select=*'); if(!d.length) throw new Error('config-missing'); const c=d[0]; if(!c.layout) c.layout={blocks:[],rows:20}; if(!c.categories) c.categories=[]; if(!c.bands) c.bands=['中学生以下','高校生','大学生','社会人']; return c; }
 async function loadRegs(){ return sbGet('hall_event_regs','event_id=eq.'+EVENT+'&select=*&order=registered_at.asc'); }
@@ -281,17 +284,31 @@ async function staffMap(){
   const cfg=S.cfg, blocks=cfg.layout.blocks||[], rows=cfg.layout.rows||20;
   const total=blocks.reduce((s,b)=>s+(b.seats||0)*rows,0), taken=S.regs.length;
   const bySeat={}; S.regs.forEach(r=>bySeat[r.seat_key]=r);
+  const moving = seatMoveId ? S.regs.find(r=>r.id===seatMoveId) : null;
   let legend='<div class="legend">'+(cfg.categories||[]).map(c=>'<span><i class="dot" style="background:'+c.color+'"></i>'+esc(c.name)+'</span>').join('')+'</div>';
   let grid='';
   for(let r=1;r<=rows;r++){ let cells='';
-    blocks.forEach((b,bi)=>{ let bs=''; for(let c=1;c<=(b.seats||0);c++){ const reg=bySeat[seatKey(b.id,r,c)]; if(reg){ const col=catColor(reg.category_id); bs+='<div class="seat" style="background:'+col+';color:#fff;border-color:'+col+';cursor:pointer" data-id="'+reg.id+'" title="'+esc((reg.name||'')+' / '+(reg.category_name||''))+'">'+esc((reg.name||'').slice(0,2))+'</div>'; } else { bs+='<div class="seat">'+c+'</div>'; } }
+    blocks.forEach((b,bi)=>{ let bs=''; for(let c=1;c<=(b.seats||0);c++){ const k=seatKey(b.id,r,c); const reg=bySeat[k]; if(reg){ const col=catColor(reg.category_id); const mine=(moving&&reg.id===moving.id); bs+='<div class="seat'+(mine?' moving':'')+'" style="background:'+col+';color:#fff;border-color:'+col+';cursor:pointer" data-id="'+reg.id+'" title="'+esc((reg.name||'')+' / '+(reg.category_name||''))+'">'+esc((reg.name||'').slice(0,2))+'</div>'; } else { bs+='<div class="seat'+(moving?' moveable':'')+'" data-empty="'+k+'" data-blk="'+b.id+'" data-r="'+r+'" data-c="'+c+'">'+c+'</div>'; } }
       cells+='<div class="blk">'+bs+'</div>'+(bi<blocks.length-1?'<div class="blkgap"></div>':''); });
     grid+='<div class="seatRow"><div class="rowNo">'+r+'列</div>'+cells+'</div>'; }
-  let body='<div class="card"><div class="stat"><div class="box"><div class="n">'+taken+'</div><div class="k">登録</div></div><div class="box"><div class="n">'+total+'</div><div class="k">総座席</div></div><div class="box"><div class="n">'+(total-taken)+'</div><div class="k">空席</div></div></div>'+legend
-    +'<div class="stage">舞　台</div><div class="seatArea">'+grid+'</div><div class="screen">スクリーン</div><div class="muted center">自動更新（5秒）・座席タップで詳細</div></div>';
+  const banner = moving ? '<div class="msg warn" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>移動中：<b>'+esc(moving.name)+'</b>（'+esc(seatLabel(moving))+'）→ 移動先の空席をタップ</span><button class="btn sec sm" id="mvcancel">キャンセル</button></div>' : '';
+  let body='<div class="card">'+banner+'<div class="stat"><div class="box"><div class="n">'+taken+'</div><div class="k">登録</div></div><div class="box"><div class="n">'+total+'</div><div class="k">総座席</div></div><div class="box"><div class="n">'+(total-taken)+'</div><div class="k">空席</div></div></div>'+legend
+    +'<div class="stage">舞　台</div><div class="seatArea">'+grid+'</div><div class="screen">スクリーン</div><div class="muted center">自動更新（5秒）・座席タップで詳細/移動</div></div>';
   $('tabbody').innerHTML=body;
-  document.querySelectorAll('.seat[data-id]').forEach(el=>el.onclick=()=>seatDetail(parseInt(el.getAttribute('data-id'))));
+  if(moving){
+    document.querySelectorAll('.seat[data-empty]').forEach(el=>el.onclick=()=>seatMoveTo(el.getAttribute('data-empty'), el.getAttribute('data-blk'), parseInt(el.getAttribute('data-r')), parseInt(el.getAttribute('data-c'))));
+    var cx=$('mvcancel'); if(cx) cx.onclick=()=>{ seatMoveId=null; staffMap(); };
+  }
+  document.querySelectorAll('.seat[data-id]').forEach(el=>el.onclick=()=>{ if(seatMoveId) return; seatDetail(parseInt(el.getAttribute('data-id'))); });
   refreshTimer=setInterval(async()=>{ if(S.role==='staff'&&S.staffTab==='map'){ try{ S.regs=await loadRegs(); staffMap(); }catch(e){} } },5000);
+}
+async function seatMoveTo(key, blk, r, c){
+  const id=seatMoveId; if(!id) return;
+  try{ S.regs=await loadRegs(); }catch(e){}
+  if(S.regs.some(x=>x.seat_key===key)){ alert('その席は今埋まりました。別の空席を選んでください。'); return staffMap(); }
+  try{ await sbPatch('hall_event_regs','id=eq.'+id+'&event_id=eq.'+EVENT,{seat_key:key, block_id:blk, seat_row:r, seat_col:c}); }
+  catch(e){ alert('移動に失敗しました。'); return; }
+  seatMoveId=null; try{ S.regs=await loadRegs(); }catch(e){} staffMap();
 }
 function seatDetail(id){
   const reg=S.regs.find(r=>r.id===id); if(!reg) return;
@@ -299,10 +316,11 @@ function seatDetail(id){
   ov.innerHTML='<div class="modal"><h2 style="border:0;padding:0;margin-top:0">'+esc(seatLabel(reg))+'</h2>'
     +'<table class="kv"><tr><td>受付番号</td><td>'+esc(reg.receipt_no||'-')+'</td></tr><tr><td>お名前</td><td>'+esc(reg.name)+'</td></tr><tr><td>カテゴリ</td><td>'+esc(reg.category_name||'')+'</td></tr><tr><td>区分</td><td>'+esc(reg.band||'')+'</td></tr>'+(reg.referrer?'<tr><td>紹介者</td><td>'+esc(reg.referrer)+'</td></tr>':'')+(reg.email?'<tr><td>メール</td><td>'+esc(reg.email)+'</td></tr>':'')+'</table>'
     +'<div style="margin:10px 0"><b>感想:</b><br>'+(reg.feedback?esc(reg.feedback):'<span class="muted">未入力</span>')+'</div>'
-    +'<div class="row"><button class="btn sec sm" id="mc" style="flex:1">閉じる</button><button class="btn danger sm" id="md" style="flex:1">この登録を取消</button></div></div>';
+    +'<div class="row"><button class="btn sm" id="mv" style="flex:1">席を移動</button><button class="btn sec sm" id="mc" style="flex:1">閉じる</button><button class="btn danger sm" id="md" style="flex:1">取消</button></div></div>';
   document.body.appendChild(ov);
   ov.onclick=e=>{ if(e.target===ov) ov.remove(); };
   ov.querySelector('#mc').onclick=()=>ov.remove();
+  ov.querySelector('#mv').onclick=()=>{ seatMoveId=reg.id; ov.remove(); staffMap(); };
   ov.querySelector('#md').onclick=async()=>{ if(!confirm(reg.name+' さんの登録を取り消します。よろしいですか？')) return; try{ await sbDelete('hall_event_regs','id=eq.'+reg.id+'&event_id=eq.'+EVENT); }catch(e){} ov.remove(); S.regs=await loadRegs(); staffMap(); };
 }
 async function staffTally(){
