@@ -241,6 +241,19 @@
     body.logged-in:not(.watching) .wrap{max-width:1120px}
     .home-grid{display:grid;grid-template-columns:340px minmax(0,1fr);align-items:start;gap:20px}
   }
+  /* 学習カレンダー */
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:8px}
+  .cal-wd{text-align:center;font-size:10px;color:var(--muted);font-weight:700;padding:2px 0}
+  .cal-cell{position:relative;aspect-ratio:1/1;border-radius:8px;border:1px solid var(--border);background:var(--surface);padding:3px;display:flex;align-items:flex-start;justify-content:flex-end}
+  .cal-cell.empty{border:none;background:transparent}
+  .cal-cell.login{background:linear-gradient(rgba(240,160,48,.16),rgba(240,160,48,.16)),var(--surface);border-color:var(--orange-l)}
+  .cal-d{font-size:11px;color:var(--text);font-weight:600}
+  .cal-vid{position:absolute;left:4px;bottom:2px;font-size:10px;color:var(--green-d);line-height:1}
+  .cal-nav{border:1px solid var(--border);background:var(--bg);border-radius:6px;font-size:13px;line-height:1;padding:3px 9px;cursor:pointer;color:var(--text);font-family:inherit}
+  .cal-legend{margin-top:8px;font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .lg{display:inline-block;width:12px;height:12px;border-radius:3px}
+  .lg-login{background:rgba(240,160,48,.35);border:1px solid var(--orange-l)}
+  .lg-vid{color:var(--green-d);font-size:11px}
 </style>
 </head>
 <body>
@@ -412,6 +425,7 @@ async function doLogin() {
 }
 
 function doLogout() {
+  endStudySession();
   localStorage.removeItem(LS_KEY);
   currentOnlineStudent = null;
   stopWatermarkCycle();
@@ -441,6 +455,7 @@ async function showHome() {
   document.getElementById('who').innerHTML =
     esc(currentOnlineStudent.name) + ' さん <span>（' + esc(currentOnlineStudent.login_id) + '）</span>';
   await updateOnlineStreak();
+  startStudySession();
   loadMyCourses();
 }
 
@@ -560,6 +575,75 @@ async function awardLessonComplete() {
     showOnlineToast('🎁 +' + pts + 'pt 授業完了ボーナス');
   } catch (e) { /* 列未追加時は無視 */ }
 }
+
+// ===== 学習記録（ログイン自動記録＋カレンダー）=====
+let studyStartMs = 0;
+let studyHeartbeat = null;
+let calY = 0, calM = 0;
+let calSessionDays = new Set(), calVideoDays = new Set();
+
+function jstDateStr(ts) {
+  if (!ts) return '';
+  const d = new Date(ts); if (isNaN(d)) return '';
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+
+async function startStudySession() {
+  if (!currentOnlineStudent) return;
+  const sid = currentOnlineStudent.id;
+  try {
+    // 閉じ忘れセッションを締める（最後のハートビート分で終了・上限300分）
+    const open = await sbGet('online_sessions', 'online_student_id=eq.' + sid + '&logout_at=is.null&is_active=not.is.false&select=id,login_at,minutes');
+    for (let i = 0; i < (open || []).length; i++) {
+      const o = open[i];
+      const mins = Math.min(300, Math.max(0, Number(o.minutes || 0)));
+      const end = new Date(new Date(o.login_at).getTime() + mins * 60000).toISOString();
+      try { await sbPatch('online_sessions', 'id=eq.' + o.id, { logout_at: end, minutes: mins }); } catch (e2) {}
+    }
+    await sbPost('online_sessions', { online_student_id: sid, source: 'auto' });
+    studyStartMs = Date.now();
+  } catch (e) { studyStartMs = 0; }
+  if (studyHeartbeat) clearInterval(studyHeartbeat);
+  studyHeartbeat = setInterval(studyHeartbeatTick, 120000);
+}
+
+function studyHeartbeatTick() {
+  if (!currentOnlineStudent || !studyStartMs) return;
+  const mins = Math.min(300, Math.round((Date.now() - studyStartMs) / 60000));
+  sbPatch('online_sessions', 'online_student_id=eq.' + currentOnlineStudent.id + '&logout_at=is.null', { minutes: mins }).catch(function () {});
+}
+
+function endStudySession() {
+  if (studyHeartbeat) { clearInterval(studyHeartbeat); studyHeartbeat = null; }
+  const stu = currentOnlineStudent;
+  if (!stu || !studyStartMs) { studyStartMs = 0; return; }
+  const sid = stu.id;
+  const mins = Math.min(300, Math.round((Date.now() - studyStartMs) / 60000));
+  studyStartMs = 0;
+  sbPatch('online_sessions', 'online_student_id=eq.' + sid + '&logout_at=is.null', { logout_at: new Date().toISOString(), minutes: mins }).catch(function () {});
+}
+
+document.addEventListener('visibilitychange', function () { if (document.hidden) studyHeartbeatTick(); });
+
+function renderStudyCal() {
+  const box = document.getElementById('study-cal'); if (!box) return;
+  const startW = new Date(calY, calM, 1).getDay();
+  const daysInMonth = new Date(calY, calM + 1, 0).getDate();
+  const wd = ['日','月','火','水','木','金','土'];
+  let cells = wd.map(function (w) { return '<div class="cal-wd">' + w + '</div>'; }).join('');
+  for (let i = 0; i < startW; i++) cells += '<div class="cal-cell empty"></div>';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = calY + '-' + String(calM + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    const login = calSessionDays.has(key), vid = calVideoDays.has(key);
+    cells += '<div class="cal-cell' + (login ? ' login' : '') + '"><span class="cal-d">' + d + '</span>' + (vid ? '<span class="cal-vid">▶</span>' : '') + '</div>';
+  }
+  box.innerHTML = '<div class="col-h" style="display:flex;align-items:center;justify-content:space-between">学習カレンダー'
+    + '<span><button class="cal-nav" onclick="calPrev()">‹</button> <b style="font-size:12px;color:var(--text)">' + calY + '年' + (calM + 1) + '月</b> <button class="cal-nav" onclick="calNext()">›</button></span></div>'
+    + '<div class="cal-grid">' + cells + '</div>'
+    + '<div class="cal-legend"><span class="lg lg-login"></span>ログイン日　<span class="lg-vid">▶</span> 動画視聴日</div>';
+}
+function calPrev() { calM--; if (calM < 0) { calM = 11; calY--; } renderStudyCal(); }
+function calNext() { calM++; if (calM > 11) { calM = 0; calY++; } renderStudyCal(); }
 
 // ===== ランク（Light）＋バッジ（メダルコレクション）=====
 let onlineRanksCache = null;
@@ -702,7 +786,7 @@ async function loadMyPage() {
     const ids = accessible.map(c => c.id).join(',');
     const [lessons, views] = await Promise.all([
       sbGet('online_lessons', 'online_course_id=in.(' + ids + ')&is_active=not.is.false&select=id,online_course_id,title,sort_order,available_from,available_until&order=sort_order.asc,id.asc'),
-      sbGet('online_views', 'online_student_id=eq.' + currentOnlineStudent.id + '&select=online_lesson_id,completed,reflection')
+      sbGet('online_views', 'online_student_id=eq.' + currentOnlineStudent.id + '&select=online_lesson_id,completed,reflection,completed_at')
     ]);
     const doneSet = {};
     (views || []).forEach(v => { if (v.completed) doneSet[v.online_lesson_id] = true; });
@@ -746,6 +830,15 @@ async function loadMyPage() {
       videos_done: sumDone, streak: streak, reflections: reflections,
       meeting: meetingDone, course_complete: completedCourses.length, points: points
     });
+    // 学習カレンダー用データ（ログイン日＋動画視聴日）
+    calSessionDays = new Set(); calVideoDays = new Set();
+    try {
+      const sess = await sbGet('online_sessions', 'online_student_id=eq.' + currentOnlineStudent.id + '&is_active=not.is.false&select=session_date,login_at');
+      (sess || []).forEach(function (r) { const k = r.session_date ? String(r.session_date).slice(0, 10) : jstDateStr(r.login_at); if (k) calSessionDays.add(k); });
+    } catch (e) {}
+    (views || []).forEach(function (v) { if (v.completed && v.completed_at) { const k = jstDateStr(v.completed_at); if (k) calVideoDays.add(k); } });
+    const nowJ = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit' }).format(new Date()).split('-');
+    calY = parseInt(nowJ[0], 10); calM = parseInt(nowJ[1], 10) - 1;
     // 最近のポイント履歴
     let logs = [];
     try {
@@ -787,6 +880,7 @@ async function loadMyPage() {
         + '</div>';
     }
     html += renderBadgeCollection(badgeState);
+    html += '<div id="study-cal" style="margin-top:16px"></div>';
     if (logs && logs.length) {
       html += '<div style="margin-top:16px"><div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:6px">最近のポイント</div>'
         + logs.map(l =>
@@ -798,6 +892,7 @@ async function loadMyPage() {
         + '</div>';
     }
     body.innerHTML = html;
+    renderStudyCal();
     if (badgeState && badgeState.newly && badgeState.newly.length) {
       showOnlineToast('🏅 新しいバッジを獲得！ ' + badgeState.newly.map(b => (b.icon || '') + ' ' + b.name).join('、'));
     }

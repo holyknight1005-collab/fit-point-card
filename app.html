@@ -6056,6 +6056,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <input id="ol-course-title" type="text" placeholder="講座名（例：共通テスト英語 総まとめ）" style="padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:'Noto Sans JP',sans-serif">
           <textarea id="ol-course-desc" placeholder="説明（任意）" rows="2" style="padding:10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:'Noto Sans JP',sans-serif;resize:vertical"></textarea>
           <input id="ol-course-price" type="number" placeholder="価格（円・任意）" style="padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:'Noto Sans JP',sans-serif">
+          <select id="ol-course-segment" style="padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:'Noto Sans JP',sans-serif;background:#fff">
+            <option value="">区分（未設定）</option>
+            <option value="adult">社会人・大学生</option>
+            <option value="hs">高校生</option>
+          </select>
           <button onclick="olCreateCourse()" class="primary-btn" style="padding:11px;border:none;border-radius:8px;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;font-weight:700;font-size:14px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">＋ 講座を作成</button>
         </div>
         <div class="section-title">講座一覧</div>
@@ -6929,7 +6934,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260923onl15';
+const APP_VERSION = '20260924onl18';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -43616,12 +43621,15 @@ async function olCreateCourse() {
   const desc  = (document.getElementById('ol-course-desc').value || '').trim();
   const priceRaw = (document.getElementById('ol-course-price').value || '').trim();
   if (!title) { alert('講座名を入力してください'); return; }
-  const body = { title: title, description: desc || null, price: priceRaw ? parseInt(priceRaw, 10) : null };
+  const segEl = document.getElementById('ol-course-segment');
+  const segment = (segEl && segEl.value) ? segEl.value : null;
+  const body = { title: title, description: desc || null, price: priceRaw ? parseInt(priceRaw, 10) : null, segment: segment };
   try {
     await sbPost('online_courses', body);
     document.getElementById('ol-course-title').value = '';
     document.getElementById('ol-course-desc').value = '';
     document.getElementById('ol-course-price').value = '';
+    if (segEl) segEl.value = '';
     olLoadCourses();
   } catch (e) { alert('作成に失敗しました: ' + e.message); }
 }
@@ -43636,10 +43644,16 @@ async function olLoadCourses() {
     box.innerHTML = rows.map(c => {
       const priceTxt = (c.price != null) ? ('¥' + Number(c.price).toLocaleString()) : '価格未設定';
       const streamOn = !!c.is_streaming;
+      const seg = c.segment || '';
+      const segSel = '<select onchange="olSetCourseSegment(' + c.id + ',this.value)" style="padding:5px 8px;border:1px solid var(--border);border-radius:7px;font-size:12px;font-family:inherit;background:#fff">'
+        + '<option value=""' + (seg===''?' selected':'') + '>区分（未設定）</option>'
+        + '<option value="adult"' + (seg==='adult'?' selected':'') + '>社会人・大学生</option>'
+        + '<option value="hs"' + (seg==='hs'?' selected':'') + '>高校生</option>'
+        + '</select>';
       return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">'
         + '<div style="font-weight:700;font-size:14px;margin-bottom:4px">' + olEsc(c.title) + '</div>'
         + (c.description ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px;line-height:1.6">' + olEsc(c.description) + '</div>' : '')
-        + '<div style="font-size:12px;color:var(--text);margin-bottom:8px">' + priceTxt + '</div>'
+        + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><span style="font-size:12px;color:var(--text)">' + priceTxt + '</span>' + segSel + '</div>'
         + '<button onclick="olToggleStreaming(' + c.id + ',' + (streamOn?'false':'true') + ')" style="padding:6px 12px;border:1px solid var(--border);border-radius:7px;background:' + (streamOn?'#E8F6EE':'#FDECEA') + ';color:' + (streamOn?'#1E6B3F':'#943126') + ';font-size:12px;font-weight:700;cursor:pointer">'
         + (streamOn ? '配信ON（押すと停止）' : '配信OFF（押すと再開）') + '</button>'
         + '</div>';
@@ -43710,6 +43724,9 @@ async function olLoadStudents() {
     const rows = await sbGet('online_students', 'select=*&order=created_at.desc');
     olStudentsCache = rows;
     if (!rows.length) { box.innerHTML = '<div style="color:var(--muted);font-size:13px">まだ受講者がいません</div>'; return; }
+    let olRanksL = null, olBadgeCnt = {};
+    try { olRanksL = await sbGet('online_ranks', 'is_active=not.is.false&segment=is.null&select=name,min_points&order=min_points.asc'); } catch (e) { olRanksL = null; }
+    try { const _sb = await sbGet('online_student_badges', 'is_active=not.is.false&select=online_student_id'); (_sb || []).forEach(b => { olBadgeCnt[b.online_student_id] = (olBadgeCnt[b.online_student_id] || 0) + 1; }); } catch (e) { olBadgeCnt = {}; }
     box.innerHTML = rows.map(s => {
       const active = (s.is_active !== false);
       const badge = active
@@ -43720,8 +43737,20 @@ async function olLoadStudents() {
       + '<div style="font-weight:700;font-size:14px">' + olEsc(s.name) + '　' + badge
       +   ' <span style="font-size:11px;color:var(--muted);font-weight:600">透かしNo.' + String(s.id).padStart(4,'0') + '</span></div>'
       + '<div style="font-size:12px;color:var(--muted);margin-top:2px">' + olEsc(s.high_school) + '／' + olEsc(s.prefecture) + '</div>'
+      + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:7px">'
+      +   (olRankName(Number(s.points||0), olRanksL) ? '<span style="font-size:11px;font-weight:800;color:#D9832A;background:#FFF3E0;border:1px solid #F0D0A0;padding:2px 9px;border-radius:9px">★ ' + olEsc(olRankName(Number(s.points||0), olRanksL)) + '</span>' : '')
+      +   '<span style="font-size:12px;color:var(--text)">累計 <b>' + Number(s.points||0) + '</b>pt</span>'
+      +   '<span style="font-size:12px;color:var(--muted)">🏅 ' + (olBadgeCnt[s.id] || 0) + '</span>'
+      +   '<select onchange="olSetStudentSegment(' + s.id + ',this.value)" style="padding:5px 8px;border:1px solid var(--border);border-radius:7px;font-size:12px;font-family:inherit;background:#fff">'
+      +     '<option value=""' + ((s.segment||'')===''?' selected':'') + '>区分（未設定）</option>'
+      +     '<option value="adult"' + ((s.segment||'')==='adult'?' selected':'') + '>社会人・大学生</option>'
+      +     '<option value="hs"' + ((s.segment||'')==='hs'?' selected':'') + '>高校生</option>'
+      +   '</select>'
+      + '</div>'
       + '<div style="font-size:12px;color:var(--text);margin-top:6px">ID：<b>' + olEsc(s.login_id) + '</b>　PW：<b>' + olEsc(s.password) + '</b></div>'
       + '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+      + '<button onclick="olAdjustPoints(' + s.id + ')" style="padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:#FFF3E0;color:#D9832A;font-size:12px;font-weight:700;cursor:pointer">± ポイント調整</button>'
+      + '<button onclick="olAddManualSession(' + s.id + ')" style="padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:#EAF6EE;color:#1E6B3F;font-size:12px;font-weight:700;cursor:pointer">🗓 学習記録</button>'
       + '<button onclick="olCopyLogin(' + s.id + ')" style="padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:#EAF2FB;color:#1E4276;font-size:12px;font-weight:700;cursor:pointer">📋 ID/PWコピー</button>'
       + '<button onclick="olResetPassword(' + s.id + ')" style="padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:#FEF9E7;color:#7D6608;font-size:12px;font-weight:700;cursor:pointer">🔑 PW再発行</button>'
       + '<button onclick="olToggleStudentActive(' + s.id + ',' + (active ? 'false' : 'true') + ')" style="padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:' + (active ? '#FDECEA' : '#E8F6EE') + ';color:' + (active ? '#943126' : '#1E6B3F') + ';font-size:12px;font-weight:700;cursor:pointer">' + (active ? '利用停止' : '再開') + '</button>'
@@ -43756,6 +43785,56 @@ async function olResetPassword(id) {
     olLoadStudents();
     alert('新しいパスワード：' + pw + '\n受講者に伝えてください。');
   } catch (e) { alert('再発行に失敗しました: ' + e.message); }
+}
+
+// ---------- ランク名の算出 / ポイント手動調整 / 区分の割当 ----------
+function olRankName(points, ranks) {
+  if (!ranks || !ranks.length) return '';
+  let name = '';
+  for (let i = 0; i < ranks.length; i++) { if (points >= ranks[i].min_points) name = ranks[i].name; else break; }
+  return name;
+}
+
+async function olAdjustPoints(id) {
+  const s = (olStudentsCache || []).find(x => x.id === id);
+  if (!s) return;
+  const raw = prompt('加減するポイント（例：+10 で加算 / -5 で減算）\n' + s.name + ' さん・現在 ' + Number(s.points||0) + 'pt', '');
+  if (raw === null) return;
+  const delta = parseInt(String(raw).replace(/[^0-9\-]/g, ''), 10);
+  if (!delta || isNaN(delta)) { alert('数値を入力してください（例：+10 / -5）'); return; }
+  const reason = (prompt('理由（任意・履歴に残ります）', '') || '').trim() || 'スタッフ調整';
+  const next = Number(s.points||0) + delta;
+  try {
+    await sbPatch('online_students', 'id=eq.' + id, { points: next });
+    try { await sbPost('online_point_logs', { online_student_id: id, points: delta, reason: reason, type: 'manual' }); } catch (e2) {}
+    olLoadStudents();
+  } catch (e) { alert('更新に失敗しました: ' + e.message); }
+}
+
+async function olSetStudentSegment(id, value) {
+  try { await sbPatch('online_students', 'id=eq.' + id, { segment: value || null }); }
+  catch (e) { alert('区分の更新に失敗しました: ' + e.message); }
+}
+
+async function olSetCourseSegment(id, value) {
+  try { await sbPatch('online_courses', 'id=eq.' + id, { segment: value || null }); }
+  catch (e) { alert('区分の更新に失敗しました: ' + e.message); }
+}
+
+async function olAddManualSession(id) {
+  const s = (olStudentsCache || []).find(x => x.id === id); if (!s) return;
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const dateStr = prompt('学習日を入力（YYYY-MM-DD）\n' + s.name + ' さんの学習記録を手動で追加します（ログアウト忘れの補正など）', today);
+  if (dateStr === null) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) { alert('日付は YYYY-MM-DD の形式で入力してください'); return; }
+  const minRaw = prompt('学習時間（分・任意）', '30'); if (minRaw === null) return;
+  const mins = Math.max(0, parseInt(String(minRaw).replace(/[^0-9]/g, ''), 10) || 0);
+  const loginAt = new Date(dateStr + 'T09:00:00+09:00').toISOString();
+  const logoutAt = new Date(new Date(loginAt).getTime() + mins * 60000).toISOString();
+  try {
+    await sbPost('online_sessions', { online_student_id: id, session_date: dateStr, login_at: loginAt, logout_at: logoutAt, minutes: mins, source: 'manual' });
+    alert('学習記録を追加しました（' + dateStr + '・' + mins + '分）');
+  } catch (e) { alert('追加に失敗しました: ' + e.message); }
 }
 
 // ---------- 受講権 ----------
