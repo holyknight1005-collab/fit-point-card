@@ -57,7 +57,7 @@
 <div id="app" class="wrap"><div class="card center">読み込み中…</div></div>
 <script>
 /* ===== ホール座席登録アプリ hall.html v3（受付チェックイン・前詰め着席） ===== */
-const APP_VERSION = 'hall-3.0.0';
+const APP_VERSION = 'hall-3.1.0';
 const SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
 const REST = SB_URL + '/rest/v1/';
@@ -88,7 +88,7 @@ function fbOpen(cfg){ if(cfg.feedback_mode==='open') return true; if(cfg.feedbac
 
 const S = { role:'participant', screen:'loading', cfg:null, regs:[], form:{}, staffTab:'checkin', staffAuthed:false, lastSeated:null };
 let refreshTimer=null; function stopTimer(){ if(refreshTimer){ clearInterval(refreshTimer); refreshTimer=null; } }
-let seatMoveId=null, scanStream=null, scanRAF=null;
+let seatMoveId=null, placingId=null, scanStream=null, scanRAF=null;
 
 async function loadCfg(){ const d=await sbGet('hall_event_config','event_id=eq.'+EVENT+'&select=*'); if(!d.length) throw new Error('config-missing'); const c=d[0]; if(!c.layout) c.layout={blocks:[],rows:20}; if(!c.categories) c.categories=[]; if(!c.bands) c.bands=['中学生以下','高校生','大学生','社会人']; return c; }
 async function loadRegs(){ return sbGet('hall_event_regs','event_id=eq.'+EVENT+'&select=*&order=registered_at.asc'); }
@@ -230,7 +230,7 @@ async function renderCheckin(){
   $('ci-no').onkeydown=e=>{ if(e.key==='Enter') $('ci-go').click(); };
   $('ci-scan').onclick=startScan; $('ci-scan-stop').onclick=stopScan;
   $('ci-ticketless').onclick=ticketlessSeat;
-  document.querySelectorAll('[data-seat]').forEach(el=>el.onclick=()=>{ const r=S.regs.find(x=>x.id===parseInt(el.getAttribute('data-seat'))); if(r) assignFrontSeat(r); });
+  document.querySelectorAll('[data-seat]').forEach(el=>el.onclick=()=>{ const id=parseInt(el.getAttribute('data-seat')); if(S.regs.find(x=>x.id===id)) startPlacing(id); });
 }
 
 function startScan(){
@@ -245,37 +245,46 @@ function scanLoop(){
 function stopScan(){ if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; } if(scanRAF){ cancelAnimationFrame(scanRAF); scanRAF=null; } const cam=$('ci-cam'); if(cam) cam.style.display='none'; }
 
 async function checkinByReceipt(no){
-  try{ const d=await sbGet('hall_event_regs','event_id=eq.'+EVENT+'&receipt_no=eq.'+encodeURIComponent(no)+'&select=*'); if(!d.length){ alert('該当する受付番号が見つかりません：'+no); return; } const reg=d[0]; S.regs=await loadRegs(); if(reg.seat_key){ S.lastSeated={name:reg.name,seat:seatLabel(reg)+'（着席済み）'}; renderCheckin(); return; } assignFrontSeat(reg); }catch(e){ alert('照合に失敗しました。'); }
+  try{ const d=await sbGet('hall_event_regs','event_id=eq.'+EVENT+'&receipt_no=eq.'+encodeURIComponent(no)+'&select=*'); if(!d.length){ alert('該当する受付番号が見つかりません：'+no); return; } const reg=d[0]; S.regs=await loadRegs(); if(reg.seat_key){ S.lastSeated={name:reg.name,seat:seatLabel(reg)+'（着席済み）'}; renderCheckin(); return; } startPlacing(reg.id); }catch(e){ alert('照合に失敗しました。'); }
+}
+
+function startPlacing(id){ seatMoveId=null; placingId=id; stopScan(); S.staffTab='map'; render(); }
+
+async function seatAssign(id, key, blk, r, c, mode){
+  try{ S.regs=await loadRegs(); }catch(e){}
+  if(S.regs.some(x=>x.seat_key===key)){ alert('その席は今埋まりました。別の空席を選んでください。'); return staffMap(); }
+  let seated=null;
+  try{ const up=await sbPatch('hall_event_regs','id=eq.'+id+'&event_id=eq.'+EVENT, mode==='place'?{seat_key:key,block_id:blk,seat_row:r,seat_col:c,checkin_at:new Date().toISOString()}:{seat_key:key,block_id:blk,seat_row:r,seat_col:c}); seated=up[0]; }
+  catch(e){ alert('着席に失敗しました。別の席でお試しください。'); return staffMap(); }
+  seatMoveId=null; placingId=null; try{ S.regs=await loadRegs(); }catch(e){}
+  if(mode==='place'){ if(seated){ S.lastSeated={name:seated.name,seat:seatLabel(seated)}; } S.staffTab='checkin'; render(); if(seated&&seated.source==='reception'&&!seated.category_id){ editReg(seated.id); } }
+  else { staffMap(); }
 }
 
 async function assignFrontSeat(reg){
+  placingId=null;
   for(let attempt=0; attempt<8; attempt++){
     S.regs=await loadRegs();
     const fresh=S.regs.find(x=>x.id===reg.id) || reg;
-    if(fresh.seat_key){ S.lastSeated={name:fresh.name,seat:seatLabel(fresh)+'（着席済み）'}; renderCheckin(); return; }
+    if(fresh.seat_key){ S.lastSeated={name:fresh.name,seat:seatLabel(fresh)+'（着席済み）'}; S.staffTab='checkin'; render(); return; }
     const seat=nextFrontSeat(); if(!seat){ alert('満席です。'); return; }
     const r=await sbPatchRaw('hall_event_regs','id=eq.'+reg.id+'&event_id=eq.'+EVENT+'&seat_key=is.null',{seat_key:seat.key,block_id:seat.blk,seat_row:seat.row,seat_col:seat.col,checkin_at:new Date().toISOString()});
     if(!r.ok){ if(r.status===409){ continue; } alert('着席に失敗しました。'); return; }
-    const arr=await r.json(); if(!arr.length){ continue; } // 既に着席 or 席が埋まった → 取り直し
+    const arr=await r.json(); if(!arr.length){ continue; }
     const seated=arr[0]; S.lastSeated={name:seated.name,seat:seatLabel(seated)};
-    S.regs=await loadRegs(); renderCheckin(); return;
+    S.regs=await loadRegs(); S.staffTab='checkin'; render(); return;
   }
   alert('混雑のため着席できませんでした。もう一度お試しください。');
 }
 
 async function ticketlessSeat(){
   const name=(prompt('お名前（後で入力も可・空でもOK）')||'').trim();
-  for(let attempt=0; attempt<8; attempt++){
-    S.regs=await loadRegs(); const seat=nextFrontSeat(); if(!seat){ alert('満席です。'); return; }
-    const res=await sbInsert({ event_id:EVENT, seat_key:seat.key, block_id:seat.blk, seat_row:seat.row, seat_col:seat.col, name:name||'（受付発券）', client_id:'reception', source:'reception', checkin_at:new Date().toISOString() });
-    if(res.conflict){ continue; }
+  try{
+    const res=await sbInsert({ event_id:EVENT, seat_key:null, name:name||'（受付発券）', client_id:'reception', source:'reception' });
     let reg=res.reg; const receipt='R-'+String(reg.id).padStart(3,'0');
     try{ const up=await sbPatch('hall_event_regs','id=eq.'+reg.id+'&event_id=eq.'+EVENT,{receipt_no:receipt}); reg=up[0]||Object.assign(reg,{receipt_no:receipt}); }catch(e){ reg.receipt_no=receipt; }
-    S.lastSeated={name:reg.name,seat:seatLabel(reg)}; S.regs=await loadRegs(); renderCheckin();
-    if(confirm('着席しました（'+seatLabel(reg)+' / '+reg.receipt_no+'）。\nカテゴリ・区分を今すぐ入力しますか？（後からでも可）')) editReg(reg.id);
-    return;
-  }
-  alert('混雑のため着席できませんでした。もう一度お試しください。');
+    S.regs=await loadRegs(); startPlacing(reg.id);
+  }catch(e){ alert('発券に失敗しました。もう一度お試しください。'); }
 }
 
 /* ---------- 座席マップ（色分け＝カテゴリ・席移動） ---------- */
@@ -285,18 +294,27 @@ async function staffMap(){
   const total=blocks.reduce((s,b)=>s+(b.seats||0)*rows,0), taken=S.regs.filter(r=>r.seat_key).length;
   const bySeat={}; S.regs.forEach(r=>{ if(r.seat_key) bySeat[r.seat_key]=r; });
   const moving=seatMoveId?S.regs.find(r=>r.id===seatMoveId):null;
+  const placing=placingId?S.regs.find(r=>r.id===placingId):null;
+  const acting=moving||placing;
   let legend='<div class="legend">'+(cfg.categories||[]).map(c=>'<span><i class="dot" style="background:'+c.color+'"></i>'+esc(c.name)+'</span>').join('')+'</div>';
   let grid='';
   for(let r=1;r<=rows;r++){ let cells='';
-    blocks.forEach((b,bi)=>{ let bs=''; for(let c=1;c<=(b.seats||0);c++){ const k=seatKey(b.id,r,c); const reg=bySeat[k]; if(reg){ const col=catColor(reg.category_id); const mine=(moving&&reg.id===moving.id); bs+='<div class="seat'+(mine?' moving':'')+'" style="background:'+col+';color:#fff;border-color:'+col+';cursor:pointer" data-id="'+reg.id+'" title="'+esc((reg.name||'')+' / '+(reg.category_name||''))+'">'+esc((reg.name||'').slice(0,2))+'</div>'; } else { bs+='<div class="seat'+(moving?' moveable':'')+'" data-empty="'+k+'" data-blk="'+b.id+'" data-r="'+r+'" data-c="'+c+'">'+c+'</div>'; } }
+    blocks.forEach((b,bi)=>{ let bs=''; for(let c=1;c<=(b.seats||0);c++){ const k=seatKey(b.id,r,c); const reg=bySeat[k]; if(reg){ const col=catColor(reg.category_id); const mine=(moving&&reg.id===moving.id); bs+='<div class="seat'+(mine?' moving':'')+'" style="background:'+col+';color:#fff;border-color:'+col+';cursor:pointer" data-id="'+reg.id+'" title="'+esc((reg.name||'')+' / '+(reg.category_name||''))+'">'+esc((reg.name||'').slice(0,2))+'</div>'; } else { bs+='<div class="seat'+(acting?' moveable':'')+'" data-empty="'+k+'" data-blk="'+b.id+'" data-r="'+r+'" data-c="'+c+'">'+c+'</div>'; } }
       cells+='<div class="blk">'+bs+'</div>'+(bi<blocks.length-1?'<div class="blkgap"></div>':''); });
     grid+='<div class="seatRow"><div class="rowNo">'+r+'列</div>'+cells+'</div>'; }
-  const banner=moving?'<div class="msg warn" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>移動中：<b>'+esc(moving.name)+'</b>（'+esc(seatLabel(moving))+'）→ 移動先の空席をタップ</span><button class="btn sec sm" id="mvcancel">キャンセル</button></div>':'';
+  const banner = moving ? '<div class="msg warn" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>移動中：<b>'+esc(moving.name)+'</b>（'+esc(seatLabel(moving))+'）→ 移動先の空席をタップ</span><button class="btn sec sm" id="mvcancel">キャンセル</button></div>'
+    : placing ? '<div class="msg info" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><span>🎫 <b>'+esc(placing.name)+'</b> を着席：<b>空席をタップ</b></span><span style="display:flex;gap:6px"><button class="btn ok sm" id="plauto">前から自動</button><button class="btn sec sm" id="plcancel">キャンセル</button></span></div>'
+    : '';
   let body='<div class="card">'+banner+'<div class="stat"><div class="box"><div class="n">'+taken+'</div><div class="k">着席</div></div><div class="box"><div class="n">'+total+'</div><div class="k">総座席</div></div><div class="box"><div class="n">'+(total-taken)+'</div><div class="k">空席</div></div></div>'+legend+'<div class="stage">舞　台</div><div class="seatArea">'+grid+'</div><div class="screen">スクリーン</div><div class="muted center">自動更新（5秒）・座席タップで詳細/移動</div></div>';
   $('tabbody').innerHTML=body;
-  if(moving){ document.querySelectorAll('.seat[data-empty]').forEach(el=>el.onclick=()=>seatMoveTo(el.getAttribute('data-empty'),el.getAttribute('data-blk'),parseInt(el.getAttribute('data-r')),parseInt(el.getAttribute('data-c')))); const cx=$('mvcancel'); if(cx) cx.onclick=()=>{ seatMoveId=null; staffMap(); }; }
-  document.querySelectorAll('.seat[data-id]').forEach(el=>el.onclick=()=>{ if(seatMoveId) return; seatDetail(parseInt(el.getAttribute('data-id'))); });
-  refreshTimer=setInterval(async()=>{ if(S.role==='staff'&&S.staffTab==='map'&&!seatMoveId){ try{ S.regs=await loadRegs(); staffMap(); }catch(e){} } },5000);
+  if(acting){
+    document.querySelectorAll('.seat[data-empty]').forEach(el=>el.onclick=()=>seatAssign(acting.id, el.getAttribute('data-empty'), el.getAttribute('data-blk'), parseInt(el.getAttribute('data-r')), parseInt(el.getAttribute('data-c')), moving?'move':'place'));
+    const cx=$('mvcancel'); if(cx) cx.onclick=()=>{ seatMoveId=null; staffMap(); };
+    const cp=$('plcancel'); if(cp) cp.onclick=()=>{ placingId=null; staffMap(); };
+    const pa=$('plauto'); if(pa) pa.onclick=()=>{ const reg=placing; placingId=null; assignFrontSeat(reg); };
+  }
+  document.querySelectorAll('.seat[data-id]').forEach(el=>el.onclick=()=>{ if(seatMoveId||placingId) return; seatDetail(parseInt(el.getAttribute('data-id'))); });
+  refreshTimer=setInterval(async()=>{ if(S.role==='staff'&&S.staffTab==='map'&&!seatMoveId&&!placingId){ try{ S.regs=await loadRegs(); staffMap(); }catch(e){} } },5000);
 }
 async function seatMoveTo(key,blk,r,c){
   const id=seatMoveId; if(!id) return; try{ S.regs=await loadRegs(); }catch(e){}
