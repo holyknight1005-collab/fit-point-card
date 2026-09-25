@@ -43851,7 +43851,7 @@ async function olLoadCohortsTab() {
   if (!box) return;
   if (!olCoLoaded) box.innerHTML = '<div style="color:var(--muted);font-size:13px">読み込み中…</div>';
   try {
-    const [plans, cohorts, members, events, courses, students, tms, pers] = await Promise.all([
+    const [plans, cohorts, members, events, courses, students, tms, pers, sets] = await Promise.all([
       sbGet('online_plans', 'is_active=not.is.false&select=*&order=sort_order.asc,id.asc'),
       sbGet('online_cohorts', 'is_active=not.is.false&select=*&order=start_date.desc'),
       sbGet('online_cohort_members', 'select=*&order=joined_at.asc'),
@@ -43859,10 +43859,11 @@ async function olLoadCohortsTab() {
       sbGet('online_courses', 'select=id,title,is_active&order=id.asc'),
       sbGet('online_students', 'is_active=not.is.false&select=id,name,nickname,segment&order=name.asc'),
       sbGet('online_team_members', 'select=online_student_id,team_id').catch(() => []),
-      sbGet('online_follow_personal', 'select=*').catch(() => null)
+      sbGet('online_follow_personal', 'select=*').catch(() => null),
+      sbGet('online_settings', 'select=key,value').catch(() => null)
     ]);
     const teamOf = {}; (tms || []).forEach(t => { teamOf[t.online_student_id] = t.team_id; });
-    olCoState = { plans: plans || [], cohorts: cohorts || [], members: members || [], events: events || [], courses: courses || [], students: students || [], teamOf: teamOf, personal: pers || [], personalOk: pers !== null };
+    olCoState = { plans: plans || [], cohorts: cohorts || [], members: members || [], events: events || [], courses: courses || [], students: students || [], teamOf: teamOf, personal: pers || [], personalOk: pers !== null, settings: sets, settingsOk: sets !== null };
     olCoLoaded = true;
     olRenderCohortsTab();
   } catch (e) {
@@ -43912,6 +43913,18 @@ function olRenderCohortsTab() {
     if (open) h += olCohortDetail(c, p, ms, evs, stuOf);
     return h + '</div>';
   }).join('') + '</div>';
+
+  // ---- 講座全体の設定 ----
+  const setv = k => { const r = (st.settings || []).find(x => x.key === k); return r ? r.value : ''; };
+  html += '<div class="section-title">⚙️ 受講者アプリの設定</div>'
+    + '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:16px">'
+    + (st.settingsOk
+        ? '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px">🗣 DMM英会話 1回の時間'
+          + '<input id="ol-set-dmm" type="number" min="5" max="240" step="5" value="' + olEsc(setv('dmm_minutes') || '25') + '" style="width:80px;' + OL_IN + '">分'
+          + '<span style="margin-left:auto">' + olBtn('保存', 'olSaveSettings()', 'background:var(--orange);color:#fff;border-color:var(--orange)') + '</span></div>'
+          + '<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">受講者は1日1回「今日のレッスンを受けた！」を押して記録します（押し間違いは本人が取り消し可）。ここで決めた分数が学習時間に加算され、回数と合わせて累計されます。変更はこれからの記録に反映されます。</div>'
+        : '<div style="font-size:12px;color:#C0392B">設定を使うには online_plans_cohorts.sql（末尾の追記）を実行してください。</div>')
+    + '</div>';
 
   // ---- プラン設定 ----
   html += '<details style="margin-bottom:10px"' + (olPlanOpen ? ' open' : '') + '><summary style="cursor:pointer;font-weight:700;font-size:14px;padding:6px 0">⚙️ プラン設定（講座・定員・チーム人数・フォローの雛形）</summary>'
@@ -44138,6 +44151,18 @@ async function olDeleteCohort(id) {
   if (!confirm('この期を削除しますか？（受講権・チームはそのまま残ります）')) return;
   try { await sbPatch('online_cohorts', 'id=eq.' + id, { is_active: false }); olCoOpen = null; await olLoadCohortsTab(); }
   catch (e) { alert('失敗しました: ' + e.message); }
+}
+
+async function olSaveSettings() {
+  const v = parseInt((document.getElementById('ol-set-dmm') || {}).value, 10);
+  if (!(v > 0 && v <= 240)) { alert('5〜240分で入れてください'); return; }
+  try {
+    const ex = (olCoState.settings || []).find(x => x.key === 'dmm_minutes');
+    if (ex) await sbPatch('online_settings', 'key=eq.dmm_minutes', { value: String(v), updated_at: new Date().toISOString() });
+    else await sbPost('online_settings', { key: 'dmm_minutes', value: String(v) });
+    alert('保存しました（DMM英会話 1回 ' + v + '分）');
+    await olLoadCohortsTab();
+  } catch (e) { alert('保存に失敗しました: ' + e.message); }
 }
 
 // ---- プラン設定 ----

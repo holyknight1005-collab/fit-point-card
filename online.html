@@ -311,6 +311,8 @@
   .dash-tabs{display:flex;gap:4px;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:3px;margin:4px 0 10px}
   .dash-tabs button{flex:1;border:0;background:transparent;border-radius:8px;padding:7px;font-size:12px;font-weight:800;color:var(--muted);cursor:pointer;font-family:inherit}
   .dash-tabs button.on{background:var(--surface);color:var(--orange-d);box-shadow:0 1px 4px rgba(0,0,0,.08)}
+  .dash-bars.dense{gap:2px}
+  .dash-bars.dense .dash-bcol .b{width:85%;border-radius:3px 3px 0 0}
   .dash-bcol .v2{font-size:8.5px;color:var(--muted);font-weight:700;min-height:11px;white-space:nowrap}
   .dash-bcol.fut .d{opacity:.4}
   .prog-head{display:flex;flex-direction:column;gap:1px;margin-bottom:8px}
@@ -357,6 +359,17 @@
   .fl-date small,.fl-ttl small{font-size:10.5px;color:var(--muted);font-weight:600}
   .fl-ttl{flex:1;min-width:0;display:flex;flex-direction:column}
   #meeting-card.flash{box-shadow:0 0 0 3px var(--orange);transition:box-shadow .3s}
+  .dmm-box{margin-top:12px;border:1.5px solid #BFDAF3;background:#F2F8FE;border-radius:14px;padding:14px}
+  .dmm-h{font-size:13px;font-weight:900;color:#1E4276;margin-bottom:8px}
+  .dmm-btn{width:100%;border:0;border-radius:12px;padding:13px;font-size:15px;font-weight:900;color:#fff;background:linear-gradient(135deg,#5DA9E9,#3B82C4);cursor:pointer;font-family:inherit}
+  .dmm-note{font-size:11px;color:var(--muted);margin-top:5px;text-align:center}
+  .dmm-done{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #BFDAF3;border-radius:12px;padding:11px 12px;font-size:13.5px;font-weight:800;color:#1E6B3F}
+  .dmm-done button{margin-left:auto;flex:none;border:1px solid var(--border);background:var(--surface);border-radius:8px;padding:5px 10px;font-size:12px;font-weight:700;color:var(--muted);cursor:pointer;font-family:inherit}
+  .dmm-stats{display:flex;gap:6px;margin-top:10px}
+  .dmm-stats div{flex:1;background:#fff;border:1px solid #DCEAF7;border-radius:10px;padding:7px 4px;text-align:center;min-width:0}
+  .dmm-stats b{display:block;font-size:16px;font-weight:900;color:#1E4276}
+  .dmm-stats b small{font-size:10px;margin-left:1px}
+  .dmm-stats span{font-size:9.5px;color:var(--muted)}
   .cat-acc{margin:10px 0 2px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg)}
   .cat-acc summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;padding:10px 12px;font-size:12px;font-weight:700;color:var(--muted)}
   .cat-acc summary::-webkit-details-marker{display:none}
@@ -1822,12 +1835,56 @@ const CAT_DEFS = [
   { key:'self',       label:'自習',           color:'#E3934A' }
 ];
 const CAT_PRESET = {
-  dmm_lesson: { title:'DMM英会話', min:25 }
+  dmm_lesson: { title:'DMM英会話', min:25 }   // min はスタッフ設定（online_settings.dmm_minutes）で上書き
 };
+// スタッフ側の設定を読む（DMM 1回あたりの分数など）。取れなければ既定値のまま
+let onlineSettingsLoaded = false;
+async function loadOnlineSettings() {
+  if (onlineSettingsLoaded) return;
+  onlineSettingsLoaded = true;
+  try {
+    const rows = await sbGet('online_settings', 'select=key,value');
+    (rows || []).forEach(r => {
+      if (r.key === 'dmm_minutes') { const n = parseInt(r.value, 10); if (n > 0 && n <= 240) CAT_PRESET.dmm_lesson.min = n; }
+    });
+  } catch (e) {}
+}
+function isDmmLog(a) { return a && a.source === 'self' && (a.category === 'dmm_lesson' || (!a.category && /^DMM(英会話|レッスン)$/.test(a.title || ''))); }
+function renderDmmBox(selfLogs, today) {
+  const dmm = (selfLogs || []).filter(isDmmLog);
+  const todayLog = dmm.find(a => jstDateStr(a.created_at) === today);
+  const ym = today.slice(0, 7);
+  const cnt = dmm.length, mins = dmm.reduce((t, a) => t + Number(a.study_minutes || 0), 0);
+  const month = dmm.filter(a => jstDateStr(a.created_at).slice(0, 7) === ym).length;
+  // 期間中の実施率（期に入っている人だけ）
+  let rate = '';
+  const pr = dashData && dashData.program;
+  if (pr && today >= pr.start) {
+    const to = today > pr.end ? pr.end : today;
+    const days = diffDays(pr.start, to) + 1;
+    const n = new Set(dmm.map(a => jstDateStr(a.created_at)).filter(k => k >= pr.start && k <= pr.end)).size;
+    rate = '<div><b>' + n + '<small>/' + days + '日</small></b><span>期間中の実施（' + Math.round(n / Math.max(1, days) * 100) + '%）</span></div>';
+  }
+  const min = CAT_PRESET.dmm_lesson.min;
+  return '<div class="dmm-box">'
+    + '<div class="dmm-h">🗣 DMM英会話</div>'
+    + (todayLog
+        ? '<div class="dmm-done"><span>✓ 今日のレッスンを記録しました（' + (todayLog.study_minutes || min) + '分）</span>'
+          + '<button onclick="undoDmm(' + todayLog.id + ')">取り消す</button></div>'
+        : '<button class="dmm-btn" onclick="quickLog(\'dmm_lesson\')">今日のレッスンを受けた！（' + min + '分）</button>'
+          + '<div class="dmm-note">1日1回記録できます。間違えて押しても、あとから取り消せます。</div>')
+    + '<div class="dmm-stats">'
+    +   '<div><b>' + cnt + '<small>回</small></b><span>累計</span></div>'
+    +   '<div><b>' + fmtMin(mins) + '</b><span>累計の時間</span></div>'
+    +   '<div><b>' + month + '<small>回</small></b><span>今月</span></div>'
+    +   rate
+    + '</div></div>';
+}
 
 async function loadStudyLog() {
   const body = document.getElementById('studylog-body');
   if (!body || !currentOnlineStudent) return;
+  await loadOnlineSettings();
   try {
     const sid = currentOnlineStudent.id;
     // 列が足りない環境でも止まらないよう、失敗したら最小限の列で取り直す
@@ -1890,10 +1947,8 @@ async function loadStudyLog() {
     }).join('');
     html += '</div></details>';
 
-    // ワンタップ記録
-    html += '<div class="sl-quick" style="margin-top:12px">'
-      +   '<button class="sl-qbtn" onclick="quickLog(\'dmm_lesson\')">🗣 DMM英会話を受けた（25分）をワンタップで記録</button>'
-      + '</div>';
+    // DMM英会話：1日1回のワンタップ記録＋取り消し＋回数・時間の累計
+    html += renderDmmBox(selfLogs, today);
 
     // 先生からの課題（未完了）
     html += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:16px 0 8px">📋 先生からの課題</div>';
@@ -1934,7 +1989,7 @@ async function loadStudyLog() {
 
 // ===== 学習グラフ（今週／プログラム全体）=====
 let dashData = null;
-let dashMode = 'week';       // 'week' | 'program'
+let dashMode = 'w1';         // 'w1' | 'w2' | 'm1' | 'all'
 let dashWeekSel = null;      // プログラム表示で開いている週（0始まり）
 const KIND_DEFS = [
   { key:'lesson',     label:'講座（動画）', color:'#F5A623' },
@@ -1969,56 +2024,78 @@ function getProgramRange(today) {
 function setDashMode(m) { dashMode = m; dashWeekSel = null; renderDashChart(); }
 function selDashWeek(i) { dashWeekSel = (dashWeekSel === i) ? null : i; renderDashChart(); }
 function fmtMD(k) { return Number(k.slice(5, 7)) + '/' + Number(k.slice(8, 10)); }
-function dayBarsHtml(dayKeys, minByDate, today, height) {
+function dayBarsHtml(dayKeys, minByDate, today, height, dense) {
   const wd = ['日','月','火','水','木','金','土'];
   const mx = Math.max(1, ...dayKeys.map(k => minByDate[k] || 0));
-  return '<div class="dash-bars"' + (height ? ' style="height:' + height + 'px"' : '') + '>' + dayKeys.map(k => {
+  return '<div class="dash-bars' + (dense ? ' dense' : '') + '"' + (height ? ' style="height:' + height + 'px"' : '') + '>' + dayKeys.map((k, i) => {
     const m = minByDate[k] || 0;
     const fut = k > today;
-    return '<div class="dash-bcol' + (k === today ? ' today' : '') + (fut ? ' fut' : '') + '"><div class="v2">' + (m ? fmtMin(m) : '') + '</div><div class="b" style="height:' + Math.round(m / mx * 100) + '%" title="' + k + '：' + m + '分"></div><div class="d">' + wd[new Date(k + 'T00:00:00+09:00').getDay()] + '</div></div>';
+    const dow = new Date(k + 'T00:00:00+09:00').getDay();
+    // 本数が多いときは曜日の代わりに日付（月曜と初日・今日だけ表示）
+    const lbl = dense ? ((i === 0 || dow === 1 || k === today) ? Number(k.slice(8, 10)) : '') : wd[dow];
+    return '<div class="dash-bcol' + (k === today ? ' today' : '') + (fut ? ' fut' : '') + '">' + (dense ? '' : '<div class="v2">' + (m ? fmtMin(m) : '') + '</div>') + '<div class="b" style="height:' + Math.round(m / mx * 100) + '%" title="' + k + '：' + m + '分"></div><div class="d">' + lbl + '</div></div>';
   }).join('') + '</div>';
 }
 function renderDashChart() {
   const box = document.getElementById('dash-chart');
   if (!box || !dashData) return;
-  const { entries, minByDate, today, days, program } = dashData;
-  let html = '';
-  if (program) {
-    html += '<div class="dash-tabs"><button class="' + (dashMode === 'week' ? 'on' : '') + '" onclick="setDashMode(\'week\')">今週</button>'
-      + '<button class="' + (dashMode === 'program' ? 'on' : '') + '" onclick="setDashMode(\'program\')">プログラム全体</button></div>';
-  }
-  if (dashMode !== 'program' || !program) {
-    html += dayBarsHtml(days, minByDate, today);
+  const { entries, minByDate, today, program } = dashData;
+  const modes = [['w1','今週'],['w2','2週間'],['m1','1か月'],['all','全期間']];
+  if (!modes.some(m => m[0] === dashMode)) dashMode = 'w1';
+  let html = '<div class="dash-tabs">' + modes.map(m => '<button class="' + (dashMode === m[0] ? 'on' : '') + '" onclick="setDashMode(\'' + m[0] + '\')">' + m[1] + '</button>').join('') + '</div>';
+
+  // 全期間の開始日：期（プログラム）の開始日 → なければ最初の記録日
+  const firstRec = entries.length ? entries.map(e => e.date).sort()[0] : today;
+  const allStart = program ? program.start : firstRec;
+  const sum = (a, b) => entries.filter(e => e.date >= a && e.date <= b).reduce((t, e) => t + e.min, 0);
+  const daysWith = (a, b) => new Set(entries.filter(e => e.date >= a && e.date <= b && e.min > 0).map(e => e.date)).size;
+  // 平均は「期間の初日（ただし開始日より前は数えない）〜今日」の経過日数で割る。まだ来ていない日は分母に入れない
+  const stats = (from, to, label) => {
+    const effFrom = from < allStart ? allStart : from;
+    const effTo = to > today ? today : to;
+    const elapsed = effTo >= effFrom ? diffDays(effFrom, effTo) + 1 : 0;
+    const total = sum(from, to);
+    const avg = elapsed ? Math.round(total / elapsed) : 0;
+    return '<div class="prog-stats">'
+      + '<div><b>' + fmtMin(total) + '</b><span>' + label + 'の合計</span></div>'
+      + '<div><b>' + (elapsed ? fmtMin(avg) : '—') + '</b><span>1日平均' + (elapsed && elapsed < 7 ? '（' + elapsed + '日分）' : '') + '</span></div>'
+      + '<div><b>' + daysWith(from, to) + '日</b><span>勉強した日</span></div>'
+      + '</div>';
+  };
+
+  if (dashMode !== 'all') {
+    const n = dashMode === 'w1' ? 7 : dashMode === 'w2' ? 14 : 30;
+    const keys = []; for (let i = n - 1; i >= 0; i--) keys.push(addDaysStr(today, -i));
+    html += stats(keys[0], today, dashMode === 'w1' ? '7日間' : dashMode === 'w2' ? '2週間' : '30日間');
+    html += dayBarsHtml(keys, minByDate, today, n > 14 ? 90 : 84, n > 7);
     box.innerHTML = html; return;
   }
-  // --- プログラム全体（週ごと）---
-  const p = program;
+
+  // --- 全期間（週ごと）---
+  const end = program ? program.end : today;
+  const nWeeks = Math.max(1, Math.ceil((diffDays(allStart, end < today ? today : end) + 1) / 7));
   const weeks = [];
-  for (let i = 0; i < p.nWeeks; i++) {
-    const ws = addDaysStr(p.start, i * 7);
+  for (let i = 0; i < nWeeks; i++) {
+    const ws = addDaysStr(allStart, i * 7);
     const keys = []; for (let d = 0; d < 7; d++) keys.push(addDaysStr(ws, d));
-    const inRange = keys.filter(k => k <= p.end);
-    weeks.push({ i: i, start: ws, keys: inRange, min: inRange.reduce((t, k) => t + (minByDate[k] || 0), 0), fut: ws > today, cur: ws <= today && today <= keys[6] });
+    weeks.push({ i: i, start: ws, keys: keys, min: keys.reduce((t, k) => t + (minByDate[k] || 0), 0), fut: ws > today, cur: ws <= today && today <= keys[6] });
   }
-  const passed = today < p.start ? 0 : Math.min(p.nWeeks, Math.floor(diffDays(p.start, today) / 7) + 1);
-  const progMin = entries.filter(e => e.date >= p.start && e.date <= p.end).reduce((t, e) => t + e.min, 0);
-  const studyDays = new Set(entries.filter(e => e.date >= p.start && e.date <= p.end && e.min > 0).map(e => e.date)).size;
-  const avg = passed ? Math.round(progMin / passed) : 0;
+  const passed = today < allStart ? 0 : Math.min(nWeeks, Math.floor(diffDays(allStart, today) / 7) + 1);
   const mx = Math.max(1, ...weeks.map(w => w.min));
-  html += '<div class="prog-head"><b>' + esc(p.title || 'プログラム') + (p.many ? ' ほか' : '') + '</b>'
-    + '<span>' + fmtMD(p.start) + '〜' + fmtMD(p.end) + (passed ? ' ・ ' + passed + '週目 / ' + p.nWeeks + '週' : ' ・ 開始前') + '</span></div>'
-    + '<div class="prog-stats"><div><b>' + fmtMin(progMin) + '</b><span>期間中の累計</span></div><div><b>' + fmtMin(avg) + '</b><span>1週平均</span></div><div><b>' + studyDays + '日</b><span>学習した日</span></div></div>'
+  html += '<div class="prog-head"><b>' + esc(program ? (program.title || 'プログラム') : 'これまでの記録') + '</b>'
+    + '<span>' + fmtMD(allStart) + '〜' + (program ? fmtMD(program.end) : '今日') + (passed ? ' ・ ' + passed + '週目' + (program ? ' / ' + nWeeks + '週' : '') : ' ・ 開始前') + '</span></div>'
+    + stats(allStart, end, '全期間')
     + '<div class="wk-bars">' + weeks.map(w =>
         '<button class="wk-col' + (w.cur ? ' cur' : '') + (w.fut ? ' fut' : '') + (dashWeekSel === w.i ? ' sel' : '') + '" onclick="selDashWeek(' + w.i + ')" title="' + fmtMD(w.start) + '〜：' + w.min + '分">'
         + '<i style="height:' + Math.round(w.min / mx * 100) + '%"></i><span>' + (w.i + 1) + '</span></button>'
       ).join('') + '</div>'
-    + '<div class="wk-cap">週ごとの学習時間（棒をタップで詳細）</div>';
+    + '<div class="wk-cap">週ごとの学習時間（棒をタップするとその週の中身）</div>';
   if (dashWeekSel !== null && weeks[dashWeekSel]) {
     const w = weeks[dashWeekSel];
     const byKind = {};
     entries.filter(e => w.keys.indexOf(e.date) !== -1).forEach(e => { byKind[e.kind] = (byKind[e.kind] || 0) + e.min; });
     const kmx = Math.max(1, ...Object.values(byKind));
-    html += '<div class="wk-detail"><div class="wk-dh">' + (w.i + 1) + '週目　' + fmtMD(w.keys[0]) + '〜' + fmtMD(w.keys[w.keys.length - 1]) + '　<b>' + fmtMin(w.min) + '</b></div>'
+    html += '<div class="wk-detail"><div class="wk-dh">' + (w.i + 1) + '週目　' + fmtMD(w.keys[0]) + '〜' + fmtMD(w.keys[6]) + '　<b>' + fmtMin(w.min) + '</b></div>'
       + dayBarsHtml(w.keys, minByDate, today, 70)
       + (Object.keys(byKind).length ? KIND_DEFS.filter(d => byKind[d.key]).map(d =>
           '<div class="cat-row" style="--cc:' + d.color + '"><span class="cl">' + esc(d.label) + '</span><span class="ct"><span class="cf" style="width:' + Math.round(byKind[d.key] / kmx * 100) + '%"></span></span><span class="cn">' + fmtMin(byKind[d.key]) + '</span></div>').join('')
@@ -2173,6 +2250,14 @@ async function postSelfLog(body) {
 
 async function quickLog(cat) {
   const p = CAT_PRESET[cat] || { title:'記録', min:0 };
+  if (cat === 'dmm_lesson') {
+    // 1日1回まで（別の端末で記録済みの場合も含めて確認）
+    try {
+      const today = getTodayJST();
+      const rows = await sbGet('online_assignments', 'online_student_id=eq.' + currentOnlineStudent.id + '&source=eq.self&is_active=not.is.false&select=*&order=created_at.desc&limit=20');
+      if ((rows || []).some(a => isDmmLog(a) && jstDateStr(a.created_at) === today)) { showOnlineToast('今日のDMM英会話はもう記録済みです'); loadStudyLog(); return; }
+    } catch (e) {}
+  }
   try {
     await postSelfLog({
       online_student_id: currentOnlineStudent.id,
@@ -2182,6 +2267,17 @@ async function quickLog(cat) {
     showOnlineToast('✓ ' + p.title + ' を記録（' + p.min + '分）');
     loadStudyLog();
   } catch (e) { console.error('[quickLog]', e); showOnlineToast('記録に失敗しました：' + (e.message || '').slice(0, 80)); }
+}
+
+// DMM英会話の記録を取り消す（間違えて押したとき）
+async function undoDmm(id) {
+  if (!confirm('今日のDMM英会話の記録を取り消しますか？')) return;
+  try {
+    await sbPatch('online_assignments', 'id=eq.' + id + '&online_student_id=eq.' + currentOnlineStudent.id, { is_active: false });
+    showOnlineToast('取り消しました');
+    loadStudyLog();
+    loadMyTeam();
+  } catch (e) { showOnlineToast('取り消せませんでした：' + (e.message || '').slice(0, 60)); }
 }
 
 async function doneAssignment(id) {
