@@ -464,8 +464,18 @@ async function sbGet(table, query) {
   const res = await fetch(SB_URL + '/rest/v1/' + table + '?' + query, {
     headers: { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY }
   });
-  if (!res.ok) throw new Error('取得エラー(' + res.status + ')');
+  if (!res.ok) { let t = ''; try { t = (await res.text()).slice(0, 160); } catch (e) {} throw new Error('取得エラー(' + res.status + ') ' + table + ' ' + t); }
   return res.json();
+}
+
+// 取得に失敗したら別のクエリ（列を減らしたもの）で取り直す。それでもダメなら空配列。
+async function sbGetSafe(table, query, fallbackQuery) {
+  try { return await sbGet(table, query); }
+  catch (e1) {
+    console.warn('[sbGetSafe]', table, e1.message);
+    if (fallbackQuery) { try { return await sbGet(table, fallbackQuery); } catch (e2) { console.warn('[sbGetSafe:fallback]', table, e2.message); } }
+    return [];
+  }
 }
 
 async function sbPost(table, body, prefer) {
@@ -1574,10 +1584,14 @@ async function loadStudyLog() {
   if (!body || !currentOnlineStudent) return;
   try {
     const sid = currentOnlineStudent.id;
+    // 列が足りない環境でも止まらないよう、失敗したら最小限の列で取り直す
     const [rows, sessions, views] = await Promise.all([
-      sbGet('online_assignments', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=*&order=created_at.desc'),
-      sbGet('online_sessions', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=session_date,minutes,login_at,source'),
-      sbGet('online_views', 'online_student_id=eq.' + sid + '&select=completed,completed_at,active_sec,last_viewed_at,first_viewed_at')
+      sbGetSafe('online_assignments', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=*&order=created_at.desc',
+                                       'online_student_id=eq.' + sid + '&select=*'),
+      sbGetSafe('online_sessions', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=session_date,minutes,login_at,source',
+                                   'online_student_id=eq.' + sid + '&select=*'),
+      sbGetSafe('online_views', 'online_student_id=eq.' + sid + '&select=completed,completed_at,active_sec,last_viewed_at,first_viewed_at',
+                                'online_student_id=eq.' + sid + '&select=*')
     ]);
     const todosOpen = (rows || []).filter(a => a.source !== 'self' && a.status !== 'done');
     const selfLogs  = (rows || []).filter(a => a.source === 'self');
@@ -1665,10 +1679,11 @@ async function loadStudyLog() {
     }
 
     body.innerHTML = html;
-    renderDashChart();
+    try { renderDashChart(); } catch (e2) { console.error('[renderDashChart]', e2); const dc = document.getElementById('dash-chart'); if (dc) dc.innerHTML = '<div class="sub" style="font-size:11px;color:#C0392B">グラフを表示できませんでした：' + esc(e2.message) + '</div>'; }
     ensureTimerTick();
   } catch (e) {
-    body.innerHTML = '<h2>学習ダッシュボード</h2><p class="sub">読み込みに失敗しました。</p>';
+    console.error('[loadStudyLog]', e);
+    body.innerHTML = '<h2>学習ダッシュボード</h2><p class="sub">読み込みに失敗しました。<br><span style="font-size:11px;color:#C0392B">' + esc((e && e.message) || String(e)) + '</span></p>';
   }
 }
 
