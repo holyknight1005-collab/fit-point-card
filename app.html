@@ -43825,7 +43825,7 @@ async function olEditNickname(id) {
 //   期に受講者を追加 → プランの講座すべてに受講権（期限＝期の終了日）を一括付与
 //   「チームを自動で作る」→ プランのチーム人数で振り分け
 // ============================================================
-var olCoState = { plans: [], cohorts: [], members: [], events: [], courses: [], students: [], teamOf: {} };
+var olCoState = { plans: [], cohorts: [], members: [], events: [], courses: [], students: [], teamOf: {}, personal: [], personalOk: true };
 var olCoOpen = null;          // 開いている期ID
 var olPlanOpen = null;        // 編集中のプランID
 var olCoLoaded = false;
@@ -43851,17 +43851,18 @@ async function olLoadCohortsTab() {
   if (!box) return;
   if (!olCoLoaded) box.innerHTML = '<div style="color:var(--muted);font-size:13px">読み込み中…</div>';
   try {
-    const [plans, cohorts, members, events, courses, students, tms] = await Promise.all([
+    const [plans, cohorts, members, events, courses, students, tms, pers] = await Promise.all([
       sbGet('online_plans', 'is_active=not.is.false&select=*&order=sort_order.asc,id.asc'),
       sbGet('online_cohorts', 'is_active=not.is.false&select=*&order=start_date.desc'),
       sbGet('online_cohort_members', 'select=*&order=joined_at.asc'),
       sbGet('online_follow_events', 'is_active=not.is.false&select=*&order=scheduled_date.asc,sort_order.asc'),
       sbGet('online_courses', 'select=id,title,is_active&order=id.asc'),
       sbGet('online_students', 'is_active=not.is.false&select=id,name,nickname,segment&order=name.asc'),
-      sbGet('online_team_members', 'select=online_student_id,team_id').catch(() => [])
+      sbGet('online_team_members', 'select=online_student_id,team_id').catch(() => []),
+      sbGet('online_follow_personal', 'select=*').catch(() => null)
     ]);
     const teamOf = {}; (tms || []).forEach(t => { teamOf[t.online_student_id] = t.team_id; });
-    olCoState = { plans: plans || [], cohorts: cohorts || [], members: members || [], events: events || [], courses: courses || [], students: students || [], teamOf: teamOf };
+    olCoState = { plans: plans || [], cohorts: cohorts || [], members: members || [], events: events || [], courses: courses || [], students: students || [], teamOf: teamOf, personal: pers || [], personalOk: pers !== null };
     olCoLoaded = true;
     olRenderCohortsTab();
   } catch (e) {
@@ -43944,18 +43945,42 @@ function olCohortDetail(c, p, ms, evs, stuOf) {
     + ((p.course_ids || []).length ? '' : '<b style="color:#C0392B">プラン設定で講座が未設定です。</b>') + '</div>';
 
   // フォロー日程
-  h += '<div style="font-size:13px;font-weight:700;margin:14px 0 6px">📅 フォロー日程 <span style="font-size:11px;color:var(--muted);font-weight:400">全体＝Zoom（時刻・URLを入れると受講者に表示）／個別＝目安日（受講者は面談予約から時間を選ぶ）</span></div>';
+  h += '<div style="font-size:13px;font-weight:700;margin:14px 0 6px">📅 フォロー日程 <span style="font-size:11px;color:var(--muted);font-weight:400">全体＝全員共通の日時・Zoom／個別＝人ごとに日時・Zoomを設定</span></div>';
   h += evs.map(e => {
     const grp = e.kind === 'group';
-    return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:7px 0;border-bottom:1px solid var(--border)">'
-      + '<span style="font-size:10px;font-weight:800;border-radius:9px;padding:2px 8px;' + (grp ? 'background:#EAF2FB;color:#1E4276' : 'background:#F3EEFB;color:#5B3FA0') + '">' + (grp ? '全体' : '個別') + '</span>'
-      + '<input id="ol-fe-date-' + e.id + '" type="date" value="' + olEsc(e.scheduled_date) + '" style="' + OL_IN + '">'
-      + (grp ? '<input id="ol-fe-time-' + e.id + '" type="time" value="' + olEsc(e.start_time || '') + '" style="width:100px;' + OL_IN + '">' : '')
+    let row = '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
+      + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+      + '<select id="ol-fe-kind-' + e.id + '" onchange="olSaveFollowEvent(' + e.id + ')" style="font-weight:800;' + OL_IN + ';' + (grp ? 'background:#EAF2FB;color:#1E4276' : 'background:#F3EEFB;color:#5B3FA0') + '">'
+      +   '<option value="group"' + (grp ? ' selected' : '') + '>全体</option><option value="individual"' + (!grp ? ' selected' : '') + '>個別（人ごと）</option></select>'
+      + '<input id="ol-fe-date-' + e.id + '" type="date" value="' + olEsc(e.scheduled_date) + '" title="' + (grp ? '開催日' : '目安日') + '" style="' + OL_IN + '">'
+      + (grp ? '<input id="ol-fe-time-' + e.id + '" type="time" value="' + olEsc(e.start_time || '') + '" style="width:100px;' + OL_IN + '">' : '<span style="font-size:11px;color:var(--muted)">目安日</span>')
       + '<input id="ol-fe-title-' + e.id + '" value="' + olEsc(e.title) + '" style="flex:1;min-width:160px;' + OL_IN + '">'
       + '<span style="font-size:11px;color:var(--muted)">' + e.minutes + '分</span>'
-      + (grp ? '<input id="ol-fe-zoom-' + e.id + '" value="' + olEsc(e.zoom_url || '') + '" placeholder="Zoom URL" style="flex:1 1 100%;' + OL_IN + '">' : '')
+      + (grp ? '<input id="ol-fe-zoom-' + e.id + '" value="' + olEsc(e.zoom_url || '') + '" placeholder="Zoom URL（全員共通）" style="flex:1 1 100%;' + OL_IN + '">' : '')
       + '<span style="display:flex;gap:4px">' + olBtn('保存', 'olSaveFollowEvent(' + e.id + ')', 'background:#E8F6EE;color:#1E6B3F') + olBtn('削除', 'olDeleteFollowEvent(' + e.id + ')', 'background:#FDECEA;color:#943126') + '</span>'
       + '</div>';
+    if (!grp) {
+      if (!st.personalOk) {
+        row += '<div style="font-size:11px;color:#C0392B;margin-top:6px">人ごとの日程を使うには online_plans_cohorts.sql（末尾の追記）を実行してください。</div>';
+      } else if (!ms.length) {
+        row += '<div style="font-size:11px;color:var(--muted);margin-top:6px">受講者を追加すると、人ごとに日時を入れられます。</div>';
+      } else {
+        row += '<div style="margin:6px 0 0 8px;padding-left:10px;border-left:3px solid #E4DAF5">' + ms.map(m => {
+          const s2 = stuOf[m.online_student_id] || { name: '(不明)' };
+          const pr = st.personal.find(x => x.event_id === e.id && x.online_student_id === m.online_student_id) || {};
+          const k = e.id + '-' + m.online_student_id;
+          const set = !!(pr.scheduled_date && pr.start_time);
+          return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:4px 0">'
+            + '<span style="width:110px;font-size:12px;font-weight:700">' + olEsc(s2.name) + '</span>'
+            + '<input id="ol-fp-date-' + k + '" type="date" value="' + olEsc(pr.scheduled_date || '') + '" style="' + OL_IN + '">'
+            + '<input id="ol-fp-time-' + k + '" type="time" value="' + olEsc(pr.start_time || '') + '" style="width:100px;' + OL_IN + '">'
+            + '<input id="ol-fp-zoom-' + k + '" value="' + olEsc(pr.zoom_url || '') + '" placeholder="Zoom URL（任意）" style="flex:1;min-width:160px;' + OL_IN + '">'
+            + '<span style="font-size:10px;font-weight:800;border-radius:9px;padding:2px 8px;' + (set ? 'background:#E8F6EE;color:#1E6B3F">決定' : 'background:#FEF9E7;color:#7D6608">未定') + '</span>'
+            + '</div>';
+        }).join('') + '<div style="font-size:11px;color:var(--muted);margin-top:2px">日時を入れて「保存」を押すと、その人の画面にだけ表示されます。未定の人には「日程は先生からお知らせします（目安日）」と表示されます。</div></div>';
+      }
+    }
+    return row + '</div>';
   }).join('') || '<div style="font-size:12px;color:var(--muted)">日程がありません</div>';
   h += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
     + olBtn('＋ 全体セッションを追加', 'olAddFollowEvent(' + c.id + ',\'group\')', 'background:#EAF2FB;color:#1E4276')
@@ -44056,11 +44081,31 @@ async function olAutoTeams(cohortId) {
 async function olSaveFollowEvent(id) {
   const v = k => { const el = document.getElementById('ol-fe-' + k + '-' + id); return el ? el.value : undefined; };
   const body = { scheduled_date: v('date'), title: (v('title') || '').trim() || 'フォロー' };
+  if (v('kind') !== undefined) body.kind = v('kind');
   if (v('time') !== undefined) body.start_time = v('time') || null;
   if (v('zoom') !== undefined) body.zoom_url = (v('zoom') || '').trim() || null;
   if (!body.scheduled_date) { alert('日付を入れてください'); return; }
-  try { await sbPatch('online_follow_events', 'id=eq.' + id, body); await olLoadCohortsTab(); }
-  catch (e) { alert('保存に失敗しました: ' + e.message); }
+  try {
+    await sbPatch('online_follow_events', 'id=eq.' + id, body);
+    // 個別（人ごと）の日程を保存
+    const ev = olCoState.events.find(x => x.id === id);
+    if (ev && ev.kind === 'individual' && body.kind !== 'group' && olCoState.personalOk) {
+      const ms = olCoState.members.filter(m => m.cohort_id === ev.cohort_id);
+      for (const m of ms) {
+        const k = id + '-' + m.online_student_id;
+        const g = n => { const el = document.getElementById('ol-fp-' + n + '-' + k); return el ? el.value : ''; };
+        const row = { scheduled_date: g('date') || null, start_time: g('time') || null, zoom_url: (g('zoom') || '').trim() || null, updated_at: new Date().toISOString() };
+        const ex = olCoState.personal.find(x => x.event_id === id && x.online_student_id === m.online_student_id);
+        if (ex) {
+          if ((ex.scheduled_date || null) !== row.scheduled_date || (ex.start_time || null) !== row.start_time || (ex.zoom_url || null) !== row.zoom_url)
+            await sbPatch('online_follow_personal', 'id=eq.' + ex.id, row);
+        } else if (row.scheduled_date || row.start_time || row.zoom_url) {
+          await sbPost('online_follow_personal', Object.assign({ event_id: id, online_student_id: m.online_student_id }, row));
+        }
+      }
+    }
+    await olLoadCohortsTab();
+  } catch (e) { alert('保存に失敗しました: ' + e.message); }
 }
 async function olDeleteFollowEvent(id) {
   if (!confirm('この日程を削除しますか？')) return;
@@ -44414,7 +44459,7 @@ async function olLoadStudyPanel() {
     const [sessions, assigns, views] = await Promise.all([
       sbGet('online_sessions', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=session_date,minutes,login_at,source&order=session_date.desc'),
       sbGet('online_assignments', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=*&order=created_at.desc'),
-      sbGet('online_views', 'online_student_id=eq.' + sid + '&select=active_sec,last_viewed_at,completed_at,first_viewed_at').catch(() => [])
+      sbGet('online_views', 'online_student_id=eq.' + sid + '&select=*').catch(() => [])
     ]);
     // --- 学習時間サマリー（online.html と同じ定義）---
     // タイマー・自習/DMM記録・fit単語帳・課題の時間・動画の実再生・スタッフの手動記録。アプリを開いているだけの時間は含めない。

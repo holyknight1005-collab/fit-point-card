@@ -759,9 +759,9 @@ async function loadMyTeam() {
       sbGet('online_students', 'id=' + inIds + '&select=*').then(rs => (rs || []).map(x => ({ id:x.id, nickname:x.nickname, points:x.points, login_streak:x.login_streak, last_active_date:x.last_active_date, is_active:x.is_active, studying_since:x.studying_since, studying_cat:x.studying_cat }))),
       sbGet('online_sessions', 'online_student_id=' + inIds + '&source=eq.manual&is_active=not.is.false&select=online_student_id,minutes,login_at,session_date,source').catch(() => []),
       sbGet('online_assignments', 'online_student_id=' + inIds + '&status=eq.done&is_active=not.is.false&created_at=gte.' + encodeURIComponent(startIso) + '&select=id,online_student_id,title,category,source,status,study_minutes,created_at,done_at&order=created_at.desc').catch(() => []),
-      sbGet('online_views', 'online_student_id=' + inIds + '&or=(completed_at.gte.' + encodeURIComponent(startIso) + ',last_viewed_at.gte.' + encodeURIComponent(startIso) + ')&select=id,online_student_id,online_lesson_id,completed,completed_at,active_sec,last_viewed_at,first_viewed_at').catch(() => [])
+      sbGet('online_views', 'online_student_id=' + inIds + '&select=*').catch(() => [])   // 列の有無に左右されないよう全列取得
     ]);
-    const allViews = views || [];
+    const allViews = (views || []).filter(v => (v.last_viewed_at || v.completed_at || v.first_viewed_at || '') >= startIso);
     views = allViews.filter(v => v.completed && v.completed_at && v.completed_at >= startIso);   // タイムライン用（完了した動画）
     // 動画タイトル
     let lessonTitle = {};
@@ -950,7 +950,16 @@ async function loadMyCohort() {
       sbGet('online_plans', 'id=eq.' + cohort.plan_id + '&select=id,name,months&limit=1'),
       sbGet('online_follow_events', 'cohort_id=eq.' + cohort.id + '&is_active=not.is.false&select=*&order=scheduled_date.asc,sort_order.asc')
     ]);
-    myCohort = { cohort: cohort, plan: (plans && plans[0]) || {}, events: events || [] };
+    // 個別フォローは人ごとの日時（スタッフが設定）を優先
+    let pers = [];
+    try { pers = await sbGet('online_follow_personal', 'online_student_id=eq.' + currentOnlineStudent.id + '&select=*'); } catch (e) { pers = []; }
+    const pm = {}; (pers || []).forEach(r => { pm[r.event_id] = r; });
+    const evs = (events || []).map(e => {
+      if (e.kind === 'group') return Object.assign({}, e, { date: e.scheduled_date, fixed: !!e.start_time });
+      const r = pm[e.id] || {};
+      return Object.assign({}, e, { date: r.scheduled_date || e.scheduled_date, start_time: r.start_time || null, zoom_url: r.zoom_url || null, fixed: !!(r.scheduled_date && r.start_time) });
+    }).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.start_time || '') < (b.start_time || '') ? -1 : 1));
+    myCohort = { cohort: cohort, plan: (plans && plans[0]) || {}, events: evs };
   } catch (e) { myCohort = null; }   // テーブル未作成時は何も出さない
 }
 function renderFollowShell() {
@@ -964,7 +973,7 @@ function renderFollowCard() {
   card.style.display = 'block';
   const { cohort, plan, events } = myCohort;
   const today = getTodayJST();
-  const next = events.find(e => e.scheduled_date >= today);
+  const next = events.find(e => e.date >= today);
   const total = Math.max(1, diffDays(cohort.start_date, cohort.end_date) + 1);
   const passed = Math.max(0, Math.min(total, diffDays(cohort.start_date, today) + 1));
   const pct = Math.round(passed / total * 100);
@@ -975,25 +984,29 @@ function renderFollowCard() {
     + '<div class="fl-prog"><i style="width:' + (today < cohort.start_date ? 0 : pct) + '%"></i></div>'
     + '<div class="fl-phase">' + phase + '</div>';
   if (next) {
-    const d = diffDays(today, next.scheduled_date);
-    const when = d === 0 ? '今日' : d === 1 ? '明日' : 'あと' + d + '日';
+    const d = diffDays(today, next.date);
     const grp = next.kind === 'group';
-    html += '<div class="fl-next' + (d <= 1 ? ' soon' : '') + '">'
+    const when = !next.fixed && !grp ? '目安' : (d === 0 ? '今日' : d === 1 ? '明日' : 'あと' + d + '日');
+    let meta;
+    if (next.fixed) meta = fmtMDW(next.date) + ' ' + esc(next.start_time) + '〜 ・ ' + next.minutes + '分 ・ ' + (grp ? '全体（Zoom）' : 'あなたの個別フォロー');
+    else if (grp) meta = fmtMDW(next.date) + '（時間は後日お知らせ） ・ ' + next.minutes + '分 ・ 全体（Zoom）';
+    else meta = fmtMDW(next.date) + 'ごろ ・ ' + next.minutes + '分 ・ 個別';
+    html += '<div class="fl-next' + (d <= 1 && next.fixed ? ' soon' : '') + '">'
       + '<div class="fl-next-lbl">次のフォロー <span>' + when + '</span></div>'
       + '<div class="fl-next-ttl">' + esc(next.title) + '</div>'
-      + '<div class="fl-next-meta">' + fmtMDW(next.scheduled_date) + (grp ? (next.start_time ? ' ' + esc(next.start_time) + '〜' : '（時間は後日お知らせ）') : ' ごろ') + ' ・ ' + next.minutes + '分 ・ ' + (grp ? '全体（Zoom）' : '個別') + '</div>'
-      + (grp
-          ? (next.zoom_url ? '<a class="btn fl-btn" href="' + esc(next.zoom_url) + '" target="_blank" rel="noopener">🎥 Zoomに参加する</a>' : '<div class="fl-note">Zoomのリンクは開催日までにここに表示されます。</div>')
-          : '<button class="btn fl-btn" onclick="goMeetingCard()">📅 面談の時間を予約する</button><div class="fl-note">この日の前後で、都合のよい時間を予約してください。</div>')
+      + '<div class="fl-next-meta">' + meta + '</div>'
+      + (next.zoom_url
+          ? '<a class="btn fl-btn" href="' + esc(next.zoom_url) + '" target="_blank" rel="noopener">🎥 Zoomに参加する</a>'
+          : '<div class="fl-note">' + (grp || next.fixed ? 'Zoomのリンクは開催日までにここに表示されます。' : '日時は先生からお知らせします。決まるとここに表示されます。') + '</div>')
       + '</div>';
   }
   html += '<div class="fl-list">' + events.map(e => {
-    const past = e.scheduled_date < today, isNext = next && e.id === next.id;
+    const past = e.date < today, isNext = next && e.id === next.id;
     const grp = e.kind === 'group';
     return '<div class="fl-item' + (past ? ' past' : '') + (isNext ? ' now' : '') + '">'
       + '<span class="fl-dot">' + (past ? '✓' : '') + '</span>'
-      + '<span class="fl-date">' + fmtMDW(e.scheduled_date) + (grp && e.start_time ? '<small>' + esc(e.start_time) + '</small>' : '') + '</span>'
-      + '<span class="fl-ttl">' + esc(e.title) + '<small>' + e.minutes + '分 ・ ' + (grp ? '全体' : '個別') + '</small></span>'
+      + '<span class="fl-date">' + fmtMDW(e.date) + (e.fixed ? '<small>' + esc(e.start_time) + '</small>' : (!grp ? '<small>ごろ</small>' : '')) + '</span>'
+      + '<span class="fl-ttl">' + esc(e.title) + '<small>' + e.minutes + '分 ・ ' + (grp ? '全体' : '個別' + (e.fixed ? '' : '（日時調整中）')) + '</small></span>'
       + '</div>';
   }).join('') + '</div>';
   body.innerHTML = html;
@@ -1590,8 +1603,7 @@ async function loadStudyLog() {
                                        'online_student_id=eq.' + sid + '&select=*'),
       sbGetSafe('online_sessions', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=session_date,minutes,login_at,source',
                                    'online_student_id=eq.' + sid + '&select=*'),
-      sbGetSafe('online_views', 'online_student_id=eq.' + sid + '&select=completed,completed_at,active_sec,last_viewed_at,first_viewed_at',
-                                'online_student_id=eq.' + sid + '&select=*')
+      sbGetSafe('online_views', 'online_student_id=eq.' + sid + '&select=*')
     ]);
     const todosOpen = (rows || []).filter(a => a.source !== 'self' && a.status !== 'done');
     const selfLogs  = (rows || []).filter(a => a.source === 'self');
