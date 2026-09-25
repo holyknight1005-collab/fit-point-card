@@ -6226,7 +6226,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <!-- ========== 学習・課題 ========== -->
       <div id="ol-sub-study" style="display:none">
         <div class="section-title">📚 学習・課題</div>
-        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px">受講者を選ぶと、学習時間（アプリのログイン記録）・自習ログ・課題（ToDo）を確認できます。ここから課題を出すと online.html の受講者に表示されます。</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px">受講者を選ぶと、学習時間（タイマー・自習記録・単語帳・動画の実再生・手動記録の合計。アプリを開いているだけの時間は含めない）・自習ログ・課題（ToDo）を確認できます。ここから課題を出すと online.html の受講者に表示されます。</div>
         <select id="ol-study-student" onchange="olLoadStudyPanel()" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:'Noto Sans JP',sans-serif;background:#fff;margin-bottom:14px">
           <option value="">受講者を選択…</option>
         </select>
@@ -44072,22 +44072,23 @@ async function olLoadStudyPanel() {
   if (!sid) { box.innerHTML = '<div style="color:var(--muted);font-size:13px">受講者を選択してください。</div>'; return; }
   box.innerHTML = '<div style="color:var(--muted);font-size:13px">読み込み中…</div>';
   try {
-    const [sessions, assigns] = await Promise.all([
-      sbGet('online_sessions', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=session_date,minutes,login_at&order=session_date.desc'),
-      sbGet('online_assignments', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=*&order=created_at.desc')
+    const [sessions, assigns, views] = await Promise.all([
+      sbGet('online_sessions', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=session_date,minutes,login_at,source&order=session_date.desc'),
+      sbGet('online_assignments', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=*&order=created_at.desc'),
+      sbGet('online_views', 'online_student_id=eq.' + sid + '&select=active_sec,last_viewed_at,completed_at,first_viewed_at').catch(() => [])
     ]);
-    // --- 学習時間サマリー（アプリのログイン記録）---
-    const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    // --- 学習時間サマリー（online.html と同じ定義）---
+    // タイマー・自習/DMM記録・fit単語帳・課題の時間・動画の実再生・スタッフの手動記録。アプリを開いているだけの時間は含めない。
+    const jst = ts => ts ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ts)) : '';
+    const todayStr = jst(Date.now());
     const d0 = new Date(todayStr + 'T00:00:00+09:00');
     const wkStart = new Date(d0.getTime() - ((d0.getDay() + 6) % 7) * 86400000); // 月曜起点
+    const ent = [];
+    (sessions || []).forEach(s => { if (s.source === 'manual' && Number(s.minutes || 0) > 0) ent.push({ k: s.session_date ? String(s.session_date).slice(0,10) : jst(s.login_at), m: Number(s.minutes) }); });
+    (assigns || []).forEach(a => { const m = Number(a.study_minutes || 0); if (!m) return; if (a.source !== 'self' && a.status !== 'done') return; ent.push({ k: jst(a.source === 'self' ? a.created_at : (a.done_at || a.created_at)), m: m }); });
+    (views || []).forEach(v => { const m = Math.round(Number(v.active_sec || 0) / 60); if (m > 0) ent.push({ k: jst(v.last_viewed_at || v.completed_at || v.first_viewed_at), m: m }); });
     let total = 0, week = 0, days = new Set();
-    (sessions || []).forEach(s => {
-      const m = Number(s.minutes || 0); total += m;
-      const key = s.session_date ? String(s.session_date).slice(0,10) : '';
-      if (key) days.add(key);
-      const dd = new Date((key || todayStr) + 'T00:00:00+09:00');
-      if (dd >= wkStart) week += m;
-    });
+    ent.forEach(e => { if (!e.k) return; total += e.m; days.add(e.k); if (new Date(e.k + 'T00:00:00+09:00') >= wkStart) week += e.m; });
     const selfLogs = (assigns || []).filter(a => a.source === 'self');
     const todos = (assigns || []).filter(a => a.source !== 'self');
     const selfMin = selfLogs.reduce((t,a) => t + Number(a.study_minutes || 0), 0);
