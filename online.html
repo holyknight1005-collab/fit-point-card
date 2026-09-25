@@ -276,6 +276,31 @@
   .wk-detail{margin-top:10px;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:10px}
   .wk-dh{font-size:12px;font-weight:700;color:var(--muted)}
   .wk-dh b{color:var(--orange-d);font-size:14px}
+  .fl-plan{display:flex;flex-direction:column;gap:1px;margin:2px 0 8px}
+  .fl-plan b{font-size:14px}
+  .fl-plan span{font-size:11.5px;color:var(--muted)}
+  .fl-prog{height:6px;border-radius:999px;background:#EEE3CE;overflow:hidden}
+  .fl-prog i{display:block;height:100%;background:linear-gradient(90deg,var(--orange-l),var(--orange));border-radius:999px}
+  .fl-phase{font-size:11px;color:var(--muted);text-align:right;margin:3px 0 10px}
+  .fl-next{border:1.5px solid var(--orange-l);border-radius:14px;padding:14px;background:linear-gradient(rgba(240,160,48,.07),rgba(240,160,48,.07)),var(--surface);margin-bottom:12px}
+  .fl-next.soon{border-color:var(--orange);box-shadow:0 4px 16px rgba(240,160,48,.25)}
+  .fl-next-lbl{font-size:11px;font-weight:800;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .fl-next-lbl span{background:var(--orange-d);color:#fff;border-radius:999px;padding:1px 9px;font-size:11px}
+  .fl-next-ttl{font-size:17px;font-weight:900;margin:5px 0 2px}
+  .fl-next-meta{font-size:12.5px;color:var(--text)}
+  .fl-btn{display:block;text-align:center;text-decoration:none;margin-top:10px}
+  .fl-note{font-size:11px;color:var(--muted);margin-top:6px}
+  .fl-list{display:flex;flex-direction:column}
+  .fl-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--border);font-size:13px}
+  .fl-item.past{opacity:.5}
+  .fl-item.now{font-weight:800}
+  .fl-dot{width:18px;height:18px;border-radius:50%;border:2px solid var(--orange-l);flex:none;font-size:10px;display:flex;align-items:center;justify-content:center;color:#fff}
+  .fl-item.past .fl-dot{background:var(--orange-l);border-color:var(--orange-l)}
+  .fl-item.now .fl-dot{border-color:var(--orange-d);background:var(--orange)}
+  .fl-date{width:82px;flex:none;font-size:12px;display:flex;flex-direction:column}
+  .fl-date small,.fl-ttl small{font-size:10.5px;color:var(--muted);font-weight:600}
+  .fl-ttl{flex:1;min-width:0;display:flex;flex-direction:column}
+  #meeting-card.flash{box-shadow:0 0 0 3px var(--orange);transition:box-shadow .3s}
   .cat-acc{margin:10px 0 2px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg)}
   .cat-acc summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;padding:10px 12px;font-size:12px;font-weight:700;color:var(--muted)}
   .cat-acc summary::-webkit-details-marker{display:none}
@@ -895,11 +920,85 @@ async function checkCheersForMe() {
   } catch (e) { /* テーブル未作成時は何もしない */ }
 }
 
+// ===== プラン・期・フォロー日程（受講者側）=====
+let myCohort = null;   // { cohort, plan, events }
+async function loadMyCohort() {
+  myCohort = null;
+  if (!currentOnlineStudent) return;
+  try {
+    const mem = await sbGet('online_cohort_members', 'online_student_id=eq.' + currentOnlineStudent.id + '&select=cohort_id');
+    const ids = (mem || []).map(m => m.cohort_id);
+    if (!ids.length) return;
+    const cs = await sbGet('online_cohorts', 'id=in.(' + ids.join(',') + ')&is_active=not.is.false&select=*&order=start_date.desc');
+    if (!cs || !cs.length) return;
+    const today = getTodayJST();
+    // 開講中 → 開始前 → 直近に終わった期 の順で選ぶ
+    const cohort = cs.find(c => c.start_date <= today && today <= c.end_date)
+      || cs.filter(c => c.start_date > today).sort((a, b) => a.start_date < b.start_date ? -1 : 1)[0]
+      || cs[0];
+    const [plans, events] = await Promise.all([
+      sbGet('online_plans', 'id=eq.' + cohort.plan_id + '&select=id,name,months&limit=1'),
+      sbGet('online_follow_events', 'cohort_id=eq.' + cohort.id + '&is_active=not.is.false&select=*&order=scheduled_date.asc,sort_order.asc')
+    ]);
+    myCohort = { cohort: cohort, plan: (plans && plans[0]) || {}, events: events || [] };
+  } catch (e) { myCohort = null; }   // テーブル未作成時は何も出さない
+}
+function renderFollowShell() {
+  return '<div class="card" id="follow-card" style="display:none"><div id="follow-body"></div></div>';
+}
+function fmtMDW(ds) { const w = '日月火水木金土'[new Date(ds + 'T00:00:00+09:00').getDay()]; return Number(ds.slice(5, 7)) + '/' + Number(ds.slice(8, 10)) + '（' + w + '）'; }
+function renderFollowCard() {
+  const card = document.getElementById('follow-card'), body = document.getElementById('follow-body');
+  if (!card || !body) return;
+  if (!myCohort) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  const { cohort, plan, events } = myCohort;
+  const today = getTodayJST();
+  const next = events.find(e => e.scheduled_date >= today);
+  const total = Math.max(1, diffDays(cohort.start_date, cohort.end_date) + 1);
+  const passed = Math.max(0, Math.min(total, diffDays(cohort.start_date, today) + 1));
+  const pct = Math.round(passed / total * 100);
+  const phase = today < cohort.start_date ? '開始まで あと' + diffDays(today, cohort.start_date) + '日'
+    : today > cohort.end_date ? '修了しました 🎉' : (passed + '日目 / ' + total + '日');
+  let html = '<h2>🗓 フォロー日程</h2>'
+    + '<div class="fl-plan"><b>' + esc(plan.name || 'プログラム') + '</b><span>' + esc(cohort.name) + '　' + fmtMDW(cohort.start_date) + '〜' + fmtMDW(cohort.end_date) + '</span></div>'
+    + '<div class="fl-prog"><i style="width:' + (today < cohort.start_date ? 0 : pct) + '%"></i></div>'
+    + '<div class="fl-phase">' + phase + '</div>';
+  if (next) {
+    const d = diffDays(today, next.scheduled_date);
+    const when = d === 0 ? '今日' : d === 1 ? '明日' : 'あと' + d + '日';
+    const grp = next.kind === 'group';
+    html += '<div class="fl-next' + (d <= 1 ? ' soon' : '') + '">'
+      + '<div class="fl-next-lbl">次のフォロー <span>' + when + '</span></div>'
+      + '<div class="fl-next-ttl">' + esc(next.title) + '</div>'
+      + '<div class="fl-next-meta">' + fmtMDW(next.scheduled_date) + (grp ? (next.start_time ? ' ' + esc(next.start_time) + '〜' : '（時間は後日お知らせ）') : ' ごろ') + ' ・ ' + next.minutes + '分 ・ ' + (grp ? '全体（Zoom）' : '個別') + '</div>'
+      + (grp
+          ? (next.zoom_url ? '<a class="btn fl-btn" href="' + esc(next.zoom_url) + '" target="_blank" rel="noopener">🎥 Zoomに参加する</a>' : '<div class="fl-note">Zoomのリンクは開催日までにここに表示されます。</div>')
+          : '<button class="btn fl-btn" onclick="goMeetingCard()">📅 面談の時間を予約する</button><div class="fl-note">この日の前後で、都合のよい時間を予約してください。</div>')
+      + '</div>';
+  }
+  html += '<div class="fl-list">' + events.map(e => {
+    const past = e.scheduled_date < today, isNext = next && e.id === next.id;
+    const grp = e.kind === 'group';
+    return '<div class="fl-item' + (past ? ' past' : '') + (isNext ? ' now' : '') + '">'
+      + '<span class="fl-dot">' + (past ? '✓' : '') + '</span>'
+      + '<span class="fl-date">' + fmtMDW(e.scheduled_date) + (grp && e.start_time ? '<small>' + esc(e.start_time) + '</small>' : '') + '</span>'
+      + '<span class="fl-ttl">' + esc(e.title) + '<small>' + e.minutes + '分 ・ ' + (grp ? '全体' : '個別') + '</small></span>'
+      + '</div>';
+  }).join('') + '</div>';
+  body.innerHTML = html;
+}
+function goMeetingCard() {
+  const el = document.getElementById('meeting-card');
+  if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1600); }
+}
+
 // ---- 受講できる講座一覧（ガワ：受講権のある講座を出すところまで）----
 async function loadMyCourses() {
   document.body.classList.remove('watching');
   const area = document.getElementById('course-area');
   area.innerHTML = '<div class="loading">読み込み中…</div>';
+  await loadMyCohort();
   try {
     const enrolls = await sbGet('online_enrollments',
       'online_student_id=eq.' + currentOnlineStudent.id +
@@ -908,10 +1007,11 @@ async function loadMyCourses() {
       myEnrollments = enrolls;
       area.innerHTML = '<div class="home-grid">'
         + '<div class="home-left">' + renderMyPageShell() + renderTeamShell() + '</div>'
-        + '<div class="home-right">'
+        + '<div class="home-right">' + renderFollowShell()
         +   '<div class="empty">受講できる講座はまだありません。<br>入金確認後に塾が受講権を付与すると、ここに表示されます。</div>'
         +   renderVocabShell() + renderStudyLogShell() + renderMeetingShell() + renderQBoxShell()
         + '</div></div>';
+      renderFollowCard();
       loadMyPage();
       loadMyTeam();
       loadStudyLog();
@@ -945,8 +1045,9 @@ async function loadMyCourses() {
       : '<div class="empty">表示できる講座がありません。<br>新しい講座が公開されると、ここに表示されます。</div>';
     area.innerHTML = '<div class="home-grid">'
       + '<div class="home-left">' + renderMyPageShell() + renderTeamShell() + '</div>'
-      + '<div class="home-right">' + courseHtml + renderVocabShell() + renderStudyLogShell() + renderMeetingShell() + renderQBoxShell() + '</div>'
+      + '<div class="home-right">' + renderFollowShell() + courseHtml + renderVocabShell() + renderStudyLogShell() + renderMeetingShell() + renderQBoxShell() + '</div>'
       + '</div>';
+    renderFollowCard();
     loadMyPage();
     loadMyTeam();
     loadStudyLog();
@@ -1585,6 +1686,10 @@ const KIND_DEFS = [
 ];
 // 受講中の講座（受講権）の開始日〜期限日をプログラム期間とみなす
 function getProgramRange(today) {
+  if (myCohort && myCohort.cohort) {
+    const c = myCohort.cohort;
+    return { start: c.start_date, end: c.end_date, title: (myCohort.plan && myCohort.plan.name) || c.name, nWeeks: Math.max(1, Math.ceil((diffDays(c.start_date, c.end_date) + 1) / 7)), many: false };
+  }
   const ens = (myEnrollments || []).filter(en => en.granted_at);
   if (!ens.length) return null;
   const withExp = ens.filter(en => en.expires_at);
