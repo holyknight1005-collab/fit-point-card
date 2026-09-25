@@ -43,6 +43,7 @@
   .rowNo{width:34px;flex:0 0 34px;text-align:center;font-size:.75rem;color:var(--sub)} .blk{display:flex;gap:5px}
   .seat{width:30px;height:26px;border-radius:5px;border:1px solid var(--empty-bd);background:var(--empty);display:flex;align-items:center;justify-content:center;font-size:.62rem;color:#94a3b8;flex:0 0 auto;overflow:hidden}
   .seat.moveable{border-color:#22c55e;background:#f0fdf4;cursor:pointer} .seat.moving{outline:3px solid #111827;outline-offset:1px}
+  .seat.reserved{background:repeating-linear-gradient(45deg,#fde68a,#fde68a 4px,#fef3c7 4px,#fef3c7 8px);border-color:#f59e0b;color:#92400e;font-weight:700}
   .blkgap{width:16px;flex:0 0 16px}
   .legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin:8px 0} .legend span{font-size:.82rem;display:inline-flex;align-items:center;gap:5px} .dot{width:12px;height:12px;border-radius:3px;display:inline-block}
   .tabs{display:flex;gap:6px;margin:6px 0 14px;flex-wrap:wrap} .tabs button{flex:1;min-width:80px;padding:10px;border:1px solid var(--line);background:#fff;border-radius:10px;font-weight:700;color:var(--sub);cursor:pointer} .tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -61,7 +62,7 @@
 <div id="app" class="wrap"><div class="card center">読み込み中…</div></div>
 <script>
 /* ===== ホール座席登録アプリ hall.html v3（受付チェックイン・前詰め着席） ===== */
-const APP_VERSION = 'hall-3.5.1';
+const APP_VERSION = 'hall-3.7.1';
 const SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
 const REST = SB_URL + '/rest/v1/';
@@ -84,21 +85,39 @@ function seatKey(b,r,c){ return b+'-'+r+'-'+c; }
 function blockOf(id){ return (S.cfg.layout.blocks||[]).find(b=>b.id===id); }
 function catOf(id){ return (S.cfg.categories||[]).find(c=>c.id===id); }
 function catColor(id){ const c=catOf(id); return c?c.color:'#64748b'; }
-function seatLabel(reg){ if(!reg.seat_key) return '未着席'; const b=blockOf(reg.block_id); return (b?b.name:reg.block_id)+' '+reg.seat_row+'列'+reg.seat_col+'番'; }
+function seatLabel(reg){ if(!reg.seat_key) return '未着席'; const b=blockOf(reg.block_id); return (b?b.name:reg.block_id)+' '+reg.seat_row+'列 '+reg.seat_col+'番'; }
+function seatMiniMap(reg){
+  if(!reg.seat_key) return '';
+  const cfg=S.cfg, blocks=cfg.layout.blocks||[], rows=cfg.layout.rows||20;
+  let grid='';
+  for(let r=1;r<=rows;r++){ let cells='';
+    blocks.forEach((b,bi)=>{ for(let c=1;c<=(b.seats||0);c++){ const mine=(b.id===reg.block_id&&r===reg.seat_row&&c===reg.seat_col); cells+='<div style="width:11px;height:10px;border-radius:2px;flex:0 0 auto;background:'+(mine?'#f97316':'#e5e7eb')+';'+(mine?'box-shadow:0 0 0 2px #f97316':'')+'"></div>'; }
+      if(bi<blocks.length-1) cells+='<div style="width:6px;flex:0 0 auto"></div>'; });
+    grid+='<div style="display:flex;gap:2px;margin:2px 0;width:max-content">'+cells+'</div>';
+  }
+  return '<div style="margin-top:12px"><div class="muted" style="margin-bottom:4px">会場での位置（🟧があなたのお席）</div>'
+    +'<div style="background:#111827;color:#fff;text-align:center;border-radius:6px;padding:4px;font-size:.78rem;font-weight:700;letter-spacing:.2em">ステージ（前）</div>'
+    +'<div style="overflow-x:auto;padding:6px 4px;border:1px solid var(--line);border-radius:8px;margin-top:4px">'+grid+'</div>'
+    +'<div class="center" style="font-size:.9rem;margin-top:6px;font-weight:700">前から '+reg.seat_row+' 列目・左から '+reg.seat_col+' 番目</div></div>';
+}
 function emailRequired(band){ return band && band!=='中学生以下'; }
 function validEmail(e){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }
 const TYPO={'gmial.com':'gmail.com','gmai.com':'gmail.com','gmail.co':'gmail.com','gmaill.com':'gmail.com','gnail.com':'gmail.com','yahooo.co.jp':'yahoo.co.jp','yaho.co.jp':'yahoo.co.jp','yhoo.co.jp':'yahoo.co.jp','icloud.co':'icloud.com','outlook.co':'outlook.com','hotmial.com':'hotmail.com'};
 function typoSuggest(e){ const m=/@(.+)$/.exec(e||''); if(!m) return null; const d=m[1].toLowerCase(); return TYPO[d]? e.slice(0,m.index+1)+TYPO[d] : null; }
 function fbOpen(cfg){ if(cfg.feedback_mode==='open') return true; if(cfg.feedback_mode==='closed') return false; if(!cfg.event_date) return false; const at=Date.parse(cfg.event_date+'T'+(cfg.feedback_open_time||'21:00')+':00+09:00'); return !isNaN(at)&&Date.now()>=at; }
 
-const S = { role:'participant', screen:'loading', cfg:null, regs:[], form:{}, staffTab:'checkin', staffAuthed:false, lastSeated:null };
+const S = { role:'participant', screen:'loading', cfg:null, regs:[], form:{}, staffTab:'checkin', staffAuthed:false, lastSeated:null, activeGroup:null };
 let refreshTimer=null; function stopTimer(){ if(refreshTimer){ clearInterval(refreshTimer); refreshTimer=null; } }
-let seatMoveId=null, placingId=null, scanStream=null, scanRAF=null;
+let seatMoveId=null, placingId=null, scanStream=null, scanRAF=null, placeGroupN=null;
 
 async function loadCfg(){ const d=await sbGet('hall_event_config','event_id=eq.'+EVENT+'&select=*'); if(!d.length) throw new Error('config-missing'); const c=d[0]; if(!c.layout) c.layout={blocks:[],rows:20}; if(!c.categories) c.categories=[]; if(!c.bands) c.bands=['中学生以下','高校生','大学生','社会人']; return c; }
 async function loadRegs(){ return sbGet('hall_event_regs','event_id=eq.'+EVENT+'&select=*&order=registered_at.asc'); }
 function takenSet(){ return new Set(S.regs.filter(r=>r.seat_key).map(r=>r.seat_key)); }
 function nextFrontSeat(){ const taken=takenSet(), rows=S.cfg.layout.rows||20, blocks=S.cfg.layout.blocks||[]; for(let r=1;r<=rows;r++){ for(const b of blocks){ for(let c=1;c<=(b.seats||0);c++){ const k=seatKey(b.id,r,c); if(!taken.has(k)) return {key:k,blk:b.id,row:r,col:c}; } } } return null; }
+function isHold(r){ return r.source==='hold'; }
+function holdRows(){ return S.regs.filter(isHold); }
+function holdGroupList(){ const map={}; holdRows().forEach(r=>{ const g=r.hold_group||'_'; (map[g]=map[g]||[]).push(r); }); return Object.keys(map).map(g=>({gid:g, seats:map[g].sort((a,b)=>a.seat_row-b.seat_row||a.seat_col-b.seat_col)})); }
+function nextFreeSeatsFrom(startKey, n){ /* startKey から row-major に前方の空席を n 席集める（占有席・確保席はスキップ） */ const taken=takenSet(), rows=S.cfg.layout.rows||20, blocks=S.cfg.layout.blocks||[]; const flat=[]; for(let r=1;r<=rows;r++){ for(const b of blocks){ for(let c=1;c<=(b.seats||0);c++){ flat.push({key:seatKey(b.id,r,c),blk:b.id,row:r,col:c}); } } } let si=flat.findIndex(s=>s.key===startKey); if(si<0) si=0; const out=[]; for(let i=si;i<flat.length&&out.length<n;i++){ if(!taken.has(flat[i].key)) out.push(flat[i]); } return out; }
 
 async function boot(){
   try{ S.cfg=await loadCfg(); S.regs=await loadRegs(); }
@@ -192,8 +211,9 @@ function renderTicket(){
   h+='<div class="card center"><div class="pill" style="background:var(--ok)">登録完了</div><div class="muted" style="margin-top:10px">受付番号</div><div class="ticketno">'+esc(reg.receipt_no||'-')+'</div>';
   h+='<div id="tqr" style="display:flex;justify-content:center;margin:12px 0"></div><div class="muted">受付でこのQRをお見せください。<br>スクショ推奨。このQRを読み取ると、自分の画面に戻れます。</div></div>';
   h+='<div class="card"><table class="kv"><tr><td>お名前</td><td>'+esc(reg.name)+'</td></tr><tr><td>カテゴリ</td><td>'+esc(reg.category_name||'')+'</td></tr><tr><td>区分</td><td>'+esc(reg.band||'')+'</td></tr>'+(reg.email?'<tr><td>メール</td><td>'+esc(reg.email)+'</td></tr>':'')+'</table>';
-  h+='<div class="seatbox"><div class="muted">お席</div><div style="font-size:1.4rem;font-weight:800">'+(reg.seat_key?esc(seatLabel(reg)):'受付でご案内します')+'</div></div>';
+  h+='<div class="seatbox"><div class="muted">お席</div><div style="font-size:1.4rem;font-weight:800">'+(reg.seat_key?esc(seatLabel(reg)):'受付でご案内します')+'</div>'+(reg.seat_key?seatMiniMap(reg):'')+'</div>';
   h+='<div class="msg info" style="margin-top:12px">受付番号は席の確認・別端末表示に使います。<b>スクショ推奨</b>。</div></div>';
+  h+='<div class="card center"><div style="font-weight:800;margin-bottom:4px">📣 オープンチャットにご参加ください</div><div class="muted" style="margin-bottom:10px">オープンチャット「【超感覚英語】🍊3000人立ち会いチャレンジ」</div><a class="btn ok" style="text-decoration:none" href="https://line.me/ti/g2/YOYwEg6dhvElTKnTMVdPJTQBR5kr6BacnHqZ8w?utm_source=invitation&utm_medium=link_copy&utm_campaign=default" target="_blank" rel="noopener">オープンチャットへの入場はこちら</a></div>';
   h+='<div class="card"><h2>感想</h2>';
   if(fbOpen(cfg)){ h+='<div class="sub">本日の感想をお聞かせください。</div><textarea id="fb" placeholder="ご感想をどうぞ">'+esc(reg.feedback||'')+'</textarea><div id="fberr"></div><button class="btn" id="sendFb">'+(reg.feedback?'感想を更新する':'感想を送信する')+'</button>'+(reg.feedback_at?'<div class="muted center" style="margin-top:8px">送信済み</div>':''); }
   else{ h+='<div class="msg info">感想は <b>'+esc(cfg.feedback_open_time||'21:00')+'</b> から入力できます。</div>'; }
@@ -222,22 +242,38 @@ function renderStaff(){
     +'<button data-t="tally" class="'+(t==='tally'?'on':'')+'">集計</button>'
     +'<button data-t="settings" class="'+(t==='settings'?'on':'')+'">設定</button></div><div id="tabbody"></div>';
   $('app').innerHTML=h;
-  document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{ stopScan(); S.staffTab=b.getAttribute('data-t'); render(); });
+  document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{ stopScan(); seatMoveId=null; placingId=null; placeGroupN=null; S.staffTab=b.getAttribute('data-t'); render(); });
   if(t==='checkin') renderCheckin(); else if(t==='map') staffMap(); else if(t==='tally') staffTally(); else staffSettings();
 }
 
 /* ---------- 受付（QR / 受付番号 / チケットなし） ---------- */
 async function renderCheckin(){
   try{ S.regs=await loadRegs(); }catch(e){}
-  const seated=S.regs.filter(r=>r.seat_key).length;
-  const waiting=S.regs.filter(r=>!r.seat_key);
-  let h='<div class="card"><div class="stat"><div class="box"><div class="n">'+seated+'</div><div class="k">着席済み</div></div><div class="box"><div class="n">'+waiting.length+'</div><div class="k">未着席（登録のみ）</div></div><div class="box"><div class="n">'+((S.cfg.layout.rows||20)*((S.cfg.layout.blocks||[]).reduce((s,b)=>s+(b.seats||0),0))-seated)+'</div><div class="k">空席</div></div></div>';
+  const holds=holdRows();
+  const seated=S.regs.filter(r=>r.seat_key&&!isHold(r)).length;
+  const reserved=holds.length;
+  const waiting=S.regs.filter(r=>!r.seat_key&&!isHold(r));
+  const total=(S.cfg.layout.rows||20)*((S.cfg.layout.blocks||[]).reduce((s,b)=>s+(b.seats||0),0));
+  const groups=holdGroupList();
+  // 有効グループが消えていたら（全消化/リロード）補正
+  if(S.activeGroup && !groups.some(g=>g.gid===S.activeGroup)) S.activeGroup=null;
+  const ag = S.activeGroup ? groups.find(g=>g.gid===S.activeGroup) : null;
+
+  let h='<div class="card"><div class="stat"><div class="box"><div class="n">'+seated+'</div><div class="k">着席済み</div></div><div class="box"><div class="n">'+reserved+'</div><div class="k">確保中</div></div><div class="box"><div class="n">'+(total-seated-reserved)+'</div><div class="k">空席</div></div></div>';
   h+='<div id="ci-confirm"></div>';
+  if(ag){ h+='<div class="msg ok" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><span>👥 このグループに着席中：<b>残り'+ag.seats.length+'席</b>（QR/受付番号/チケットなしで前から着席）</span><button class="btn sec sm" id="ci-groupoff">通常に戻す</button></div>'; }
   h+='<label>受付番号で着席</label><div class="row"><input type="text" id="ci-no" placeholder="例：R-032" style="flex:2"><button class="btn sm" id="ci-go" style="flex:1">照合して着席</button></div>';
   h+='<button class="btn ghost" id="ci-scan" style="margin-top:12px">📷 カメラでQRを読み取る</button><div id="ci-cam" style="display:none;margin-top:10px"><video id="qr-video" playsinline></video><canvas id="qr-canvas" style="display:none"></canvas><button class="btn sec sm" id="ci-scan-stop" style="margin-top:8px;width:100%">スキャンを止める</button></div>';
   h+='<button class="btn ok" id="ci-ticketless" style="margin-top:12px">🎫 チケットなしで着席（受付で発券）</button>';
+  h+='<button class="btn sec" id="ci-group" style="margin-top:12px">👥 グループで席を確保（連続）</button>';
   h+='</div>';
-  h+='<div class="card"><h2>未着席の一覧（'+waiting.length+'）</h2><div class="muted" style="margin-bottom:6px">登録済みだが未着席の方。QRがなくても「着席」で前から詰めて座らせられます。</div>';
+  // グループ確保の状況
+  if(groups.length){
+    h+='<div class="card"><h2>確保中のグループ</h2>';
+    groups.forEach((g,i)=>{ const on=g.gid===S.activeGroup; h+='<div class="waitrow"><div><b>グループ'+(i+1)+'</b> <span class="muted">残り'+g.seats.length+'席（'+g.seats.map(s=>seatLabel(s)).slice(0,4).join('・')+(g.seats.length>4?'…':'')+'）</span></div><span style="display:flex;gap:6px"><button class="btn '+(on?'sec':'ok')+' sm" data-actg="'+g.gid+'">'+(on?'選択中':'このグループに着席')+'</button><button class="btn danger sm" data-relg="'+g.gid+'">解除</button></span></div>'; });
+    h+='</div>';
+  }
+  h+='<div class="card"><h2>未着席の一覧（'+waiting.length+'）</h2><div class="muted" style="margin-bottom:6px">登録済みだが未着席の方。QRがなくても「着席」で座らせられます（グループ選択中はそのグループへ）。</div>';
   if(!waiting.length) h+='<div class="muted">なし</div>';
   else h+=waiting.map(r=>'<div class="waitrow"><div><b>'+esc(r.name||'（氏名未入力）')+'</b> <span class="muted">'+esc(r.receipt_no||'')+' / '+esc(r.category_name||'')+' '+esc(r.band||'')+'</span></div><button class="btn ok sm" data-seat="'+r.id+'">着席</button></div>').join('');
   h+='</div>';
@@ -247,7 +283,65 @@ async function renderCheckin(){
   $('ci-no').onkeydown=e=>{ if(e.key==='Enter') $('ci-go').click(); };
   $('ci-scan').onclick=startScan; $('ci-scan-stop').onclick=stopScan;
   $('ci-ticketless').onclick=ticketlessSeat;
-  document.querySelectorAll('[data-seat]').forEach(el=>el.onclick=()=>{ const id=parseInt(el.getAttribute('data-seat')); if(S.regs.find(x=>x.id===id)) startPlacing(id); });
+  $('ci-group').onclick=startGroupHold;
+  { const off=$('ci-groupoff'); if(off) off.onclick=()=>{ S.activeGroup=null; renderCheckin(); }; }
+  document.querySelectorAll('[data-actg]').forEach(el=>el.onclick=()=>{ S.activeGroup=el.getAttribute('data-actg'); renderCheckin(); });
+  document.querySelectorAll('[data-relg]').forEach(el=>el.onclick=()=>releaseGroup(el.getAttribute('data-relg')));
+  document.querySelectorAll('[data-seat]').forEach(el=>el.onclick=()=>{ const id=parseInt(el.getAttribute('data-seat')); const reg=S.regs.find(x=>x.id===id); if(!reg) return; if(S.activeGroup) fillGroupSlot(reg); else startPlacing(id); });
+}
+
+/* ---------- グループ確保 ---------- */
+function startGroupHold(){
+  const v=prompt('確保する人数を入力してください（例：4）'); if(v===null) return;
+  const n=parseInt(v,10); if(!n||n<1||n>40){ alert('1〜40の人数を入れてください。'); return; }
+  placeGroupN=n; seatMoveId=null; placingId=null; stopScan(); S.staffTab='map'; render();
+}
+async function placeGroupAt(startKey){
+  const n=placeGroupN; if(!n) return;
+  try{ S.regs=await loadRegs(); }catch(e){}
+  const seats=nextFreeSeatsFrom(startKey,n);
+  if(seats.length<n){ alert('空席が足りません（残り'+seats.length+'席）。'); return; }
+  const gid='g'+Date.now().toString(36);
+  try{
+    for(const s of seats){ await sbInsert({ event_id:EVENT, seat_key:s.key, block_id:s.blk, seat_row:s.row, seat_col:s.col, name:'（確保）', source:'hold', hold_group:gid, client_id:'hold' }); }
+  }catch(e){ alert('席の確保に失敗しました。埋まった席が混ざった可能性があります。もう一度お試しください。'); }
+  placeGroupN=null; S.activeGroup=gid; try{ S.regs=await loadRegs(); }catch(e){}
+  S.staffTab='checkin'; render();
+}
+function activeGroupSlots(){ const g=holdGroupList().find(x=>x.gid===S.activeGroup); return g?g.seats:[]; }
+
+async function fillGroupSlot(personReg){
+  // personReg: 既存登録者の行（QR/受付番号/未着席一覧）。null はチケットなし。
+  try{ S.regs=await loadRegs(); }catch(e){}
+  const slots=activeGroupSlots();
+  if(!slots.length){ alert('このグループの確保席は満席です。'); S.activeGroup=null; if(personReg) startPlacing(personReg.id); else ticketlessSeat(); return; }
+  const slot=slots[0];
+  if(personReg){
+    if(personReg.seat_key && !isHold(personReg)){ S.lastSeated={name:personReg.name,seat:seatLabel(personReg)+'（着席済み）'}; renderCheckin(); return; }
+    // 確保席を空けて本人をそこへ（本人の行ID・トークンは維持）
+    try{ await sbDelete('hall_event_regs','id=eq.'+slot.id+'&event_id=eq.'+EVENT); }catch(e){ alert('着席に失敗しました。'); return; }
+    const rr=await sbPatchRaw('hall_event_regs','id=eq.'+personReg.id+'&event_id=eq.'+EVENT+'&seat_key=is.null',{seat_key:slot.seat_key,block_id:slot.block_id,seat_row:slot.seat_row,seat_col:slot.seat_col,checkin_at:new Date().toISOString()});
+    if(!rr.ok){ alert('着席に失敗しました。'); try{ S.regs=await loadRegs(); }catch(e){} renderCheckin(); return; }
+    const arr=await rr.json(); const seated=arr[0]||personReg;
+    S.lastSeated={name:seated.name,seat:seatLabel(slot)};
+  }else{
+    const name=(prompt('お名前（後で入力も可・空でもOK）')||'').trim();
+    const receipt='R-'+String(slot.id).padStart(3,'0');
+    try{ await sbPatch('hall_event_regs','id=eq.'+slot.id+'&event_id=eq.'+EVENT,{name:name||'（受付発券）',source:'reception',hold_group:null,receipt_no:receipt,checkin_at:new Date().toISOString()}); }
+    catch(e){ alert('着席に失敗しました。'); return; }
+    S.lastSeated={name:name||'（受付発券）',seat:seatLabel(slot)};
+  }
+  try{ S.regs=await loadRegs(); }catch(e){}
+  if(!activeGroupSlots().length) S.activeGroup=null;
+  renderCheckin();
+  if(!personReg){ const filled=S.regs.find(x=>x.id===slot.id); if(filled) editReg(filled.id); }
+}
+
+async function releaseGroup(gid){
+  if(!confirm('このグループの未着席の確保席を解除します。よろしいですか？')) return;
+  try{ await sbDelete('hall_event_regs','event_id=eq.'+EVENT+'&source=eq.hold&hold_group=eq.'+encodeURIComponent(gid)); }catch(e){ alert('解除に失敗しました。'); }
+  if(S.activeGroup===gid) S.activeGroup=null;
+  try{ S.regs=await loadRegs(); }catch(e){} renderCheckin();
 }
 
 function startScan(){
@@ -263,9 +357,9 @@ function scanLoop(){
 function stopScan(){ if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; } if(scanRAF){ cancelAnimationFrame(scanRAF); scanRAF=null; } const cam=$('ci-cam'); if(cam) cam.style.display='none'; }
 
 function onScanCode(txt){ const m=/[?&]t=([^&\s]+)/.exec(txt); if(m){ return checkinByToken(decodeURIComponent(m[1])); } return checkinByReceipt(txt); }
-async function checkinByToken(tok){ try{ const d=await sbGet('hall_event_regs','event_id=eq.'+EVENT+'&token=eq.'+encodeURIComponent(tok)+'&select=*'); if(!d.length){ alert('該当するQRが見つかりません。'); return; } const reg=d[0]; S.regs=await loadRegs(); if(reg.seat_key){ S.lastSeated={name:reg.name,seat:seatLabel(reg)+'（着席済み）'}; renderCheckin(); return; } startPlacing(reg.id); }catch(e){ alert('照合に失敗しました。'); } }
+async function checkinByToken(tok){ try{ const d=await sbGet('hall_event_regs','event_id=eq.'+EVENT+'&token=eq.'+encodeURIComponent(tok)+'&select=*'); if(!d.length){ alert('該当するQRが見つかりません。'); return; } const reg=d[0]; S.regs=await loadRegs(); if(reg.seat_key&&!isHold(reg)){ S.lastSeated={name:reg.name,seat:seatLabel(reg)+'（着席済み）'}; renderCheckin(); return; } if(S.activeGroup) return fillGroupSlot(reg); startPlacing(reg.id); }catch(e){ alert('照合に失敗しました。'); } }
 async function checkinByReceipt(no){
-  try{ const d=await sbGet('hall_event_regs','event_id=eq.'+EVENT+'&receipt_no=eq.'+encodeURIComponent(no)+'&select=*'); if(!d.length){ alert('該当する受付番号が見つかりません：'+no); return; } const reg=d[0]; S.regs=await loadRegs(); if(reg.seat_key){ S.lastSeated={name:reg.name,seat:seatLabel(reg)+'（着席済み）'}; renderCheckin(); return; } startPlacing(reg.id); }catch(e){ alert('照合に失敗しました。'); }
+  try{ const d=await sbGet('hall_event_regs','event_id=eq.'+EVENT+'&receipt_no=eq.'+encodeURIComponent(no)+'&select=*'); if(!d.length){ alert('該当する受付番号が見つかりません：'+no); return; } const reg=d[0]; S.regs=await loadRegs(); if(reg.seat_key&&!isHold(reg)){ S.lastSeated={name:reg.name,seat:seatLabel(reg)+'（着席済み）'}; renderCheckin(); return; } if(S.activeGroup) return fillGroupSlot(reg); startPlacing(reg.id); }catch(e){ alert('照合に失敗しました。'); }
 }
 
 function startPlacing(id){ seatMoveId=null; placingId=id; stopScan(); S.staffTab='map'; render(); }
@@ -298,6 +392,7 @@ async function assignFrontSeat(reg){
 }
 
 async function ticketlessSeat(){
+  if(S.activeGroup && activeGroupSlots().length) return fillGroupSlot(null);
   try{
     const res=await sbInsert({ event_id:EVENT, seat_key:null, name:'（受付発券）', client_id:'reception', source:'reception' });
     let reg=res.reg; const receipt='R-'+String(reg.id).padStart(3,'0');
@@ -310,30 +405,37 @@ async function ticketlessSeat(){
 async function staffMap(){
   try{ S.regs=await loadRegs(); }catch(e){}
   const cfg=S.cfg, blocks=cfg.layout.blocks||[], rows=cfg.layout.rows||20;
-  const total=blocks.reduce((s,b)=>s+(b.seats||0)*rows,0), taken=S.regs.filter(r=>r.seat_key).length;
+  const total=blocks.reduce((s,b)=>s+(b.seats||0)*rows,0);
+  const taken=S.regs.filter(r=>r.seat_key&&!isHold(r)).length;
+  const reserved=holdRows().length;
   const bySeat={}; S.regs.forEach(r=>{ if(r.seat_key) bySeat[r.seat_key]=r; });
   const moving=seatMoveId?S.regs.find(r=>r.id===seatMoveId):null;
   const placing=placingId?S.regs.find(r=>r.id===placingId):null;
   const acting=moving||placing;
+  const grouping=!!placeGroupN;
   let legend='<div class="legend">'+(cfg.categories||[]).map(c=>'<span><i class="dot" style="background:'+c.color+'"></i>'+esc(c.name)+'</span>').join('')+'</div>';
   let grid='';
   for(let r=1;r<=rows;r++){ let cells='';
-    blocks.forEach((b,bi)=>{ let bs=''; for(let c=1;c<=(b.seats||0);c++){ const k=seatKey(b.id,r,c); const reg=bySeat[k]; if(reg){ const col=catColor(reg.category_id); const mine=(moving&&reg.id===moving.id); bs+='<div class="seat'+(mine?' moving':'')+'" style="background:'+col+';color:#fff;border-color:'+col+';cursor:pointer" data-id="'+reg.id+'" title="'+esc((reg.name||'')+' / '+(reg.category_name||''))+'">'+esc((reg.name||'').slice(0,2))+'</div>'; } else { bs+='<div class="seat'+(acting?' moveable':'')+'" data-empty="'+k+'" data-blk="'+b.id+'" data-r="'+r+'" data-c="'+c+'">'+c+'</div>'; } }
+    blocks.forEach((b,bi)=>{ let bs=''; for(let c=1;c<=(b.seats||0);c++){ const k=seatKey(b.id,r,c); const reg=bySeat[k]; if(reg&&isHold(reg)){ bs+='<div class="seat reserved" title="グループ確保中">確</div>'; } else if(reg){ const col=catColor(reg.category_id); const mine=(moving&&reg.id===moving.id); bs+='<div class="seat'+(mine?' moving':'')+'" style="background:'+col+';color:#fff;border-color:'+col+';cursor:pointer" data-id="'+reg.id+'" title="'+esc((reg.name||'')+' / '+(reg.category_name||''))+'">'+esc((reg.name||'').slice(0,2))+'</div>'; } else { bs+='<div class="seat'+((acting||grouping)?' moveable':'')+'" data-empty="'+k+'" data-blk="'+b.id+'" data-r="'+r+'" data-c="'+c+'">'+c+'</div>'; } }
       cells+='<div class="blk">'+bs+'</div>'+(bi<blocks.length-1?'<div class="blkgap"></div>':''); });
     grid+='<div class="seatRow"><div class="rowNo">'+r+'列</div>'+cells+'</div>'; }
   const banner = moving ? '<div class="msg warn" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>移動中：<b>'+esc(moving.name)+'</b>（'+esc(seatLabel(moving))+'）→ 移動先の空席をタップ</span><button class="btn sec sm" id="mvcancel">キャンセル</button></div>'
     : placing ? '<div class="msg info" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><span>🎫 <b>'+esc(placing.name)+'</b> を着席：<b>空席をタップ</b></span><span style="display:flex;gap:6px"><button class="btn ok sm" id="plauto">前から自動</button><button class="btn sec sm" id="plcancel">キャンセル</button></span></div>'
+    : grouping ? '<div class="msg warn" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><span>👥 <b>'+placeGroupN+'席を確保</b>：開始席をタップ（そこから連続'+placeGroupN+'席）</span><button class="btn sec sm" id="grpcancel">キャンセル</button></div>'
     : '';
-  let body='<div class="card">'+banner+'<div class="stat"><div class="box"><div class="n">'+taken+'</div><div class="k">着席</div></div><div class="box"><div class="n">'+total+'</div><div class="k">総座席</div></div><div class="box"><div class="n">'+(total-taken)+'</div><div class="k">空席</div></div></div>'+legend+'<div class="stage">舞　台</div><div class="seatArea">'+grid+'</div><div class="screen">スクリーン</div><div class="muted center">自動更新（5秒）・座席タップで詳細/移動</div></div>';
+  let body='<div class="card">'+banner+'<div class="stat"><div class="box"><div class="n">'+taken+'</div><div class="k">着席</div></div><div class="box"><div class="n">'+reserved+'</div><div class="k">確保中</div></div><div class="box"><div class="n">'+(total-taken-reserved)+'</div><div class="k">空席</div></div></div>'+legend+'<div class="stage">ステージ</div><div class="seatArea">'+grid+'</div><div class="muted center" style="margin-top:8px">自動更新（5秒）・座席タップで詳細/移動・「確」＝グループ確保中</div></div>';
   $('tabbody').innerHTML=body;
-  if(acting){
+  if(grouping){
+    document.querySelectorAll('.seat[data-empty]').forEach(el=>el.onclick=()=>placeGroupAt(el.getAttribute('data-empty')));
+    const gc=$('grpcancel'); if(gc) gc.onclick=()=>{ placeGroupN=null; S.staffTab='checkin'; render(); };
+  } else if(acting){
     document.querySelectorAll('.seat[data-empty]').forEach(el=>el.onclick=()=>seatAssign(acting.id, el.getAttribute('data-empty'), el.getAttribute('data-blk'), parseInt(el.getAttribute('data-r')), parseInt(el.getAttribute('data-c')), moving?'move':'place'));
     const cx=$('mvcancel'); if(cx) cx.onclick=()=>{ seatMoveId=null; staffMap(); };
     const cp=$('plcancel'); if(cp) cp.onclick=()=>{ placingId=null; staffMap(); };
     const pa=$('plauto'); if(pa) pa.onclick=()=>{ const reg=placing; placingId=null; assignFrontSeat(reg); };
   }
-  document.querySelectorAll('.seat[data-id]').forEach(el=>el.onclick=()=>{ if(seatMoveId||placingId) return; seatDetail(parseInt(el.getAttribute('data-id'))); });
-  refreshTimer=setInterval(async()=>{ if(S.role==='staff'&&S.staffTab==='map'&&!seatMoveId&&!placingId){ try{ S.regs=await loadRegs(); staffMap(); }catch(e){} } },5000);
+  document.querySelectorAll('.seat[data-id]').forEach(el=>el.onclick=()=>{ if(seatMoveId||placingId||placeGroupN) return; seatDetail(parseInt(el.getAttribute('data-id'))); });
+  refreshTimer=setInterval(async()=>{ if(S.role==='staff'&&S.staffTab==='map'&&!seatMoveId&&!placingId&&!placeGroupN){ try{ S.regs=await loadRegs(); staffMap(); }catch(e){} } },5000);
 }
 async function seatMoveTo(key,blk,r,c){
   const id=seatMoveId; if(!id) return; try{ S.regs=await loadRegs(); }catch(e){}
@@ -378,17 +480,17 @@ function editReg(id){
 /* ---------- 集計・CSV ---------- */
 async function staffTally(){
   try{ S.regs=await loadRegs(); }catch(e){}
-  const cfg=S.cfg, cats=cfg.categories||[], bands=cfg.bands||[]; const fb=S.regs.filter(r=>r.feedback&&r.feedback.trim());
-  const seated=S.regs.filter(r=>r.seat_key).length;
-  let body='<div class="card"><div class="stat"><div class="box"><div class="n">'+S.regs.length+'</div><div class="k">登録総数</div></div><div class="box"><div class="n">'+seated+'</div><div class="k">着席</div></div><div class="box"><div class="n">'+fb.length+'</div><div class="k">感想あり</div></div></div><button class="btn ghost" id="csv" style="margin-top:12px">CSVをダウンロード</button></div>';
-  body+='<div class="card"><h2>カテゴリ別</h2><table class="list"><tr><th>カテゴリ</th><th>登録</th></tr>'+cats.map(c=>'<tr><td><i class="dot" style="background:'+c.color+'"></i> '+esc(c.name)+'</td><td>'+S.regs.filter(r=>r.category_id===c.id).length+'</td></tr>').join('')+'</table></div>';
-  body+='<div class="card"><h2>区分別</h2><table class="list"><tr><th>区分</th><th>登録</th></tr>'+bands.map(b=>'<tr><td>'+esc(b)+'</td><td>'+S.regs.filter(r=>r.band===b).length+'</td></tr>').join('')+'</table></div>';
+  const cfg=S.cfg, cats=cfg.categories||[], bands=cfg.bands||[]; const people=S.regs.filter(r=>!isHold(r)); const fb=people.filter(r=>r.feedback&&r.feedback.trim());
+  const seated=people.filter(r=>r.seat_key).length;
+  let body='<div class="card"><div class="stat"><div class="box"><div class="n">'+people.length+'</div><div class="k">登録総数</div></div><div class="box"><div class="n">'+seated+'</div><div class="k">着席</div></div><div class="box"><div class="n">'+fb.length+'</div><div class="k">感想あり</div></div></div><button class="btn ghost" id="csv" style="margin-top:12px">CSVをダウンロード</button></div>';
+  body+='<div class="card"><h2>カテゴリ別</h2><table class="list"><tr><th>カテゴリ</th><th>登録</th></tr>'+cats.map(c=>'<tr><td><i class="dot" style="background:'+c.color+'"></i> '+esc(c.name)+'</td><td>'+people.filter(r=>r.category_id===c.id).length+'</td></tr>').join('')+'</table></div>';
+  body+='<div class="card"><h2>区分別</h2><table class="list"><tr><th>区分</th><th>登録</th></tr>'+bands.map(b=>'<tr><td>'+esc(b)+'</td><td>'+people.filter(r=>r.band===b).length+'</td></tr>').join('')+'</table></div>';
   body+='<div class="card"><h2>感想一覧（'+fb.length+'件）</h2>'+(fb.length?('<table class="list"><tr><th>席</th><th>名前/カテゴリ</th><th>感想</th></tr>'+fb.slice().sort((a,b)=>new Date(b.feedback_at||0)-new Date(a.feedback_at||0)).map(r=>'<tr><td>'+esc(seatLabel(r))+'</td><td>'+esc(r.name)+'<br><span class="muted">'+esc(r.category_name||'')+'</span></td><td>'+esc(r.feedback)+'</td></tr>').join('')+'</table>'):'<div class="muted">まだありません。</div>')+'</div>';
   $('tabbody').innerHTML=body; $('csv').onclick=downloadCSV;
 }
 function downloadCSV(){
   const head=['受付番号','席','名前','カテゴリ','区分','紹介者','メール','発券元','登録時刻','着席時刻','感想'];
-  const rows=S.regs.slice().sort((a,b)=>(a.seat_row||999)-(b.seat_row||999)||(a.seat_col||999)-(b.seat_col||999))
+  const rows=S.regs.filter(r=>!isHold(r)).slice().sort((a,b)=>(a.seat_row||999)-(b.seat_row||999)||(a.seat_col||999)-(b.seat_col||999))
     .map(r=>[r.receipt_no||'',seatLabel(r),r.name||'',r.category_name||'',r.band||'',r.referrer||'',r.email||'',r.source||'',r.registered_at?new Date(r.registered_at).toLocaleString('ja-JP'):'',r.checkin_at?new Date(r.checkin_at).toLocaleString('ja-JP'):'',(r.feedback||'')]);
   const q=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
   const csv='\uFEFF'+[head].concat(rows).map(r=>r.map(q).join(',')).join('\r\n');
