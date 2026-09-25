@@ -207,22 +207,37 @@
   .mp-stat .v{font-size:22px;font-weight:800;color:var(--orange-d);line-height:1.1}
   .mp-stat .l{font-size:11px;color:var(--muted);margin-top:3px}
   .mp-badge{display:inline-block;font-size:12px;font-weight:700;color:#8a5a00;background:#FFF3DC;border:1px solid #F0D08A;border-radius:999px;padding:4px 11px;margin:0 6px 6px 0}
-  /* ランク章（Light テーマ）*/
+  /* ランク章（楽天式・メダル＋一覧）*/
   .rank-card{margin:6px 0 12px;padding:14px 16px;border-radius:var(--radius-sm);
     background:linear-gradient(var(--rkt),var(--rkt)),var(--surface);
-    border:1px solid var(--rk);box-shadow:0 6px 20px var(--rkg)}
+    border:1px solid var(--rk)}
   .rank-top{display:flex;align-items:center;gap:12px}
-  .rank-orb{width:34px;height:34px;border-radius:50%;flex:none;
-    background:radial-gradient(circle at 32% 30%,#fff 0%,var(--rk) 62%,var(--rk) 100%);
-    box-shadow:0 0 14px 2px var(--rkg)}
   .rank-lbl{font-size:10px;font-weight:700;color:var(--muted);letter-spacing:.04em}
   .rank-name{font-size:20px;font-weight:900;color:var(--text);line-height:1.1;letter-spacing:.02em}
   .rank-pt{margin-left:auto;font-size:20px;font-weight:900;color:var(--orange-d)}
   .rank-pt span{font-size:11px;font-weight:700;color:var(--muted);margin-left:2px}
-  .rank-bar{height:8px;border-radius:999px;background:var(--rkt);overflow:hidden;margin:12px 0 6px}
-  .rank-fill{height:100%;border-radius:999px;background:var(--rk);box-shadow:0 0 10px var(--rkg);transition:width .5s ease}
+  .rank-bar{height:8px;border-radius:999px;background:#EEE3CE;overflow:hidden;margin:12px 0 6px}
+  .rank-fill{height:100%;border-radius:999px;background:var(--rk);transition:width .5s ease}
   .rank-next{font-size:12px;color:var(--muted)}
   .rank-next b{color:var(--orange-d)}
+  /* メダル（コイン＋リボン）*/
+  .medal{position:relative;flex:none;width:var(--ms,46px);height:var(--ms,46px)}
+  .medal .coin{width:100%;height:100%;border-radius:50%;background:var(--mc);
+    border:3px solid #fff;box-shadow:0 2px 5px rgba(0,0,0,.18);
+    display:flex;align-items:center;justify-content:center;color:#fff;
+    font-weight:900;font-size:calc(var(--ms,46px) * .42);position:relative;z-index:2}
+  .medal .coin::after{content:'';position:absolute;inset:3px;border-radius:50%;border:1.5px solid rgba(255,255,255,.5)}
+  .medal::before,.medal::after{content:'';position:absolute;bottom:-5px;width:7px;height:13px;background:var(--mc);opacity:.85;z-index:1;border-radius:1px}
+  .medal::before{left:calc(50% - 11px);transform:rotate(14deg)}
+  .medal::after{right:calc(50% - 11px);transform:rotate(-14deg)}
+  /* ランク一覧（楽天式テーブル）*/
+  .rank-ladder{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+  .rank-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--surface)}
+  .rank-row.cur{border-color:var(--rr);background:linear-gradient(var(--rrt),var(--rrt)),var(--surface)}
+  .rank-row .rr-name{font-weight:800;font-size:13px;color:var(--text)}
+  .rank-row .rr-req{margin-left:auto;font-size:11px;color:var(--muted);text-align:right;white-space:nowrap}
+  .rank-row .rr-cur{font-size:10px;font-weight:800;color:#fff;background:var(--rr);border-radius:999px;padding:2px 8px}
+  .rank-toggle{margin-top:8px;font-size:12px;font-weight:700;color:var(--orange-d);background:none;border:none;cursor:pointer;padding:2px 0;font-family:inherit}
   /* バッジコレクション */
   .badge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:10px}
   .badge-item{border-radius:14px;padding:12px 8px 10px;text-align:center;border:1px solid var(--border);background:var(--bg)}
@@ -672,34 +687,87 @@ async function loadOnlineRanks() {
 async function computeOnlineRank(points) {
   const ranks = await loadOnlineRanks();
   if (!ranks) return null;
-  let current = ranks[0], next = null;
+  let current = ranks[0], next = null, idx = 0;
   for (let i = 0; i < ranks.length; i++) {
-    if (points >= ranks[i].min_points) current = ranks[i];
+    if (points >= ranks[i].min_points) { current = ranks[i]; idx = i; }
     else { next = ranks[i]; break; }
   }
-  return { current: current, next: next };
+  return { current: current, next: next, ranks: ranks, idx: idx };
+}
+
+// ランクの頭文字（楽天式 R/S/G/P/D）。未知キーは番号でフォールバック
+function rankLetter(r, i) {
+  const m = { regular:'R', silver:'S', gold:'G', platinum:'P', diamond:'D' };
+  return (r && r.rank_key && m[r.rank_key]) ? m[r.rank_key] : String((i || 0) + 1);
+}
+// メダル（コイン＋リボン）
+function medalHtml(color, label, size) {
+  const s = size ? (';--ms:' + size + 'px') : '';
+  return '<div class="medal" style="--mc:' + esc(color || '#F0A030') + s + '"><div class="coin">' + esc(label) + '</div></div>';
 }
 
 function renderRankCard(info, points) {
   if (!info || !info.current) return '';
   const c = info.current, n = info.next;
+  const ranks = info.ranks || [c];
   const color = c.color || '#F0A030';
-  const style = '--rk:' + esc(color) + ';--rkg:' + hexToRgba(color, .45) + ';--rkt:' + hexToRgba(color, .13);
+  const style = '--rk:' + esc(color) + ';--rkt:' + hexToRgba(color, .13);
   let sub, pct;
   if (n) {
     const span = Math.max(1, n.min_points - c.min_points);
     pct = Math.max(0, Math.min(100, Math.round((points - c.min_points) / span * 100)));
     sub = 'あと <b>' + (n.min_points - points) + 'pt</b> で ' + esc(n.name);
   } else { pct = 100; sub = '最高ランクに到達しました！🎉'; }
-  return '<div class="rank-card" style="' + style + '">'
+
+  // ヒーロー：現ランクのメダル＋名前＋pt＋次まで
+  let html = '<div class="rank-card" style="' + style + '">'
     + '<div class="rank-top">'
-    +   '<div class="rank-orb"></div>'
+    +   medalHtml(color, rankLetter(c, info.idx), 52)
     +   '<div><div class="rank-lbl">現在のランク</div><div class="rank-name">' + esc(c.name) + '</div></div>'
     +   '<div class="rank-pt">' + points + '<span>pt</span></div>'
     + '</div>'
     + '<div class="rank-bar"><div class="rank-fill" style="width:' + pct + '%"></div></div>'
     + '<div class="rank-next">' + sub + '</div>'
     + '</div>';
+
+  // ランク一覧（楽天式）：初期は現ランク周辺のみ、ボタンで全表示
+  const rows = ranks.map(function (r, i) {
+    const isCur = (i === info.idx);
+    const rc = r.color || '#F0A030';
+    const req = (r.min_points === 0) ? '登録で開始' : (r.min_points + 'pt〜');
+    return '<div class="rank-row' + (isCur ? ' cur' : '') + '" data-i="' + i + '" style="--rr:' + esc(rc) + ';--rrt:' + hexToRgba(rc, .12) + '">'
+      + medalHtml(rc, rankLetter(r, i), 32)
+      + '<span class="rr-name">' + esc(r.name) + '</span>'
+      + (isCur ? '<span class="rr-cur">現在</span>' : '')
+      + '<span class="rr-req">' + req + '</span>'
+      + '</div>';
+  }).join('');
+  html += '<div class="rank-ladder" id="rank-ladder" data-open="0">' + rows + '</div>'
+    + '<button class="rank-toggle" id="rank-toggle" onclick="toggleRankLadder()">すべてのランクを見る ▾</button>';
+  return html;
+}
+
+// 一覧の開閉（初期は現ランク±1のみ表示してコンパクトに）
+function applyRankLadderView() {
+  const lad = document.getElementById('rank-ladder');
+  const btn = document.getElementById('rank-toggle');
+  if (!lad) return;
+  const open = lad.getAttribute('data-open') === '1';
+  const rows = lad.querySelectorAll('.rank-row');
+  let curIdx = 0;
+  rows.forEach(function (r) { if (r.classList.contains('cur')) curIdx = parseInt(r.getAttribute('data-i'), 10); });
+  rows.forEach(function (r) {
+    const i = parseInt(r.getAttribute('data-i'), 10);
+    const near = Math.abs(i - curIdx) <= 1;
+    r.style.display = (open || near) ? 'flex' : 'none';
+  });
+  if (btn) btn.textContent = open ? '閉じる ▴' : 'すべてのランクを見る ▾';
+}
+function toggleRankLadder() {
+  const lad = document.getElementById('rank-ladder');
+  if (!lad) return;
+  lad.setAttribute('data-open', lad.getAttribute('data-open') === '1' ? '0' : '1');
+  applyRankLadderView();
 }
 
 function badgeMet(b, ctx) {
@@ -895,6 +963,7 @@ async function loadMyPage() {
     }
     body.innerHTML = html;
     renderStudyCal();
+    applyRankLadderView();
     if (badgeState && badgeState.newly && badgeState.newly.length) {
       showOnlineToast('🏅 新しいバッジを獲得！ ' + badgeState.newly.map(b => (b.icon || '') + ' ' + b.name).join('、'));
     }
