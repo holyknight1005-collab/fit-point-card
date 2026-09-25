@@ -242,9 +242,9 @@
     .home-grid{display:grid;grid-template-columns:340px minmax(0,1fr);align-items:start;gap:20px}
   }
   /* 学習カレンダー */
-  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:8px}
-  .cal-wd{text-align:center;font-size:10px;color:var(--muted);font-weight:700;padding:2px 0}
-  .cal-cell{position:relative;aspect-ratio:1/1;border-radius:8px;border:1px solid var(--border);background:var(--surface);padding:3px;display:flex;align-items:flex-start;justify-content:flex-end}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin-top:8px}
+  .cal-wd{text-align:center;font-size:10px;color:var(--muted);font-weight:700;padding:2px 0;min-width:0}
+  .cal-cell{position:relative;aspect-ratio:1/1;min-width:0;border-radius:8px;border:1px solid var(--border);background:var(--surface);padding:3px;display:flex;align-items:flex-start;justify-content:flex-end;overflow:hidden}
   .cal-cell.empty{border:none;background:transparent}
   .cal-cell.login{background:linear-gradient(rgba(240,160,48,.16),rgba(240,160,48,.16)),var(--surface);border-color:var(--orange-l)}
   .cal-d{font-size:11px;color:var(--text);font-weight:600}
@@ -474,9 +474,10 @@ async function loadMyCourses() {
         + '<div class="home-left">' + renderMyPageShell() + '</div>'
         + '<div class="home-right">'
         +   '<div class="empty">受講できる講座はまだありません。<br>入金確認後に塾が受講権を付与すると、ここに表示されます。</div>'
-        +   renderMeetingShell() + renderQBoxShell()
+        +   renderStudyLogShell() + renderMeetingShell() + renderQBoxShell()
         + '</div></div>';
       loadMyPage();
+      loadStudyLog();
       loadMeetings();
       loadMyQuestions();
       return;
@@ -507,9 +508,10 @@ async function loadMyCourses() {
       : '<div class="empty">表示できる講座がありません。<br>新しい講座が公開されると、ここに表示されます。</div>';
     area.innerHTML = '<div class="home-grid">'
       + '<div class="home-left">' + renderMyPageShell() + '</div>'
-      + '<div class="home-right">' + courseHtml + renderMeetingShell() + renderQBoxShell() + '</div>'
+      + '<div class="home-right">' + courseHtml + renderStudyLogShell() + renderMeetingShell() + renderQBoxShell() + '</div>'
       + '</div>';
     loadMyPage();
+    loadStudyLog();
     loadMeetings();
     loadMyQuestions();
   } catch (e) {
@@ -940,6 +942,121 @@ function printCertificate() {
   document.body.classList.add('printing-cert');
   window.print();
   setTimeout(function () { document.body.classList.remove('printing-cert'); }, 400);
+}
+
+// ===== 課題（ToDo）・自習ログ =====
+function renderStudyLogShell() {
+  return '<div class="card" id="studylog-card"><div id="studylog-body"><div class="loading">読み込み中…</div></div></div>';
+}
+
+async function loadStudyLog() {
+  const body = document.getElementById('studylog-body');
+  if (!body || !currentOnlineStudent) return;
+  try {
+    const rows = await sbGet('online_assignments',
+      'online_student_id=eq.' + currentOnlineStudent.id + '&is_active=not.is.false&select=*&order=created_at.desc');
+    const todosOpen = (rows || []).filter(a => a.source !== 'self' && a.status !== 'done');
+    const todosDone = (rows || []).filter(a => a.source !== 'self' && a.status === 'done');
+    const selfLogs  = (rows || []).filter(a => a.source === 'self');
+
+    let html = '<h2>課題・自習ログ</h2>';
+
+    // 先生からの課題（未完了）
+    html += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:6px 0 8px">📋 先生からの課題</div>';
+    if (!todosOpen.length) {
+      html += '<div class="sub" style="margin:0 0 6px">いまやる課題はありません。</div>';
+    } else {
+      html += todosOpen.map(a =>
+        '<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:8px">'
+        + '<div style="font-weight:700;font-size:14px">' + esc(a.title) + '</div>'
+        + (a.detail ? '<div style="font-size:12px;color:var(--muted);margin-top:4px;white-space:pre-wrap">' + esc(a.detail) + '</div>' : '')
+        + (a.due_date ? '<div style="font-size:11px;color:var(--orange-d);margin-top:4px">期限: ' + esc(String(a.due_date).slice(0,10)) + '</div>' : '')
+        + '<button class="btn" style="margin-top:8px" onclick="doneAssignment(' + a.id + ')">✓ 完了にする</button>'
+        + '</div>'
+      ).join('');
+    }
+
+    // 自習ログを記録
+    html += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:14px 0 8px">🖊 自習を記録する</div>'
+      + '<input id="sl-title" type="text" placeholder="やったこと（例：単語帳 Unit3）" style="width:100%;padding:11px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:14px;font-family:inherit;background:var(--bg);box-sizing:border-box;margin-bottom:8px">'
+      + '<textarea id="sl-note" rows="2" placeholder="内容・気づき（任意）" style="width:100%;padding:11px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:14px;font-family:inherit;background:var(--bg);box-sizing:border-box;resize:vertical"></textarea>'
+      + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
+      +   '<label style="font-size:12px;color:var(--muted)">学習時間</label>'
+      +   '<input id="sl-min" type="number" min="0" step="5" placeholder="分" style="width:90px;padding:9px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:14px;font-family:inherit;background:var(--bg)">'
+      +   '<span style="font-size:12px;color:var(--muted)">分</span>'
+      +   '<button class="btn" style="margin:0 0 0 auto;width:auto;padding:9px 16px" onclick="addSelfLog()">記録する</button>'
+      + '</div>'
+      + '<div id="sl-msg" class="err" style="display:none"></div>';
+
+    // 最近の自習ログ
+    if (selfLogs.length) {
+      html += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:16px 0 8px">最近の自習</div>'
+        + selfLogs.slice(0, 5).map(a =>
+            '<div style="background:#F6FBF6;border:1px solid #CDE9D6;border-radius:var(--radius-sm);padding:10px;margin-bottom:6px">'
+            + '<div style="display:flex;justify-content:space-between;gap:8px"><span style="font-weight:700;font-size:13px">' + esc(a.title) + '</span>'
+            +   '<span style="font-size:11px;color:var(--muted)">' + esc(fmtJST(a.created_at)) + (a.study_minutes ? ' ／ ' + a.study_minutes + '分' : '') + '</span></div>'
+            + (a.student_note ? '<div style="font-size:12px;color:var(--text);margin-top:3px;white-space:pre-wrap">' + esc(a.student_note) + '</div>' : '')
+            + '</div>'
+          ).join('');
+    }
+
+    // 完了した課題
+    if (todosDone.length) {
+      html += '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:16px 0 8px">完了した課題</div>'
+        + todosDone.slice(0, 5).map(a =>
+            '<div style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--border)">'
+            + '<span>✓ ' + esc(a.title) + '</span>'
+            + '<span style="color:var(--muted);font-size:11px;white-space:nowrap">' + esc(a.done_at ? fmtJST(a.done_at) : '') + '</span></div>'
+          ).join('');
+    }
+
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<h2>課題・自習ログ</h2><p class="sub">読み込みに失敗しました。</p>';
+  }
+}
+
+async function doneAssignment(id) {
+  const note = prompt('やったこと・気づきがあれば入力してください（任意）', '');
+  if (note === null) return;   // キャンセル
+  const minRaw = prompt('かかった時間（分・任意）', '');
+  const mins = minRaw ? Math.max(0, parseInt(String(minRaw).replace(/[^0-9]/g,''),10) || 0) : null;
+  try {
+    await sbPatch('online_assignments', 'id=eq.' + id, {
+      status: 'done', done_at: new Date().toISOString(),
+      student_note: (note || '').trim() || null, study_minutes: mins
+    });
+    showOnlineToast('✓ 課題を完了にしました');
+    loadStudyLog();
+  } catch (e) { showOnlineToast('保存に失敗しました'); }
+}
+
+async function addSelfLog() {
+  const title = (document.getElementById('sl-title').value || '').trim();
+  const note = (document.getElementById('sl-note').value || '').trim();
+  const minRaw = (document.getElementById('sl-min').value || '').trim();
+  const msg = document.getElementById('sl-msg');
+  if (msg) msg.style.display = 'none';
+  if (!title) {
+    if (msg) { msg.textContent = 'やったことを入力してください。'; msg.style.background = '#FDECEA'; msg.style.borderColor = '#E6B0AA'; msg.style.color = '#943126'; msg.style.display = 'block'; }
+    return;
+  }
+  const mins = minRaw ? Math.max(0, parseInt(minRaw, 10) || 0) : null;
+  try {
+    await sbPost('online_assignments', {
+      online_student_id: currentOnlineStudent.id,
+      title: title, source: 'self', status: 'done',
+      student_note: note || null, study_minutes: mins,
+      done_at: new Date().toISOString()
+    });
+    document.getElementById('sl-title').value = '';
+    document.getElementById('sl-note').value = '';
+    document.getElementById('sl-min').value = '';
+    showOnlineToast('🖊 自習を記録しました');
+    loadStudyLog();
+  } catch (e) {
+    if (msg) { msg.textContent = '記録に失敗しました。時間をおいて試してください。'; msg.style.background = '#FDECEA'; msg.style.borderColor = '#E6B0AA'; msg.style.color = '#943126'; msg.style.display = 'block'; }
+  }
 }
 
 function renderQBoxShell() {

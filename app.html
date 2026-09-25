@@ -6045,6 +6045,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <button class="tab-btn" id="ol-subtab-lessons" onclick="olSwitchSub('lessons',this)">🎥 動画登録</button>
         <button class="tab-btn" id="ol-subtab-reflections" onclick="olSwitchSub('reflections',this)">💬 感想</button>
         <button class="tab-btn" id="ol-subtab-progress" onclick="olSwitchSub('progress',this)">📊 進捗</button>
+        <button class="tab-btn" id="ol-subtab-study" onclick="olSwitchSub('study',this)">📚 学習・課題</button>
         <button class="tab-btn" id="ol-subtab-questions" onclick="olSwitchSub('questions',this)">❓ 質問箱</button>
         <button class="tab-btn" id="ol-subtab-meetings" onclick="olSwitchSub('meetings',this)">📅 面談</button>
       </div>
@@ -6198,6 +6199,16 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <div id="ol-mt-slot-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:18px"><div style="color:var(--muted);font-size:13px">読み込み中…</div></div>
         <div class="section-title">🧑‍🏫 予約された面談・記録</div>
         <div id="ol-mt-meeting-list" style="display:flex;flex-direction:column;gap:10px"><div style="color:var(--muted);font-size:13px">読み込み中…</div></div>
+      </div>
+
+      <!-- ========== 学習・課題 ========== -->
+      <div id="ol-sub-study" style="display:none">
+        <div class="section-title">📚 学習・課題</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px">受講者を選ぶと、学習時間（アプリのログイン記録）・自習ログ・課題（ToDo）を確認できます。ここから課題を出すと online.html の受講者に表示されます。</div>
+        <select id="ol-study-student" onchange="olLoadStudyPanel()" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:'Noto Sans JP',sans-serif;background:#fff;margin-bottom:14px">
+          <option value="">受講者を選択…</option>
+        </select>
+        <div id="ol-study-panel"><div style="color:var(--muted);font-size:13px">受講者を選択してください。</div></div>
       </div>
 
     </div>
@@ -6934,7 +6945,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260924onl18';
+const APP_VERSION = '20260925onl19';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -43592,7 +43603,7 @@ async function initOnlineTab() {
 }
 
 function olSwitchSub(sub, el) {
-  ['courses','students','enroll','lessons','reflections','progress','questions','meetings'].forEach(s => {
+  ['courses','students','enroll','lessons','reflections','progress','study','questions','meetings'].forEach(s => {
     const c = document.getElementById('ol-sub-' + s);
     if (c) c.style.display = 'none';
     const b = document.getElementById('ol-subtab-' + s);
@@ -43607,6 +43618,7 @@ function olSwitchSub(sub, el) {
   if (sub === 'lessons') olLoadLessonCourseSelect();
   if (sub === 'reflections') olLoadReflectionCourseSelect();
   if (sub === 'progress') olLoadProgressCourseSelect();
+  if (sub === 'study') olLoadStudyStudentSelect();
   if (sub === 'questions') olLoadQuestions();
   if (sub === 'meetings') olLoadMeetingsAdmin();
 }
@@ -43835,6 +43847,156 @@ async function olAddManualSession(id) {
     await sbPost('online_sessions', { online_student_id: id, session_date: dateStr, login_at: loginAt, logout_at: logoutAt, minutes: mins, source: 'manual' });
     alert('学習記録を追加しました（' + dateStr + '・' + mins + '分）');
   } catch (e) { alert('追加に失敗しました: ' + e.message); }
+}
+
+// ===== 学習・課題（学習時間の可視化＋自習ログ＋ToDo付与）=====
+async function olLoadStudyStudentSelect() {
+  const sel = document.getElementById('ol-study-student');
+  if (!sel) return;
+  try {
+    const rows = await sbGet('online_students', 'is_active=not.is.false&select=id,name,login_id&order=name.asc');
+    olStudentsCache = olStudentsCache || rows;
+    const keep = sel.value;
+    sel.innerHTML = '<option value="">受講者を選択…</option>'
+      + rows.map(s => '<option value="' + s.id + '">' + olEsc(s.name) + '（' + olEsc(s.login_id) + '）</option>').join('');
+    if (keep) sel.value = keep;
+  } catch (e) {
+    sel.innerHTML = '<option value="">読み込み失敗</option>';
+  }
+}
+
+function olStudyMinLabel(min) {
+  min = Math.max(0, Math.round(min || 0));
+  const h = Math.floor(min / 60), m = min % 60;
+  return h > 0 ? (h + '時間' + (m ? m + '分' : '')) : (m + '分');
+}
+
+async function olLoadStudyPanel() {
+  const sel = document.getElementById('ol-study-student');
+  const box = document.getElementById('ol-study-panel');
+  if (!sel || !box) return;
+  const sid = sel.value;
+  if (!sid) { box.innerHTML = '<div style="color:var(--muted);font-size:13px">受講者を選択してください。</div>'; return; }
+  box.innerHTML = '<div style="color:var(--muted);font-size:13px">読み込み中…</div>';
+  try {
+    const [sessions, assigns] = await Promise.all([
+      sbGet('online_sessions', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=session_date,minutes,login_at&order=session_date.desc'),
+      sbGet('online_assignments', 'online_student_id=eq.' + sid + '&is_active=not.is.false&select=*&order=created_at.desc')
+    ]);
+    // --- 学習時間サマリー（アプリのログイン記録）---
+    const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    const d0 = new Date(todayStr + 'T00:00:00+09:00');
+    const wkStart = new Date(d0.getTime() - ((d0.getDay() + 6) % 7) * 86400000); // 月曜起点
+    let total = 0, week = 0, days = new Set();
+    (sessions || []).forEach(s => {
+      const m = Number(s.minutes || 0); total += m;
+      const key = s.session_date ? String(s.session_date).slice(0,10) : '';
+      if (key) days.add(key);
+      const dd = new Date((key || todayStr) + 'T00:00:00+09:00');
+      if (dd >= wkStart) week += m;
+    });
+    const selfLogs = (assigns || []).filter(a => a.source === 'self');
+    const todos = (assigns || []).filter(a => a.source !== 'self');
+    const selfMin = selfLogs.reduce((t,a) => t + Number(a.study_minutes || 0), 0);
+
+    let html = '';
+    // 学習時間カード
+    html += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">'
+      + olStudyStat('今週の学習', olStudyMinLabel(week))
+      + olStudyStat('累計の学習', olStudyMinLabel(total))
+      + olStudyStat('自習ログ合計', olStudyMinLabel(selfMin))
+      + olStudyStat('学習した日数', days.size + '日')
+      + '</div>';
+
+    // 課題を出す
+    html += '<div class="section-title">✍️ 課題（ToDo）を出す</div>'
+      + '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:14px;display:flex;flex-direction:column;gap:8px">'
+      +   '<input id="ol-asg-title" type="text" placeholder="課題名（例：単語帳 Unit3 ／ 過去問 大問1）" style="padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit">'
+      +   '<textarea id="ol-asg-detail" rows="2" placeholder="指示・補足（任意）" style="padding:10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;resize:vertical"></textarea>'
+      +   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+      +     '<label style="font-size:12px;color:var(--muted)">期限</label>'
+      +     '<input id="ol-asg-due" type="date" style="padding:8px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit">'
+      +     '<button onclick="olAssignTodo()" style="margin-left:auto;padding:10px 16px;border:none;border-radius:8px;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit">＋ 課題を出す</button>'
+      +   '</div>'
+      + '</div>';
+
+    // 課題一覧
+    html += '<div class="section-title">📋 出した課題</div>';
+    if (!todos.length) {
+      html += '<div style="color:var(--muted);font-size:13px;margin-bottom:14px">まだ課題はありません。</div>';
+    } else {
+      html += '<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">' + todos.map(a => {
+        const done = a.status === 'done';
+        const chip = done
+          ? '<span style="font-size:10px;font-weight:700;color:#1E6B3F;background:#E8F6EE;border:1px solid #A9DFBF;border-radius:999px;padding:2px 9px">完了</span>'
+          : '<span style="font-size:10px;font-weight:700;color:#943126;background:#FDECEA;border:1px solid #E6B0AA;border-radius:999px;padding:2px 9px">未完了</span>';
+        return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">'
+          + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap">'
+          +   '<div style="font-weight:700;font-size:14px">' + olEsc(a.title) + '</div>' + chip + '</div>'
+          + (a.detail ? '<div style="font-size:12px;color:var(--muted);margin-top:4px;white-space:pre-wrap">' + olEsc(a.detail) + '</div>' : '')
+          + (a.due_date ? '<div style="font-size:11px;color:var(--orange-d);margin-top:4px">期限: ' + olEsc(a.due_date) + '</div>' : '')
+          + (done && a.student_note ? '<div style="margin-top:6px;border-top:1px dashed var(--border);padding-top:6px;font-size:12px"><span style="color:var(--green-d);font-weight:700">やったこと:</span> ' + olEsc(a.student_note) + (a.study_minutes ? '（' + olStudyMinLabel(a.study_minutes) + '）' : '') + '</div>' : '')
+          + '<div style="margin-top:8px"><button onclick="olDeleteAssignment(' + a.id + ')" style="padding:5px 10px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--muted);font-size:11px;cursor:pointer">削除</button></div>'
+          + '</div>';
+      }).join('') + '</div>';
+    }
+
+    // 自習ログ一覧
+    html += '<div class="section-title">🖊 自習ログ（受講者が記録）</div>';
+    if (!selfLogs.length) {
+      html += '<div style="color:var(--muted);font-size:13px">まだ自習ログはありません。</div>';
+    } else {
+      html += '<div style="display:flex;flex-direction:column;gap:8px">' + selfLogs.map(a => {
+        const when = a.created_at ? olFmtJSTFull(a.created_at) : '';
+        return '<div style="background:#F6FBF6;border:1px solid #CDE9D6;border-radius:10px;padding:12px">'
+          + '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div style="font-weight:700;font-size:14px">' + olEsc(a.title) + '</div>'
+          +   '<div style="font-size:11px;color:var(--muted)">' + olEsc(when) + (a.study_minutes ? ' ／ ' + olStudyMinLabel(a.study_minutes) : '') + '</div></div>'
+          + (a.student_note ? '<div style="font-size:12px;color:var(--text);margin-top:4px;white-space:pre-wrap">' + olEsc(a.student_note) + '</div>' : '')
+          + '<div style="margin-top:8px"><button onclick="olDeleteAssignment(' + a.id + ')" style="padding:5px 10px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--muted);font-size:11px;cursor:pointer">削除</button></div>'
+          + '</div>';
+      }).join('') + '</div>';
+    }
+
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = '<div style="color:#C0392B;font-size:12px">読み込み失敗: ' + olEsc(e.message) + '（online_assignments テーブルが未作成の可能性）</div>';
+  }
+}
+
+function olStudyStat(label, val) {
+  return '<div style="flex:1;min-width:110px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 10px;text-align:center">'
+    + '<div style="font-size:19px;font-weight:800;color:var(--orange-d);line-height:1.1">' + olEsc(val) + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-top:3px">' + olEsc(label) + '</div></div>';
+}
+
+async function olAssignTodo() {
+  const sel = document.getElementById('ol-study-student');
+  const sid = sel ? sel.value : '';
+  if (!sid) { alert('受講者を選択してください'); return; }
+  const title = (document.getElementById('ol-asg-title').value || '').trim();
+  if (!title) { alert('課題名を入力してください'); return; }
+  const detail = (document.getElementById('ol-asg-detail').value || '').trim();
+  const due = (document.getElementById('ol-asg-due').value || '').trim();
+  try {
+    await sbPost('online_assignments', {
+      online_student_id: parseInt(sid, 10),
+      title: title, detail: detail || null,
+      source: 'staff',
+      assigned_by: (currentStaff && currentStaff.name) ? currentStaff.name : null,
+      due_date: due || null,
+      status: 'open'
+    });
+    document.getElementById('ol-asg-title').value = '';
+    document.getElementById('ol-asg-detail').value = '';
+    document.getElementById('ol-asg-due').value = '';
+    olLoadStudyPanel();
+  } catch (e) { alert('課題の追加に失敗しました: ' + e.message); }
+}
+
+async function olDeleteAssignment(id) {
+  if (!confirm('この項目を削除しますか？')) return;
+  try { await sbPatch('online_assignments', 'id=eq.' + id, { is_active: false }); olLoadStudyPanel(); }
+  catch (e) { alert('削除に失敗しました: ' + e.message); }
 }
 
 // ---------- 受講権 ----------
