@@ -62,7 +62,7 @@
 <div id="app" class="wrap"><div class="card center">読み込み中…</div></div>
 <script>
 /* ===== ホール座席登録アプリ hall.html v3（受付チェックイン・前詰め着席） ===== */
-const APP_VERSION = 'hall-3.8.1';
+const APP_VERSION = 'hall-3.9.0';
 const SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
 const REST = SB_URL + '/rest/v1/';
@@ -89,10 +89,10 @@ function seatLabel(reg){ if(!reg.seat_key) return '未着席'; const b=blockOf(r
 function seatMiniMap(reg){
   if(!reg.seat_key) return '';
   const cfg=S.cfg, blocks=cfg.layout.blocks||[], rows=cfg.layout.rows||20;
-  const GROUP=5, gap='<div style="width:10px;flex:0 0 auto"></div>';
+  const GROUP=5, gap='<div style="width:10px;flex:0 0 auto"></div>', dis=disabledSet();
   let grid='';
   for(let r=1;r<=rows;r++){ let cells='';
-    blocks.forEach((b,bi)=>{ const seats=b.seats||0; for(let c=1;c<=seats;c++){ const mine=(b.id===reg.block_id&&r===reg.seat_row&&c===reg.seat_col); cells+='<div style="width:13px;height:12px;border-radius:2px;flex:0 0 auto;background:'+(mine?'#f97316':'#e5e7eb')+';'+(mine?'box-shadow:0 0 0 2px #f97316':'')+'"></div>'; if(c%GROUP===0 && c<seats) cells+=gap; }
+    blocks.forEach((b,bi)=>{ const seats=b.seats||0; for(let c=1;c<=seats;c++){ const k=seatKey(b.id,r,c); const mine=(b.id===reg.block_id&&r===reg.seat_row&&c===reg.seat_col); const off=dis.has(k); cells+='<div style="width:13px;height:12px;border-radius:2px;flex:0 0 auto;background:'+(mine?'#f97316':(off?'#374151':'#e5e7eb'))+';'+(mine?'box-shadow:0 0 0 2px #f97316':'')+'"></div>'; if(c%GROUP===0 && c<seats) cells+=gap; }
       if(bi<blocks.length-1) cells+=gap; });
     grid+='<div style="display:flex;gap:3px;margin:3px 0;width:max-content;justify-content:center">'+cells+'</div>';
   }
@@ -115,11 +115,12 @@ let seatMoveId=null, placingId=null, scanStream=null, scanRAF=null, placeGroupN=
 async function loadCfg(){ const d=await sbGet('hall_event_config','event_id=eq.'+EVENT+'&select=*'); if(!d.length) throw new Error('config-missing'); const c=d[0]; if(!c.layout) c.layout={blocks:[],rows:20}; if(!c.categories) c.categories=[]; if(!c.bands) c.bands=['中学生以下','高校生','大学生','社会人']; return c; }
 async function loadRegs(){ return sbGet('hall_event_regs','event_id=eq.'+EVENT+'&select=*&order=registered_at.asc'); }
 function takenSet(){ return new Set(S.regs.filter(r=>r.seat_key).map(r=>r.seat_key)); }
-function nextFrontSeat(){ const taken=takenSet(), rows=S.cfg.layout.rows||20, blocks=S.cfg.layout.blocks||[]; for(let r=1;r<=rows;r++){ for(const b of blocks){ for(let c=1;c<=(b.seats||0);c++){ const k=seatKey(b.id,r,c); if(!taken.has(k)) return {key:k,blk:b.id,row:r,col:c}; } } } return null; }
+function disabledSet(){ return new Set((S.cfg.layout&&S.cfg.layout.disabled)||[]); }
+function nextFrontSeat(){ const taken=takenSet(), dis=disabledSet(), rows=S.cfg.layout.rows||20, blocks=S.cfg.layout.blocks||[]; for(let r=1;r<=rows;r++){ for(const b of blocks){ for(let c=1;c<=(b.seats||0);c++){ const k=seatKey(b.id,r,c); if(!taken.has(k)&&!dis.has(k)) return {key:k,blk:b.id,row:r,col:c}; } } } return null; }
 function isHold(r){ return r.source==='hold'; }
 function holdRows(){ return S.regs.filter(isHold); }
 function holdGroupList(){ const map={}; holdRows().forEach(r=>{ const g=r.hold_group||'_'; (map[g]=map[g]||[]).push(r); }); return Object.keys(map).map(g=>({gid:g, seats:map[g].sort((a,b)=>a.seat_row-b.seat_row||a.seat_col-b.seat_col)})); }
-function nextFreeSeatsFrom(startKey, n){ /* startKey から row-major に前方の空席を n 席集める（占有席・確保席はスキップ） */ const taken=takenSet(), rows=S.cfg.layout.rows||20, blocks=S.cfg.layout.blocks||[]; const flat=[]; for(let r=1;r<=rows;r++){ for(const b of blocks){ for(let c=1;c<=(b.seats||0);c++){ flat.push({key:seatKey(b.id,r,c),blk:b.id,row:r,col:c}); } } } let si=flat.findIndex(s=>s.key===startKey); if(si<0) si=0; const out=[]; for(let i=si;i<flat.length&&out.length<n;i++){ if(!taken.has(flat[i].key)) out.push(flat[i]); } return out; }
+function nextFreeSeatsFrom(startKey, n){ /* startKey から row-major に前方の空席を n 席集める（占有席・確保席・着席不可席はスキップ） */ const taken=takenSet(), dis=disabledSet(), rows=S.cfg.layout.rows||20, blocks=S.cfg.layout.blocks||[]; const flat=[]; for(let r=1;r<=rows;r++){ for(const b of blocks){ for(let c=1;c<=(b.seats||0);c++){ flat.push({key:seatKey(b.id,r,c),blk:b.id,row:r,col:c}); } } } let si=flat.findIndex(s=>s.key===startKey); if(si<0) si=0; const out=[]; for(let i=si;i<flat.length&&out.length<n;i++){ if(!taken.has(flat[i].key)&&!dis.has(flat[i].key)) out.push(flat[i]); } return out; }
 
 async function boot(){
   try{ S.cfg=await loadCfg(); S.regs=await loadRegs(); }
@@ -142,8 +143,8 @@ function renderRegister(){
   let h='<div class="card"><h1>9/27(日)「超感覚英語ライブ」当日受付URL</h1><div class="sub">こちらにご登録ください</div>';
   h+='<label>お名前</label><input type="text" id="f_name" value="'+esc(f.name||'')+'" placeholder="山田 太郎" autocomplete="name">';
   h+='<label>カテゴリ</label><select id="f_cat"><option value="">選択してください</option>'+cats.map(c=>'<option value="'+esc(c.id)+'"'+(f.catId===c.id?' selected':'')+'>'+esc(c.name)+'</option>').join('')+'</select>';
-  h+='<label>区分</label><select id="f_band"><option value="">選択してください</option>'+bands.map(b=>'<option value="'+esc(b)+'"'+(f.band===b?' selected':'')+'>'+esc(b)+'</option>').join('')+'</select>';
-  h+='<div id="refwrap"></div><div id="mailwrap"></div><div id="regerr"></div><button class="btn" id="doReg">登録してチケットを発行</button></div>';
+  h+='<div id="bandwrap"><label>区分</label><select id="f_band"><option value="">選択してください</option>'+bands.map(b=>'<option value="'+esc(b)+'"'+(f.band===b?' selected':'')+'>'+esc(b)+'</option>').join('')+'</select></div>';
+  h+='<div id="extwrap"></div><div id="refwrap"></div><div id="mailwrap"></div><div id="regerr"></div><button class="btn" id="doReg">登録してチケットを発行</button></div>';
   h+='<div class="card"><div class="muted center" style="margin-bottom:8px">登録がお済みの方（別の端末で開く／QRを紛失した場合）</div>'
     +'<input type="text" id="rl_name" placeholder="お名前（登録どおり）">'
     +'<input type="email" id="rl_mail" placeholder="メールアドレス" style="margin-top:8px">'
@@ -151,8 +152,19 @@ function renderRegister(){
     +'<div class="muted center" style="margin-top:8px;font-size:.8rem">メール未登録の方（中学生など）は当日、受付でご確認ください。</div></div>';
   $('app').innerHTML=h+footer();
   const paint=()=>{
-    const cat=$('f_cat').value, band=$('f_band').value;
-    $('refwrap').innerHTML=(cat&&cat!=='cur')?'<label>紹介者（つながり） <span class="opt">任意</span></label><input type="text" id="f_ref" value="'+esc(f.referrer||'')+'" placeholder="例）◯◯先生の紹介 / 卒業生 田中">':'';
+    const cat=$('f_cat').value;
+    const isExt=(cat==='ext');
+    $('bandwrap').style.display=isExt?'none':'';
+    if(isExt){
+      const st=f.schoolType||'';
+      $('extwrap').innerHTML='<label>学校区分</label><div class="row" style="margin-bottom:4px"><button type="button" class="btn '+(st==='中学'?'':'sec')+' sm" id="ext-jh" style="flex:1">中学</button><button type="button" class="btn '+(st==='高校'?'':'sec')+' sm" id="ext-hs" style="flex:1">高校</button></div>'
+        +(st?'<label>'+(st==='中学'?'中学校名':'高校名')+'</label><input type="text" id="f_school" value="'+esc(f.school||'')+'" placeholder="'+(st==='中学'?'例）◯◯中学校':'例）◯◯高校')+'">':'<div class="muted">中学／高校を選んでください。</div>');
+      $('ext-jh').onclick=()=>{ f.schoolType='中学'; f.band='中学生以下'; paint(); };
+      $('ext-hs').onclick=()=>{ f.schoolType='高校'; f.band='高校生'; paint(); };
+      const sc=$('f_school'); if(sc) sc.oninput=()=>{ f.school=sc.value; };
+    } else { $('extwrap').innerHTML=''; f.schoolType=null; f.school=''; }
+    const band = isExt ? (f.band||'') : $('f_band').value;
+    $('refwrap').innerHTML=(cat&&cat!=='cur'&&!isExt)?'<label>紹介者（つながり） <span class="opt">任意</span></label><input type="text" id="f_ref" value="'+esc(f.referrer||'')+'" placeholder="例）◯◯先生の紹介 / 卒業生 田中">':'';
     if(!band){ $('mailwrap').innerHTML=''; return; }
     if(emailRequired(band)){
       $('mailwrap').innerHTML='<label>メールアドレス</label><input type="email" id="f_mail" value="'+esc(f.email||'')+'" placeholder="taro@example.com" autocomplete="email"><label>メールアドレス（確認）</label><input type="email" id="f_mail2" value="'+esc(f.email2||'')+'" placeholder="もう一度入力"><div id="mailchk"></div>';
@@ -171,10 +183,14 @@ function renderRegister(){
 
 async function doRegister(){
   const f=S.form, err=$('regerr'); err.innerHTML='';
-  const name=($('f_name').value||'').trim(), catId=$('f_cat').value, band=$('f_band').value;
+  const name=($('f_name').value||'').trim(), catId=$('f_cat').value;
+  const isExt=(catId==='ext');
+  const band = isExt ? (f.band||'') : ($('f_band')?$('f_band').value:'');
+  const school = isExt ? (($('f_school')?$('f_school').value:'')||'').trim() : '';
   const refEl=$('f_ref'), referrer=refEl?refEl.value.trim():'';
   if(!name) return err.innerHTML='<div class="msg err">お名前を入力してください。</div>';
   if(!catId) return err.innerHTML='<div class="msg err">カテゴリを選択してください。</div>';
+  if(isExt){ if(!f.schoolType) return err.innerHTML='<div class="msg err">中学／高校を選んでください。</div>'; if(!school) return err.innerHTML='<div class="msg err">学校名を入力してください。</div>'; }
   if(!band) return err.innerHTML='<div class="msg err">区分を選択してください。</div>';
   let email=''; const mailEl=$('f_mail'), mail2El=$('f_mail2');
   if(emailRequired(band)){ email=(mailEl?mailEl.value:'').trim(); const e2=(mail2El?mail2El.value:'').trim();
@@ -185,7 +201,7 @@ async function doRegister(){
   const cat=catOf(catId);
   const btn=$('doReg'); btn.disabled=true; btn.textContent='登録中…';
   try{
-    const res=await sbInsert({ event_id:EVENT, seat_key:null, token:genToken(), category_id:catId, category_name:cat?cat.name:'', band:band, referrer:referrer||null, email:email||null, name:name, client_id:clientId(), source:'self' });
+    const res=await sbInsert({ event_id:EVENT, seat_key:null, token:genToken(), category_id:catId, category_name:cat?cat.name:'', band:band, referrer:referrer||null, school:school||null, email:email||null, name:name, client_id:clientId(), source:'self' });
     let reg=res.reg;
     const receipt='R-'+String(reg.id).padStart(3,'0');
     try{ const up=await sbPatch('hall_event_regs','id=eq.'+reg.id+'&event_id=eq.'+EVENT,{receipt_no:receipt}); reg=up[0]||Object.assign(reg,{receipt_no:receipt}); }catch(e){ reg.receipt_no=receipt; }
@@ -212,7 +228,7 @@ function renderTicket(){
   let h='<div style="background:#f97316;color:#fff;border-radius:14px;padding:16px;text-align:center;font-weight:800;font-size:1.1rem;margin-bottom:14px;box-shadow:0 2px 8px rgba(249,115,22,.35)">📸 この画面（QR）を必ずスクショで保存してください<div style="font-weight:600;font-size:.85rem;margin-top:5px;opacity:.95">当日の受付でこのQRを使います</div></div>';
   h+='<div class="card center"><div class="pill" style="background:var(--ok)">登録完了</div><div class="muted" style="margin-top:10px">受付番号</div><div class="ticketno">'+esc(reg.receipt_no||'-')+'</div>';
   h+='<div id="tqr" style="display:flex;justify-content:center;margin:12px 0"></div><div class="muted">受付でこのQRをお見せください。<br>スクショ推奨。このQRを読み取ると、自分の画面に戻れます。</div></div>';
-  h+='<div class="card"><table class="kv"><tr><td>お名前</td><td>'+esc(reg.name)+'</td></tr><tr><td>カテゴリ</td><td>'+esc(reg.category_name||'')+'</td></tr><tr><td>区分</td><td>'+esc(reg.band||'')+'</td></tr>'+(reg.email?'<tr><td>メール</td><td>'+esc(reg.email)+'</td></tr>':'')+'</table>';
+  h+='<div class="card"><table class="kv"><tr><td>お名前</td><td>'+esc(reg.name)+'</td></tr><tr><td>カテゴリ</td><td>'+esc(reg.category_name||'')+'</td></tr>'+(reg.school?'<tr><td>学校</td><td>'+esc(reg.school)+'</td></tr>':'')+'<tr><td>区分</td><td>'+esc(reg.band||'')+'</td></tr>'+(reg.email?'<tr><td>メール</td><td>'+esc(reg.email)+'</td></tr>':'')+'</table>';
   h+='<div class="seatbox"><div class="muted">お席</div><div style="font-size:1.4rem;font-weight:800">'+(reg.seat_key?esc(seatLabel(reg)):'受付でご案内します')+'</div>'+(reg.seat_key?seatMiniMap(reg):'')+'</div>';
   h+='<div class="msg info" style="margin-top:12px">受付番号は席の確認・別端末表示に使います。<b>スクショ推奨</b>。</div></div>';
   h+='<div class="card center"><div style="font-weight:800;margin-bottom:4px">📣 オープンチャットにご参加ください</div><div class="muted" style="margin-bottom:10px">オープンチャット「【超感覚英語】🍊3000人立ち会いチャレンジ」</div><a class="btn ok" style="text-decoration:none" href="https://line.me/ti/g2/YOYwEg6dhvElTKnTMVdPJTQBR5kr6BacnHqZ8w?utm_source=invitation&utm_medium=link_copy&utm_campaign=default" target="_blank" rel="noopener">オープンチャットへの入場はこちら</a></div>';
@@ -255,7 +271,7 @@ async function renderCheckin(){
   const seated=S.regs.filter(r=>r.seat_key&&!isHold(r)).length;
   const reserved=holds.length;
   const waiting=S.regs.filter(r=>!r.seat_key&&!isHold(r));
-  const total=(S.cfg.layout.rows||20)*((S.cfg.layout.blocks||[]).reduce((s,b)=>s+(b.seats||0),0));
+  const total=(S.cfg.layout.rows||20)*((S.cfg.layout.blocks||[]).reduce((s,b)=>s+(b.seats||0),0))-disabledSet().size;
   const groups=holdGroupList();
   // 有効グループが消えていたら（全消化/リロード）補正
   if(S.activeGroup && !groups.some(g=>g.gid===S.activeGroup)) S.activeGroup=null;
@@ -407,7 +423,9 @@ async function ticketlessSeat(){
 async function staffMap(){
   try{ S.regs=await loadRegs(); }catch(e){}
   const cfg=S.cfg, blocks=cfg.layout.blocks||[], rows=cfg.layout.rows||20;
-  const total=blocks.reduce((s,b)=>s+(b.seats||0)*rows,0);
+  const dis=disabledSet();
+  const cap=blocks.reduce((s,b)=>s+(b.seats||0)*rows,0)-dis.size;
+  const total=cap;
   const taken=S.regs.filter(r=>r.seat_key&&!isHold(r)).length;
   const reserved=holdRows().length;
   const bySeat={}; S.regs.forEach(r=>{ if(r.seat_key) bySeat[r.seat_key]=r; });
@@ -418,7 +436,7 @@ async function staffMap(){
   let legend='<div class="legend">'+(cfg.categories||[]).map(c=>'<span><i class="dot" style="background:'+c.color+'"></i>'+esc(c.name)+'</span>').join('')+'</div>';
   let grid='';
   for(let r=1;r<=rows;r++){ let cells='';
-    blocks.forEach((b,bi)=>{ let bs=''; const seats=b.seats||0; for(let c=1;c<=seats;c++){ const k=seatKey(b.id,r,c); const reg=bySeat[k]; if(reg&&isHold(reg)){ bs+='<div class="seat reserved" title="グループ確保中">確</div>'; } else if(reg){ const col=catColor(reg.category_id); const mine=(moving&&reg.id===moving.id); bs+='<div class="seat'+(mine?' moving':'')+'" style="background:'+col+';color:#fff;border-color:'+col+';cursor:pointer" data-id="'+reg.id+'" title="'+esc((reg.name||'')+' / '+(reg.category_name||''))+'">'+esc((reg.name||'').slice(0,2))+'</div>'; } else { bs+='<div class="seat'+((acting||grouping)?' moveable':'')+'" data-empty="'+k+'" data-blk="'+b.id+'" data-r="'+r+'" data-c="'+c+'">'+c+'</div>'; } if(c%5===0 && c<seats) bs+='<div class="blkgap"></div>'; }
+    blocks.forEach((b,bi)=>{ let bs=''; const seats=b.seats||0; for(let c=1;c<=seats;c++){ const k=seatKey(b.id,r,c); const reg=bySeat[k]; if(dis.has(k)){ bs+='<div class="seat" style="background:#374151;color:#fff;border-color:#374151" title="配信用（着席不可）">配</div>'; } else if(reg&&isHold(reg)){ bs+='<div class="seat reserved" title="グループ確保中">確</div>'; } else if(reg){ const col=catColor(reg.category_id); const mine=(moving&&reg.id===moving.id); bs+='<div class="seat'+(mine?' moving':'')+'" style="background:'+col+';color:#fff;border-color:'+col+';cursor:pointer" data-id="'+reg.id+'" title="'+esc((reg.name||'')+' / '+(reg.category_name||''))+'">'+esc((reg.name||'').slice(0,2))+'</div>'; } else { bs+='<div class="seat'+((acting||grouping)?' moveable':'')+'" data-empty="'+k+'" data-blk="'+b.id+'" data-r="'+r+'" data-c="'+c+'">'+c+'</div>'; } if(c%5===0 && c<seats) bs+='<div class="blkgap"></div>'; }
       cells+='<div class="blk">'+bs+'</div>'+(bi<blocks.length-1?'<div class="blkgap"></div>':''); });
     grid+='<div class="seatRow"><div class="rowNo">'+r+'列</div>'+cells+'</div>'; }
   const banner = moving ? '<div class="msg warn" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>移動中：<b>'+esc(moving.name)+'</b>（'+esc(seatLabel(moving))+'）→ 移動先の空席をタップ</span><button class="btn sec sm" id="mvcancel">キャンセル</button></div>'
@@ -448,7 +466,7 @@ async function seatMoveTo(key,blk,r,c){
 function seatDetail(id){
   const reg=S.regs.find(r=>r.id===id); if(!reg) return;
   const ov=document.createElement('div'); ov.className='ov';
-  ov.innerHTML='<div class="modal"><h2 style="border:0;padding:0;margin-top:0">'+esc(seatLabel(reg))+'</h2><table class="kv"><tr><td>受付番号</td><td>'+esc(reg.receipt_no||'-')+'</td></tr><tr><td>お名前</td><td>'+esc(reg.name||'')+'</td></tr><tr><td>カテゴリ</td><td>'+esc(reg.category_name||'')+'</td></tr><tr><td>区分</td><td>'+esc(reg.band||'')+'</td></tr>'+(reg.referrer?'<tr><td>紹介者</td><td>'+esc(reg.referrer)+'</td></tr>':'')+(reg.email?'<tr><td>メール</td><td>'+esc(reg.email)+'</td></tr>':'')+'</table><div style="margin:10px 0"><b>感想:</b><br>'+(reg.feedback?esc(reg.feedback):'<span class="muted">未入力</span>')+'</div><div class="row"><button class="btn sm" id="mv" style="flex:1">席を移動</button><button class="btn ghost sm" id="me" style="flex:1">編集</button></div><div class="row" style="margin-top:8px"><button class="btn sec sm" id="mc" style="flex:1">閉じる</button><button class="btn danger sm" id="md" style="flex:1">取消</button></div></div>';
+  ov.innerHTML='<div class="modal"><h2 style="border:0;padding:0;margin-top:0">'+esc(seatLabel(reg))+'</h2><table class="kv"><tr><td>受付番号</td><td>'+esc(reg.receipt_no||'-')+'</td></tr><tr><td>お名前</td><td>'+esc(reg.name||'')+'</td></tr><tr><td>カテゴリ</td><td>'+esc(reg.category_name||'')+'</td></tr>'+(reg.school?'<tr><td>学校</td><td>'+esc(reg.school)+'</td></tr>':'')+'<tr><td>区分</td><td>'+esc(reg.band||'')+'</td></tr>'+(reg.referrer?'<tr><td>紹介者</td><td>'+esc(reg.referrer)+'</td></tr>':'')+(reg.email?'<tr><td>メール</td><td>'+esc(reg.email)+'</td></tr>':'')+'</table><div style="margin:10px 0"><b>感想:</b><br>'+(reg.feedback?esc(reg.feedback):'<span class="muted">未入力</span>')+'</div><div class="row"><button class="btn sm" id="mv" style="flex:1">席を移動</button><button class="btn ghost sm" id="me" style="flex:1">編集</button></div><div class="row" style="margin-top:8px"><button class="btn sec sm" id="mc" style="flex:1">閉じる</button><button class="btn danger sm" id="md" style="flex:1">取消</button></div></div>';
   document.body.appendChild(ov);
   ov.onclick=e=>{ if(e.target===ov) ov.remove(); };
   ov.querySelector('#mc').onclick=()=>ov.remove();
@@ -465,6 +483,7 @@ function editReg(id){
     +'<label>お名前</label><input type="text" id="e_name" value="'+esc(reg.name||'')+'">'
     +'<label>カテゴリ</label><select id="e_cat"><option value="">（未設定）</option>'+(cfg.categories||[]).map(c=>'<option value="'+esc(c.id)+'"'+(reg.category_id===c.id?' selected':'')+'>'+esc(c.name)+'</option>').join('')+'</select>'
     +'<label>区分</label><select id="e_band"><option value="">（未設定）</option>'+(cfg.bands||[]).map(b=>'<option value="'+esc(b)+'"'+(reg.band===b?' selected':'')+'>'+esc(b)+'</option>').join('')+'</select>'
+    +'<label>学校 <span class="opt">任意（fit以外中高生）</span></label><input type="text" id="e_school" value="'+esc(reg.school||'')+'">'
     +'<label>紹介者（つながり） <span class="opt">任意</span></label><input type="text" id="e_ref" value="'+esc(reg.referrer||'')+'">'
     +'<label>メール <span class="opt">任意</span></label><input type="text" id="e_email" value="'+esc(reg.email||'')+'">'
     +'<div id="e_err"></div><div class="row" style="margin-top:12px"><button class="btn sec sm" id="e_cancel" style="flex:1">キャンセル</button><button class="btn sm" id="e_save" style="flex:1">保存</button></div></div>';
@@ -472,9 +491,9 @@ function editReg(id){
   ov.onclick=e=>{ if(e.target===ov) ov.remove(); };
   ov.querySelector('#e_cancel').onclick=()=>ov.remove();
   ov.querySelector('#e_save').onclick=async()=>{
-    const name=ov.querySelector('#e_name').value.trim(); const cid=ov.querySelector('#e_cat').value; const band=ov.querySelector('#e_band').value; const ref=ov.querySelector('#e_ref').value.trim(); const email=ov.querySelector('#e_email').value.trim();
+    const name=ov.querySelector('#e_name').value.trim(); const cid=ov.querySelector('#e_cat').value; const band=ov.querySelector('#e_band').value; const ref=ov.querySelector('#e_ref').value.trim(); const email=ov.querySelector('#e_email').value.trim(); const school=ov.querySelector('#e_school').value.trim();
     const cat=catOf(cid);
-    try{ await sbPatch('hall_event_regs','id=eq.'+reg.id+'&event_id=eq.'+EVENT,{name:name,category_id:cid||null,category_name:cat?cat.name:null,band:band||null,referrer:ref||null,email:email||null}); }catch(e){ ov.querySelector('#e_err').innerHTML='<div class="msg err">保存に失敗しました。</div>'; return; }
+    try{ await sbPatch('hall_event_regs','id=eq.'+reg.id+'&event_id=eq.'+EVENT,{name:name,category_id:cid||null,category_name:cat?cat.name:null,band:band||null,referrer:ref||null,email:email||null,school:school||null}); }catch(e){ ov.querySelector('#e_err').innerHTML='<div class="msg err">保存に失敗しました。</div>'; return; }
     ov.remove(); S.regs=await loadRegs(); if(S.staffTab==='map') staffMap(); else renderCheckin();
   };
 }
@@ -491,9 +510,9 @@ async function staffTally(){
   $('tabbody').innerHTML=body; $('csv').onclick=downloadCSV;
 }
 function downloadCSV(){
-  const head=['受付番号','席','名前','カテゴリ','区分','紹介者','メール','発券元','登録時刻','着席時刻','感想'];
+  const head=['受付番号','席','名前','カテゴリ','学校','区分','紹介者','メール','発券元','登録時刻','着席時刻','感想'];
   const rows=S.regs.filter(r=>!isHold(r)).slice().sort((a,b)=>(a.seat_row||999)-(b.seat_row||999)||(a.seat_col||999)-(b.seat_col||999))
-    .map(r=>[r.receipt_no||'',seatLabel(r),r.name||'',r.category_name||'',r.band||'',r.referrer||'',r.email||'',r.source||'',r.registered_at?new Date(r.registered_at).toLocaleString('ja-JP'):'',r.checkin_at?new Date(r.checkin_at).toLocaleString('ja-JP'):'',(r.feedback||'')]);
+    .map(r=>[r.receipt_no||'',seatLabel(r),r.name||'',r.category_name||'',r.school||'',r.band||'',r.referrer||'',r.email||'',r.source||'',r.registered_at?new Date(r.registered_at).toLocaleString('ja-JP'):'',r.checkin_at?new Date(r.checkin_at).toLocaleString('ja-JP'):'',(r.feedback||'')]);
   const q=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
   const csv='\uFEFF'+[head].concat(rows).map(r=>r.map(q).join(',')).join('\r\n');
   const blob=new Blob([csv],{type:'text/csv'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='seats_'+EVENT+'_'+new Date().toISOString().slice(0,10)+'.csv'; document.body.appendChild(a); a.click(); a.remove();
