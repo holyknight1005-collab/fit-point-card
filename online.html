@@ -221,6 +221,23 @@
   .rank-next{font-size:12px;color:var(--muted)}
   .rank-next b{color:var(--orange-d)}
   /* メダル（コイン＋リボン）*/
+  /* マイチーム */
+  .team-stats{display:flex;gap:8px;margin:8px 0 10px}
+  .team-stat{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 6px;text-align:center}
+  .team-stat .v{font-size:17px;font-weight:900;color:var(--orange-d);line-height:1.1}
+  .team-stat .l{font-size:10px;color:var(--muted);margin-top:2px}
+  .tm-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border)}
+  .tm-row.me{background:linear-gradient(90deg,rgba(240,160,48,.10),transparent);border-radius:8px}
+  .tm-row .tm-main{flex:1;min-width:0}
+  .tm-row .tm-nm{font-weight:800;font-size:14px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .tm-row .tm-me{font-size:9px;font-weight:800;color:#fff;background:var(--orange-d);border-radius:999px;padding:1px 7px}
+  .tm-row .tm-sub{font-size:11px;color:var(--muted);margin-top:1px}
+  .tm-row .tm-bar{height:6px;border-radius:999px;background:#EEE3CE;overflow:hidden;margin-top:5px}
+  .tm-row .tm-bar i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--orange-l),var(--orange))}
+  .tm-row .tm-wk{font-size:13px;font-weight:900;color:var(--orange-d);white-space:nowrap;text-align:right}
+  .tm-row .tm-wk span{display:block;font-size:9px;color:var(--muted);font-weight:700}
+  .nick-link{border:0;background:none;color:var(--orange-d);font-size:12px;font-weight:700;cursor:pointer;padding:2px 4px;font-family:inherit}
+  .vocab-card{background:linear-gradient(135deg,#E3F5F4,#F4FBFA)!important;border-color:#BFE3DF!important}
   .medal{position:relative;flex:none;width:var(--ms,46px);height:var(--ms,46px)}
   .medal .coin{width:100%;height:100%;border-radius:50%;background:var(--mc);
     border:3px solid #fff;box-shadow:0 2px 5px rgba(0,0,0,.18);
@@ -489,11 +506,136 @@ async function showHome() {
   document.body.classList.add('logged-in');
   document.getElementById('login-view').classList.add('hidden');
   document.getElementById('home-view').classList.remove('hidden');
-  document.getElementById('who').innerHTML =
-    esc(currentOnlineStudent.name) + ' さん <span>（' + esc(currentOnlineStudent.login_id) + '）</span>';
+  renderWho();
   await updateOnlineStreak();
   startStudySession();
   loadMyCourses();
+}
+
+// ヘッダーの名前表示（ニックネームがあれば併記）
+function renderWho() {
+  const s = currentOnlineStudent; if (!s) return;
+  document.getElementById('who').innerHTML =
+    esc(s.name) + ' さん <span>（' + esc(s.login_id) + '）</span>'
+    + (s.nickname ? ' <span>／ ' + esc(s.nickname) + '</span>' : '')
+    + ' <button class="nick-link" onclick="editNickname()" title="チーム・ランキングでの表示名">✏️ニックネーム</button>';
+}
+
+// ===== ニックネーム（チーム・単語ランキングでの表示名）=====
+async function editNickname() {
+  const s = currentOnlineStudent; if (!s) return;
+  const v = prompt('ニックネーム（12文字まで）\nチームのメンバーや単語テストのランキングには、この名前で表示されます。\n空欄にすると氏名で表示されます。', s.nickname || '');
+  if (v === null) return;
+  const nick = v.trim().slice(0, 12) || null;
+  try {
+    await sbPatch('online_students', 'id=eq.' + s.id, { nickname: nick });
+    s.nickname = nick;
+    renderWho();
+    showOnlineToast(nick ? '🏷 ニックネームを「' + nick + '」にしました' : 'ニックネームを解除しました');
+    loadMyTeam();
+  } catch (e) { showOnlineToast('保存できませんでした。時間をおいて試してください。'); }
+}
+
+// ===== 英単語帳（eitango.html をオンライン受講者モードで開く）=====
+function renderVocabShell() {
+  return '<div class="card vocab-card" id="vocab-card">'
+    + '<h2>📘 英単語帳</h2>'
+    + '<p class="sub" style="margin-bottom:12px">わからなかった単語を登録して、自分だけの単語帳を作れます。5択・スペル・タイムアタックで練習でき、共有リンクを作ればスマホからも見られます。</p>'
+    + '<button class="btn" onclick="openVocabApp()">単語帳を開く</button>'
+    + '</div>';
+}
+function openVocabApp() {
+  try { endStudySession(); } catch (e) {}
+  setTimeout(function () { location.href = 'eitango.html?online=1'; }, 250);
+}
+
+// ===== マイチーム（スタッフが割り当てたチームのメンバー状況）=====
+function renderTeamShell() {
+  return '<div class="card" id="team-card" style="display:none"><div id="team-body"></div></div>';
+}
+async function loadMyTeam() {
+  const card = document.getElementById('team-card');
+  const body = document.getElementById('team-body');
+  if (!card || !body || !currentOnlineStudent) return;
+  const myId = currentOnlineStudent.id;
+  let team, members;
+  try {
+    const mem = await sbGet('online_team_members', 'online_student_id=eq.' + myId + '&select=team_id&limit=1');
+    if (!mem || !mem.length) { card.style.display = 'none'; return; }
+    const tRows = await sbGet('online_teams', 'id=eq.' + mem[0].team_id + '&is_active=not.is.false&select=id,name,max_members&limit=1');
+    team = tRows && tRows[0];
+    if (!team) { card.style.display = 'none'; return; }
+    members = await sbGet('online_team_members', 'team_id=eq.' + team.id + '&select=online_student_id');
+  } catch (e) { card.style.display = 'none'; return; }   // テーブル未作成時は出さない
+  const ids = (members || []).map(m => m.online_student_id).filter(Boolean);
+  if (!ids.length) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  body.innerHTML = '<h2>👥 マイチーム</h2><div class="loading">読み込み中…</div>';
+
+  const today = getTodayJST();
+  const start = new Date(today + 'T00:00:00+09:00'); start.setDate(start.getDate() - 6);
+  const startIso = start.toISOString();
+  try {
+    const inIds = 'in.(' + ids.join(',') + ')';
+    const [studs, sessions, logs] = await Promise.all([
+      // 所属・ログイン情報などは取らない（表示に必要な列だけ）
+      sbGet('online_students', 'id=' + inIds + '&select=id,name,nickname,points,login_streak,last_active_date,is_active'),
+      sbGet('online_sessions', 'online_student_id=' + inIds + '&login_at=gte.' + encodeURIComponent(startIso) + '&is_active=not.is.false&select=online_student_id,minutes').catch(() => []),
+      sbGet('online_assignments', 'online_student_id=' + inIds + '&source=eq.self&is_active=not.is.false&created_at=gte.' + encodeURIComponent(startIso) + '&select=online_student_id,study_minutes').catch(() => [])
+    ]);
+    const wk = {};
+    (sessions || []).forEach(r => { wk[r.online_student_id] = (wk[r.online_student_id] || 0) + Number(r.minutes || 0); });
+    (logs || []).forEach(r => { wk[r.online_student_id] = (wk[r.online_student_id] || 0) + Number(r.study_minutes || 0); });
+    const list = (studs || []).filter(x => x.is_active !== false).map(x => ({
+      id: x.id, me: x.id === myId,
+      name: x.nickname || x.name || '',
+      points: Number(x.points || 0), streak: Number(x.login_streak || 0),
+      last: x.last_active_date ? String(x.last_active_date).slice(0, 10) : '',
+      week: wk[x.id] || 0
+    }));
+    list.sort((a, b) => (b.week - a.week) || (b.points - a.points));
+    const totalPt = list.reduce((t, x) => t + x.points, 0);
+    const totalWk = list.reduce((t, x) => t + x.week, 0);
+    const maxWk = Math.max(1, ...list.map(x => x.week));
+    const ranks = await loadOnlineRanks();
+    const rankOf = pts => {
+      if (!ranks) return null;
+      let cur = ranks[0], idx = 0;
+      ranks.forEach((r, i) => { if (pts >= r.min_points) { cur = r; idx = i; } });
+      return { r: cur, idx: idx };
+    };
+    const lastTxt = d => {
+      if (!d) return 'まだログインなし';
+      const n = Math.round((new Date(today + 'T00:00:00+09:00') - new Date(d + 'T00:00:00+09:00')) / 86400000);
+      return n <= 0 ? '今日ログイン' : n === 1 ? '昨日ログイン' : n + '日前にログイン';
+    };
+    const meRow = list.find(x => x.me);
+    let html = '<h2>👥 マイチーム <span style="font-size:13px;color:var(--orange-d)">' + esc(team.name) + '</span></h2>'
+      + '<div class="team-stats">'
+      +   '<div class="team-stat"><div class="v">' + totalPt + '</div><div class="l">チーム合計pt</div></div>'
+      +   '<div class="team-stat"><div class="v">' + fmtMin(totalWk) + '</div><div class="l">今週のチーム学習</div></div>'
+      +   '<div class="team-stat"><div class="v">' + list.length + '</div><div class="l">メンバー</div></div>'
+      + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">今週（直近7日）の学習時間が多い順</div>';
+    html += list.map(x => {
+      const rk = rankOf(x.points);
+      const medal = rk ? medalHtml(rk.r.color || '#F0A030', rankLetter(rk.r, rk.idx), 30) : '';
+      return '<div class="tm-row' + (x.me ? ' me' : '') + '">'
+        + medal
+        + '<div class="tm-main">'
+        +   '<div class="tm-nm">' + esc(x.name) + (x.me ? '<span class="tm-me">あなた</span>' : '') + '</div>'
+        +   '<div class="tm-sub">' + (rk ? esc(rk.r.name) + ' ・ ' : '') + x.points + 'pt ・ 🔥' + x.streak + ' ・ ' + lastTxt(x.last) + '</div>'
+        +   '<div class="tm-bar"><i style="width:' + Math.round(x.week / maxWk * 100) + '%"></i></div>'
+        + '</div>'
+        + '<div class="tm-wk">' + fmtMin(x.week) + '<span>今週</span></div>'
+        + '</div>';
+    }).join('');
+    html += '<div style="margin-top:10px;font-size:12px;color:var(--muted)">チームでのあなたの表示名：<b style="color:var(--text)">' + esc(meRow ? meRow.name : '') + '</b>'
+      + '<button class="nick-link" onclick="editNickname()">✏️ ニックネームを' + (currentOnlineStudent.nickname ? '変更' : '設定') + '</button></div>';
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = '<h2>👥 マイチーム</h2><p class="sub">読み込みに失敗しました。</p>';
+  }
 }
 
 // ---- 受講できる講座一覧（ガワ：受講権のある講座を出すところまで）----
@@ -508,12 +650,13 @@ async function loadMyCourses() {
     if (!enrolls.length) {
       myEnrollments = enrolls;
       area.innerHTML = '<div class="home-grid">'
-        + '<div class="home-left">' + renderMyPageShell() + '</div>'
+        + '<div class="home-left">' + renderMyPageShell() + renderTeamShell() + '</div>'
         + '<div class="home-right">'
         +   '<div class="empty">受講できる講座はまだありません。<br>入金確認後に塾が受講権を付与すると、ここに表示されます。</div>'
-        +   renderStudyLogShell() + renderMeetingShell() + renderQBoxShell()
+        +   renderVocabShell() + renderStudyLogShell() + renderMeetingShell() + renderQBoxShell()
         + '</div></div>';
       loadMyPage();
+      loadMyTeam();
       loadStudyLog();
       loadMeetings();
       loadMyQuestions();
@@ -544,10 +687,11 @@ async function loadMyCourses() {
     }).join('')
       : '<div class="empty">表示できる講座がありません。<br>新しい講座が公開されると、ここに表示されます。</div>';
     area.innerHTML = '<div class="home-grid">'
-      + '<div class="home-left">' + renderMyPageShell() + '</div>'
-      + '<div class="home-right">' + courseHtml + renderStudyLogShell() + renderMeetingShell() + renderQBoxShell() + '</div>'
+      + '<div class="home-left">' + renderMyPageShell() + renderTeamShell() + '</div>'
+      + '<div class="home-right">' + courseHtml + renderVocabShell() + renderStudyLogShell() + renderMeetingShell() + renderQBoxShell() + '</div>'
       + '</div>';
     loadMyPage();
+    loadMyTeam();
     loadStudyLog();
     loadMeetings();
     loadMyQuestions();
@@ -1047,6 +1191,7 @@ const CAT_DEFS = [
   { key:'lesson',     label:'講座（動画）',   color:'#F5A623' },
   { key:'dmm_lesson', label:'DMMレッスン',    color:'#5DA9E9' },
   { key:'dmm_vocab',  label:'DMM単語',        color:'#7BC96F' },
+  { key:'eitango',    label:'fit単語帳',      color:'#1B8A93' },
   { key:'self',       label:'自習',           color:'#E3934A' },
   { key:'other',      label:'その他',         color:'#9AA0A6' }
 ];
@@ -1089,7 +1234,7 @@ async function loadStudyLog() {
     const videosDone = (views||[]).filter(v => v.completed).length;
 
     // --- 今月のカテゴリ内訳（回数）---
-    const catCount = { lesson:0, dmm_lesson:0, dmm_vocab:0, self:0, other:0 };
+    const catCount = { lesson:0, dmm_lesson:0, dmm_vocab:0, eitango:0, self:0, other:0 };
     (views||[]).forEach(v => { if (v.completed && v.completed_at && jstDateStr(v.completed_at).slice(0,7) === ym) catCount.lesson++; });
     (selfLogs||[]).forEach(a => { const k = jstDateStr(a.created_at).slice(0,7); if (k === ym) { const c = (a.category && catCount.hasOwnProperty(a.category)) ? a.category : 'self'; catCount[c]++; } });
     const catMax = Math.max(1, ...Object.values(catCount));
