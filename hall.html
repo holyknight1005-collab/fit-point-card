@@ -62,7 +62,7 @@
 <div id="app" class="wrap"><div class="card center">読み込み中…</div></div>
 <script>
 /* ===== ホール座席登録アプリ hall.html v3（受付チェックイン・前詰め着席） ===== */
-const APP_VERSION = 'hall-3.9.0';
+const APP_VERSION = 'hall-4.0.0';
 const SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
 const REST = SB_URL + '/rest/v1/';
@@ -85,7 +85,8 @@ function seatKey(b,r,c){ return b+'-'+r+'-'+c; }
 function blockOf(id){ return (S.cfg.layout.blocks||[]).find(b=>b.id===id); }
 function catOf(id){ return (S.cfg.categories||[]).find(c=>c.id===id); }
 function catColor(id){ const c=catOf(id); return c?c.color:'#64748b'; }
-function seatLabel(reg){ if(!reg.seat_key) return '未着席'; const b=blockOf(reg.block_id); return (b?b.name:reg.block_id)+' '+reg.seat_row+'列 '+reg.seat_col+'番'; }
+function colLetter(c){ return String.fromCharCode(64+c); } /* 1→A … 20→T */
+function seatLabel(reg){ if(!reg.seat_key) return '未着席'; return reg.seat_row+'列目 '+colLetter(reg.seat_col); }
 function seatMiniMap(reg){
   if(!reg.seat_key) return '';
   const cfg=S.cfg, blocks=cfg.layout.blocks||[], rows=cfg.layout.rows||20;
@@ -100,7 +101,7 @@ function seatMiniMap(reg){
     +'<div style="background:#111827;color:#fff;text-align:center;border-radius:6px;padding:5px;font-size:.8rem;font-weight:700;letter-spacing:.2em">ステージ（前）</div>'
     +'<div style="overflow-x:auto;padding:8px 6px;border:1px solid var(--line);border-radius:8px;margin-top:4px"><div style="width:max-content;margin:0 auto;display:flex;align-items:stretch;gap:8px"><div>'+grid+'</div>'
     +'<div style="display:flex;flex-direction:column;justify-content:flex-end"><span style="background:#dc2626;color:#fff;font-size:.72rem;font-weight:700;padding:10px 5px;border-radius:6px;writing-mode:vertical-rl;text-orientation:upright">入口</span></div></div></div>'
-    +'<div class="center" style="font-size:.9rem;margin-top:6px;font-weight:700">前から '+reg.seat_row+' 列目・左から '+reg.seat_col+' 番目</div></div>';
+    +'<div class="center" style="font-size:.95rem;margin-top:6px;font-weight:700">前から '+reg.seat_row+' 列目・座席 '+colLetter(reg.seat_col)+'</div><div class="muted center" style="font-size:.78rem">（ステージに向かって左から A〜T）</div></div>';
 }
 function emailRequired(band){ return band && band!=='中学生以下'; }
 function validEmail(e){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }
@@ -142,7 +143,7 @@ function renderRegister(){
   const f=S.form;
   let h='<div class="card"><h1>9/27(日)「超感覚英語ライブ」当日受付URL</h1><div class="sub">こちらにご登録ください</div>';
   h+='<label>お名前</label><input type="text" id="f_name" value="'+esc(f.name||'')+'" placeholder="山田 太郎" autocomplete="name">';
-  h+='<label>カテゴリ</label><select id="f_cat"><option value="">選択してください</option>'+cats.map(c=>'<option value="'+esc(c.id)+'"'+(f.catId===c.id?' selected':'')+'>'+esc(c.name)+'</option>').join('')+'</select>';
+  h+='<label>所属</label><select id="f_cat"><option value="">選択してください</option>'+cats.map(c=>'<option value="'+esc(c.id)+'"'+(f.catId===c.id?' selected':'')+'>'+esc(c.name)+'</option>').join('')+'</select>';
   h+='<div id="bandwrap"><label>区分</label><select id="f_band"><option value="">選択してください</option>'+bands.map(b=>'<option value="'+esc(b)+'"'+(f.band===b?' selected':'')+'>'+esc(b)+'</option>').join('')+'</select></div>';
   h+='<div id="extwrap"></div><div id="refwrap"></div><div id="mailwrap"></div><div id="regerr"></div><button class="btn" id="doReg">登録してチケットを発行</button></div>';
   h+='<div class="card"><div class="muted center" style="margin-bottom:8px">登録がお済みの方（別の端末で開く／QRを紛失した場合）</div>'
@@ -167,14 +168,13 @@ function renderRegister(){
     $('refwrap').innerHTML=(cat&&cat!=='cur'&&!isExt)?'<label>紹介者（つながり） <span class="opt">任意</span></label><input type="text" id="f_ref" value="'+esc(f.referrer||'')+'" placeholder="例）◯◯先生の紹介 / 卒業生 田中">':'';
     if(!band){ $('mailwrap').innerHTML=''; return; }
     if(emailRequired(band)){
-      $('mailwrap').innerHTML='<label>メールアドレス</label><input type="email" id="f_mail" value="'+esc(f.email||'')+'" placeholder="taro@example.com" autocomplete="email"><label>メールアドレス（確認）</label><input type="email" id="f_mail2" value="'+esc(f.email2||'')+'" placeholder="もう一度入力"><div id="mailchk"></div>';
-      const chk=()=>{ const a=$('f_mail').value.trim(),b=$('f_mail2').value.trim(); let m=''; const t=typoSuggest(a); if(t) m+='<div class="msg warn" style="margin:6px 0">もしかして <b>'+esc(t)+'</b> ？ <a href="#" id="fixmail" style="color:#92400e">修正</a></div>'; if(a&&b){ m+=a===b?'<div class="match-ok">✓ 一致しています</div>':'<div class="match-ng">✕ 一致しません</div>'; } $('mailchk').innerHTML=m; const fx=$('fixmail'); if(fx) fx.onclick=(e)=>{ e.preventDefault(); $('f_mail').value=t; f.email=t; chk(); }; };
-      $('f_mail').oninput=()=>{f.email=$('f_mail').value;chk();}; $('f_mail2').oninput=()=>{f.email2=$('f_mail2').value;chk();}; chk();
+      $('mailwrap').innerHTML='<label>メールアドレス</label><input type="email" id="f_mail" value="'+esc(f.email||'')+'" placeholder="taro@example.com" autocomplete="email"><div id="mailchk"></div>';
+      const chk=()=>{ const a=$('f_mail').value.trim(); let m=''; const t=typoSuggest(a); if(t) m+='<div class="msg warn" style="margin:6px 0">もしかして <b>'+esc(t)+'</b> ？ <a href="#" id="fixmail" style="color:#92400e">修正</a></div>'; $('mailchk').innerHTML=m; const fx=$('fixmail'); if(fx) fx.onclick=(e)=>{ e.preventDefault(); $('f_mail').value=t; f.email=t; chk(); }; };
+      $('f_mail').oninput=()=>{f.email=$('f_mail').value;chk();}; chk();
     }else{
       const no=f.noEmail?'checked':'';
       $('mailwrap').innerHTML='<label>メールアドレス <span class="opt">任意（中学生以下）</span></label><div style="margin:2px 0 8px"><label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="checkbox" id="f_noemail" style="width:auto" '+no+'> メールを持っていない</label></div><div id="mailopt"></div>';
-      const drawOpt=()=>{ if($('f_noemail').checked){ f.noEmail=true; $('mailopt').innerHTML='<div class="muted">受付番号で受け取ります。</div>'; return; } f.noEmail=false; $('mailopt').innerHTML='<input type="email" id="f_mail" value="'+esc(f.email||'')+'" placeholder="任意：連絡用メール"><label style="margin-top:8px">確認</label><input type="email" id="f_mail2" value="'+esc(f.email2||'')+'" placeholder="もう一度入力"><div id="mailchk2" style="margin-top:4px"></div>'; const chk2=()=>{ const a=$('f_mail').value.trim(),b=$('f_mail2').value.trim(); $('mailchk2').innerHTML=(a&&b)?(a===b?'<div class="match-ok">✓ 一致</div>':'<div class="match-ng">✕ 一致しません</div>'):''; }; $('f_mail').oninput=()=>{f.email=$('f_mail').value;chk2();}; $('f_mail2').oninput=()=>{f.email2=$('f_mail2').value;chk2();}; chk2(); };
-      $('f_noemail').onchange=drawOpt; drawOpt();
+      const drawOpt=()=>{ if($('f_noemail').checked){ f.noEmail=true; $('mailopt').innerHTML='<div class="muted">受付番号で受け取ります。</div>'; return; } f.noEmail=false; $('mailopt').innerHTML='<input type="email" id="f_mail" value="'+esc(f.email||'')+'" placeholder="任意：連絡用メール">'; const sc=$('f_mail'); if(sc) sc.oninput=()=>{f.email=sc.value;}; }; $('f_noemail').onchange=drawOpt; drawOpt();
     }
   };
   $('f_cat').onchange=()=>{ f.catId=$('f_cat').value; paint(); }; $('f_band').onchange=()=>{ f.band=$('f_band').value; paint(); }; $('f_name').oninput=()=>{ f.name=$('f_name').value; };
@@ -189,15 +189,14 @@ async function doRegister(){
   const school = isExt ? (($('f_school')?$('f_school').value:'')||'').trim() : '';
   const refEl=$('f_ref'), referrer=refEl?refEl.value.trim():'';
   if(!name) return err.innerHTML='<div class="msg err">お名前を入力してください。</div>';
-  if(!catId) return err.innerHTML='<div class="msg err">カテゴリを選択してください。</div>';
+  if(!catId) return err.innerHTML='<div class="msg err">所属を選択してください。</div>';
   if(isExt){ if(!f.schoolType) return err.innerHTML='<div class="msg err">中学／高校を選んでください。</div>'; if(!school) return err.innerHTML='<div class="msg err">学校名を入力してください。</div>'; }
   if(!band) return err.innerHTML='<div class="msg err">区分を選択してください。</div>';
-  let email=''; const mailEl=$('f_mail'), mail2El=$('f_mail2');
-  if(emailRequired(band)){ email=(mailEl?mailEl.value:'').trim(); const e2=(mail2El?mail2El.value:'').trim();
+  let email=''; const mailEl=$('f_mail');
+  if(emailRequired(band)){ email=(mailEl?mailEl.value:'').trim();
     if(!email) return err.innerHTML='<div class="msg err">メールアドレスを入力してください。</div>';
     if(!validEmail(email)) return err.innerHTML='<div class="msg err">メールアドレスの形式をご確認ください。</div>';
-    if(email!==e2) return err.innerHTML='<div class="msg err">確認用メールアドレスが一致しません。</div>';
-  }else{ if(!f.noEmail){ email=(mailEl?mailEl.value:'').trim(); const e2=(mail2El?mail2El.value:'').trim(); if(email){ if(!validEmail(email)) return err.innerHTML='<div class="msg err">メールアドレスの形式をご確認ください。</div>'; if(email!==e2) return err.innerHTML='<div class="msg err">確認用メールアドレスが一致しません。</div>'; } } }
+  }else{ if(!f.noEmail){ email=(mailEl?mailEl.value:'').trim(); if(email && !validEmail(email)) return err.innerHTML='<div class="msg err">メールアドレスの形式をご確認ください。</div>'; } }
   const cat=catOf(catId);
   const btn=$('doReg'); btn.disabled=true; btn.textContent='登録中…';
   try{
@@ -228,7 +227,7 @@ function renderTicket(){
   let h='<div style="background:#f97316;color:#fff;border-radius:14px;padding:16px;text-align:center;font-weight:800;font-size:1.1rem;margin-bottom:14px;box-shadow:0 2px 8px rgba(249,115,22,.35)">📸 この画面（QR）を必ずスクショで保存してください<div style="font-weight:600;font-size:.85rem;margin-top:5px;opacity:.95">当日の受付でこのQRを使います</div></div>';
   h+='<div class="card center"><div class="pill" style="background:var(--ok)">登録完了</div><div class="muted" style="margin-top:10px">受付番号</div><div class="ticketno">'+esc(reg.receipt_no||'-')+'</div>';
   h+='<div id="tqr" style="display:flex;justify-content:center;margin:12px 0"></div><div class="muted">受付でこのQRをお見せください。<br>スクショ推奨。このQRを読み取ると、自分の画面に戻れます。</div></div>';
-  h+='<div class="card"><table class="kv"><tr><td>お名前</td><td>'+esc(reg.name)+'</td></tr><tr><td>カテゴリ</td><td>'+esc(reg.category_name||'')+'</td></tr>'+(reg.school?'<tr><td>学校</td><td>'+esc(reg.school)+'</td></tr>':'')+'<tr><td>区分</td><td>'+esc(reg.band||'')+'</td></tr>'+(reg.email?'<tr><td>メール</td><td>'+esc(reg.email)+'</td></tr>':'')+'</table>';
+  h+='<div class="card"><table class="kv"><tr><td>お名前</td><td>'+esc(reg.name)+'</td></tr><tr><td>所属</td><td>'+esc(reg.category_name||'')+'</td></tr>'+(reg.school?'<tr><td>学校</td><td>'+esc(reg.school)+'</td></tr>':'')+'<tr><td>区分</td><td>'+esc(reg.band||'')+'</td></tr>'+(reg.email?'<tr><td>メール</td><td>'+esc(reg.email)+'</td></tr>':'')+'</table>';
   h+='<div class="seatbox"><div class="muted">お席</div><div style="font-size:1.4rem;font-weight:800">'+(reg.seat_key?esc(seatLabel(reg)):'受付でご案内します')+'</div>'+(reg.seat_key?seatMiniMap(reg):'')+'</div>';
   h+='<div class="msg info" style="margin-top:12px">受付番号は席の確認・別端末表示に使います。<b>スクショ推奨</b>。</div></div>';
   h+='<div class="card center"><div style="font-weight:800;margin-bottom:4px">📣 オープンチャットにご参加ください</div><div class="muted" style="margin-bottom:10px">オープンチャット「【超感覚英語】🍊3000人立ち会いチャレンジ」</div><a class="btn ok" style="text-decoration:none" href="https://line.me/ti/g2/YOYwEg6dhvElTKnTMVdPJTQBR5kr6BacnHqZ8w?utm_source=invitation&utm_medium=link_copy&utm_campaign=default" target="_blank" rel="noopener">オープンチャットへの入場はこちら</a></div>';
@@ -436,7 +435,7 @@ async function staffMap(){
   let legend='<div class="legend">'+(cfg.categories||[]).map(c=>'<span><i class="dot" style="background:'+c.color+'"></i>'+esc(c.name)+'</span>').join('')+'</div>';
   let grid='';
   for(let r=1;r<=rows;r++){ let cells='';
-    blocks.forEach((b,bi)=>{ let bs=''; const seats=b.seats||0; for(let c=1;c<=seats;c++){ const k=seatKey(b.id,r,c); const reg=bySeat[k]; if(dis.has(k)){ bs+='<div class="seat" style="background:#374151;color:#fff;border-color:#374151" title="配信用（着席不可）">配</div>'; } else if(reg&&isHold(reg)){ bs+='<div class="seat reserved" title="グループ確保中">確</div>'; } else if(reg){ const col=catColor(reg.category_id); const mine=(moving&&reg.id===moving.id); bs+='<div class="seat'+(mine?' moving':'')+'" style="background:'+col+';color:#fff;border-color:'+col+';cursor:pointer" data-id="'+reg.id+'" title="'+esc((reg.name||'')+' / '+(reg.category_name||''))+'">'+esc((reg.name||'').slice(0,2))+'</div>'; } else { bs+='<div class="seat'+((acting||grouping)?' moveable':'')+'" data-empty="'+k+'" data-blk="'+b.id+'" data-r="'+r+'" data-c="'+c+'">'+c+'</div>'; } if(c%5===0 && c<seats) bs+='<div class="blkgap"></div>'; }
+    blocks.forEach((b,bi)=>{ let bs=''; const seats=b.seats||0; for(let c=1;c<=seats;c++){ const k=seatKey(b.id,r,c); const reg=bySeat[k]; if(dis.has(k)){ bs+='<div class="seat" style="background:#374151;color:#fff;border-color:#374151" title="配信用（着席不可）">配</div>'; } else if(reg&&isHold(reg)){ bs+='<div class="seat reserved" title="グループ確保中">確</div>'; } else if(reg){ const col=catColor(reg.category_id); const mine=(moving&&reg.id===moving.id); bs+='<div class="seat'+(mine?' moving':'')+'" style="background:'+col+';color:#fff;border-color:'+col+';cursor:pointer" data-id="'+reg.id+'" title="'+esc((reg.name||'')+' / '+(reg.category_name||''))+'">'+esc((reg.name||'').slice(0,2))+'</div>'; } else { bs+='<div class="seat'+((acting||grouping)?' moveable':'')+'" data-empty="'+k+'" data-blk="'+b.id+'" data-r="'+r+'" data-c="'+c+'">'+colLetter(c)+'</div>'; } if(c%5===0 && c<seats) bs+='<div class="blkgap"></div>'; }
       cells+='<div class="blk">'+bs+'</div>'+(bi<blocks.length-1?'<div class="blkgap"></div>':''); });
     grid+='<div class="seatRow"><div class="rowNo">'+r+'列</div>'+cells+'</div>'; }
   const banner = moving ? '<div class="msg warn" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>移動中：<b>'+esc(moving.name)+'</b>（'+esc(seatLabel(moving))+'）→ 移動先の空席をタップ</span><button class="btn sec sm" id="mvcancel">キャンセル</button></div>'
@@ -466,7 +465,7 @@ async function seatMoveTo(key,blk,r,c){
 function seatDetail(id){
   const reg=S.regs.find(r=>r.id===id); if(!reg) return;
   const ov=document.createElement('div'); ov.className='ov';
-  ov.innerHTML='<div class="modal"><h2 style="border:0;padding:0;margin-top:0">'+esc(seatLabel(reg))+'</h2><table class="kv"><tr><td>受付番号</td><td>'+esc(reg.receipt_no||'-')+'</td></tr><tr><td>お名前</td><td>'+esc(reg.name||'')+'</td></tr><tr><td>カテゴリ</td><td>'+esc(reg.category_name||'')+'</td></tr>'+(reg.school?'<tr><td>学校</td><td>'+esc(reg.school)+'</td></tr>':'')+'<tr><td>区分</td><td>'+esc(reg.band||'')+'</td></tr>'+(reg.referrer?'<tr><td>紹介者</td><td>'+esc(reg.referrer)+'</td></tr>':'')+(reg.email?'<tr><td>メール</td><td>'+esc(reg.email)+'</td></tr>':'')+'</table><div style="margin:10px 0"><b>感想:</b><br>'+(reg.feedback?esc(reg.feedback):'<span class="muted">未入力</span>')+'</div><div class="row"><button class="btn sm" id="mv" style="flex:1">席を移動</button><button class="btn ghost sm" id="me" style="flex:1">編集</button></div><div class="row" style="margin-top:8px"><button class="btn sec sm" id="mc" style="flex:1">閉じる</button><button class="btn danger sm" id="md" style="flex:1">取消</button></div></div>';
+  ov.innerHTML='<div class="modal"><h2 style="border:0;padding:0;margin-top:0">'+esc(seatLabel(reg))+'</h2><table class="kv"><tr><td>受付番号</td><td>'+esc(reg.receipt_no||'-')+'</td></tr><tr><td>お名前</td><td>'+esc(reg.name||'')+'</td></tr><tr><td>所属</td><td>'+esc(reg.category_name||'')+'</td></tr>'+(reg.school?'<tr><td>学校</td><td>'+esc(reg.school)+'</td></tr>':'')+'<tr><td>区分</td><td>'+esc(reg.band||'')+'</td></tr>'+(reg.referrer?'<tr><td>紹介者</td><td>'+esc(reg.referrer)+'</td></tr>':'')+(reg.email?'<tr><td>メール</td><td>'+esc(reg.email)+'</td></tr>':'')+'</table><div style="margin:10px 0"><b>感想:</b><br>'+(reg.feedback?esc(reg.feedback):'<span class="muted">未入力</span>')+'</div><div class="row"><button class="btn sm" id="mv" style="flex:1">席を移動</button><button class="btn ghost sm" id="me" style="flex:1">編集</button></div><div class="row" style="margin-top:8px"><button class="btn sec sm" id="mc" style="flex:1">閉じる</button><button class="btn danger sm" id="md" style="flex:1">取消</button></div></div>';
   document.body.appendChild(ov);
   ov.onclick=e=>{ if(e.target===ov) ov.remove(); };
   ov.querySelector('#mc').onclick=()=>ov.remove();
@@ -481,7 +480,7 @@ function editReg(id){
   const ov=document.createElement('div'); ov.className='ov';
   ov.innerHTML='<div class="modal"><h2 style="border:0;padding:0;margin-top:0">情報を編集</h2><div class="muted">'+esc(reg.receipt_no||'')+' / '+esc(seatLabel(reg))+'</div>'
     +'<label>お名前</label><input type="text" id="e_name" value="'+esc(reg.name||'')+'">'
-    +'<label>カテゴリ</label><select id="e_cat"><option value="">（未設定）</option>'+(cfg.categories||[]).map(c=>'<option value="'+esc(c.id)+'"'+(reg.category_id===c.id?' selected':'')+'>'+esc(c.name)+'</option>').join('')+'</select>'
+    +'<label>所属</label><select id="e_cat"><option value="">（未設定）</option>'+(cfg.categories||[]).map(c=>'<option value="'+esc(c.id)+'"'+(reg.category_id===c.id?' selected':'')+'>'+esc(c.name)+'</option>').join('')+'</select>'
     +'<label>区分</label><select id="e_band"><option value="">（未設定）</option>'+(cfg.bands||[]).map(b=>'<option value="'+esc(b)+'"'+(reg.band===b?' selected':'')+'>'+esc(b)+'</option>').join('')+'</select>'
     +'<label>学校 <span class="opt">任意（fit以外中高生）</span></label><input type="text" id="e_school" value="'+esc(reg.school||'')+'">'
     +'<label>紹介者（つながり） <span class="opt">任意</span></label><input type="text" id="e_ref" value="'+esc(reg.referrer||'')+'">'
@@ -504,13 +503,13 @@ async function staffTally(){
   const cfg=S.cfg, cats=cfg.categories||[], bands=cfg.bands||[]; const people=S.regs.filter(r=>!isHold(r)); const fb=people.filter(r=>r.feedback&&r.feedback.trim());
   const seated=people.filter(r=>r.seat_key).length;
   let body='<div class="card"><div class="stat"><div class="box"><div class="n">'+people.length+'</div><div class="k">登録総数</div></div><div class="box"><div class="n">'+seated+'</div><div class="k">着席</div></div><div class="box"><div class="n">'+fb.length+'</div><div class="k">感想あり</div></div></div><button class="btn ghost" id="csv" style="margin-top:12px">CSVをダウンロード</button></div>';
-  body+='<div class="card"><h2>カテゴリ別</h2><table class="list"><tr><th>カテゴリ</th><th>登録</th></tr>'+cats.map(c=>'<tr><td><i class="dot" style="background:'+c.color+'"></i> '+esc(c.name)+'</td><td>'+people.filter(r=>r.category_id===c.id).length+'</td></tr>').join('')+'</table></div>';
+  body+='<div class="card"><h2>所属別</h2><table class="list"><tr><th>所属</th><th>登録</th></tr>'+cats.map(c=>'<tr><td><i class="dot" style="background:'+c.color+'"></i> '+esc(c.name)+'</td><td>'+people.filter(r=>r.category_id===c.id).length+'</td></tr>').join('')+'</table></div>';
   body+='<div class="card"><h2>区分別</h2><table class="list"><tr><th>区分</th><th>登録</th></tr>'+bands.map(b=>'<tr><td>'+esc(b)+'</td><td>'+people.filter(r=>r.band===b).length+'</td></tr>').join('')+'</table></div>';
-  body+='<div class="card"><h2>感想一覧（'+fb.length+'件）</h2>'+(fb.length?('<table class="list"><tr><th>席</th><th>名前/カテゴリ</th><th>感想</th></tr>'+fb.slice().sort((a,b)=>new Date(b.feedback_at||0)-new Date(a.feedback_at||0)).map(r=>'<tr><td>'+esc(seatLabel(r))+'</td><td>'+esc(r.name)+'<br><span class="muted">'+esc(r.category_name||'')+'</span></td><td>'+esc(r.feedback)+'</td></tr>').join('')+'</table>'):'<div class="muted">まだありません。</div>')+'</div>';
+  body+='<div class="card"><h2>感想一覧（'+fb.length+'件）</h2>'+(fb.length?('<table class="list"><tr><th>席</th><th>名前/所属</th><th>感想</th></tr>'+fb.slice().sort((a,b)=>new Date(b.feedback_at||0)-new Date(a.feedback_at||0)).map(r=>'<tr><td>'+esc(seatLabel(r))+'</td><td>'+esc(r.name)+'<br><span class="muted">'+esc(r.category_name||'')+'</span></td><td>'+esc(r.feedback)+'</td></tr>').join('')+'</table>'):'<div class="muted">まだありません。</div>')+'</div>';
   $('tabbody').innerHTML=body; $('csv').onclick=downloadCSV;
 }
 function downloadCSV(){
-  const head=['受付番号','席','名前','カテゴリ','学校','区分','紹介者','メール','発券元','登録時刻','着席時刻','感想'];
+  const head=['受付番号','席','名前','所属','学校','区分','紹介者','メール','発券元','登録時刻','着席時刻','感想'];
   const rows=S.regs.filter(r=>!isHold(r)).slice().sort((a,b)=>(a.seat_row||999)-(b.seat_row||999)||(a.seat_col||999)-(b.seat_col||999))
     .map(r=>[r.receipt_no||'',seatLabel(r),r.name||'',r.category_name||'',r.school||'',r.band||'',r.referrer||'',r.email||'',r.source||'',r.registered_at?new Date(r.registered_at).toLocaleString('ja-JP'):'',r.checkin_at?new Date(r.checkin_at).toLocaleString('ja-JP'):'',(r.feedback||'')]);
   const q=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
@@ -526,16 +525,16 @@ function staffSettings(){
   body+='<div class="card"><h2>座席エリア</h2><div class="muted" style="margin-bottom:6px">前から詰めて着席します（列1の左→右→列2…）。単一エリア推奨。</div><label>列数（前→後）</label><input type="number" id="c_rows" min="1" max="60" value="'+(cfg.layout.rows||20)+'"><div id="blkList">';
   blocks.forEach(b=>{ body+='<div class="cfgblk"><div class="row"><div style="flex:2"><label>エリア名</label><input type="text" class="b_name" value="'+esc(b.name)+'"></div><div style="flex:1"><label>席数/列</label><input type="number" class="b_seats" min="1" max="40" value="'+b.seats+'"></div><div style="flex:0 0 auto;min-width:auto"><label>色</label><input type="color" class="b_color" value="'+esc(b.color||'#2563eb')+'" style="width:44px;height:44px;padding:2px"></div><button class="x b_del" style="align-self:flex-end">削除</button></div><div class="muted">ID: '+esc(b.id)+'</div></div>'; });
   body+='</div><button class="btn sec sm" id="addBlk" style="margin-top:10px">＋ エリアを追加</button></div>';
-  body+='<div class="card"><h2>カテゴリ（記録用）</h2><div class="muted" style="margin-bottom:6px">色分け・集計に使います（着席順には影響しません）。</div><div id="catList">';
-  cats.forEach(c=>{ body+='<div class="cfgblk"><div class="row"><div style="flex:2"><label>カテゴリ名</label><input type="text" class="k_name" value="'+esc(c.name)+'"></div><div style="flex:0 0 auto;min-width:auto"><label>色</label><input type="color" class="k_color" value="'+esc(c.color||'#2563eb')+'" style="width:44px;height:44px;padding:2px"></div><button class="x k_del" style="align-self:flex-end">削除</button></div><div class="muted">ID: '+esc(c.id)+'</div></div>'; });
-  body+='</div><button class="btn sec sm" id="addCat" style="margin-top:10px">＋ カテゴリを追加</button></div>';
+  body+='<div class="card"><h2>所属（記録用）</h2><div class="muted" style="margin-bottom:6px">色分け・集計に使います（着席順には影響しません）。</div><div id="catList">';
+  cats.forEach(c=>{ body+='<div class="cfgblk"><div class="row"><div style="flex:2"><label>所属名</label><input type="text" class="k_name" value="'+esc(c.name)+'"></div><div style="flex:0 0 auto;min-width:auto"><label>色</label><input type="color" class="k_color" value="'+esc(c.color||'#2563eb')+'" style="width:44px;height:44px;padding:2px"></div><button class="x k_del" style="align-self:flex-end">削除</button></div><div class="muted">ID: '+esc(c.id)+'</div></div>'; });
+  body+='</div><button class="btn sec sm" id="addCat" style="margin-top:10px">＋ 所属を追加</button></div>';
   body+='<button class="btn" id="saveCfg">設定を保存</button>';
   body+='<div class="card" style="margin-top:18px;border-color:#fecaca"><h2 style="border-color:var(--danger)">危険な操作</h2><div class="muted">全ての登録データを削除します。</div><button class="btn danger" id="resetAll">全登録を削除する</button></div>';
   body+='<div class="foot"><a id="showURL">参加者用URL / QRを表示</a></div>';
   $('tabbody').innerHTML=body;
   $('addBlk').onclick=()=>{ pullSettings(); const id='X'+Date.now().toString(36).slice(-4); S.cfg.layout.blocks.push({id,name:'新エリア',seats:20,color:'#0ea5e9'}); render(); };
   document.querySelectorAll('.b_del').forEach((btn,i)=>btn.onclick=()=>{ pullSettings(); S.cfg.layout.blocks.splice(i,1); render(); });
-  $('addCat').onclick=()=>{ pullSettings(); const id='cat'+Date.now().toString(36).slice(-5); (S.cfg.categories=S.cfg.categories||[]).push({id,name:'新カテゴリ',color:'#8b5cf6'}); render(); };
+  $('addCat').onclick=()=>{ pullSettings(); const id='cat'+Date.now().toString(36).slice(-5); (S.cfg.categories=S.cfg.categories||[]).push({id,name:'新しい所属',color:'#8b5cf6'}); render(); };
   document.querySelectorAll('.k_del').forEach((btn,i)=>btn.onclick=()=>{ pullSettings(); S.cfg.categories.splice(i,1); render(); });
   $('saveCfg').onclick=saveSettings;
   $('resetAll').onclick=async()=>{ const p=prompt('全ての登録を削除します。スタッフパスコードを入力してください。'); if(p===null) return; if(p!==String(S.cfg.staff_pass||'')){ alert('パスコードが違います。'); return; } try{ await sbDelete('hall_event_regs','event_id=eq.'+EVENT); alert('削除しました。'); S.regs=await loadRegs(); }catch(e){ alert('削除に失敗しました。'); } };
