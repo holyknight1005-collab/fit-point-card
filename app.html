@@ -6981,7 +6981,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260926onl26';
+const APP_VERSION = '20260927onl28';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -43701,8 +43701,10 @@ async function olLoadCourses() {
         + '<option value="adult"' + (seg==='adult'?' selected':'') + '>社会人・大学生</option>'
         + '<option value="hs"' + (seg==='hs'?' selected':'') + '>高校生</option>'
         + '</select>';
+      if (olCourseEditId === c.id) return olCourseEditForm(c);
       return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">'
-        + '<div style="font-weight:700;font-size:14px;margin-bottom:4px">' + olEsc(c.title) + '</div>'
+        + '<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:4px"><div style="font-weight:700;font-size:14px;flex:1">' + olEsc(c.title) + '</div>'
+        +   '<button onclick="olEditCourse(' + c.id + ')" style="flex:none;padding:5px 10px;border:1px solid var(--border);border-radius:7px;background:#fff;color:var(--text);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">✏️ 編集</button></div>'
         + (c.description ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px;line-height:1.6">' + olEsc(c.description) + '</div>' : '')
         + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><span style="font-size:12px;color:var(--text)">' + priceTxt + '</span>' + segSel + '</div>'
         + '<button onclick="olToggleStreaming(' + c.id + ',' + (streamOn?'false':'true') + ')" style="padding:6px 12px;border:1px solid var(--border);border-radius:7px;background:' + (streamOn?'#E8F6EE':'#FDECEA') + ';color:' + (streamOn?'#1E6B3F':'#943126') + ';font-size:12px;font-weight:700;cursor:pointer">'
@@ -43710,6 +43712,36 @@ async function olLoadCourses() {
         + '</div>';
     }).join('');
   } catch (e) { box.innerHTML = '<div style="color:#C0392B;font-size:12px">読み込み失敗: ' + olEsc(e.message) + '</div>'; }
+}
+
+// 講座の編集（講座名・説明・受講料）
+var olCourseEditId = null;
+function olEditCourse(id) { olCourseEditId = id; olLoadCourses(); }
+function olCancelCourseEdit() { olCourseEditId = null; olLoadCourses(); }
+function olCourseEditForm(c) {
+  const IN = 'width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:14px;font-family:inherit;box-sizing:border-box';
+  return '<div style="background:var(--surface);border:2px solid var(--orange);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px">'
+    + '<label style="font-size:12px;color:var(--muted);font-weight:600">講座名</label>'
+    + '<input id="ol-ce-title" value="' + olEsc(c.title || '') + '" style="' + IN + ';font-weight:700">'
+    + '<label style="font-size:12px;color:var(--muted);font-weight:600">説明（受講者の画面に表示）</label>'
+    + '<textarea id="ol-ce-desc" rows="3" style="' + IN + ';resize:vertical">' + olEsc(c.description || '') + '</textarea>'
+    + '<label style="font-size:12px;color:var(--muted);font-weight:600">受講料（円・空欄で未設定）</label>'
+    + '<input id="ol-ce-price" type="number" min="0" value="' + (c.price != null ? c.price : '') + '" style="' + IN + ';max-width:180px">'
+    + '<div style="display:flex;gap:8px;margin-top:4px">'
+    +   '<button onclick="olSaveCourseEdit(' + c.id + ')" style="padding:9px 16px;border:none;border-radius:8px;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit">保存</button>'
+    +   '<button onclick="olCancelCourseEdit()" style="padding:9px 16px;border:1px solid var(--border);border-radius:8px;background:#fff;color:var(--muted);font-weight:700;font-size:13px;cursor:pointer;font-family:inherit">キャンセル</button>'
+    + '</div></div>';
+}
+async function olSaveCourseEdit(id) {
+  const title = (document.getElementById('ol-ce-title').value || '').trim();
+  const desc = (document.getElementById('ol-ce-desc').value || '').trim();
+  const pr = (document.getElementById('ol-ce-price').value || '').trim();
+  if (!title) { alert('講座名を入力してください'); return; }
+  try {
+    await sbPatch('online_courses', 'id=eq.' + id, { title: title, description: desc || null, price: pr === '' ? null : parseInt(pr, 10) });
+    olCourseEditId = null;
+    olLoadCourses();
+  } catch (e) { alert('保存に失敗しました: ' + e.message); }
 }
 
 async function olToggleStreaming(id, next) {
@@ -43892,7 +43924,8 @@ function olRenderCohortsTab() {
     + '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:16px;display:flex;flex-direction:column;gap:8px">'
     +   '<div style="display:flex;gap:8px;flex-wrap:wrap">'
     +     '<select id="ol-co-plan" onchange="olCoSuggestName()" style="flex:2;min-width:200px;' + OL_IN + '">' + st.plans.map(p => '<option value="' + p.id + '">' + olEsc(p.name) + '（' + p.months + 'か月・定員' + p.capacity + '名）</option>').join('') + '</select>'
-    +     '<label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:4px">開始日 <input id="ol-co-start" type="date" onchange="olCoSuggestName()" style="' + OL_IN + '"></label>'
+    +     '<label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:4px">開始日 <input id="ol-co-start" type="date" onchange="document.getElementById(\'ol-co-end\').dataset.auto=\'1\';olCoSuggestName()" style="' + OL_IN + '"></label>'
+    +     '<label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:4px">終了日 <input id="ol-co-end" type="date" data-auto="1" onchange="this.dataset.auto=\'0\';olCoSuggestName()" style="' + OL_IN + '"></label>'
     +   '</div>'
     +   '<input id="ol-co-name" placeholder="期の名前（例：2026年10月期）" style="' + OL_IN + '">'
     +   '<div id="ol-co-preview" style="font-size:12px;color:var(--muted)"></div>'
@@ -44013,6 +44046,11 @@ function olCohortDetail(c, p, ms, evs, stuOf) {
   return h + '</div>';
 }
 
+function olCoKyotsuDate() {
+  const r = ((olCoState && olCoState.settings) || []).find(x => x.key === 'kyotsu_test_date');
+  const v = r ? String(r.value || '').trim() : '';
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
+}
 function olToggleCohort(id) { olCoOpen = (olCoOpen === id) ? null : id; olRenderCohortsTab(); }
 
 function olCoSuggestName() {
@@ -44020,10 +44058,15 @@ function olCoSuggestName() {
   if (!ps || !sd) return;
   const p = olCoState.plans.find(x => String(x.id) === ps.value);
   if (!p || !sd.value) { if (pv) pv.textContent = '開始日を選ぶと期間とフォロー日程が決まります。'; return; }
-  const end = olMonthEnd(sd.value, p.months);
+  const ed = document.getElementById('ol-co-end');
+  if (ed && (ed.dataset.auto !== '0' || !ed.value)) { ed.value = olMonthEnd(sd.value, p.months); ed.dataset.auto = '1'; }
+  const end = (ed && ed.value) || olMonthEnd(sd.value, p.months);
   if (nm && (!nm.value || nm.dataset.auto === '1')) { nm.value = (+sd.value.slice(0,4)) + '年' + (+sd.value.slice(5,7)) + '月期'; nm.dataset.auto = '1'; }
   const tmpl = Array.isArray(p.follow_template) ? p.follow_template : [];
-  if (pv) pv.innerHTML = '期間：' + olMD(sd.value) + ' 〜 ' + olMD(end) + '　／　フォロー ' + tmpl.length + '回：'
+  const kd = olCoKyotsuDate();
+  if (pv) pv.innerHTML = '期間：' + olMD(sd.value) + ' 〜 ' + olMD(end)
+    + (p.access_until === 'kyotsu' ? '　／　<b style="color:#243B6B">視聴期限：' + (kd ? olMD(kd) + '（共通テスト本番）' : '共通テスト本番（📝模試タブで日付を設定）') + '</b>' : '')
+    + '　／　フォロー ' + tmpl.length + '回：'
     + tmpl.map(t => olMD(t.anchor === 'end' ? olDateAdd(end, t.offset || 0) : olDateAdd(sd.value, t.offset || 0)) + ' ' + olEsc(t.title)).join('、');
 }
 
@@ -44032,7 +44075,9 @@ async function olCreateCohort() {
   const start = document.getElementById('ol-co-start').value;
   const name = (document.getElementById('ol-co-name').value || '').trim();
   if (!p || !start) { alert('プランと開始日を選んでください'); return; }
-  const end = olMonthEnd(start, p.months);
+  const edv = (document.getElementById('ol-co-end') || {}).value;
+  const end = edv || olMonthEnd(start, p.months);
+  if (end < start) { alert('終了日が開始日より前になっています'); return; }
   try {
     const rows = await sbPostReturn('online_cohorts', { plan_id: p.id, name: name || start + '期', start_date: start, end_date: end, capacity: p.capacity });
     const c = rows[0];
@@ -44060,7 +44105,10 @@ async function olAddCohortMember(cohortId) {
   try {
     await sbPost('online_cohort_members', { cohort_id: cohortId, online_student_id: sid });
     // 受講権：プランの講座すべて。既にあれば期限だけ期の終了日に合わせる
-    const exp = c.end_date + 'T23:59:59+09:00';
+    // 視聴期限：プランが「共通テスト当日まで」なら本番の日、それ以外は期の終了日
+    const kd = olCoKyotsuDate();
+    if (p.access_until === 'kyotsu' && !kd) { alert('このプランは「共通テスト当日まで」視聴できる設定です。先に「📝 模試」タブで本番の日付を保存してください。'); return; }
+    const exp = (p.access_until === 'kyotsu' ? kd : c.end_date) + 'T23:59:59+09:00';
     let granted = 0;
     for (const cid of (p.course_ids || [])) {
       const ex = await sbGet('online_enrollments', 'online_student_id=eq.' + sid + '&online_course_id=eq.' + cid + '&select=id,expires_at&limit=1');
@@ -44191,6 +44239,7 @@ function olPlanEditor(p) {
     +   '<label style="font-size:12px;color:var(--muted)">定員 <input data-f="capacity" type="number" min="1" value="' + p.capacity + '" style="width:56px;' + OL_IN + '">名</label>'
     +   '<label style="font-size:12px;color:var(--muted)">チーム <input data-f="team_size" type="number" min="2" value="' + p.team_size + '" style="width:56px;' + OL_IN + '">人</label>'
     +   '<label style="font-size:12px;color:var(--muted)">受講料 <input data-f="price" type="number" value="' + (p.price || '') + '" style="width:90px;' + OL_IN + '">円</label>'
+    +   ('access_until' in p ? '<label style="font-size:12px;color:var(--muted)">視聴期限 <select data-f="access_until" style="' + OL_IN + '"><option value="cohort_end"' + (p.access_until !== 'kyotsu' ? ' selected' : '') + '>期の終了日まで</option><option value="kyotsu"' + (p.access_until === 'kyotsu' ? ' selected' : '') + '>共通テスト当日まで</option></select></label>' : '')
     + '</div>'
     + '<div style="font-size:12px;font-weight:700;margin:10px 0 4px">受講権を付ける講座</div>'
     + '<div style="display:flex;gap:10px;flex-wrap:wrap">' + olCoState.courses.map(c => '<label style="font-size:13px;display:flex;gap:4px;align-items:center"><input type="checkbox" data-course="' + c.id + '"' + (ids.indexOf(c.id) !== -1 ? ' checked' : '') + '>' + olEsc(c.title) + (c.is_active === false ? '（休止）' : '') + '</label>').join('') + '</div>'
@@ -44217,11 +44266,11 @@ async function olSavePlan(pid) {
   });
   const courses = Array.from(root.querySelectorAll('[data-course]')).filter(x => x.checked).map(x => Number(x.dataset.course));
   try {
-    await sbPatch('online_plans', 'id=eq.' + pid, {
+    await sbPatch('online_plans', 'id=eq.' + pid, Object.assign({
       name: f('name').trim(), months: parseInt(f('months'), 10) || 2, capacity: parseInt(f('capacity'), 10) || 8,
       team_size: parseInt(f('team_size'), 10) || 4, price: parseInt(f('price'), 10) || null,
       course_ids: courses, follow_template: tmpl
-    });
+    }, root.querySelector('[data-f="access_until"]') ? { access_until: f('access_until') } : {}));
     olPlanOpen = pid;
     alert('保存しました');
     await olLoadCohortsTab();
