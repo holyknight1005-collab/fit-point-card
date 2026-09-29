@@ -1571,7 +1571,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
     <div class="form-label">タイトル</div>
     <input class="form-input-sm" id="calreg-title" type="text" placeholder="例：夏期講習スタート / 三者面談" style="margin-bottom:10px">
     <div class="form-label">日付</div>
-    <input class="form-input-sm" id="calreg-date" type="date" style="margin-bottom:10px">
+    <input class="form-input-sm" id="calreg-date" type="date" onchange="calRegOnDateChange()" style="margin-bottom:10px">
     <div class="form-label">終了日（任意・複数日にまたがる帯にする場合）</div>
     <input class="form-input-sm" id="calreg-end-date" type="date" style="margin-bottom:10px">
     <div style="background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:10px">
@@ -6981,7 +6981,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260927onl28';
+const APP_VERSION = '20260929onl29';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -18072,11 +18072,13 @@ function calRegPmSyncPeriod() {
   const note = document.getElementById('calreg-pm-period-note');
   const start = startEl ? startEl.value : '';
   if (!start) { if (note) note.textContent = '時刻を入れると、その時間に近いコマへ自動で割り当てます。'; return; }
-  const p = (typeof nearestPeriodFromTime === 'function') ? nearestPeriodFromTime(start) : null;
+  // 20260929onl29: 予定日の時間割（共通テスト期など）で最寄りの限を決める
+  const calDate = (document.getElementById('calreg-date') || {}).value || '';
+  const p = (typeof nearestPeriodFromTime === 'function') ? nearestPeriodFromTime(start, calDate || null) : null;
   if (p != null) {
     const pf = document.getElementById('calreg-period-from'); if (pf) pf.value = String(p);
     const pt = document.getElementById('calreg-period-to'); if (pt) pt.value = String(p);
-    const tt = (typeof PERIODS !== 'undefined' && PERIODS[p]) ? PERIODS[p] : null;
+    const tt = calDate ? periodTimeOnDate(calDate, p) : (PERIODS[p] || null);
     if (note) note.textContent = '→ ' + p + '限' + (tt ? '（' + tt[0] + '〜' + tt[1] + '）' : '') + ' に表示されます。';
   } else if (note) { note.textContent = ''; }
 }
@@ -18207,9 +18209,31 @@ function calRegInitPeriodFields() {
   const t = document.getElementById('calreg-period-to');
   if (f) { f.innerHTML = opts; f.value = ''; }
   if (t) { t.innerHTML = opts; t.value = ''; }
+  calRegRefreshPeriodLabels();
   const ad = document.getElementById('calreg-allday'); if (ad) ad.checked = false;
   const bl = document.getElementById('calreg-blocks'); if (bl) bl.checked = false;
   calRegToggleAllDay();
+}
+// 20260929onl29: 時限プルダウンの表示に、予定日の時間割の時刻を付ける（その日に無い限は「この日なし」）。
+function calRegRefreshPeriodLabels() {
+  const date = (document.getElementById('calreg-date') || {}).value || '';
+  const tbl = date ? periodsForDate(date) : null;
+  ['calreg-period-from', 'calreg-period-to'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    Array.prototype.forEach.call(sel.options, o => {
+      if (o.value === '') return;
+      const p = parseInt(o.value, 10);
+      if (!tbl) { o.textContent = p + '限'; return; }
+      const tt = tbl[p];
+      o.textContent = p + '限' + (tt ? '（' + tt[0] + '〜' + tt[1] + '）' : '（この日なし）');
+    });
+  });
+}
+function calRegOnDateChange() {
+  if (!wkOverrides) { wkLoadOverrides().then(calRegRefreshPeriodLabels); }
+  calRegRefreshPeriodLabels();
+  if (calRegScope === 'parent_meeting') calRegPmSyncPeriod();
 }
 function calRegToggleAllDay() {
   const ad = document.getElementById('calreg-allday');
@@ -18276,7 +18300,7 @@ async function submitCalendarReg() {
     if (pmE) data.end_time = pmE;
     // コマを時刻から再取得（allDayでない前提）
     if (!calAllDay && pmS) {
-      const p = (typeof nearestPeriodFromTime === 'function') ? nearestPeriodFromTime(pmS) : null;
+      const p = (typeof nearestPeriodFromTime === 'function') ? nearestPeriodFromTime(pmS, date) : null;
       if (p != null) { data.period_from = p; data.period_to = p; }
     }
   }
@@ -18426,6 +18450,7 @@ async function editCalRegEvent(id) {
     if (typeof calRegToggleAllDay === 'function') calRegToggleAllDay();
     const pf = document.getElementById('calreg-period-from'); if (pf) pf.value = (ev.period_from != null ? String(ev.period_from) : '');
     const pt = document.getElementById('calreg-period-to'); if (pt) pt.value = (ev.period_to != null ? String(ev.period_to) : '');
+    calRegRefreshPeriodLabels();
     // 編集モード表示＋ボタン文言更新
     calRegUpdateEditUI();
     // フォームまでスクロール
@@ -22306,35 +22331,93 @@ function closePhotoModal() {
 
 // ===== 授業マスター管理 =====
 const PERIODS = {1:['10:20','11:50'],2:['12:30','14:00'],3:['14:20','15:50'],4:['16:10','17:40'],5:['18:00','19:30'],6:['19:50','21:20']};
+// 20260929onl29: 期間別の時間割（共通テスト期の0〜7限など）。
+// period_time_overrides（wkOverrides にキャッシュ）に、その日付・曜日に該当する行があればその限・時刻を優先し、
+// 無い限は通常の PERIODS を使う（週間時間割の periodTimeFor と同じ規則。中学部の10分短縮は表示側だけで行う）。
+function periodsForDate(dateStr) {
+  const out = {};
+  Object.keys(PERIODS).forEach(p => { out[p] = PERIODS[p].slice(); });
+  if (!dateStr || !wkOverrides || !wkOverrides.length) return out;
+  const ds = String(dateStr).slice(0, 10);
+  const pr = ds.split('-').map(Number);
+  if (pr.length !== 3 || pr.some(isNaN)) return out;
+  const dt = new Date(pr[0], pr[1] - 1, pr[2]);
+  const isodow = dt.getDay() === 0 ? 7 : dt.getDay();
+  const seen = {};
+  wkOverrides.forEach(o => {
+    if (!o || ds < o.start_date || ds > o.end_date) return;
+    if (o.weekdays && o.weekdays.length && o.weekdays.indexOf(isodow) === -1) return;
+    const p = parseInt(o.period, 10);
+    if (isNaN(p) || seen[p]) return;   // 同じ限が重なったら先勝ち（periodTimeFor と同じ）
+    seen[p] = true;
+    out[p] = [String(o.start_time).slice(0, 5), String(o.end_time).slice(0, 5)];
+  });
+  return out;
+}
+// その日の p 限の [開始,終了]。その日に無い限は null。
+function periodTimeOnDate(dateStr, p) {
+  const t = periodsForDate(dateStr)[parseInt(p, 10)];
+  return t ? t.slice() : null;
+}
+// 複数日の限の和集合（昇順）。日付なしなら通常の限。
+function periodNumsForDates(dates) {
+  const set = {};
+  const list = (dates && dates.length) ? dates : [null];
+  list.forEach(d => { Object.keys(periodsForDate(d)).forEach(p => { set[p] = true; }); });
+  return Object.keys(set).map(Number).sort((a, b) => a - b);
+}
+// 通常期＋登録済みの全期間の限（日付未定の選択肢用）。
+function periodNumsAll() {
+  const set = {};
+  Object.keys(PERIODS).forEach(p => { set[p] = true; });
+  (wkOverrides || []).forEach(o => { const p = parseInt(o.period, 10); if (!isNaN(p)) set[p] = true; });
+  return Object.keys(set).map(Number).sort((a, b) => a - b);
+}
+// 複数日の中で最初にその限がある日の時刻（ピッカーの表示用）。日付なしなら通常の時刻。
+function periodTimeForDates(dates, p) {
+  if (!dates || !dates.length) return PERIODS[p] ? PERIODS[p].slice() : null;
+  for (let i = 0; i < dates.length; i++) { const t = periodTimeOnDate(dates[i], p); if (t) return t; }
+  return null;
+}
+// その限の時刻が、指定日のあいだで違うか（ピッカーの注記用）。
+function periodTimeVaries(dates, p) {
+  if (!dates || dates.length < 2) return false;
+  const set = {};
+  dates.forEach(d => { const t = periodTimeOnDate(d, p); set[t ? t.join('-') : 'none'] = true; });
+  return Object.keys(set).length > 1;
+}
 // period=null（限に乗らないイレギュラー時間の授業）を、開始時刻から最寄りの限に寄せる。
 // 週間グリッドは「限」の行にセルを並べる構造のため、時間外授業も一番近い限の枠に表示する。
 // 実際の時刻ラベルはセル側で start_time/end_time をそのまま出すので、寄せるのは「どの行か」だけ。
 // 戻り値: 1〜6 の限番号（判定不能時は null）。
 // dlm170: 時間帯[start,end]に重なる限の配列を返す（イベントの監督不可判定用）。
 //   end 無し/開始と同時刻なら最寄りの限1つ。start 無し（終日予定）は空＝対象外。
-function periodsOverlappingTime(startHHMM, endHHMM) {
+// 20260929onl29: dateStr（任意）を渡すと、その日の時間割（共通テスト期など）で判定する。
+function periodsOverlappingTime(startHHMM, endHHMM, dateStr) {
   function toMin(x){ if(!x) return null; const m=String(x).slice(0,5).match(/^(\d{1,2}):(\d{2})$/); return m ? (parseInt(m[1],10)*60+parseInt(m[2],10)) : null; }
   const s = toMin(startHHMM);
   if (s == null) return [];
   const e = toMin(endHHMM);
-  if (e == null || e <= s) { const p = nearestPeriodFromTime(startHHMM); return (p == null) ? [] : [p]; }
+  if (e == null || e <= s) { const p = nearestPeriodFromTime(startHHMM, dateStr); return (p == null) ? [] : [p]; }
+  const table = dateStr ? periodsForDate(dateStr) : PERIODS;
   const out = [];
-  for (const p in PERIODS) {
-    const ps = toMin(PERIODS[p][0]), pe = toMin(PERIODS[p][1]);
+  for (const p in table) {
+    const ps = toMin(table[p][0]), pe = toMin(table[p][1]);
     if (s < pe && e > ps) out.push(parseInt(p, 10));
   }
   if (out.length) return out;
-  const p = nearestPeriodFromTime(startHHMM); return (p == null) ? [] : [p];
+  const p = nearestPeriodFromTime(startHHMM, dateStr); return (p == null) ? [] : [p];
 }
-function nearestPeriodFromTime(hhmm) {
+function nearestPeriodFromTime(hhmm, dateStr) {
   if (!hhmm) return null;
   const s = String(hhmm).slice(0, 5);
   const m = s.match(/^(\d{1,2}):(\d{2})$/);
   if (!m) return null;
   const mins = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  const table = dateStr ? periodsForDate(dateStr) : PERIODS;
   let best = null, bestDiff = Infinity;
-  for (const p in PERIODS) {
-    const st = PERIODS[p][0].split(':');
+  for (const p in table) {
+    const st = table[p][0].split(':');
     const pmin = parseInt(st[0], 10) * 60 + parseInt(st[1], 10);
     const d = Math.abs(pmin - mins);
     if (d < bestDiff) { bestDiff = d; best = parseInt(p, 10); }
@@ -27592,11 +27675,17 @@ function onCsRowFilterChange(selEl) {
   if (rowEl) renderRowClassOptions(rowEl);
 }
 
+// 20260929onl29: 授業日登録の限の選択肢。時刻は日付ごとに違う（共通テスト期など）ので限だけ出し、
+// 実際の時刻は登録時に各日の時間割から決める（プレビューで日付ごとの時刻を確認できる）。
+function csPeriodOptionsHtml() {
+  return periodNumsAll().map(p =>
+    '<option value="' + p + '">' + p + '限' + (PERIODS[p] ? '' : '（期間限定）') + '</option>'
+  ).join('');
+}
+
 function addSessionRow() {
   const rowId = 'row-' + Date.now();
-  const periodOpts = Object.entries(PERIODS).map(([p, t]) =>
-    '<option value="' + p + '">' + p + '限（' + t[0] + '〜' + t[1] + '）</option>'
-  ).join('');
+  const periodOpts = csPeriodOptionsHtml();
 
   const rowHtml = '<div id="' + rowId + '" class="cs-row" style="background:var(--surface2);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px">' +
     '<div style="display:flex;gap:6px">' +
@@ -27761,7 +27850,9 @@ async function previewSessions() {
   if (!dates.length) { showToast('期間内に該当曜日がありません', 'error'); return; }
 
   // rowsからクラス・時限を収集
+  await wkLoadOverrides();   // 20260929onl29: 期間別時間割を確実に読み込んでから時刻を決める
   pendingSessions = [];
+  const csMissing = [];      // その日の時間割に無い限（例：土日の0限・7限）は登録せずに知らせる
   let valid = true;
   // 回数カウントの開始位置（空欄なら回数を振らない）
   const cyYear = parseInt(document.getElementById('cs-cycle-year').value);
@@ -27792,9 +27883,11 @@ async function previewSessions() {
     if (!classSel.value) { valid = false; return; }
     const className = classSel.options[classSel.selectedIndex].dataset.name || classSel.options[classSel.selectedIndex].text;
     const period = parseInt(periodSel.value);
-    const times = PERIODS[period];
     const isNormal = isNormalMap[classSel.value] !== false;
     dates.forEach(d => {
+      const dsKey = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+      const times = periodTimeOnDate(dsKey, period);
+      if (!times) { csMissing.push((d.getMonth()+1) + '/' + d.getDate() + ' ' + period + '限'); return; }
       let cyc = null;
       if (useCycle) {
         if (!cycleCursor[classSel.value]) {
@@ -27818,6 +27911,11 @@ async function previewSessions() {
   });
 
   if (!valid) { showToast('授業を選択してください', 'error'); return; }
+  if (csMissing.length) {
+    const head = csMissing.slice(0, 5).join('、') + (csMissing.length > 5 ? ' ほか' : '');
+    if (!pendingSessions.length) { showToast('選んだ限がその日の時間割にありません（' + head + '）', 'error'); return; }
+    alert('次の日はその限が時間割に無いため、登録から外しました。\n' + csMissing.join('、') + '\n\n（共通テスト期の0限・7限は平日のみです）');
+  }
 
   // プレビュー表示（授業ごとにグループ化＋一括時刻変更ボタン付き）
   renderCsPreview();
@@ -27830,9 +27928,7 @@ async function previewSessions() {
 // ===== 単発登録（特定日に1回だけ追加） =====
 function addSpotSessionRow() {
   const rowId = 'spotrow-' + Date.now();
-  const periodOpts = Object.entries(PERIODS).map(([p, t]) =>
-    '<option value="' + p + '">' + p + '限（' + t[0] + '〜' + t[1] + '）</option>'
-  ).join('');
+  const periodOpts = csPeriodOptionsHtml();
   const rowHtml = '<div id="' + rowId + '" class="cs-spot-row" style="background:var(--surface2);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px">' +
     '<div style="display:flex;gap:6px">' +
       '<select class="form-select cs-subj-sel" onchange="onCsRowFilterChange(this)" style="flex:1;font-size:12px">' + csSubjectOptsHtml() + '</select>' +
@@ -27868,6 +27964,10 @@ async function previewSpotSessions() {
     rowData.push({ classId: classSel.value, className, period });
   });
   if (!valid) { showToast('授業を選択してください', 'error'); return; }
+  // 20260929onl29: その日の時間割（共通テスト期など）に無い限はエラーにする
+  await wkLoadOverrides();
+  const spotBad = rowData.filter(rd => !periodTimeOnDate(dateStr, rd.period)).map(rd => rd.period + '限');
+  if (spotBad.length) { showToast('この日の時間割に ' + [...new Set(spotBad)].join('・') + ' はありません', 'error'); return; }
 
   // 補習でなければ、授業ごとに登録済みの続き番号を自動採番
   const cursor = {};
@@ -27890,7 +27990,7 @@ async function previewSpotSessions() {
   }
 
   rowData.forEach(rd => {
-    const times = PERIODS[rd.period];
+    const times = periodTimeOnDate(dateStr, rd.period);
     let cyc = null;
     if (!isMakeup && cursor[rd.classId]) {
       cyc = { ...cursor[rd.classId] };
@@ -27965,15 +28065,25 @@ function csBulkTime(classId) {
     sub: (cur.class_name || '') + '（' + list.length + '日ぶんまとめて）',
     period: (cur.period == null ? null : parseInt(cur.period, 10)),
     start: cur.start_time || '', end: cur.end_time || '',
+    dates: list.map(s => s.session_date),
     onConfirm: function(res) {
+      // 20260929onl29: 限で選んだときは各日の時間割（共通テスト期など）の時刻を入れる。その日に無い限は変更しない。
+      const skipped = [];
       pendingSessions.forEach(s => {
         if (s.class_master_id === classId) {
-          s.period = res.period;
-          s.start_time = res.start;
-          s.end_time = res.end;
+          if (res.period != null) {
+            const tt = periodTimeOnDate(s.session_date, res.period);
+            if (!tt) { skipped.push(s.session_date.slice(5).replace('-', '/')); return; }
+            s.period = res.period; s.start_time = tt[0]; s.end_time = tt[1];
+          } else {
+            s.period = null;
+            s.start_time = res.start;
+            s.end_time = res.end;
+          }
         }
       });
       renderCsPreview();
+      if (skipped.length) { alert(res.period + '限が時間割に無い日は変更していません：\n' + skipped.join('、')); }
       showToast('⏱ ' + (cur.class_name || '') + ' の時間を一括変更しました', 'success');
     }
   });
@@ -28355,10 +28465,16 @@ const WK_DEFAULT_PERIODS = {
 
 async function wkLoadOverrides() {
   if (wkOverrides) return wkOverrides;
-  wkOverrides = await sbGet('period_time_overrides',
-    'select=label,start_date,end_date,weekdays,period,start_time,end_time').catch(() => []) || [];
-  return wkOverrides;
+  // 20260929onl29: 失敗時はキャッシュせず次回また取りに行く（空で固定されると期間別時間割が効かなくなるため）
+  try {
+    const d = await sbGet('period_time_overrides',
+      'select=label,start_date,end_date,weekdays,period,start_time,end_time');
+    wkOverrides = Array.isArray(d) ? d : [];
+    return wkOverrides;
+  } catch (e) { return []; }
 }
+// 20260929onl29: 授業日登録・カレンダー登録でも期間別時間割を使うため、起動直後に先読みしておく。
+setTimeout(function(){ wkLoadOverrides(); }, 0);
 
 // dateStr(YYYY-MM-DD) と period から [開始,終了] を返す。該当なしは既定表、それも無ければ null。
 // 中学部は80分授業のため、各時限の終了を一律10分早める（開始は共通）。
@@ -28587,7 +28703,7 @@ async function loadStuWeekGrid() {
     const cell = {}, usedPeriods = {};
     (sessions || []).forEach(s => {
       // period=null（イレギュラー時間）は開始時刻から最寄りの限に寄せて表示する
-      const p = (s.period == null) ? nearestPeriodFromTime(s.start_time) : parseInt(s.period, 10);
+      const p = (s.period == null) ? nearestPeriodFromTime(s.start_time, s.session_date) : parseInt(s.period, 10);
       if (p == null || isNaN(p)) return;
       // 長文読解などの preferred_period：自分のコマだけ
       const pref = prefOf[s.class_master_id];
@@ -28842,7 +28958,7 @@ async function loadWeekGrid() {
       // dlm131: 「自分の予定」表示時は、自分が担当する授業だけ
       if (wkMineOnly && !wkMineClassIds.has(s.class_master_id)) return;
       // period=null（イレギュラー時間）は開始時刻から最寄りの限に寄せて表示する
-      const p = (s.period == null) ? nearestPeriodFromTime(s.start_time) : parseInt(s.period, 10);
+      const p = (s.period == null) ? nearestPeriodFromTime(s.start_time, s.session_date) : parseInt(s.period, 10);
       if (p == null || isNaN(p)) return;
       usedPeriods[p] = true;
       const tt = periodTimeFor(s.session_date, p, mdiv);
@@ -30777,6 +30893,7 @@ function openSessionTimeEdit(classId, dateISO, periodStr, startStr, endStr) {
     title: '授業の時間を変更',
     sub: p[1] + '月' + p[2] + '日（' + wd[dt.getDay()] + '）',
     period: curPeriod, start: startStr, end: endStr,
+    date: dateISO,
     onConfirm: async function(res) {
       showLoading('更新中...');
       try {
@@ -31055,7 +31172,7 @@ function openCourseSessionModal() {
 function renderCoursePeriodRow() {
   const row = document.getElementById('course-period-row');
   if (!row) return;
-  row.innerHTML = periodButtonsHtml(courseBulkTime.period, 'setCourseBulkPeriod');
+  row.innerHTML = periodButtonsHtml(courseBulkTime.period, 'setCourseBulkPeriod', periodNumsForDates([...courseSelectedDates].sort()));
   const customRow = document.getElementById('course-custom-row');
   if (courseBulkTime.period === null) {
     customRow.style.display = 'flex';
@@ -31071,8 +31188,9 @@ function setCourseBulkPeriod(p) {
     if (!courseBulkTime.start) { courseBulkTime.start = '17:00'; courseBulkTime.end = '18:30'; }
   } else {
     courseBulkTime.period = p;
-    courseBulkTime.start = PERIODS[p][0];
-    courseBulkTime.end = PERIODS[p][1];
+    const tt = periodTimeForDates([...courseSelectedDates].sort(), p);
+    courseBulkTime.start = tt ? tt[0] : '';
+    courseBulkTime.end = tt ? tt[1] : '';
   }
   renderCoursePeriodRow();
 }
@@ -31089,7 +31207,17 @@ function applyCourseTimeToAll() {
     courseDateTimes[d] = Object.assign({}, courseBulkTime);
   });
   renderCourseDateList();
+  const bad = Object.keys(courseDateTimes).filter(d => courseTimeOf(d).invalid);
+  if (bad.length) { showToast(courseBulkTime.period + '限が時間割に無い日があります（⚠️の日を個別に変更してください）', 'error'); return; }
   showToast('全日に時間を適用しました', 'success');
+}
+// 20260929onl29: 講習登録の各日の時間。限で選んだ日は、その日の時間割（共通テスト期など）から時刻を決め直す。
+// その日に無い限なら invalid:true（一覧に⚠️、登録時はエラー）。
+function courseTimeOf(d) {
+  const t = courseDateTimes[d] || courseBulkTime;
+  if (t.period == null) return t;
+  const tt = periodTimeOnDate(d, t.period);
+  return tt ? { period: t.period, start: tt[0], end: tt[1] } : { period: t.period, start: null, end: null, invalid: true };
 }
 
 // 各日リスト（タップで個別の時間ピッカー）
@@ -31100,8 +31228,8 @@ function renderCourseDateList() {
   document.getElementById('course-modal-dates').innerHTML = dates.map(d => {
     const p = d.split('-').map(Number);
     const dt = new Date(p[0], p[1]-1, p[2]);
-    const t = courseDateTimes[d] || courseBulkTime;
-    const tLabel = (t.period ? t.period + '限 ' : '') + (t.start || '') + '〜' + (t.end || '');
+    const t = courseTimeOf(d);
+    const tLabel = t.invalid ? ('⚠️ ' + t.period + '限はこの日なし') : ((t.period != null ? t.period + '限 ' : '') + (t.start || '') + '〜' + (t.end || ''));
     return '<div onclick="openTimePickerForCourseDate(\'' + d + '\')" style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;cursor:pointer">' +
       '<span style="font-size:12px;font-weight:700;color:var(--text)">' + p[1] + '/' + p[2] + '（' + wd[dt.getDay()] + '）</span>' +
       '<span style="font-size:11px;color:#2D6DB5;font-weight:700">' + tLabel + ' ✎</span></div>';
@@ -31117,6 +31245,7 @@ function openTimePickerForCourseDate(dateISO) {
     title: '時間を変更',
     sub: p[1] + '月' + p[2] + '日（' + wd[dt.getDay()] + '）',
     period: t.period, start: t.start, end: t.end,
+    date: dateISO,
     onConfirm: function(res) {
       courseDateTimes[dateISO] = { period: res.period, start: res.start, end: res.end };
       renderCourseDateList();
@@ -31223,6 +31352,10 @@ async function submitCourseSessions() {
   const schoolOn = !!document.getElementById('course-school-on')?.checked;
   const schoolVal = courseSchoolValue();
   if (schoolOn && !schoolVal) { showToast('学校を選んでください', 'error'); return; }
+  // 20260929onl29: その日の時間割に無い限が残っていたら止める
+  await wkLoadOverrides();
+  const badCourse = dates.filter(d => courseTimeOf(d).invalid);
+  if (badCourse.length) { showToast(badCourse.map(d => d.slice(5).replace('-', '/')).join('、') + ' は選んだ限が時間割にありません', 'error'); return; }
   showLoading('登録中...');
   // dkr: 学校別回で「引き継ぐ回番号」が指定されていれば、自動採番せずその回番号を全日に付ける。
   let fixedCyc = null;
@@ -31244,7 +31377,7 @@ async function submitCourseSessions() {
   }
   let success = 0;
   for (const d of dates) {
-    const t = courseDateTimes[d] || courseBulkTime;
+    const t = courseTimeOf(d);
     // fixedCyc があれば全日その番号、無ければ cursor（自動採番）
     const useCyc = fixedCyc || cursor;
     const payload = {
@@ -31286,10 +31419,12 @@ async function submitCourseSessions() {
   loadStaffHomeCalendar();
 }
 
-// ===== 共通：時限ボタン群のHTML（時限1-6＋カスタム）=====
-function periodButtonsHtml(activePeriod, onclickFn) {
+// ===== 共通：時限ボタン群のHTML（時限＋カスタム）=====
+// 20260929onl29: nums（限の配列）を渡すとその限を並べる（共通テスト期は0〜7限）。省略時は通常の1〜6限。
+function periodButtonsHtml(activePeriod, onclickFn, nums) {
   let h = '';
-  for (let i = 1; i <= 6; i++) {
+  const list = (nums && nums.length) ? nums : Object.keys(PERIODS).map(Number);
+  for (const i of list) {
     const on = activePeriod === i;
     h += '<button type="button" onclick="' + onclickFn + '(' + i + ')" style="padding:6px 10px;font-size:11px;font-weight:700;border-radius:8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;border:1.5px solid ' + (on ? 'var(--orange)' : 'var(--border)') + ';background:' + (on ? 'var(--orange)' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--text)') + '">' + i + '限</button>';
   }
@@ -31299,21 +31434,34 @@ function periodButtonsHtml(activePeriod, onclickFn) {
 }
 
 // ===== 共通：時間ピッカーモーダル =====
-let timePickerState = { period: 6, start: '', end: '', onConfirm: null };
+let timePickerState = { period: 6, start: '', end: '', onConfirm: null, dates: null };
+// 20260929onl29: opts.date / opts.dates（YYYY-MM-DD）を渡すと、その日の時間割の限・時刻で選べる。
 function openTimePicker(opts) {
+  const dts = (opts.dates && opts.dates.length) ? opts.dates.slice().sort() : (opts.date ? [opts.date] : null);
   timePickerState = {
     period: (opts.period === undefined ? 6 : opts.period),
     start: opts.start || '',
     end: opts.end || '',
-    onConfirm: opts.onConfirm || null
+    onConfirm: opts.onConfirm || null,
+    dates: dts
   };
+  if (!wkOverrides) wkLoadOverrides().then(function(){ if (document.getElementById('time-picker-modal').style.display === 'flex') renderTimePicker(); });
   document.getElementById('time-picker-title').textContent = opts.title || '時間を選ぶ';
   document.getElementById('time-picker-sub').textContent = opts.sub || '';
   renderTimePicker();
   document.getElementById('time-picker-modal').style.display = 'flex';
 }
 function renderTimePicker() {
-  document.getElementById('tp-period-row').innerHTML = periodButtonsHtml(timePickerState.period, 'setTimePickerPeriod');
+  const tpDates = timePickerState.dates;
+  let tpNote = '';
+  if (timePickerState.period !== null) {
+    const tt = periodTimeForDates(tpDates, timePickerState.period);
+    if (!tt) tpNote = '⚠️ この日の時間割に ' + timePickerState.period + '限 はありません';
+    else if (periodTimeVaries(tpDates, timePickerState.period)) tpNote = timePickerState.period + '限：日付により時刻が異なります（各日の時間割で登録）';
+    else tpNote = timePickerState.period + '限：' + tt[0] + '〜' + tt[1];
+  }
+  document.getElementById('tp-period-row').innerHTML = periodButtonsHtml(timePickerState.period, 'setTimePickerPeriod', periodNumsForDates(tpDates))
+    + (tpNote ? '<div style="width:100%;font-size:11px;color:var(--muted);margin-top:2px">' + tpNote + '</div>' : '');
   const customRow = document.getElementById('tp-custom-row');
   if (timePickerState.period === null) {
     customRow.style.display = 'flex';
@@ -31329,8 +31477,9 @@ function setTimePickerPeriod(p) {
     if (!timePickerState.start) { timePickerState.start = '17:00'; timePickerState.end = '18:30'; }
   } else {
     timePickerState.period = p;
-    timePickerState.start = PERIODS[p][0];
-    timePickerState.end = PERIODS[p][1];
+    const tt = periodTimeForDates(timePickerState.dates, p);
+    timePickerState.start = tt ? tt[0] : '';
+    timePickerState.end = tt ? tt[1] : '';
   }
   renderTimePicker();
 }
@@ -31346,7 +31495,9 @@ function confirmTimePicker() {
     if (e <= s) { showToast('終了は開始より後にしてください', 'error'); return; }
     res = { period: null, start: s, end: e };
   } else {
-    res = { period: timePickerState.period, start: PERIODS[timePickerState.period][0], end: PERIODS[timePickerState.period][1] };
+    const tt = periodTimeForDates(timePickerState.dates, timePickerState.period);
+    if (!tt) { showToast('この日の時間割に ' + timePickerState.period + '限 はありません', 'error'); return; }
+    res = { period: timePickerState.period, start: tt[0], end: tt[1] };
   }
   const cb = timePickerState.onConfirm;
   closeTimePicker();
