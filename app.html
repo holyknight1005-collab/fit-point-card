@@ -726,7 +726,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <div style="font-size:13px;font-weight:700;color:#C0392B;margin-bottom:4px">この日の在室ポイントは0ポイントです</div>
       <div style="font-size:12px;color:#943126;line-height:1.6">チェックアウトを押さなかったため、ポイントは失効しました。</div>
     </div>
-    <div style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:18px">⏰ <b style="color:var(--orange-d)">チェックアウトは毎日 21:40 までに</b>押してください。<br>21:40 を過ぎると自動でその日の在室は終了となり、ポイントは付きません。帰るときは必ずチェックアウトボタンを押しましょう。</div>
+    <div style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:18px">⏰ <b style="color:var(--orange-d)">チェックアウトは毎日 <span class="js-close-time">21:40</span> までに</b>押してください。<br><span class="js-close-time">21:40</span> を過ぎると自動でその日の在室は終了となり、ポイントは付きません。帰るときは必ずチェックアウトボタンを押しましょう。</div>
     <button onclick="closeForgotCheckout()" style="width:100%;background:var(--orange);color:#fff;border:none;border-radius:10px;padding:12px;font-size:15px;font-weight:700;cursor:pointer">確認しました</button>
   </div>
 </div>
@@ -2067,7 +2067,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <button onclick="openQrCheckin()" style="width:100%;margin-bottom:8px;padding:10px;background:white;border:1.5px solid #2D5FA6;border-radius:var(--radius-sm);color:#1A3D7A;font-family:'Noto Sans JP',sans-serif;font-size:12px;font-weight:700;cursor:pointer">
         📷 QRでチェックアウト<span style="display:block;font-size:10px;font-weight:400;opacity:0.85;margin-top:2px">位置情報が使えない方はこちら</span>
       </button>
-      <div style="font-size:10px;color:var(--muted);text-align:center;line-height:1.6">⏰ チェックアウトは <b style="color:var(--orange-d)">21:40まで</b>に・fitの中で押してください<br>押し忘れ／範囲外だとポイントは入りません</div>
+      <div style="font-size:10px;color:var(--muted);text-align:center;line-height:1.6">⏰ <b style="color:var(--orange-d)"><span class="js-close-time">21:40</span>までにチェックアウトをお願いします</b>（fitの中で押してください）<br>押し忘れ／範囲外だとポイントは入りません</div>
     </div>
 
     <!-- ③ チェックアウト完了 -->
@@ -6986,7 +6986,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261001onl35';
+const APP_VERSION = '20261001onl37';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -9574,14 +9574,14 @@ const AUTO_CLOSE_HH = 21, AUTO_CLOSE_MM = 40;
 // 締め時刻はその日の 21:40（JST）に統一。stay_minutes=0 なのでポイントは入らない。
 async function cleanupStaleCheckins() {
   try {
+    await wkLoadOverrides();   // 20261001onl37: 期間設定（締め時刻）を読んでから
     const today = getTodayJST();
     const stale = await sbGet('checkins',
       'checkin_date=lt.' + today + '&checkout_time=is.null&select=id,checkin_date&limit=500');
     if (!stale || !stale.length) return;
-    const hh = String(AUTO_CLOSE_HH).padStart(2,'0'), mm = String(AUTO_CLOSE_MM).padStart(2,'0');
     for (const row of stale) {
-      // その日の 21:40（JST）を擬似チェックアウト時刻にする
-      const closeTime = new Date(row.checkin_date + 'T' + hh + ':' + mm + ':00+09:00').toISOString();
+      // その日の締め時刻（通常21:40／期間設定があればその時刻）を擬似チェックアウト時刻にする
+      const closeTime = new Date(row.checkin_date + 'T' + closeHHMMFor(row.checkin_date) + ':00+09:00').toISOString();
       try { await sbPatch('checkins', 'id=eq.' + row.id, { checkout_time: closeTime, stay_minutes: 0, valid_minutes: 0 }); }
       catch (e) { await sbPatch('checkins', 'id=eq.' + row.id, { checkout_time: closeTime, stay_minutes: 0 }); }
     }
@@ -9594,18 +9594,18 @@ async function cleanupStaleCheckins() {
 // スタッフ端末が開いていれば initStaff とポーリングから呼ばれ、自動で締まる。
 async function closeTodayCheckinsAt2140() {
   try {
+    await wkLoadOverrides();   // 20261001onl37
     const today = getTodayJST();
-    // 現在のJST時刻が 21:40 を過ぎているか判定
+    // 現在のJST時刻がその日の締め時刻（通常21:40／期間設定）を過ぎているか判定
     const nowJST = new Date(Date.now() + 9 * 60 * 60 * 1000);
     const nowMin = nowJST.getUTCHours() * 60 + nowJST.getUTCMinutes();
-    if (nowMin < AUTO_CLOSE_HH * 60 + AUTO_CLOSE_MM) return 0; // まだ21:40前なら何もしない
+    if (nowMin < closeMinFor(today)) return 0; // まだ締め時刻前なら何もしない
 
     const open = await sbGet('checkins',
       'checkin_date=eq.' + today + '&checkout_time=is.null&select=id&limit=500');
     if (!open || !open.length) return 0;
 
-    const hh = String(AUTO_CLOSE_HH).padStart(2,'0'), mm = String(AUTO_CLOSE_MM).padStart(2,'0');
-    const closeTime = new Date(today + 'T' + hh + ':' + mm + ':00+09:00').toISOString();
+    const closeTime = new Date(today + 'T' + closeHHMMFor(today) + ':00+09:00').toISOString();
     for (const row of open) {
       try { await sbPatch('checkins', 'id=eq.' + row.id, { checkout_time: closeTime, stay_minutes: 0, valid_minutes: 0 }); }
       catch (e) { await sbPatch('checkins', 'id=eq.' + row.id, { checkout_time: closeTime, stay_minutes: 0 }); }
@@ -9630,19 +9630,19 @@ async function checkForgotCheckout() {
       'student_id=eq.' + currentStudent.id + '&checkout_time=is.null&select=id,checkin_date&order=checkin_date.asc&limit=200');
     if (!rows || !rows.length) return;
 
-    // 当日が締め対象になるのは「現在が21:40を過ぎている」場合のみ
+    // 当日が締め対象になるのは「現在がその日の締め時刻（通常21:40／期間設定）を過ぎている」場合のみ
+    await wkLoadOverrides();   // 20261001onl37
     const nowJST = new Date(Date.now() + 9 * 60 * 60 * 1000);
     const nowMin = nowJST.getUTCHours() * 60 + nowJST.getUTCMinutes();
-    const past2140Today = nowMin >= AUTO_CLOSE_HH * 60 + AUTO_CLOSE_MM;
+    const past2140Today = nowMin >= closeMinFor(today);
 
-    const hh = String(AUTO_CLOSE_HH).padStart(2,'0'), mm = String(AUTO_CLOSE_MM).padStart(2,'0');
     const targets = rows.filter(r => r.checkin_date < today || (r.checkin_date === today && past2140Today));
     if (!targets.length) return;
 
     const closedDates = [];
     for (const row of targets) {
       // その日の 21:40（JST）を退室時刻として締める（stay_minutes=0＝ポイントなし）
-      const closeTime = new Date(row.checkin_date + 'T' + hh + ':' + mm + ':00+09:00').toISOString();
+      const closeTime = new Date(row.checkin_date + 'T' + closeHHMMFor(row.checkin_date) + ':00+09:00').toISOString();
       try {
         try { await sbPatch('checkins', 'id=eq.' + row.id, { checkout_time: closeTime, stay_minutes: 0, valid_minutes: 0 }); }
         catch (e0) { await sbPatch('checkins', 'id=eq.' + row.id, { checkout_time: closeTime, stay_minutes: 0 }); }
@@ -11135,7 +11135,7 @@ function isEventVisibleTo(ev, viewer) {  const sc = ev.scope || 'all';   // NULL
   }
   if (viewer.kind !== 'staff') {
     // 生徒・保護者向けホワイトリスト：許可は school_grade（生徒のみ・学校/学年一致）だけ
-    if (sc === 'school_grade' && viewer.kind === 'student') {
+    if ((sc === 'school_grade' || sc === 'testprep') && viewer.kind === 'student') {   // 20261001onl36: テスト対策も対象の学校・学年の生徒に表示
       const schools = (ev.target_schools || '').split(',').filter(Boolean);
       const grades = (ev.target_grades || '').split(',').filter(Boolean);
       const schoolOK = !schools.length || schools.includes(viewer.school || '');
@@ -11150,7 +11150,7 @@ function isEventVisibleTo(ev, viewer) {  const sc = ev.scope || 'all';   // NULL
     // 個人の予定は作成者本人だけ
     return ev.created_by && ev.created_by === viewer.id;
   }
-  if (sc === 'school_staff') {
+  if (sc === 'school_staff' || sc === 'testprep') {   // 20261001onl36: テスト対策は担当講師（created_by）＋その学校の担当スタッフ
     // dlm131: 対象学校(target_schools)の担当スタッフ＋作成者本人だけに見せる。
     if (ev.created_by && ev.created_by === viewer.id) return true; // 作成者本人
     if (viewer.admin) return false;                               // adminは担当扱いにしない
@@ -15679,6 +15679,9 @@ var FEATURE_CATALOG = [
   { key:'demo',          icon:'🧪', label:'デモ確認',     action:function(){ openHomeFeature('demo'); } },
   { key:'revenue',       icon:'💰', label:'売上',         action:function(){ openHomeFeature('revenue'); },
     visible:function(){ return (currentStaff && currentStaff.role === 'admin') || (typeof saMyPerms !== 'undefined' && saMyPerms && saMyPerms.perms && saMyPerms.perms.revenue === true); } },
+  { key:'testprep',      icon:'📝', label:'テスト対策',   action:function(){ openTestPrep(); } },   // 20261001onl36
+  { key:'terms',         icon:'🗓', label:'期間設定',     action:function(){ openTerms(); },
+    visible:function(){ return !!currentStaff && currentStaff.role === 'admin'; } },   // 20261001onl37
   { key:'kubs',          icon:'🧒', label:'小学部(kubs)', action:function(){ openKubs(); },
     visible:function(){ return (typeof canSeeKubs === 'function') && canSeeKubs(); } },   // 20261001onl35: スクパス照合・名簿
   { key:'shortcuts',     icon:'🔗', label:'ショートカット', action:function(){ openShortcuts(); } },
@@ -28530,6 +28533,7 @@ const WK_DEFAULT_PERIODS = {
 };
 
 async function wkLoadOverrides() {
+  if (typeof loadScheduleTerms === 'function') { try { await loadScheduleTerms(); } catch (e) {} }   // 20261001onl37: 期間設定
   if (wkOverrides) return wkOverrides;
   // 20260929onl29: 失敗時はキャッシュせず次回また取りに行く（空で固定されると期間別時間割が効かなくなるため）
   try {
@@ -28797,7 +28801,7 @@ async function loadStuWeekGrid() {
     (checkins || []).forEach(c => {
       const inT = swkJstHHMM(c.created_at);
       const outT = swkJstHHMM(c.checkout_time);
-      const forced = (c.stay_minutes === 0 && outT === '21:40');
+      const forced = (c.stay_minutes === 0 && isAutoClosedAt(c.checkin_date, outT));   // 20261001onl37: 期間設定の締め時刻も
       (stayOf[c.checkin_date] || (stayOf[c.checkin_date] = [])).push({
         inT: inT, outT: outT, forced: forced, mins: c.stay_minutes
       });
@@ -30540,7 +30544,9 @@ function openStaffCalModal(dateISO, simple) {
         ? '<span style="font-size:9px;background:#8A93A6;color:#fff;padding:1px 6px;border-radius:10px;margin-left:6px">🔒個人</span>'
         : (ev.scope === 'school_staff')
           ? '<span style="font-size:9px;background:#2D6CB6;color:#fff;padding:1px 6px;border-radius:10px;margin-left:6px">🧑‍🏫学校担当</span>'
-          : '';
+          : (ev.scope === 'testprep')
+            ? '<span style="font-size:9px;background:#6C5CE7;color:#fff;padding:1px 6px;border-radius:10px;margin-left:6px">📝テスト対策</span>'
+            : '';
       const _pmTime = (ev.scope === 'parent_meeting' && ev.start_time) ? (String(ev.start_time).slice(0,5) + (ev.end_time ? '〜' + String(ev.end_time).slice(0,5) : '')) : '';
       const _pmSch = (ev.scope === 'parent_meeting') ? (ev.target_schools || '').split(',').filter(Boolean).join('・') : '';
       body += '<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid ' + (ev.color || '#F5A623') + ';border-radius:8px;padding:8px 10px;margin-bottom:6px">' +
@@ -31577,6 +31583,11 @@ function closeStaffCalModal() {
 // dlm130: 日別モーダルの予定カード「✏️編集」→ モーダルを閉じ、予定登録フォームを開いて編集モードにする。
 // openCalendarReg はフォームを全リセットするため、必ず開いた後に editCalRegEvent で値を復元する順序にする。
 async function editEventFromModal(id) {
+  // 20261001onl36: テスト対策は専用画面で編集・実施報告
+  try {
+    const r = await sbGet('events', 'id=eq.' + encodeURIComponent(id) + '&select=scope') || [];
+    if (r[0] && r[0].scope === 'testprep') { closeStaffCalModal(); openTestPrep(id); return; }
+  } catch (e) {}
   closeStaffCalModal();
   await openCalendarReg();
   await editCalRegEvent(id);
@@ -37801,6 +37812,8 @@ async function loadKomaCount() {
     return;
   }
   reps = reps || []; sess = sess || []; cms = cms || []; svAssigns = svAssigns || [];
+  // 20261001onl36: テスト対策（実施報告済み＝1コマ／未報告＝未記入）
+  const tpByStaff = (typeof tpKomaByStaffCode === 'function') ? await tpKomaByStaffCode(from, to) : {};
 
   // 授業マスタのマップ
   const cmById = {};
@@ -37897,7 +37910,7 @@ async function loadKomaCount() {
   };
 
   // 行を組む（授業を書いた人 ∪ 自習監督が決まった人）
-  const staffIdSet = new Set([...Object.keys(byStaff), ...Object.keys(svByStaff)]);
+  const staffIdSet = new Set([...Object.keys(byStaff), ...Object.keys(svByStaff), ...Object.keys(tpByStaff)]);
   const rows = [...staffIdSet].map(sid => {
     const myClassIds = codeToClassIds[sid] || new Set();
     const cidSet = new Set(Object.keys(byStaffClass[sid] || {}));
@@ -37924,6 +37937,9 @@ async function loadKomaCount() {
       };
     });
     breakdown.sort((a, b) => kcSortKey(a) - kcSortKey(b) || (a.name < b.name ? -1 : 1));
+    // 20261001onl36: テスト対策は「その他」コマとして1行にまとめる
+    const tp = tpByStaff[sid];
+    if (tp) breakdown.push({ cid: 'testprep', name: '📝 テスト対策', category: 'regular_test', division: '', bucket: 'other', count: tp.done, plan: tp.plan, unfilled: tp.pending, people: 0 });
 
     // 中学/高校/その他/浪人 コマ数。浪人は plan(実開講数) を count に入れてあるのでそのまま合算。
     let jhsKoma = 0, hsKoma = 0, otherKoma = 0, roninKoma = 0;
@@ -37942,6 +37958,7 @@ async function loadKomaCount() {
       classUnfilled += (classPlan[cid] || {}).unfilled || 0;
     });
 
+    if (tp) classUnfilled += tp.pending;   // 20261001onl36: テスト対策の未報告も未記入に含める
     // 自習監督
     const sv = svByStaff[sid] || { koma: 0, unfilled: 0 };
     const svKoma = sv.koma, svUnfilled = sv.unfilled;
@@ -38264,13 +38281,14 @@ function svIsSpecialDay(iso) {
 //  通常の日：限番号の範囲で判定（従来どおり）。
 //  共通テスト期などの日：限の時間の半分以上が「通常期の from限開始〜to限終了」の勤務時間帯に入れば勤務内。
 function svShiftCovers(t, p, iso) {
-  if (!t || t.off || t.from == null || !t.from) return false;
-  if (!iso || !svIsSpecialDay(iso)) return p >= t.from && p <= t.to;
-  const f = PERIODS[t.from], e = PERIODS[t.to], tt = periodTimeOnDate(iso, p);
-  if (!f || !e || !tt) return false;
-  const m = (x) => { const a = String(x).split(':'); return parseInt(a[0], 10) * 60 + parseInt(a[1], 10); };
-  const ov = Math.min(m(tt[1]), m(e[1])) - Math.max(m(tt[0]), m(f[0]));   // 重なっている分数
-  return ov > 0 && ov * 2 >= (m(tt[1]) - m(tt[0]));                         // 限の半分以上が勤務時間帯に入れば勤務内
+  // 20261001onl37: 限番号で判定（0〜7限）。6限まで登録＝通常期の最後まで → その日の最後の限（共通テスト期の平日は7限）まで勤務内。
+  if (!t || t.off || t.from == null) return false;
+  let last = t.to;
+  if (t.to >= 6 && iso && typeof periodNumsForDates === 'function') {
+    const nums = periodNumsForDates([iso]);
+    if (nums.length) last = Math.max(t.to, nums[nums.length - 1]);
+  }
+  return p >= t.from && p <= last;
 }
 // その日の時間割に無い限のセル（例：共通テスト期の土日の0限・7限）
 function svNoSlotCellTd() {
@@ -38327,8 +38345,8 @@ async function svLoadMyShiftTemplate() {
     const rows = await sbGet('staff_shift_template',
       'staff_id=eq.' + encodeURIComponent(sid) + '&select=dow,work_from_period,work_to_period') || [];
     rows.forEach(r => {
-      const from = (r.work_from_period == null) ? 0 : Number(r.work_from_period);
-      if (!from) return; // 0/NULL=休み
+      if (r.work_from_period == null) return; // NULL=休み（20261001onl37: 0限から勤務も可）
+      const from = Number(r.work_from_period);
       _svMyShiftTemplate[Number(r.dow)] = { from: from, to: (r.work_to_period == null ? 6 : Number(r.work_to_period)) };
     });
   } catch (e) { _svMyShiftTemplate = {}; }
@@ -38353,7 +38371,7 @@ function svShiftDraftFromTemplate() {
   for (const dow of [1,2,3,4,5,6,0]) {
     const t = _svMyShiftTemplate[dow];
     d[dow] = new Set();
-    if (t && t.from) { for (let p = t.from; p <= t.to; p++) d[dow].add(p); }
+    if (t && t.from != null) { for (let p = t.from; p <= t.to; p++) d[dow].add(p); }
   }
   return d;
 }
@@ -38374,10 +38392,10 @@ function svRenderShiftTemplateUI() {
     const isOff = sel.size === 0;
     h += '<div style="display:flex;align-items:center;gap:6px">';
     h += '<div style="width:26px;font-weight:700;font-size:13px;color:' + (isOff ? '#B03A34' : 'var(--text)') + '">' + wl[dow] + '</div>';
-    for (let p = 1; p <= 6; p++) {
+    for (const p of (typeof periodNumsAll === 'function' ? periodNumsAll() : [1,2,3,4,5,6])) {   // 20261001onl37: 0〜7限
       const on = sel.has(p);
       h += '<button type="button" onclick="svToggleShiftCell(' + dow + ',' + p + ')" ' +
-        'style="width:34px;height:32px;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer;' +
+        'style="width:30px;height:32px;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer;' +
         'font-family:\'Noto Sans JP\',sans-serif;' +
         (on
           ? 'background:#F3D9BF;border:1.5px solid #C88A3E;color:#8a5a1a;'
@@ -38390,7 +38408,7 @@ function svRenderShiftTemplateUI() {
   });
   h += '</div>';
   // 20260929onl31: 共通テスト期（平日0〜7限）の扱いを明記
-  h += '<div style="font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:6px">※ 定型シフトは通常期の限で登録します。共通テスト期の平日は、この勤務時間帯（例：4〜6限＝16:10〜21:20）に半分以上入る限が勤務内になります。</div>';
+  h += '<div style="font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:6px">※ 0限・7限は期間設定（共通テスト期の平日など）がある日だけ使われます。<b>6限まで</b>で登録している曜日は「その日の最後の限まで」とみなすので、共通テスト期の平日は7限も勤務内になります。7限は入れない場合は5限までなどで登録してください。</div>';
   // 保存ボタン（未変更のときは淡く）
   h += '<div style="display:flex;align-items:center;gap:10px;margin-top:10px">' +
     '<button onclick="svSaveShiftTemplate()" style="opacity:' + (_svShiftDirty ? '1' : '0.55') + ';font-size:12px;font-weight:700;background:var(--orange);color:#fff;border:1px solid var(--orange);border-radius:8px;padding:7px 16px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">定型シフトを保存</button>' +
@@ -39776,8 +39794,8 @@ async function svRenderView() {
   // 定型シフトを staff_id×dow でまとめる
   const tmplByStaff = {};
   templates.forEach(r => {
-    const from = (r.work_from_period == null) ? 0 : Number(r.work_from_period);
-    if (!from) return;
+    if (r.work_from_period == null) return;   // 20261001onl37: NULL=休み（0限からも可）
+    const from = Number(r.work_from_period);
     (tmplByStaff[r.staff_id] || (tmplByStaff[r.staff_id] = {}))[Number(r.dow)] = { from: from, to: (r.work_to_period == null ? 6 : Number(r.work_to_period)) };
   });
   // ○希望を staff_id ごとに件数集計（この週）
@@ -55774,7 +55792,7 @@ function isTsushinAutoClosed(c) {
   if (Number(c.stay_minutes || 0) > 0) return false;
   const t = new Date(c.checkout_time);
   const jst = new Date(t.getTime() + 9 * 60 * 60 * 1000);
-  return jst.getUTCHours() === AUTO_CLOSE_HH && jst.getUTCMinutes() === AUTO_CLOSE_MM;
+  return isAutoClosedAt(c.checkin_date, String(jst.getUTCHours()).padStart(2, '0') + ':' + String(jst.getUTCMinutes()).padStart(2, '0'));   // 20261001onl37
 }
 
 // checkin 行から入室・退室の JST 'H:MM' を作る
@@ -67157,6 +67175,527 @@ async function kubsSaveStudent(sid) {
     });
     showToast('保存しました', 'success');
   } catch (e) { showToast('保存に失敗しました', 'error'); }
+}
+
+
+/* ===== テスト対策（臨時授業）  20261001onl36 =====
+   授業マスターを増やさず、events の scope='testprep' として1回＝1行で持つ。
+   ・created_by＝担当講師（staff.id）… 講師本人のカレンダー・週間時間割に出る
+   ・target_schools / target_grades … その学校の担当スタッフと、対象の生徒のカレンダーに出る
+   ・done_at が入ったもの（実施報告済み）をコマ数集計の「その他」に数える */
+const TP_COLOR = '#6C5CE7';
+const TP_SUBJECTS = ['数学', '英語', '国語', '古典', '物理', '化学', '生物', '地学', '日本史', '世界史', '地理', '公共・政経', '理科', '社会'];
+let tpStaffList = null, tpSchools = null, tpForm = null, tpMonth = null, tpScope = 'mine', tpEditId = null;
+
+function tpIsManager() { return !!currentStaff && (currentStaff.role === 'admin' || (typeof canSeeKomaCount === 'function' && canSeeKomaCount())); }
+// 「北2年 物理」の形に（高校は先頭の「松山」を省略、中学は「◯◯中」）
+function tpShortClass(division, school, grade, subject) {
+  const sc = String(school || '');
+  const s = (division === '中学部') ? (sc.endsWith('中') ? sc : sc + '中') : (sc.replace(/^松山/, '') || sc);
+  return s + grade + '年 ' + (subject || '');
+}
+function tpTitle(division, school, grade, subject) { return '📝 ' + tpShortClass(division, school, grade, subject) + '（テスト対策）'; }
+function tpPeriodLabel(ev) {
+  if (ev.period_from == null) return ev.start_time ? String(ev.start_time).slice(0, 5) + (ev.end_time ? '〜' + String(ev.end_time).slice(0, 5) : '') : '';
+  const a = parseInt(ev.period_from, 10), b = (ev.period_to != null ? parseInt(ev.period_to, 10) : a);
+  return (a === b ? a + '限' : a + '〜' + b + '限');
+}
+function tpDateLabel(iso) { const p = iso.split('-').map(Number); const d = new Date(p[0], p[1] - 1, p[2]); return p[1] + '/' + p[2] + '（' + ['日', '月', '火', '水', '木', '金', '土'][d.getDay()] + '）'; }
+
+async function tpLoadMasters() {
+  if (!tpStaffList) {
+    try { tpStaffList = (await sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id') || []).filter(s => String(s.staff_id).toLowerCase() !== 'fit001'); }
+    catch (e) { tpStaffList = []; }
+  }
+  if (!tpSchools) {
+    tpSchools = { '高校部': [], '中学部': [] };
+    try {
+      const rows = await sbGetAll('students', 'select=school,division&order=id') || [];
+      const cnt = { '高校部': {}, '中学部': {} };
+      rows.forEach(r => { if (!r.school || !cnt[r.division]) return; cnt[r.division][r.school] = (cnt[r.division][r.school] || 0) + 1; });
+      Object.keys(cnt).forEach(dv => { tpSchools[dv] = Object.keys(cnt[dv]).sort((a, b) => cnt[dv][b] - cnt[dv][a]); });
+    } catch (e) {}
+    if (!tpSchools['高校部'].length && typeof CALREG_SCHOOLS !== 'undefined') tpSchools['高校部'] = CALREG_SCHOOLS.slice();
+  }
+}
+
+function openTestPrep(editId) {
+  let el = document.getElementById('tp-screen');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'tp-screen';
+    el.style.cssText = 'position:fixed;inset:0;z-index:690;background:var(--bg);display:flex;flex-direction:column;overflow:hidden';
+    el.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border)">' +
+        '<div style="font-size:17px;font-weight:800;color:var(--text);flex:1">📝 テスト対策</div>' +
+        '<button onclick="closeTestPrep()" style="background:none;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;color:var(--muted);cursor:pointer;font-family:inherit">閉じる</button></div>' +
+      '<div id="tp-body" style="flex:1;overflow-y:auto;padding:12px 16px 40px;max-width:820px;width:100%;margin:0 auto;box-sizing:border-box"></div>';
+    document.body.appendChild(el);
+  }
+  el.style.display = 'flex';
+  if (!tpMonth) tpMonth = getTodayJST().slice(0, 7);
+  tpEditId = editId || null;
+  tpRender();
+}
+function closeTestPrep() {
+  const el = document.getElementById('tp-screen'); if (el) el.style.display = 'none';
+  try { if (typeof loadStaffHomeCalendar === 'function') loadStaffHomeCalendar(); } catch (e) {}
+}
+
+function tpNewForm() {
+  return { division: '高校部', school: '', grade: '', subject: '', teacher: currentStaff ? currentStaff.id : '', dates: [], pf: '', pt: '', start: '', end: '', memo: '' };
+}
+
+async function tpRender() {
+  const body = document.getElementById('tp-body');
+  body.innerHTML = '<div style="font-size:13px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
+  await tpLoadMasters();
+  try { if (typeof wkLoadOverrides === 'function') await wkLoadOverrides(); } catch (e) {}
+  if (tpEditId) {
+    try {
+      const rows = await sbGet('events', 'id=eq.' + encodeURIComponent(tpEditId) + '&select=*') || [];
+      const ev = rows[0];
+      if (ev) {
+        tpForm = { division: ev.tp_division || '高校部', school: (ev.target_schools || '').split(',')[0] || '', grade: String(ev.target_grades || ''), subject: ev.tp_subject || '', teacher: ev.created_by || '', dates: [ev.event_date],
+          pf: ev.period_from != null ? String(ev.period_from) : '', pt: ev.period_to != null ? String(ev.period_to) : '', start: ev.start_time ? String(ev.start_time).slice(0, 5) : '', end: ev.end_time ? String(ev.end_time).slice(0, 5) : '', memo: ev.detail || '', editing: ev };
+      }
+    } catch (e) {}
+    tpEditId = null;
+  }
+  if (!tpForm) tpForm = tpNewForm();
+  body.innerHTML = tpFormHtml() + '<div id="tp-list"></div>';
+  tpRenderList();
+}
+
+function tpFormHtml() {
+  const f = tpForm, ed = !!f.editing;
+  const card = 'background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:12px';
+  const lab = 'font-size:12px;font-weight:700;color:var(--muted);margin:10px 0 5px';
+  const chip = (on) => 'padding:6px 11px;border-radius:16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;border:1.5px solid ' + (on ? TP_COLOR : 'var(--border)') + ';background:' + (on ? TP_COLOR : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--text)');
+  let h = '<div style="' + card + '">';
+  h += '<div style="font-size:14px;font-weight:800;color:' + TP_COLOR + '">' + (ed ? '✏️ テスト対策を編集' : '＋ テスト対策を登録') + '</div>';
+  h += '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-top:4px">授業マスターは作りません。担当講師のカレンダー・週間時間割、その学校の担当スタッフ、対象の学校・学年の生徒のカレンダーに出ます。実施後に「実施報告」をするとコマ数（給与）に入ります（6〜7限なら2コマ）。</div>';
+  h += '<div style="' + lab + '">部門・学校</div><div style="display:flex;gap:6px;flex-wrap:wrap">' +
+    ['高校部', '中学部'].map(dv => '<button type="button" onclick="tpSet(\'division\',\'' + dv + '\')" style="' + chip(f.division === dv) + '">' + dv + '</button>').join('') + '</div>';
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + (tpSchools[f.division] || []).map(sc => '<button type="button" onclick="tpSet(\'school\',\'' + escapeAttr(sc) + '\')" style="' + chip(f.school === sc) + '">' + escapeHtml(sc) + '</button>').join('') + '</div>';
+  h += '<div style="' + lab + '">学年</div><div style="display:flex;gap:6px">' + ['1', '2', '3'].map(g => '<button type="button" onclick="tpSet(\'grade\',\'' + g + '\')" style="' + chip(f.grade === g) + '">' + g + '年</button>').join('') + '</div>';
+  h += '<div style="' + lab + '">授業名（講師が入力）</div><input id="tp-subject" list="tp-subject-list" value="' + escapeAttr(f.subject) + '" oninput="tpForm.subject=this.value;tpPreview()" placeholder="例：物理 / 化学 / 数学ⅠA 範囲①" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:9px;font-family:inherit">' +
+    '<datalist id="tp-subject-list">' + TP_SUBJECTS.map(s => '<option value="' + s + '">').join('') + '</datalist>';
+  h += '<div style="' + lab + '">担当講師</div><select onchange="tpForm.teacher=this.value" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:9px;font-family:inherit">' +
+    (tpStaffList || []).map(s => '<option value="' + escapeAttr(s.id) + '"' + (s.id === f.teacher ? ' selected' : '') + '>' + escapeHtml(s.name) + '</option>').join('') + '</select>';
+  h += '<div style="' + lab + '">日付' + (ed ? '' : '（複数選べます）') + '</div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
+    '<input type="date" id="tp-date-in" ' + (ed ? 'value="' + escapeAttr(f.dates[0] || '') + '" onchange="tpForm.dates=[this.value];tpRefreshPeriods()"' : '') + ' style="padding:7px 9px;border:1px solid var(--border);border-radius:9px;font-family:inherit">' +
+    (ed ? '' : '<button type="button" onclick="tpAddDate()" style="padding:7px 12px;border-radius:9px;border:1.5px solid ' + TP_COLOR + ';background:var(--surface);color:' + TP_COLOR + ';font-weight:700;cursor:pointer;font-family:inherit">追加</button>') + '</div>' +
+    (ed ? '' : '<div id="tp-dates" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + tpDatesHtml() + '</div>');
+  h += '<div style="' + lab + '">時限（または時刻）</div><div id="tp-period-box">' + tpPeriodHtml() + '</div>';
+  h += '<div style="' + lab + '">メモ（任意・生徒にも見えます）</div><input value="' + escapeAttr(f.memo) + '" oninput="tpForm.memo=this.value" placeholder="例：範囲 p.40〜62／自習室で実施" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:9px;font-family:inherit">';
+  h += '<div id="tp-preview" style="font-size:12px;color:' + TP_COLOR + ';font-weight:700;margin-top:10px">' + tpPreviewText() + '</div>';
+  h += '<div style="display:flex;gap:8px;margin-top:10px">' +
+    '<button onclick="tpSave()" style="flex:1;padding:11px;background:' + TP_COLOR + ';color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">' + (ed ? '変更を保存' : '登録する') + '</button>' +
+    (ed ? '<button onclick="tpForm=tpNewForm();tpRender()" style="padding:11px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--muted);cursor:pointer;font-family:inherit">やめる</button>' : '') + '</div>';
+  return h + '</div>';
+}
+function tpSet(k, v) {
+  tpForm[k] = v;
+  if (k === 'division') tpForm.school = '';
+  const box = document.getElementById('tp-body');
+  const top = box ? box.scrollTop : 0;
+  const listHtml = (document.getElementById('tp-list') || {}).innerHTML || '';
+  box.innerHTML = tpFormHtml() + '<div id="tp-list">' + listHtml + '</div>';
+  box.scrollTop = top;
+}
+function tpPreviewText() {
+  const f = tpForm;
+  if (!f.school || !f.grade || !String(f.subject).trim()) return '';
+  return 'カレンダー表示：' + tpTitle(f.division, f.school, f.grade, String(f.subject).trim());
+}
+function tpPreview() { const el = document.getElementById('tp-preview'); if (el) el.textContent = tpPreviewText(); }
+function tpDatesHtml() {
+  return tpForm.dates.slice().sort().map(d => '<span style="font-size:12px;background:#EFEBFD;color:' + TP_COLOR + ';border-radius:14px;padding:4px 10px;font-weight:700">' + tpDateLabel(d) +
+    ' <span onclick="tpRemoveDate(\'' + d + '\')" style="cursor:pointer;margin-left:2px">✕</span></span>').join('') || '<span style="font-size:11px;color:var(--muted)">日付を選んで「追加」</span>';
+}
+function tpAddDate() {
+  const v = (document.getElementById('tp-date-in') || {}).value;
+  if (!v) { showToast('日付を選んでください', 'info'); return; }
+  if (tpForm.dates.indexOf(v) === -1) tpForm.dates.push(v);
+  const el = document.getElementById('tp-dates'); if (el) el.innerHTML = tpDatesHtml();
+  tpRefreshPeriods();
+}
+function tpRemoveDate(d) { tpForm.dates = tpForm.dates.filter(x => x !== d); const el = document.getElementById('tp-dates'); if (el) el.innerHTML = tpDatesHtml(); tpRefreshPeriods(); }
+function tpRefreshPeriods() { const el = document.getElementById('tp-period-box'); if (el) el.innerHTML = tpPeriodHtml(); }
+// 選んだ日の時間割に合わせて限の選択肢を出す（共通テスト期の平日は0〜7限）
+function tpPeriodHtml() {
+  const f = tpForm, ds = f.dates.slice().sort();
+  const nums = (typeof periodNumsForDates === 'function') ? periodNumsForDates(ds) : [1, 2, 3, 4, 5, 6];
+  const lbl = (p) => { const t = (typeof periodTimeForDates === 'function') ? periodTimeForDates(ds, p) : null; const v = (typeof periodTimeVaries === 'function') && periodTimeVaries(ds, p); return p + '限' + (t ? '（' + t[0] + (v ? '〜*' : '〜') + '）' : ''); };
+  const sel = (id, val) => '<select id="' + id + '" onchange="tpForm.' + (id === 'tp-pf' ? 'pf' : 'pt') + '=this.value" style="padding:7px;border:1px solid var(--border);border-radius:9px;font-family:inherit"><option value="">―</option>' +
+    nums.map(p => '<option value="' + p + '"' + (String(val) === String(p) ? ' selected' : '') + '>' + lbl(p) + '</option>').join('') + '</select>';
+  return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' + sel('tp-pf', f.pf) + '<span>〜</span>' + sel('tp-pt', f.pt) +
+    '<span style="font-size:11px;color:var(--muted);margin-left:6px">または時刻</span>' +
+    '<input type="time" value="' + escapeAttr(f.start) + '" onchange="tpForm.start=this.value" style="padding:6px;border:1px solid var(--border);border-radius:8px;font-family:inherit">〜' +
+    '<input type="time" value="' + escapeAttr(f.end) + '" onchange="tpForm.end=this.value" style="padding:6px;border:1px solid var(--border);border-radius:8px;font-family:inherit"></div>' +
+    (nums.some(p => (typeof periodTimeVaries === 'function') && periodTimeVaries(ds, p)) ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">* 日によって時刻が違う限（共通テスト期の平日と土日など）。各日の時間割で表示されます。</div>' : '');
+}
+
+async function tpSave() {
+  const f = tpForm, ed = f.editing;
+  const subject = String(f.subject || '').trim();
+  if (!f.school) return showToast('学校を選んでください', 'error');
+  if (!f.grade) return showToast('学年を選んでください', 'error');
+  if (!subject) return showToast('授業名を入力してください', 'error');
+  if (!f.teacher) return showToast('担当講師を選んでください', 'error');
+  if (!f.dates.length) return showToast('日付を選んで「追加」してください', 'error');
+  const pf = f.pf === '' ? null : parseInt(f.pf, 10);
+  let pt = f.pt === '' ? null : parseInt(f.pt, 10);
+  if (pf == null && !f.start) return showToast('時限か開始時刻を入れてください', 'error');
+  if (pf != null && pt == null) pt = pf;
+  if (pf != null && pt < pf) return showToast('終わりの限は始まりの限以降にしてください', 'error');
+  if (pf != null && typeof periodTimeOnDate === 'function') {
+    const bad = f.dates.filter(d => !periodTimeOnDate(d, pf) || !periodTimeOnDate(d, pt));
+    if (bad.length) return showToast(bad.map(tpDateLabel).join('・') + ' はその限が時間割にありません', 'error');
+  }
+  const base = {
+    title: tpTitle(f.division, f.school, f.grade, subject), color: TP_COLOR, scope: 'testprep',
+    target_schools: f.school, target_grades: String(f.grade), created_by: f.teacher,
+    period_from: pf, period_to: pf == null ? null : pt, start_time: f.start || null, end_time: f.end || null,
+    all_day: false, blocks_class: false, detail: (f.memo || '').trim() || null,
+    tp_subject: subject, tp_division: f.division
+  };
+  showLoading(ed ? '保存中...' : '登録中...');
+  try {
+    if (ed) {
+      await sbPatch('events', 'id=eq.' + encodeURIComponent(ed.id), Object.assign({}, base, { event_date: f.dates[0] }));
+    } else {
+      const by = (currentStaff && currentStaff.staff_id) || null;
+      const rows = f.dates.slice().sort().map(d => Object.assign({}, base, { event_date: d, registered_by: by }));
+      await sbPost('events', rows);
+    }
+    hideLoading();
+    showToast(ed ? '変更しました' : f.dates.length + '回分を登録しました', 'success');
+    const keepMonth = f.dates.slice().sort()[0];
+    tpForm = tpNewForm();
+    if (keepMonth) tpMonth = keepMonth.slice(0, 7);
+    tpRender();
+  } catch (e) {
+    hideLoading();
+    // updated_at 列が無い環境向けに一度だけ外して再試行
+    if (ed && /updated_at/.test(String(e.message || ''))) {
+      try { await sbPatch('events', 'id=eq.' + encodeURIComponent(ed.id), Object.assign({}, base, { event_date: f.dates[0] })); showToast('変更しました', 'success'); tpForm = tpNewForm(); tpRender(); return; } catch (e2) {}
+    }
+    alert('保存に失敗しました（testprep.sql の実行が必要です）\n' + String(e.message || e).slice(0, 200));
+  }
+}
+
+// 一覧：自分の担当 / 担当校 / 全部（管理者・集計担当）
+async function tpRenderList() {
+  const el = document.getElementById('tp-list');
+  if (!el) return;
+  el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:12px">一覧を読み込み中...</div>';
+  const y = parseInt(tpMonth.slice(0, 4), 10), m = parseInt(tpMonth.slice(5, 7), 10);
+  const from = tpMonth + '-01', to = tpMonth + '-' + String(new Date(y, m, 0).getDate()).padStart(2, '0');
+  let evs = [];
+  try {
+    evs = await sbGetAll('events', 'scope=eq.testprep&event_date=gte.' + from + '&event_date=lte.' + to + '&select=id,title,event_date,period_from,period_to,start_time,end_time,detail,target_schools,target_grades,created_by,done_at,done_note,done_by,registered_by,tp_subject,tp_division&order=event_date,period_from') || [];
+  } catch (e) { el.innerHTML = '<div style="font-size:12px;color:var(--red)">一覧を読み込めませんでした（testprep.sql の実行が必要です）</div>'; return; }
+  const me = currentStaff ? currentStaff.id : null;
+  const viewer = (typeof staffCalViewer === 'function') ? staffCalViewer() : null;
+  const nameOf = {}; (tpStaffList || []).forEach(s => { nameOf[s.id] = s.name; });
+  const today = getTodayJST();
+  const list = evs.filter(ev => {
+    if (tpScope === 'all') return tpIsManager();
+    if (tpScope === 'mine') return ev.created_by === me;
+    return ev.created_by === me || (viewer && isEventVisibleTo(Object.assign({ scope: 'testprep' }, ev), viewer));
+  });
+  const pending = evs.filter(ev => ev.created_by === me && !ev.done_at && ev.event_date <= today).length;
+  const tab = (k, label) => '<button onclick="tpScope=\'' + k + '\';tpRenderList()" style="padding:6px 12px;border-radius:16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;border:1.5px solid ' + (tpScope === k ? TP_COLOR : 'var(--border)') + ';background:' + (tpScope === k ? TP_COLOR : 'var(--surface)') + ';color:' + (tpScope === k ? '#fff' : 'var(--text)') + '">' + label + '</button>';
+  let h = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">' +
+    '<input type="month" value="' + tpMonth + '" onchange="tpMonth=this.value||getTodayJST().slice(0,7);tpRenderList()" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-family:inherit">' +
+    tab('mine', '自分の担当') + tab('school', '担当校も') + (tpIsManager() ? tab('all', '全部') : '') + '</div>';
+  if (pending) h += '<div style="background:#FDECEC;border:1px solid #E0A0A0;color:#C0392B;border-radius:10px;padding:8px 12px;font-size:12px;font-weight:700;margin-bottom:8px">⚠️ 実施報告がまだのテスト対策が ' + pending + '件あります（報告するとコマ数に入ります）</div>';
+  if (!list.length) h += '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px;background:var(--surface);border:1px dashed var(--border);border-radius:10px">この月のテスト対策はありません</div>';
+  list.forEach(ev => {
+    const mineT = ev.created_by === me;
+    const canDel = tpIsManager() || (currentStaff && ev.registered_by === currentStaff.staff_id) || (!ev.registered_by && mineT);
+    const canEdit = canDel || mineT;
+    const canReport = mineT || tpIsManager();
+    const st = ev.done_at ? '<span style="font-size:10px;font-weight:700;color:#1A7340;background:#DBF0E2;border-radius:9px;padding:2px 8px">✅ 実施済み</span>'
+      : (ev.event_date <= today ? '<span style="font-size:10px;font-weight:700;color:#C0392B;background:#FDECEC;border-radius:9px;padding:2px 8px">未報告</span>'
+        : '<span style="font-size:10px;font-weight:700;color:#6C5CE7;background:#EFEBFD;border-radius:9px;padding:2px 8px">予定</span>');
+    const btn = (label, fn, color) => '<button onclick="' + fn + '" style="font-size:11px;padding:5px 10px;border-radius:7px;border:1px solid ' + (color || 'var(--border)') + ';background:#fff;color:' + (color || 'var(--muted)') + ';cursor:pointer;font-family:inherit;font-weight:700">' + label + '</button>';
+    h += '<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid ' + TP_COLOR + ';border-radius:10px;padding:9px 12px;margin-bottom:7px">' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:13px">' + tpDateLabel(ev.event_date) + ' ' + escapeHtml(tpPeriodLabel(ev)) + '</b>' +
+      '<span style="font-size:13px">' + escapeHtml(tpShortClass(ev.tp_division, (ev.target_schools || '').split(',')[0], ev.target_grades, ev.tp_subject || '')) + '</span>' +
+      '<span style="font-size:11px;color:var(--muted)">' + escapeHtml(nameOf[ev.created_by] || '') + '</span><span style="flex:1"></span>' + st + '</div>' +
+      (ev.detail ? '<div style="font-size:11px;color:var(--muted);margin-top:3px">' + escapeHtml(ev.detail) + '</div>' : '') +
+      (ev.done_at ? '<div style="font-size:11px;color:#1A7340;margin-top:3px">実施報告：' + escapeHtml(ev.done_note || '') + '</div>' : '') +
+      '<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">' +
+        (canReport ? (ev.done_at ? btn('報告を取り消す', 'tpUndone(\'' + ev.id + '\')') : btn('✅ 実施報告', 'tpDone(\'' + ev.id + '\')', '#1A7340')) : '') +
+        (canEdit ? btn('✏️ 編集', 'openTestPrep(\'' + ev.id + '\')') : '') +
+        (canDel ? btn('🗑 削除', 'tpDelete(\'' + ev.id + '\')', '#C0392B') : '') +
+      '</div></div>';
+  });
+  el.innerHTML = h;
+}
+async function tpDone(id) {
+  const note = prompt('実施報告（やった範囲・様子など。必須）', '');
+  if (note === null) return;
+  if (!String(note).trim()) { showToast('ひとことでいいので内容を書いてください', 'info'); return; }
+  try {
+    await sbPatch('events', 'id=eq.' + encodeURIComponent(id), { done_at: new Date().toISOString(), done_note: String(note).trim(), done_by: (currentStaff && currentStaff.staff_id) || null });
+    showToast('実施報告しました（コマ数に入ります）', 'success'); tpRenderList();
+  } catch (e) { showToast('保存に失敗しました', 'error'); }
+}
+async function tpUndone(id) {
+  if (!confirm('実施報告を取り消しますか？（コマ数から外れます）')) return;
+  try { await sbPatch('events', 'id=eq.' + encodeURIComponent(id), { done_at: null, done_note: null, done_by: null }); tpRenderList(); }
+  catch (e) { showToast('取り消しに失敗しました', 'error'); }
+}
+async function tpDelete(id) {
+  if (!confirm('このテスト対策を削除しますか？（生徒のカレンダーからも消えます）')) return;
+  try { await sbDelete('events', 'id=eq.' + encodeURIComponent(id)); showToast('削除しました', 'success'); tpRenderList(); }
+  catch (e) { showToast('削除に失敗しました', 'error'); }
+}
+
+// コマ数集計用：その月の実施済み・未報告を staff_id コード別に
+async function tpKomaByStaffCode(from, to) {
+  const out = {};
+  try {
+    const evs = await sbGetAll('events', 'scope=eq.testprep&event_date=gte.' + from + '&event_date=lte.' + to + '&select=id,event_date,created_by,done_at,period_from,period_to&order=event_date') || [];
+    if (!evs.length) return out;
+    const staff = await sbGet('staff', 'select=id,staff_id') || [];
+    const code = {}; staff.forEach(s => { code[s.id] = String(s.staff_id); });
+    const today = getTodayJST();
+    evs.forEach(ev => {
+      const c = code[ev.created_by]; if (!c) return;
+      const o = out[c] || (out[c] = { done: 0, plan: 0, pending: 0 });
+      // 「6〜7限」のように続けて登録したものは限の数だけコマに数える（時刻だけの登録は1コマ）
+      const n = (ev.period_from != null && ev.period_to != null) ? Math.max(1, parseInt(ev.period_to, 10) - parseInt(ev.period_from, 10) + 1) : 1;
+      o.plan += n;
+      if (ev.done_at) o.done += n; else if (ev.event_date <= today) o.pending += n;
+    });
+  } catch (e) { /* 列未追加なら集計しない */ }
+  return out;
+}
+
+
+/* ===== 期間設定（schedule_terms）  20261001onl37 =====
+   期間（開始日〜終了日・曜日）ごとに、各限の時刻（period_time_overrides）と
+   自動チェックアウト（締め）時刻を切り替える。登録しておけば、その期間だけ自動で仕様が変わる。 */
+const DEFAULT_CLOSE_HHMM = '21:40';
+let schTerms = null;   // schedule_terms キャッシュ
+
+async function loadScheduleTerms() {
+  if (schTerms) return schTerms;
+  try {
+    const d = await sbGet('schedule_terms', 'select=*&order=start_date');
+    schTerms = Array.isArray(d) ? d : [];
+  } catch (e) { return []; }   // テーブル未作成なら通常どおり（キャッシュしない）
+  try { refreshCloseTimeTexts(); } catch (e) {}
+  return schTerms;
+}
+// その日に効いている期間（後から始まった期間を優先）
+function termForDate(dateStr) {
+  if (!dateStr || !schTerms || !schTerms.length) return null;
+  const ds = String(dateStr).slice(0, 10);
+  const p = ds.split('-').map(Number);
+  const dow = new Date(p[0], p[1] - 1, p[2]).getDay();
+  const iso = dow === 0 ? 7 : dow;
+  let hit = null;
+  schTerms.forEach(t => {
+    if (ds < t.start_date || ds > t.end_date) return;
+    if (Array.isArray(t.weekdays) && t.weekdays.length && t.weekdays.indexOf(iso) === -1) return;
+    if (!hit || t.start_date >= hit.start_date) hit = t;
+  });
+  return hit;
+}
+// その日の自動チェックアウト（締め）時刻 'HH:MM'
+function closeHHMMFor(dateStr) {
+  const t = termForDate(dateStr);
+  return (t && t.checkout_time) ? String(t.checkout_time).slice(0, 5) : DEFAULT_CLOSE_HHMM;
+}
+function closeMinFor(dateStr) { const a = closeHHMMFor(dateStr).split(':').map(Number); return a[0] * 60 + a[1]; }
+// 画面の「◯◯までにチェックアウト」の時刻を今日の設定に合わせる
+function refreshCloseTimeTexts() {
+  const t = closeHHMMFor(getTodayJST());
+  document.querySelectorAll('.js-close-time').forEach(el => { el.textContent = t; });
+}
+// 自動締め（ポイントなし）による退室か：その日の締め時刻ちょうど、または旧来の 21:40
+function isAutoClosedAt(checkinDate, hhmm) {
+  const h = String(hhmm || '').padStart(5, '0').slice(0, 5);
+  return h === closeHHMMFor(checkinDate) || h === DEFAULT_CLOSE_HHMM;
+}
+
+/* ---- 管理画面 ---- */
+const TERM_WD = ['月', '火', '水', '木', '金', '土', '日'];
+let termEdit = null;
+
+function canEditTerms() { return !!currentStaff && currentStaff.role === 'admin'; }
+async function openTerms() {
+  if (!canEditTerms()) { showToast('管理者のみ設定できます', 'error'); return; }
+  let el = document.getElementById('terms-screen');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'terms-screen';
+    el.style.cssText = 'position:fixed;inset:0;z-index:690;background:var(--bg);display:flex;flex-direction:column;overflow:hidden';
+    el.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border)">' +
+        '<div style="font-size:17px;font-weight:800;color:var(--text);flex:1">🗓 期間設定（時間割・自動チェックアウト）</div>' +
+        '<button onclick="closeTerms()" style="background:none;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;color:var(--muted);cursor:pointer;font-family:inherit">閉じる</button></div>' +
+      '<div id="terms-body" style="flex:1;overflow-y:auto;padding:12px 16px 40px;max-width:760px;width:100%;margin:0 auto;box-sizing:border-box"></div>';
+    document.body.appendChild(el);
+  }
+  el.style.display = 'flex';
+  termEdit = null;
+  termsRender();
+}
+function closeTerms() { const el = document.getElementById('terms-screen'); if (el) el.style.display = 'none'; }
+
+async function termsFetchAll() {
+  const [terms, ov] = await Promise.all([
+    sbGet('schedule_terms', 'select=*&order=start_date'),
+    sbGet('period_time_overrides', 'select=*&order=period')
+  ]);
+  const byLabel = {};
+  (terms || []).forEach(t => { byLabel[t.label] = { term: t, periods: {} }; });
+  (ov || []).forEach(o => {
+    const g = byLabel[o.label] || (byLabel[o.label] = { term: { label: o.label, start_date: o.start_date, end_date: o.end_date, weekdays: o.weekdays, checkout_time: null, _legacy: true }, periods: {} });
+    g.periods[o.period] = [String(o.start_time).slice(0, 5), String(o.end_time).slice(0, 5)];
+  });
+  return Object.values(byLabel).sort((a, b) => String(a.term.start_date).localeCompare(String(b.term.start_date)));
+}
+function termWdText(w) { return (Array.isArray(w) && w.length && w.length < 7) ? w.slice().sort().map(i => TERM_WD[i - 1]).join('・') : '毎日'; }
+
+async function termsRender() {
+  const body = document.getElementById('terms-body');
+  if (termEdit) { body.innerHTML = termsEditorHtml(); return; }
+  body.innerHTML = '<div style="font-size:13px;color:var(--muted);text-align:center;padding:20px">読み込み中...</div>';
+  let groups;
+  try { groups = await termsFetchAll(); }
+  catch (e) { body.innerHTML = '<div style="font-size:12px;color:var(--red)">読み込みに失敗しました（schedule_terms.sql の実行が必要です）</div>'; return; }
+  const today = getTodayJST();
+  let h = '<div style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:10px">期間を登録しておくと、その期間（指定した曜日）だけ<b>時間割の限と時刻</b>・<b>自動チェックアウトの時刻</b>・生徒画面の「◯◯までにチェックアウト」の案内が自動で切り替わります。期間外の日は通常（1〜6限・21:40）に戻ります。</div>' +
+    '<div style="font-size:12px;margin-bottom:10px">今日（' + today.slice(5).replace('-', '/') + '）の自動チェックアウト：<b>' + closeHHMMFor(today) + '</b>' + (termForDate(today) ? '（' + escapeHtml(termForDate(today).label) + '）' : '（通常）') + '</div>' +
+    '<button onclick="termsNew()" style="width:100%;padding:11px;background:var(--orange);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:12px">＋ 期間を追加</button>';
+  if (!groups.length) h += '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">登録された期間はありません</div>';
+  groups.forEach((g, i) => {
+    const t = g.term, ps = Object.keys(g.periods).map(Number).sort((a, b) => a - b);
+    const active = today >= t.start_date && today <= t.end_date;
+    h += '<div style="background:var(--surface);border:1px solid ' + (active ? 'var(--orange)' : 'var(--border)') + ';border-radius:12px;padding:11px 13px;margin-bottom:8px">' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:14px">' + escapeHtml(t.label) + '</b>' + (active ? '<span style="font-size:10px;background:var(--orange);color:#fff;border-radius:9px;padding:1px 7px">適用中</span>' : '') +
+      '<span style="flex:1"></span><button onclick="termsEditIdx(' + i + ')" style="font-size:11px;padding:5px 10px;border:1px solid var(--border);border-radius:7px;background:#fff;cursor:pointer;font-family:inherit">✏️ 編集</button></div>' +
+      '<div style="font-size:12px;color:var(--muted);margin-top:4px;line-height:1.7">' + t.start_date.replace(/-/g, '/') + ' 〜 ' + t.end_date.replace(/-/g, '/') + '　' + termWdText(t.weekdays) +
+      '<br>自動チェックアウト：<b style="color:var(--text)">' + (t.checkout_time ? String(t.checkout_time).slice(0, 5) : '通常（21:40）') + '</b>' +
+      '<br>時間割：' + (ps.length ? ps.map(p => p + '限 ' + g.periods[p][0] + '〜' + g.periods[p][1]).join('／') : '通常どおり') + '</div>' +
+      (t.note ? '<div style="font-size:11px;color:var(--muted);margin-top:3px">📝 ' + escapeHtml(t.note) + '</div>' : '') + '</div>';
+  });
+  window._termGroups = groups;
+  body.innerHTML = h;
+}
+function termsNew() {
+  termEdit = { origLabel: null, label: '', start_date: '', end_date: '', weekdays: [1, 2, 3, 4, 5], checkout_time: '', note: '', periods: {} };
+  termsRender();
+}
+function termsEditIdx(i) {
+  const g = (window._termGroups || [])[i]; if (!g) return;
+  const t = g.term;
+  termEdit = { origLabel: t.label, label: t.label, start_date: t.start_date, end_date: t.end_date, weekdays: Array.isArray(t.weekdays) ? t.weekdays.slice() : [],
+    checkout_time: t.checkout_time ? String(t.checkout_time).slice(0, 5) : '', note: t.note || '', periods: JSON.parse(JSON.stringify(g.periods)), legacy: !!t._legacy };
+  termsRender();
+}
+function termsEditorHtml() {
+  const e = termEdit;
+  const inp = 'padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-family:inherit';
+  const lab = 'font-size:12px;font-weight:700;color:var(--muted);margin:12px 0 5px';
+  let h = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px">' +
+    '<div style="font-size:14px;font-weight:800;color:var(--orange-d)">' + (e.origLabel ? '✏️ 期間を編集' : '＋ 期間を追加') + '</div>' +
+    '<div style="' + lab + '">名前</div><input id="tm-label" value="' + escapeAttr(e.label) + '" placeholder="例：共通テスト期 / 夏期講習" style="width:100%;box-sizing:border-box;' + inp + '">' +
+    '<div style="' + lab + '">期間</div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input type="date" id="tm-start" value="' + escapeAttr(e.start_date) + '" style="' + inp + '">〜<input type="date" id="tm-end" value="' + escapeAttr(e.end_date) + '" style="' + inp + '"></div>' +
+    '<div style="' + lab + '">曜日（選ばなければ毎日）</div><div style="display:flex;gap:5px;flex-wrap:wrap">' +
+      TERM_WD.map((w, i) => { const on = e.weekdays.indexOf(i + 1) !== -1; return '<button type="button" onclick="termsToggleWd(' + (i + 1) + ')" style="width:40px;padding:7px 0;border-radius:8px;font-weight:700;cursor:pointer;font-family:inherit;border:1.5px solid ' + (on ? 'var(--orange)' : 'var(--border)') + ';background:' + (on ? 'var(--orange)' : '#fff') + ';color:' + (on ? '#fff' : 'var(--text)') + '">' + w + '</button>'; }).join('') + '</div>' +
+    '<div style="' + lab + '">自動チェックアウトの時刻（空欄＝通常の21:40）</div><input type="time" id="tm-close" value="' + escapeAttr(e.checkout_time) + '" style="' + inp + '">' +
+    '<div style="font-size:11px;color:var(--muted);margin-top:4px">この時刻を過ぎて未チェックアウトの生徒は、ポイントなしで自動的に締められます。生徒画面の案内文もこの時刻になります。</div>' +
+    '<div style="' + lab + '">時間割（使う限にチェックして時刻を入力。全部空なら通常の時間割のまま）</div>';
+  for (let p = 0; p <= 7; p++) {
+    const v = e.periods[p] || null, nv = (typeof PERIODS !== 'undefined' && PERIODS[p]) ? PERIODS[p] : null;
+    h += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;flex-wrap:wrap">' +
+      '<label style="width:62px;font-size:13px;font-weight:700;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="tm-p' + p + '-on"' + (v ? ' checked' : '') + '>' + p + '限</label>' +
+      '<input type="time" id="tm-p' + p + '-s" value="' + (v ? v[0] : '') + '" style="' + inp + ';padding:5px 7px">〜<input type="time" id="tm-p' + p + '-e" value="' + (v ? v[1] : '') + '" style="' + inp + ';padding:5px 7px">' +
+      '<span style="font-size:10px;color:var(--muted)">' + (nv ? '通常 ' + nv[0] + '〜' + nv[1] : '通常はなし') + '</span></div>';
+  }
+  h += '<div style="' + lab + '">メモ</div><input id="tm-note" value="' + escapeAttr(e.note) + '" style="width:100%;box-sizing:border-box;' + inp + '">' +
+    '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">' +
+      '<button onclick="termsSave()" style="flex:1;padding:11px;background:var(--orange);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">保存</button>' +
+      '<button onclick="termEdit=null;termsRender()" style="padding:11px 14px;background:#fff;border:1px solid var(--border);border-radius:10px;color:var(--muted);cursor:pointer;font-family:inherit">戻る</button>' +
+      (e.origLabel ? '<button onclick="termsDelete()" style="padding:11px 14px;background:#fff;border:1px solid #E0A0A0;border-radius:10px;color:#C0392B;cursor:pointer;font-family:inherit">削除</button>' : '') +
+    '</div></div>';
+  return h;
+}
+function termsCollect() {
+  const e = termEdit;
+  e.label = (document.getElementById('tm-label').value || '').trim();
+  e.start_date = document.getElementById('tm-start').value;
+  e.end_date = document.getElementById('tm-end').value;
+  e.checkout_time = document.getElementById('tm-close').value;
+  e.note = (document.getElementById('tm-note').value || '').trim();
+  const per = {};
+  for (let p = 0; p <= 7; p++) {
+    if (!document.getElementById('tm-p' + p + '-on').checked) continue;
+    per[p] = [document.getElementById('tm-p' + p + '-s').value, document.getElementById('tm-p' + p + '-e').value];
+  }
+  e.periods = per;
+}
+function termsToggleWd(i) {
+  termsCollect();
+  const k = termEdit.weekdays.indexOf(i);
+  if (k === -1) termEdit.weekdays.push(i); else termEdit.weekdays.splice(k, 1);
+  termsRender();
+}
+async function termsSave() {
+  termsCollect();
+  const e = termEdit;
+  if (!e.label) return showToast('名前を入力してください', 'error');
+  if (!e.start_date || !e.end_date) return showToast('期間を入力してください', 'error');
+  if (e.end_date < e.start_date) return showToast('終了日は開始日以降にしてください', 'error');
+  for (const p of Object.keys(e.periods)) {
+    const v = e.periods[p];
+    if (!v[0] || !v[1] || v[1] <= v[0]) return showToast(p + '限の時刻を正しく入れてください', 'error');
+  }
+  const wd = e.weekdays.slice().sort((a, b) => a - b);
+  showLoading('保存中...');
+  try {
+    const row = { label: e.label, start_date: e.start_date, end_date: e.end_date, weekdays: wd.length ? wd : null, checkout_time: e.checkout_time || null, note: e.note || null, updated_at: new Date().toISOString() };
+    if (e.origLabel && e.origLabel !== e.label) {
+      await sbDelete('schedule_terms', 'label=eq.' + encodeURIComponent(e.origLabel));
+      await sbDelete('period_time_overrides', 'label=eq.' + encodeURIComponent(e.origLabel));
+    }
+    await svUpsert('schedule_terms', 'label', row);
+    // 各限の時刻：この期間の行を入れ替える
+    await sbDelete('period_time_overrides', 'label=eq.' + encodeURIComponent(e.label));
+    const rows = Object.keys(e.periods).map(p => ({ label: e.label, start_date: e.start_date, end_date: e.end_date, weekdays: wd.length ? wd : null, period: parseInt(p, 10), start_time: e.periods[p][0], end_time: e.periods[p][1] }));
+    if (rows.length) await sbPost('period_time_overrides', rows);
+    // キャッシュを捨てて読み直す（時間割・締め時刻・案内文に即反映）
+    schTerms = null; if (typeof wkOverrides !== 'undefined') wkOverrides = null;
+    if (typeof wkLoadOverrides === 'function') await wkLoadOverrides();
+    hideLoading();
+    showToast('保存しました', 'success');
+    termEdit = null; termsRender();
+  } catch (err) {
+    hideLoading();
+    alert('保存に失敗しました（schedule_terms.sql の実行が必要です）\n' + String(err.message || err).slice(0, 200));
+  }
+}
+async function termsDelete() {
+  const e = termEdit;
+  if (!e || !e.origLabel) return;
+  if (!confirm('期間「' + e.origLabel + '」を削除しますか？（時間割・自動チェックアウトが通常に戻ります）')) return;
+  showLoading('削除中...');
+  try {
+    await sbDelete('schedule_terms', 'label=eq.' + encodeURIComponent(e.origLabel));
+    await sbDelete('period_time_overrides', 'label=eq.' + encodeURIComponent(e.origLabel));
+    schTerms = null; if (typeof wkOverrides !== 'undefined') wkOverrides = null;
+    if (typeof wkLoadOverrides === 'function') await wkLoadOverrides();
+    hideLoading(); showToast('削除しました', 'success'); termEdit = null; termsRender();
+  } catch (err) { hideLoading(); alert('削除に失敗しました\n' + String(err.message || err).slice(0, 200)); }
 }
 
 </script>
