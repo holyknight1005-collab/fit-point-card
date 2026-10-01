@@ -6986,7 +6986,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261001onl34';
+const APP_VERSION = '20261001onl35';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -15679,6 +15679,8 @@ var FEATURE_CATALOG = [
   { key:'demo',          icon:'🧪', label:'デモ確認',     action:function(){ openHomeFeature('demo'); } },
   { key:'revenue',       icon:'💰', label:'売上',         action:function(){ openHomeFeature('revenue'); },
     visible:function(){ return (currentStaff && currentStaff.role === 'admin') || (typeof saMyPerms !== 'undefined' && saMyPerms && saMyPerms.perms && saMyPerms.perms.revenue === true); } },
+  { key:'kubs',          icon:'🧒', label:'小学部(kubs)', action:function(){ openKubs(); },
+    visible:function(){ return (typeof canSeeKubs === 'function') && canSeeKubs(); } },   // 20261001onl35: スクパス照合・名簿
   { key:'shortcuts',     icon:'🔗', label:'ショートカット', action:function(){ openShortcuts(); } },
   { key:'settings',      icon:'⚙️', label:'設定',         action:function(){ openHomeFeature('settings'); } }
 ];
@@ -66656,6 +66658,505 @@ async function saveCaMatrix() {
     hideLoading();
     showToast('エラー: ' + e.message, 'error');
   }
+}
+
+
+/* ===== 小学部（kubs）スクパス照合：読み取り・照合ロジック（画面に依存しない）  20261001onl35 ===== */
+// 氏名の正規化（全角半角・空白・異体字のゆれを吸収）
+function kubsNormName(s) {
+  let t = String(s == null ? '' : s).normalize('NFKC').replace(/[\s　 ]/g, '');
+  return t.replace(/髙/g, '高').replace(/﨑/g, '崎').replace(/桒/g, '桑').replace(/德/g, '徳').replace(/邉|邊/g, '辺').replace(/齋|齊/g, '斉');
+}
+// かなの正規化（カタカナ→ひらがな、空白除去）
+function kubsNormKana(s) {
+  const t = String(s == null ? '' : s).normalize('NFKC').replace(/[\s　 ]/g, '');
+  return t.replace(/[ァ-ヶ]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x60));
+}
+// 'YYYY/MM/DD' / 'YYYY-MM-DD' → 'YYYY-MM-DD'（不正は null）
+function kubsDate(s) {
+  const m = String(s == null ? '' : s).trim().match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+  return m ? (m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0')) : null;
+}
+function kubsInt(s) { const v = parseInt(String(s == null ? '' : s).replace(/[,，円\s]/g, ''), 10); return isNaN(v) ? null : v; }
+
+// CSV文字列 → 2次元配列（"..." 内のカンマ・改行に対応）
+function kubsParseCsv(text) {
+  const rows = []; let row = [], cur = '', q = false;
+  const s = String(text || '').replace(/^﻿/, '');
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) {
+      if (c === '"') { if (s[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(cur); cur = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && s[i + 1] === '\n') i++;
+      row.push(cur); cur = '';
+      if (row.some(v => v !== '')) rows.push(row);
+      row = [];
+    } else cur += c;
+  }
+  if (cur !== '' || row.length) { row.push(cur); if (row.some(v => v !== '')) rows.push(row); }
+  return rows;
+}
+
+// スクパスの請求CSV → 請求行の配列（列名で読むので列順が変わっても動く）
+function kubsParseInvoices(text) {
+  const rows = kubsParseCsv(text);
+  if (!rows.length) throw new Error('CSVが空です');
+  const head = rows[0].map(h => String(h).trim());
+  const col = (name) => head.indexOf(name);
+  const need = ['請求書番号', '生徒ID', '生徒名', '請求金額'];
+  const miss = need.filter(n => col(n) < 0);
+  if (miss.length) throw new Error('スクパスの請求CSVではないようです（「' + miss.join('」「') + '」の列がありません）');
+  const g = (r, n) => { const i = col(n); return i < 0 ? '' : String(r[i] == null ? '' : r[i]).trim(); };
+  return rows.slice(1).filter(r => g(r, '請求書番号')).map(r => {
+    const issue = kubsDate(g(r, '発行日'));
+    return {
+      invoice_no: g(r, '請求書番号'),
+      sukupass_id: g(r, '生徒ID'),
+      bill_month: issue ? issue.slice(0, 7) : null,
+      kind: g(r, '種類') || null,
+      student_name: g(r, '生徒名'),
+      kana: g(r, 'フリガナ') || null,
+      grade: g(r, '学年(現在)') || null,
+      amount: kubsInt(g(r, '請求金額')),
+      pay_method: g(r, '支払方法') || null,
+      read_status: g(r, '既読') || null,
+      issue_date: issue,
+      due_date: kubsDate(g(r, '支払期限')),
+      bill_status: g(r, '請求状況') || null,
+      paid_date: kubsDate(g(r, '入金日')),
+      last_updated: kubsDate(g(r, '最終更新日'))
+    };
+  });
+}
+
+// 出席表Excel（SheetJSで2次元配列にしたシート）→ 在籍の配列
+//  1行目=教室の見出し、2行目に「生徒名」「なまえ」「年」、4行目以降に 番号|生徒名|なまえ|年 …。
+//  番号が数字の行だけ在籍とみなす（「体験」行・人数集計・担当者の行は除外）。
+function kubsParseRosterSheet(aoa, sourceFile) {
+  const out = [];
+  const r1 = aoa[0] || [], r2 = aoa[1] || [];
+  for (let c = 0; c < r2.length; c++) {
+    if (String(r2[c] == null ? '' : r2[c]).trim() !== '生徒名') continue;
+    // 見出しは同じ列（無ければ左側を探す）
+    let program = '';
+    for (let k = c; k >= Math.max(0, c - 2); k--) { if (r1[k] != null && String(r1[k]).trim()) { program = String(r1[k]).trim(); break; } }
+    if (!program) program = '教室' + (out.length + 1);
+    const kanaCol = (String(r2[c + 1] || '').trim() === 'なまえ') ? c + 1 : -1;
+    const gradeCol = (String(r2[c + 2] || '').trim() === '年') ? c + 2 : -1;
+    for (let r = 3; r < aoa.length; r++) {
+      const row = aoa[r] || [];
+      const no = row[c - 1];
+      const nm = row[c];
+      if (nm == null || !String(nm).trim()) continue;
+      const isNum = (typeof no === 'number') || /^\d+$/.test(String(no == null ? '' : no).trim());
+      if (!isNum) continue;
+      const name = String(nm).trim();
+      if (kubsNormName(name).length < 2) continue;
+      out.push({
+        program: program, name: name,
+        kana: kanaCol >= 0 && row[kanaCol] != null ? String(row[kanaCol]).trim() : null,
+        grade: gradeCol >= 0 && row[gradeCol] != null ? String(row[gradeCol]).normalize('NFKC').trim() : null,
+        source_file: sourceFile || null
+      });
+    }
+  }
+  return out;
+}
+// 'YYYY-MM' → 出席表のシート名候補（'2026.10' など）
+function kubsSheetNamesFor(month) {
+  const y = month.slice(0, 4), m = parseInt(month.slice(5, 7), 10);
+  return [y + '.' + m, y + '.' + String(m).padStart(2, '0'), y + '年' + m + '月', m + '月'];
+}
+
+// 照合本体
+//  month: 'YYYY-MM' / invoices: その月の請求 / prevInvoices: 前月の請求 / students: kubs_students
+//  roster: その月の出席表在籍（無ければ null＝出席表との照合はしない）/ checks: kubs_checks（その月）/ today: 'YYYY-MM-DD'
+function kubsReconcile(opt) {
+  const month = opt.month, invoices = opt.invoices || [], prev = opt.prevInvoices || [];
+  const students = opt.students || [], roster = opt.roster, checks = opt.checks || [], today = opt.today;
+  const stuById = {}; students.forEach(s => { stuById[s.sukupass_id] = s; });
+  // 生徒ID → 氏名・かな（請求データも名簿の補完に使う）
+  const people = {};
+  const addPerson = (id, name, kana, grade) => {
+    if (!id) return;
+    const p = people[id] || (people[id] = { sukupass_id: id, name: name, kana: kana, grade: grade, aliases: [] });
+    if (!p.name && name) p.name = name; if (!p.kana && kana) p.kana = kana; if (!p.grade && grade) p.grade = grade;
+  };
+  students.forEach(s => { addPerson(s.sukupass_id, s.name, s.kana, s.grade); people[s.sukupass_id].aliases = String(s.aliases || '').split(/[,、，]/).map(x => x.trim()).filter(Boolean); people[s.sukupass_id].student = s; });
+  invoices.forEach(v => addPerson(v.sukupass_id, v.student_name, v.kana, v.grade));
+  prev.forEach(v => addPerson(v.sukupass_id, v.student_name, v.kana, v.grade));
+  // 名前・かな → 生徒ID の索引
+  const byName = {}, byKana = {};
+  Object.keys(people).forEach(id => {
+    const p = people[id];
+    [p.name].concat(p.aliases).forEach(n => { const k = kubsNormName(n); if (k) (byName[k] = byName[k] || []).push(id); });
+    const kk = kubsNormKana(p.kana); if (kk) (byKana[kk] = byKana[kk] || []).push(id);
+  });
+  const invBy = {}; invoices.forEach(v => { (invBy[v.sukupass_id] = invBy[v.sukupass_id] || []).push(v); });
+  const prevBy = {}; prev.forEach(v => { (prevBy[v.sukupass_id] = prevBy[v.sukupass_id] || []).push(v); });
+  const checked = {}; checks.forEach(c => { checked[c.target_key + '|' + c.issue_type] = c; });
+
+  // 出席表の在籍 → 生徒IDに紐付け
+  const rosterById = {}; const rosterUnmatched = {};
+  (roster || []).forEach(e => {
+    const nk = kubsNormName(e.name);
+    let ids = byName[nk], how = 'name';
+    if (!ids || ids.length !== 1) { const kk = kubsNormKana(e.kana); const k2 = kk ? byKana[kk] : null; if (k2 && k2.length === 1) { ids = k2; how = 'kana'; } }
+    if (ids && ids.length === 1) {
+      const id = ids[0];
+      const r = rosterById[id] || (rosterById[id] = { programs: [], variants: [] });
+      if (r.programs.indexOf(e.program) < 0) r.programs.push(e.program);
+      if (how === 'kana' && r.variants.indexOf(e.name) < 0) r.variants.push(e.name);
+    } else {
+      const u = rosterUnmatched[nk] || (rosterUnmatched[nk] = { name: e.name, kana: e.kana, grade: e.grade, programs: [] });
+      if (u.programs.indexOf(e.program) < 0) u.programs.push(e.program);
+    }
+  });
+
+  const rows = [];
+  const isPaid = (v) => !!v.paid_date || /入金済|支払済|決済済|完了/.test(v.bill_status || '');
+  const sum = (arr) => arr.reduce((a, v) => a + (v.amount || 0), 0);
+  const ids = new Set(Object.keys(invBy).concat(roster ? Object.keys(rosterById) : []));
+  ids.forEach(id => {
+    const p = people[id] || { sukupass_id: id };
+    const inv = invBy[id] || [], pv = prevBy[id] || [];
+    const ros = roster ? rosterById[id] : null;
+    const issues = [];
+    const key = 'sp:' + id;
+    const add = (type, level, text) => issues.push({ type: type, level: level, text: text, checked: checked[key + '|' + type] || null });
+    if (roster && ros && !inv.length) add('no_invoice', 'warn', '出席表にいるのに、この月の請求がありません');
+    if (roster && !ros && inv.length) add('not_in_roster', 'warn', '請求があるのに、この月の出席表にいません（退会・休会・別の教室の可能性）');
+    const teiki = inv.filter(v => v.kind !== '都度'), pTeiki = pv.filter(v => v.kind !== '都度');
+    if (teiki.length && pTeiki.length && sum(teiki) !== sum(pTeiki)) add('amount_changed', 'info', '先月と金額が違います（先月 ' + sum(pTeiki).toLocaleString() + '円 → 今月 ' + sum(teiki).toLocaleString() + '円）');
+    const fee = p.student && p.student.monthly_fee;
+    if (fee != null && teiki.length && sum(teiki) !== fee) add('fee_mismatch', 'warn', '登録した月謝（' + fee.toLocaleString() + '円）と請求額が違います');
+    inv.forEach(v => {
+      if (!isPaid(v) && v.due_date && today > v.due_date) add('overdue', 'danger', '支払期限（' + v.due_date.slice(5).replace('-', '/') + '）を過ぎても入金がありません' + (v.bill_status ? '（' + v.bill_status + '）' : ''));
+    });
+    if (ros && ros.variants.length) add('name_variant', 'info', '出席表の表記が違います：「' + ros.variants.join('」「') + '」（ふりがなで照合しました）');
+    const status = !inv.length ? 'none' : (inv.every(isPaid) ? 'paid' : (inv.some(v => v.bill_status === '未請求') ? 'unbilled' : 'billed'));
+    rows.push({
+      key: key, sukupass_id: id, name: p.name || '(不明)', kana: p.kana || '', grade: p.grade || '',
+      programs: ros ? ros.programs : [], variants: ros ? ros.variants : [],
+      invoices: inv, amount: sum(inv), prevAmount: pv.length ? sum(pv) : null, payStatus: status,
+      paidDate: inv.map(v => v.paid_date).filter(Boolean).sort().pop() || null,
+      issues: issues
+    });
+  });
+  // 出席表にいるが、スクパスの誰とも紐付かない子（請求なし）
+  Object.keys(rosterUnmatched).forEach(nk => {
+    const u = rosterUnmatched[nk];
+    const key = 'nm:' + nk;
+    rows.push({
+      key: key, sukupass_id: null, name: u.name, kana: u.kana || '', grade: u.grade || '', programs: u.programs, variants: [],
+      invoices: [], amount: 0, prevAmount: null, payStatus: 'none', paidDate: null,
+      issues: [{ type: 'no_invoice', level: 'warn', text: '出席表にいますが、スクパスに該当する生徒が見つかりません（請求なし）', checked: checked[key + '|no_invoice'] || null }]
+    });
+  });
+  rows.forEach(r => { r.open = r.issues.filter(i => !i.checked && i.level !== 'info').length; r.openInfo = r.issues.filter(i => !i.checked && i.level === 'info').length; });
+  rows.sort((a, b) => (b.open - a.open) || (b.openInfo - a.openInfo) || String(a.kana || a.name).localeCompare(String(b.kana || b.name), 'ja'));
+  const summary = {
+    students: rows.length,
+    invoiced: rows.filter(r => r.invoices.length).length,
+    total: rows.reduce((a, r) => a + r.amount, 0),
+    paid: rows.filter(r => r.payStatus === 'paid').length,
+    unbilled: rows.filter(r => r.payStatus === 'unbilled').length,
+    needCheck: rows.filter(r => r.open > 0).length,
+    infoOnly: rows.filter(r => r.open === 0 && r.openInfo > 0).length
+  };
+  return { rows: rows, summary: summary };
+}
+
+/* ===== 小学部（kubs）画面：スクパス照合・名簿  20261001onl35 ===== */
+// 見られる人：管理者・コマ数集計の担当（橋田・石田・亀井）・タグ「小学部」を持つスタッフ
+function canSeeKubs() {
+  if (!currentStaff) return false;
+  if (currentStaff.role === 'admin') return true;
+  if (typeof canSeeKomaCount === 'function' && canSeeKomaCount()) return true;
+  const tags = Array.isArray(currentStaff.tags) ? currentStaff.tags : [];
+  return tags.indexOf('小学部') !== -1;
+}
+let kubsMonth = null, kubsTab = 'recon', kubsShowAll = false, kubsData = null, kubsNameFilter = '';
+
+function kubsThisMonth() { return getTodayJST().slice(0, 7); }
+function kubsPrevMonth(m) { const y = parseInt(m.slice(0, 4), 10), mo = parseInt(m.slice(5, 7), 10); return mo === 1 ? (y - 1) + '-12' : y + '-' + String(mo - 1).padStart(2, '0'); }
+function kubsMonthLabel(m) { return parseInt(m.slice(0, 4), 10) + '年' + parseInt(m.slice(5, 7), 10) + '月'; }
+function kubsYen(n) { return (n == null ? '-' : Number(n).toLocaleString() + '円'); }
+
+function openKubs() {
+  if (!canSeeKubs()) { showToast('小学部の画面を見る権限がありません', 'error'); return; }
+  let el = document.getElementById('kubs-screen');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'kubs-screen';
+    el.style.cssText = 'position:fixed;inset:0;z-index:690;background:var(--bg);display:flex;flex-direction:column;overflow:hidden';
+    el.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border)">' +
+        '<div style="font-size:17px;font-weight:800;color:var(--text);flex:1">🧒 小学部（kubs）</div>' +
+        '<button onclick="closeKubs()" style="background:none;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;color:var(--muted);cursor:pointer;font-family:inherit">閉じる</button>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;padding:10px 16px 0">' +
+        '<button id="kubs-tab-recon" onclick="setKubsTab(\'recon\')" class="tab-btn" style="flex:1;padding:9px;font-size:13px">🧾 スクパス照合</button>' +
+        '<button id="kubs-tab-roster" onclick="setKubsTab(\'roster\')" class="tab-btn" style="flex:1;padding:9px;font-size:13px">👦 名簿・月謝</button>' +
+      '</div>' +
+      '<div id="kubs-body" style="flex:1;overflow-y:auto;padding:12px 16px 40px;max-width:900px;width:100%;margin:0 auto;box-sizing:border-box"></div>';
+    document.body.appendChild(el);
+  }
+  el.style.display = 'flex';
+  if (!kubsMonth) kubsMonth = kubsThisMonth();
+  setKubsTab(kubsTab);
+}
+function closeKubs() { const el = document.getElementById('kubs-screen'); if (el) el.style.display = 'none'; }
+function setKubsTab(t) {
+  kubsTab = t;
+  ['recon', 'roster'].forEach(k => { const b = document.getElementById('kubs-tab-' + k); if (b) b.classList.toggle('active', k === t); });
+  const bd = document.getElementById('kubs-body'); if (bd) bd.scrollTop = 0;
+  if (t === 'recon') kubsLoadMonth(); else kubsRenderRoster();
+}
+
+// ---- 読み込み（その月の請求・前月の請求・名簿・出席表スナップショット・確認済み） ----
+async function kubsLoadMonth() {
+  const body = document.getElementById('kubs-body');
+  body.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:20px;text-align:center">読み込み中...</div>';
+  const m = kubsMonth, pm = kubsPrevMonth(m);
+  try {
+    const [inv, prev, students, roster, checks] = await Promise.all([
+      sbGetAll('sukupass_invoices', 'bill_month=eq.' + m + '&select=*&order=invoice_no'),
+      sbGetAll('sukupass_invoices', 'bill_month=eq.' + pm + '&select=sukupass_id,kind,amount,student_name,kana,grade&order=invoice_no'),
+      sbGetAll('kubs_students', 'select=*&order=sukupass_id'),
+      sbGetAll('kubs_rosters', 'bill_month=eq.' + m + '&select=program,name,kana,grade,source_file,imported_at&order=id'),
+      sbGetAll('kubs_checks', 'bill_month=eq.' + m + '&select=*&order=checked_at')
+    ]);
+    kubsData = { inv: inv || [], prev: prev || [], students: students || [], roster: roster || [], checks: checks || [] };
+  } catch (e) {
+    body.innerHTML = '<div style="font-size:12px;color:var(--red);padding:12px;border:1px solid #F5BABA;border-radius:10px;background:var(--red-l)">読み込みに失敗しました。kubs.sql の実行が必要です。<br>' + escapeHtml(String(e.message || e).slice(0, 160)) + '</div>';
+    return;
+  }
+  kubsRenderRecon();
+}
+
+function kubsRenderRecon() {
+  const body = document.getElementById('kubs-body');
+  const d = kubsData, m = kubsMonth;
+  const hasRoster = d.roster.length > 0;
+  const res = kubsReconcile({ month: m, invoices: d.inv, prevInvoices: d.prev, students: d.students, roster: hasRoster ? d.roster : null, checks: d.checks, today: getTodayJST() });
+  const s = res.summary;
+  const programs = [...new Set(d.roster.map(r => r.program))];
+  const lastImp = d.inv.map(v => v.imported_at).filter(Boolean).sort().pop();
+  const card = 'background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px';
+  const fileBtn = 'display:inline-block;padding:8px 14px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;';
+  let h = '';
+  h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span style="font-size:13px;font-weight:700">対象月</span>' +
+    '<input type="month" value="' + m + '" onchange="kubsMonth=this.value||kubsThisMonth();kubsLoadMonth()" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-family:inherit"></div>';
+  // 読み込みカード
+  h += '<div style="' + card + '">' +
+    '<div style="font-size:13px;font-weight:800;margin-bottom:6px">① スクパスの請求CSV</div>' +
+    '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">スクパスの請求一覧からCSVを書き出して読み込みます。同じ請求書は上書きされるので、<b>支払期限のあとにもう一度読み込めば入金状況が更新</b>されます。</div>' +
+    '<label style="' + fileBtn + 'background:var(--orange);color:#fff">CSVを読み込む<input type="file" accept=".csv,text/csv" style="display:none" onchange="kubsImportCsv(this)"></label>' +
+    '<span style="font-size:11px;color:var(--muted);margin-left:8px">' + (d.inv.length ? kubsMonthLabel(m) + '分 ' + d.inv.length + '件' + (lastImp ? '（最終読込 ' + lastImp.slice(5, 10).replace('-', '/') + '）' : '') : 'まだ読み込んでいません') + '</span>' +
+    '</div>';
+  h += '<div style="' + card + '">' +
+    '<div style="font-size:13px;font-weight:800;margin-bottom:6px">② 出席表のExcel（複数まとめて可）</div>' +
+    '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">今の出席表をそのまま読み込みます（「' + kubsSheetNamesFor(m)[0] + '」のシートを使用）。番号の付いた行を在籍として扱い、体験の行は除きます。教室ごとに入れ替わるので、片方だけ読み込み直しても大丈夫です。</div>' +
+    '<label style="' + fileBtn + 'background:var(--surface);color:var(--orange-d);border:1.5px solid var(--orange)">出席表を読み込む<input type="file" accept=".xlsx,.xls" multiple style="display:none" onchange="kubsImportRoster(this)"></label>' +
+    '<span style="font-size:11px;color:var(--muted);margin-left:8px">' + (hasRoster ? new Set(d.roster.map(r => kubsNormName(r.name))).size + '人（のべ' + d.roster.length + '・' + programs.map(escapeHtml).join('・') + '）' : '未読み込み（請求データだけで確認します）') + '</span>' +
+    '</div>';
+  if (!d.inv.length && !hasRoster) { body.innerHTML = h; return; }
+  // サマリー
+  const chip = (label, val, color) => '<div style="flex:1;min-width:90px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px;text-align:center"><div style="font-size:18px;font-weight:800;color:' + color + '">' + val + '</div><div style="font-size:10px;color:var(--muted)">' + label + '</div></div>';
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 10px">' +
+    chip('要確認', s.needCheck + '人', s.needCheck ? '#C0392B' : 'var(--green-d)') +
+    chip('請求', s.invoiced + '人', 'var(--text)') +
+    chip('入金済', s.paid + '人', 'var(--green-d)') +
+    chip('未請求', s.unbilled + '人', '#8A6D1E') +
+    chip('請求合計', kubsYen(s.total), 'var(--text)') + '</div>';
+  h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
+    '<label style="font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" ' + (kubsShowAll ? 'checked' : '') + ' onchange="kubsShowAll=this.checked;kubsRenderRecon()">全員を表示（オフ＝要確認・お知らせのみ）</label></div>';
+  const list = kubsShowAll ? res.rows : res.rows.filter(r => r.open > 0 || r.openInfo > 0);
+  if (!list.length) h += '<div style="' + card + 'text-align:center;color:var(--green-d);font-weight:700">✅ 要確認はありません</div>';
+  list.forEach(r => { h += kubsRowHtml(r); });
+  body.innerHTML = h;
+}
+
+function kubsPayBadge(r) {
+  const map = { paid: ['入金済' + (r.paidDate ? ' ' + r.paidDate.slice(5).replace('-', '/') : ''), '#1A7340', '#DBF0E2'], unbilled: ['未請求', '#8A6D1E', '#FBF3D9'], billed: ['請求済・未入金', '#2D6CB6', '#EAF2FB'], none: ['請求なし', '#888', '#EEE'] };
+  const b = map[r.payStatus] || map.none;
+  return '<span style="font-size:10px;font-weight:700;color:' + b[1] + ';background:' + b[2] + ';border-radius:9px;padding:2px 8px;white-space:nowrap">' + b[0] + '</span>';
+}
+function kubsRowHtml(r) {
+  const color = { danger: '#C0392B', warn: '#B5651D', info: '#2D6CB6' };
+  const bg = { danger: '#FCEDED', warn: '#FFF5EA', info: '#EEF5FC' };
+  const keyArg = escapeAttr(r.key);
+  let h = '<div style="background:var(--surface);border:1px solid ' + (r.open ? '#F0C7A6' : 'var(--border)') + ';border-radius:12px;padding:10px 12px;margin-bottom:8px">';
+  h += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+    '<div style="font-size:14px;font-weight:700">' + escapeHtml(r.name) + '</div>' +
+    '<div style="font-size:11px;color:var(--muted)">' + escapeHtml([r.grade, r.kana].filter(Boolean).join(' ')) + (r.sukupass_id ? '　ID ' + escapeHtml(r.sukupass_id) : '') + '</div>' +
+    '<div style="flex:1"></div>' +
+    '<div style="font-size:13px;font-weight:700">' + (r.invoices.length ? kubsYen(r.amount) : '') + '</div>' + kubsPayBadge(r) + '</div>';
+  if (r.programs.length) h += '<div style="font-size:11px;color:var(--muted);margin-top:3px">📋 ' + r.programs.map(escapeHtml).join('・') + '</div>';
+  r.issues.forEach(i => {
+    const done = !!i.checked;
+    h += '<div style="margin-top:6px;padding:7px 9px;border-radius:8px;background:' + (done ? '#F4F4F4' : bg[i.level]) + ';font-size:12px;color:' + (done ? '#999' : color[i.level]) + ';display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<span style="flex:1;min-width:180px">' + (done ? '☑ ' : (i.level === 'info' ? 'ℹ️ ' : '⚠️ ')) + escapeHtml(i.text) +
+      (done ? '<br><span style="font-size:10px">確認済み：' + escapeHtml(i.checked.note || '') + '（' + escapeHtml(i.checked.checked_by || '') + '）</span>' : '') + '</span>';
+    if (done) h += '<button onclick="kubsUncheck(\'' + keyArg + '\',\'' + i.type + '\')" style="font-size:10px;background:#fff;border:1px solid #ccc;border-radius:7px;padding:4px 8px;cursor:pointer;color:#777;font-family:inherit">取り消す</button>';
+    else {
+      if (i.type === 'name_variant' && r.sukupass_id) h += '<button onclick="kubsAddAlias(\'' + escapeAttr(r.sukupass_id) + '\',\'' + escapeAttr(r.variants.join(',')) + '\')" style="font-size:10px;background:#fff;border:1px solid #9CC0E8;border-radius:7px;padding:4px 8px;cursor:pointer;color:#2D6CB6;font-family:inherit">この表記を登録</button>';
+      h += '<button onclick="kubsCheck(\'' + keyArg + '\',\'' + i.type + '\')" style="font-size:10px;background:#fff;border:1px solid #ccc;border-radius:7px;padding:4px 8px;cursor:pointer;color:#555;font-family:inherit">確認済みにする</button>';
+    }
+    h += '</div>';
+  });
+  return h + '</div>';
+}
+
+// ---- 確認済み ----
+async function kubsCheck(key, type) {
+  const note = prompt('確認した内容をメモ（例：現金払い・体験中・10月で退会 など）', '');
+  if (note === null) return;
+  try {
+    await svUpsert('kubs_checks', 'bill_month,target_key,issue_type', { bill_month: kubsMonth, target_key: key, issue_type: type, note: note || '', checked_by: (currentStaff && currentStaff.name) || '', checked_at: new Date().toISOString() });
+    kubsLoadMonth();
+  } catch (e) { showToast('保存に失敗しました', 'error'); }
+}
+async function kubsUncheck(key, type) {
+  try {
+    await sbDelete('kubs_checks', 'bill_month=eq.' + kubsMonth + '&target_key=eq.' + encodeURIComponent(key) + '&issue_type=eq.' + type);
+    kubsLoadMonth();
+  } catch (e) { showToast('取り消しに失敗しました', 'error'); }
+}
+// 表記ゆれを名簿の別表記に登録（以降は名前で一致する）
+async function kubsAddAlias(sid, variants) {
+  const st = (kubsData.students || []).find(s => s.sukupass_id === sid);
+  const cur = String((st && st.aliases) || '').split(',').map(x => x.trim()).filter(Boolean);
+  variants.split(',').forEach(v => { if (v && cur.indexOf(v) < 0) cur.push(v); });
+  try {
+    await sbPatch('kubs_students', 'sukupass_id=eq.' + encodeURIComponent(sid), { aliases: cur.join(','), updated_at: new Date().toISOString() });
+    showToast('別表記を登録しました', 'success');
+    kubsLoadMonth();
+  } catch (e) { showToast('登録に失敗しました', 'error'); }
+}
+
+// ---- CSV読み込み ----
+async function kubsReadText(file) {
+  const buf = await file.arrayBuffer();
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+  catch (e) { return new TextDecoder('shift_jis').decode(buf); }   // スクパスがShift_JISで出した場合
+}
+async function kubsImportCsv(input) {
+  const f = input.files && input.files[0]; input.value = '';
+  if (!f) return;
+  let rows;
+  try { rows = kubsParseInvoices(await kubsReadText(f)); } catch (e) { alert(e.message || 'CSVを読めませんでした'); return; }
+  if (!rows.length) { alert('請求データがありません'); return; }
+  const months = {}; rows.forEach(r => { if (r.bill_month) months[r.bill_month] = (months[r.bill_month] || 0) + 1; });
+  const mainMonth = Object.keys(months).sort((a, b) => months[b] - months[a])[0];
+  if (!confirm(Object.keys(months).sort().map(mm => kubsMonthLabel(mm) + '分 ' + months[mm] + '件').join('、') + ' を読み込みます。よろしいですか？')) return;
+  showLoading('読み込み中...');
+  try {
+    const by = (currentStaff && currentStaff.staff_id) || null, now = new Date().toISOString();
+    const inv = rows.filter(r => r.bill_month).map(r => Object.assign({}, r, { imported_at: now, imported_by: by }));
+    for (let i = 0; i < inv.length; i += 200) await svUpsert('sukupass_invoices', 'invoice_no', inv.slice(i, i + 200));
+    // 名簿：新しい生徒は自動で追加、氏名・かな・学年はスクパスに合わせて更新（月謝・別表記・状態は触らない）
+    const stu = {}; rows.forEach(r => { stu[r.sukupass_id] = { sukupass_id: r.sukupass_id, name: r.student_name, kana: r.kana, grade: r.grade, updated_at: now }; });
+    const list = Object.values(stu);
+    for (let i = 0; i < list.length; i += 200) await svUpsert('kubs_students', 'sukupass_id', list.slice(i, i + 200));
+    hideLoading();
+    showToast('請求 ' + inv.length + '件を読み込みました', 'success');
+    kubsMonth = mainMonth;
+    kubsLoadMonth();
+  } catch (e) { hideLoading(); alert('保存に失敗しました（kubs.sql の実行が必要です）\n' + String(e.message || e).slice(0, 200)); }
+}
+
+// ---- 出席表Excel読み込み ----
+function kubsLoadSheetJs() {
+  return new Promise((resolve, reject) => {
+    if (window.XLSX) return resolve(window.XLSX);
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    s.onload = () => resolve(window.XLSX); s.onerror = () => reject(new Error('Excel読み取りの部品を読み込めませんでした'));
+    document.head.appendChild(s);
+  });
+}
+async function kubsImportRoster(input) {
+  const files = Array.from(input.files || []); input.value = '';
+  if (!files.length) return;
+  showLoading('出席表を読み込み中...');
+  let entries = [], notes = [];
+  try {
+    const XLSX = await kubsLoadSheetJs();
+    for (const f of files) {
+      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array', cellDates: true });
+      const sn = kubsSheetNamesFor(kubsMonth).find(n => wb.SheetNames.indexOf(n) !== -1);
+      if (!sn) { notes.push('「' + f.name + '」に ' + kubsSheetNamesFor(kubsMonth)[0] + ' のシートがありません'); continue; }
+      const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: null });
+      const got = kubsParseRosterSheet(aoa, f.name);
+      if (!got.length) notes.push('「' + f.name + '」から在籍を読み取れませんでした');
+      entries = entries.concat(got);
+    }
+  } catch (e) { hideLoading(); alert(e.message || '読み込めませんでした'); return; }
+  hideLoading();
+  if (!entries.length) { alert(notes.join('\n') || '在籍を読み取れませんでした'); return; }
+  const progs = {}; entries.forEach(e => { progs[e.program] = (progs[e.program] || 0) + 1; });
+  if (!confirm(kubsMonthLabel(kubsMonth) + 'の出席表として読み込みます：\n' + Object.keys(progs).map(p => '・' + p + '　' + progs[p] + '人').join('\n') + (notes.length ? '\n\n※' + notes.join('\n※') : ''))) return;
+  showLoading('保存中...');
+  try {
+    // 同じ教室の古い読み込みは入れ替える
+    const progList = Object.keys(progs);
+    await sbDelete('kubs_rosters', 'bill_month=eq.' + kubsMonth + '&program=in.(' + progList.map(p => '"' + p.replace(/"/g, '') + '"').map(encodeURIComponent).join(',') + ')');
+    const now = new Date().toISOString();
+    const rows = entries.map(e => ({ bill_month: kubsMonth, program: e.program, name: e.name, kana: e.kana, grade: e.grade, source_file: e.source_file, imported_at: now }));
+    for (let i = 0; i < rows.length; i += 200) await sbPost('kubs_rosters', rows.slice(i, i + 200));
+    hideLoading();
+    showToast('出席表を読み込みました（' + new Set(rows.map(r => kubsNormName(r.name))).size + '人）', 'success');
+    kubsLoadMonth();
+  } catch (e) { hideLoading(); alert('保存に失敗しました（kubs.sql の実行が必要です）\n' + String(e.message || e).slice(0, 200)); }
+}
+
+// ---- 名簿・月謝タブ ----
+async function kubsRenderRoster() {
+  const body = document.getElementById('kubs-body');
+  body.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:20px;text-align:center">読み込み中...</div>';
+  let students = [], last = {};
+  try {
+    students = await sbGetAll('kubs_students', 'select=*&order=kana') || [];
+    const inv = await sbGetAll('sukupass_invoices', 'select=sukupass_id,bill_month,amount,kind&order=bill_month.desc') || [];
+    inv.forEach(v => { if (v.kind === '都度') return; const l = last[v.sukupass_id]; if (!l) last[v.sukupass_id] = { m: v.bill_month, a: v.amount }; else if (l.m === v.bill_month) l.a += (v.amount || 0); });
+  } catch (e) { body.innerHTML = '<div style="font-size:12px;color:var(--red)">読み込みに失敗しました（kubs.sql の実行が必要です）</div>'; return; }
+  const q = kubsNormName(kubsNameFilter) || '';
+  const list = students.filter(s => !q || kubsNormName(s.name).indexOf(q) !== -1 || kubsNormKana(s.kana).indexOf(kubsNormKana(kubsNameFilter)) !== -1);
+  let h = '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">スクパスのCSVを読み込むと自動で追加されます。<b>月謝</b>を入れておくと、照合で請求額との違いを知らせます（空欄なら比べません。振替などのルールはあとで決められます）。<b>別表記</b>は出席表での書き方が違うときに入れます（カンマ区切り）。</div>' +
+    '<input type="text" placeholder="名前・ふりがなで絞り込み" value="' + escapeAttr(kubsNameFilter) + '" oninput="kubsNameFilter=this.value;clearTimeout(window._kubsQ);window._kubsQ=setTimeout(kubsRenderRoster,300)" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:9px;margin-bottom:10px;font-family:inherit">' +
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + list.length + '人</div>';
+  list.forEach(s => {
+    const id = escapeAttr(s.sukupass_id), l = last[s.sukupass_id];
+    h += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:9px 11px;margin-bottom:6px">' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:14px">' + escapeHtml(s.name) + '</b><span style="font-size:11px;color:var(--muted)">' + escapeHtml([s.grade, s.kana].filter(Boolean).join(' ')) + '　ID ' + escapeHtml(s.sukupass_id) + '</span>' +
+      '<span style="flex:1"></span><span style="font-size:11px;color:var(--muted)">' + (l ? '直近請求 ' + kubsMonthLabel(l.m) + ' ' + kubsYen(l.a) : '') + '</span></div>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center">' +
+        '<select id="kubs-st-' + id + '" style="padding:5px;border:1px solid var(--border);border-radius:7px;font-family:inherit">' + ['在籍', '休会', '退会'].map(o => '<option' + (s.status === o ? ' selected' : '') + '>' + o + '</option>').join('') + '</select>' +
+        '<input id="kubs-fee-' + id + '" type="number" placeholder="月謝" value="' + (s.monthly_fee == null ? '' : s.monthly_fee) + '" style="width:90px;padding:5px 7px;border:1px solid var(--border);border-radius:7px;font-family:inherit">' +
+        '<input id="kubs-al-' + id + '" type="text" placeholder="出席表での別表記" value="' + escapeAttr(s.aliases || '') + '" style="flex:1;min-width:120px;padding:5px 7px;border:1px solid var(--border);border-radius:7px;font-family:inherit">' +
+        '<input id="kubs-nt-' + id + '" type="text" placeholder="メモ（現金払い・兄弟割 など）" value="' + escapeAttr(s.note || '') + '" style="flex:2;min-width:140px;padding:5px 7px;border:1px solid var(--border);border-radius:7px;font-family:inherit">' +
+        '<button onclick="kubsSaveStudent(\'' + id + '\')" style="padding:6px 12px;background:var(--orange);color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">保存</button>' +
+      '</div></div>';
+  });
+  if (!students.length) h += '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">まだ生徒がいません。「スクパス照合」でCSVを読み込むと追加されます。</div>';
+  body.innerHTML = h;
+}
+async function kubsSaveStudent(sid) {
+  const v = (p) => (document.getElementById('kubs-' + p + '-' + sid) || {}).value;
+  const fee = String(v('fee') || '').trim();
+  try {
+    await sbPatch('kubs_students', 'sukupass_id=eq.' + encodeURIComponent(sid), {
+      status: v('st') || '在籍', monthly_fee: fee === '' ? null : parseInt(fee, 10),
+      aliases: (v('al') || '').trim() || null, note: (v('nt') || '').trim() || null, updated_at: new Date().toISOString()
+    });
+    showToast('保存しました', 'success');
+  } catch (e) { showToast('保存に失敗しました', 'error'); }
 }
 
 </script>
