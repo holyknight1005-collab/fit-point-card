@@ -6981,7 +6981,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20260929onl29';
+const APP_VERSION = '20261001onl33';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -7068,6 +7068,7 @@ function getTodayJSTString() {
 
 // ===== fitの時間割スロット（JST・分単位 minutes-of-day）=====
 // ⓪8:00-10:00 ①10:20-11:50 ②12:30-14:00 ③14:20-15:50 ④16:10-17:40 ⑤18:00-19:30 ⑥19:50-21:20
+// ※共通テスト期など期間別の時間割がある日は timetableSlotsForDate() でその日の限（0〜7限）に置き換わる。
 // ポイントはこの枠内にいた分だけが対象（休み時間・枠外はカウントしない）。
 const TIMETABLE_SLOTS = [
   { s: 8*60+0,   e: 10*60+0  }, // 0限 8:00-10:00
@@ -7083,6 +7084,14 @@ function jstMinutesOfDay(d) {
   const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
   return jst.getUTCHours() * 60 + jst.getUTCMinutes() + jst.getUTCSeconds() / 60;
 }
+// 20260929onl32: その日の時間割スロット。共通テスト期など期間別の時間割がある日は、
+// period_time_overrides の限（平日0〜7限）の時刻を使う。それ以外の日は従来の TIMETABLE_SLOTS。
+function timetableSlotsForDate(dateStr) {
+  if (!dateStr || !wkOverrides || !wkOverrides.length || !svIsSpecialDay(dateStr)) return TIMETABLE_SLOTS;
+  const tbl = periodsForDate(dateStr);
+  const toM = (x) => { const a = String(x).split(':'); return parseInt(a[0], 10) * 60 + parseInt(a[1], 10); };
+  return Object.keys(tbl).map(p => ({ s: toM(tbl[p][0]), e: toM(tbl[p][1]) }));
+}
 // [start,end] が時間割スロットと重なる合計分を返す（同日内前提・fitは日跨ぎ在室なし）。
 function overlapMinutesWithTimetable(startDate, endDate) {
   if (!startDate || !endDate) return 0;
@@ -7090,7 +7099,7 @@ function overlapMinutesWithTimetable(startDate, endDate) {
   const b = jstMinutesOfDay(endDate);
   if (b <= a) return 0;
   let total = 0;
-  for (const slot of TIMETABLE_SLOTS) {
+  for (const slot of timetableSlotsForDate(toJSTDateStr(startDate))) {
     const lo = Math.max(a, slot.s);
     const hi = Math.min(b, slot.e);
     if (hi > lo) total += (hi - lo);
@@ -9218,7 +9227,7 @@ function updateCheckinDisplay() {
   const earnedPts = Math.floor(validSec / INTERVAL_SEC);
   // いま時間割の枠内かどうか（休み時間中はポイントが増えない旨を出す）
   const nowMod = jstMinutesOfDay(now);
-  const inSlot = TIMETABLE_SLOTS.some(sl => nowMod >= sl.s && nowMod < sl.e);
+  const inSlot = timetableSlotsForDate(getTodayJST()).some(sl => nowMod >= sl.s && nowMod < sl.e);
   const lbl = document.getElementById('checkin-pts-label');
   if (lbl) {
     if (inSlot) {
@@ -9239,6 +9248,7 @@ async function doCheckout(skipConfirm) {
   if (!skipConfirm && !confirm('チェックアウトしてポイントを確定しますか？')) return;
   showLoading('チェックアウト中...');
   try {
+    await wkLoadOverrides();   // 20260929onl32: 共通テスト期の時間割で枠内時間を数える
     const nowD = new Date();
     const elapsed = Math.floor((nowD.getTime() - checkinStartTime.getTime()) / 1000);
     // 時間割の枠内にいた分だけをポイント対象にする（30分=1pt）。休み時間・枠外は除外。
@@ -9352,7 +9362,7 @@ async function openStudentClassSchedule() {
         const d = s.session_date ? new Date(s.session_date + 'T00:00:00+09:00') : null;
         const dlabel = d ? ((d.getMonth() + 1) + '/' + d.getDate() + '(' + wd[d.getDay()] + ')') : '';
         const t = (s.start_time ? String(s.start_time).slice(0,5) : '') + (s.end_time ? '〜' + String(s.end_time).slice(0,5) : '');
-        const per = s.period ? (s.period + '限 ') : '';
+        const per = hasPer(s.period) ? (s.period + '限 ') : '';
         const past = s.session_date && s.session_date < todayStr;
         return '<div style="display:flex;align-items:center;gap:8px;padding:5px 4px;border-bottom:1px solid var(--border);' + (past ? 'opacity:.45' : '') + '">' +
           '<span style="font-size:12px;font-weight:700;color:' + (past ? 'var(--muted)' : '#2D6CB6') + ';min-width:66px">' + dlabel + '</span>' +
@@ -9385,6 +9395,7 @@ function closeStudentClassSchedule() { document.getElementById('stusched-modal')
 async function loadCheckinPtsByDate(studentId) {
   checkinPtsByDate = {};
   try {
+    await wkLoadOverrides();   // 20260929onl32: 過去行の再計算も日付ごとの時間割で
     const since = new Date(); since.setFullYear(since.getFullYear() - 1);
     const sinceStr = toJSTDateStr(since);
     // valid_minutes（枠内時間）があればそれで、無ければ created_at/checkout_time から枠内時間を再計算。
@@ -10437,7 +10448,7 @@ async function loadTodayTasks() {
     const seenSession = new Set();
     const unfilledReports = [];
     (mySessionsAll || []).forEach(s => {
-      const k = s.class_master_id + '|' + s.session_date + '|' + (s.period || '');
+      const k = s.class_master_id + '|' + s.session_date + '|' + perKey(s.period);
       if (seenSession.has(k)) return;
       seenSession.add(k);
       if (!filledSet.has(s.class_master_id + '|' + s.session_date)) {
@@ -10490,13 +10501,13 @@ async function loadTodayTasks() {
         const className = s.class_name || cm.name || '授業';
         const teacherName = cm.teacher_staff_id ? (staffNameMap[cm.teacher_staff_id] || '') : '';
         const mine = cm.teacher_staff_id && currentStaff && cm.teacher_staff_id === currentStaff.id;
-        const periodLabel = s.period ? (s.period + '限') : '';
+        const periodLabel = hasPer(s.period) ? (s.period + '限') : '';
         const timeLabel = (s.start_time && s.end_time) ? (String(s.start_time).slice(0,5) + '-' + String(s.end_time).slice(0,5)) : '';
         const title = (periodLabel ? periodLabel + ' ' : '') + escapeHtml(className);
         const sub = teacherName ? escapeHtml(teacherName) : (timeLabel || '');
         // タップで出席タブを開き、その授業・その日を自動選択
         const oc = s.class_master_id
-          ? "openClassAttendance('" + s.class_master_id + "','" + today + "','" + (s.period || '') + "')"
+          ? "openClassAttendance('" + s.class_master_id + "','" + today + "','" + perKey(s.period) + "')"
           : '';
         items.push(classRow(mine ? '⭐' : '📚', title, sub, mine, oc));
       });
@@ -10898,9 +10909,9 @@ async function loadHomeSchedule() {
         '<div style="font-size:11px;font-weight:700;color:' + (isToday ? '#7B2D8B' : 'var(--muted)') + ';margin-bottom:4px">' + dateLabel + '</div>';
       const entry = byDate[dateISO];
       entry.sessions.slice().sort((a,b) => (a.period||0)-(b.period||0)).forEach(s => {
-        const time = (s.start_time && s.end_time) ? (String(s.start_time).slice(0,5) + '〜' + String(s.end_time).slice(0,5)) : (s.period ? s.period + '限' : '');
+        const time = (s.start_time && s.end_time) ? (String(s.start_time).slice(0,5) + '〜' + String(s.end_time).slice(0,5)) : (hasPer(s.period) ? s.period + '限' : '');
         const mineBadge = s.mine ? '<span style="font-size:9px;background:var(--orange);color:#fff;padding:1px 6px;border-radius:10px;margin-left:6px">担当</span>' : '';
-        html += '<div style="font-size:12px;color:var(--text);padding:2px 0">📚 ' + (s.period ? s.period + '限 ' : '') + escapeHtml(s.name) + mineBadge + '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + time + '</span></div>';
+        html += '<div style="font-size:12px;color:var(--text);padding:2px 0">📚 ' + (hasPer(s.period) ? s.period + '限 ' : '') + escapeHtml(s.name) + mineBadge + '<span style="font-size:10px;color:var(--muted);margin-left:6px">' + time + '</span></div>';
       });
       entry.events.forEach(ev => {
         html += '<div style="font-size:12px;color:var(--text);padding:2px 0"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + (ev.color || '#F5A623') + ';margin-right:5px"></span>' + escapeHtml(ev.title) + '</div>';
@@ -10994,12 +11005,12 @@ async function loadHomeAbsent() {
     const stus = Object.values(byStu).sort((a, b) => b.items.length - a.items.length);
     const totalAbsent = rows.length;
     if (cntEl) cntEl.textContent = totalAbsent + '件 / ' + stus.length + '名';
-    const periodLabel = { '1':'1限','2':'2限','3':'3限','4':'4限','5':'5限','6':'6限' };
+    const periodLabel = { '0':'0限','1':'1限','2':'2限','3':'3限','4':'4限','5':'5限','6':'6限','7':'7限' };
     listEl.innerHTML = stus.map(st => {
       const gradeInfo = [st.school, st.grade].filter(Boolean).join(' ');
       const itemsHtml = st.items.map(it => {
         const d = it.date ? it.date.replace(/^\d{4}-/, '').replace('-', '/') : '';
-        const pl = it.period ? periodLabel[String(it.period)] || (it.period + '限') : '';
+        const pl = hasPer(it.period) ? periodLabel[String(it.period)] || (it.period + '限') : '';
         const meta = [d, pl].filter(Boolean).join(' ');
         return '<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:#fff;border:1px solid #EAD9C5;border-radius:8px">' +
           '<span style="flex:1;font-size:12px;color:var(--text);font-weight:600">' + escapeHtml(it.className) + '</span>' +
@@ -11224,10 +11235,11 @@ async function exportMyCalendarICS() {
     sessions.forEach(s => {
       const name = classMap[s.class_master_id] || '授業';
       const per = s.period;
-      let st = s.start_time ? s.start_time.slice(0,5) : (per && PERIODS[per] ? PERIODS[per][0] : null);
-      let et = s.end_time ? s.end_time.slice(0,5) : (per && PERIODS[per] ? PERIODS[per][1] : null);
+      const ptt = hasPer(per) ? periodTimeOnDate(s.session_date, per) : null;   // 20260929onl30: 日付ごとの時間割
+      let st = s.start_time ? s.start_time.slice(0,5) : (ptt ? ptt[0] : null);
+      let et = s.end_time ? s.end_time.slice(0,5) : (ptt ? ptt[1] : null);
       lines.push('BEGIN:VEVENT');
-      lines.push('UID:' + icsUid(['sess', s.class_master_id, s.session_date, per || '0']));
+      lines.push('UID:' + icsUid(['sess', s.class_master_id, s.session_date, hasPer(per) ? String(per) : '0']));
       lines.push('DTSTAMP:' + dtstamp);
       if (st && et) {
         lines.push('DTSTART;TZID=Asia/Tokyo:' + icsDateTimeLocal(s.session_date, st));
@@ -11237,7 +11249,7 @@ async function exportMyCalendarICS() {
         lines.push('DTSTART;VALUE=DATE:' + icsDateOnly(s.session_date));
         lines.push('DTEND;VALUE=DATE:' + icsDateOnly(nextDateStr(s.session_date)));
       }
-      lines.push(icsFoldLine('SUMMARY:' + icsEscape((per ? per + '限 ' : '') + name)));
+      lines.push(icsFoldLine('SUMMARY:' + icsEscape((hasPer(per) ? per + '限 ' : '') + name)));
       lines.push('END:VEVENT');
     });
 
@@ -11532,7 +11544,7 @@ function renderStaffHomeCalMonth(year, month) {
     const reportMissing = staffCalReportMissingOn(dateISO);
 
     const titleParts = [];
-    sess.forEach(s => titleParts.push((s.period ? s.period + '限 ' : '') + s.class_name + (s.teacher_name ? '（' + s.teacher_name + '）' : '')));
+    sess.forEach(s => titleParts.push((hasPer(s.period) ? s.period + '限 ' : '') + s.class_name + (s.teacher_name ? '（' + s.teacher_name + '）' : '')));
     evs.forEach(ev => titleParts.push((ev._trial ? '' : '🎪 ') + ev.title));
     bdays.forEach(b => titleParts.push('🎂 ' + b.name));
     (staffCalSupervisions[dateISO] || []).forEach(p => titleParts.push('🪑 自習監督 ' + p + '限'));
@@ -11576,7 +11588,7 @@ function renderStaffHomeCalMonth(year, month) {
     });
     const items = [];
     sortedSess.forEach(s => {
-      const tm = s.start_time ? s.start_time.slice(0, 5) : (s.period ? s.period + '限' : '');
+      const tm = s.start_time ? s.start_time.slice(0, 5) : (hasPer(s.period) ? s.period + '限' : '');
       const label = (tm ? tm + ' ' : '') + s.class_name;
       items.push({ kind: 'sess', label: label, color: s.color || '#E8923A' });
     });
@@ -11755,9 +11767,9 @@ function openUnfilledReports() {
       el.innerHTML = '<div style="font-size:13px;color:var(--muted);text-align:center;padding:16px">未記入の報告書はありません 🎉</div>';
     } else {
       el.innerHTML = list.map(r => {
-        const periodLabel = r.period ? (r.period + '限') : '';
+        const periodLabel = hasPer(r.period) ? (r.period + '限') : '';
         const dateLabel = r.session_date.slice(5).replace('-', '/');
-        const oc = "closeUnfilledReports();openClassAttendance('" + r.class_master_id + "','" + r.session_date + "','" + (r.period || '') + "')";
+        const oc = "closeUnfilledReports();openClassAttendance('" + r.class_master_id + "','" + r.session_date + "','" + perKey(r.period) + "')";
         return '<div onclick="' + oc + '" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">' +
           '<span style="font-size:12px;font-weight:700;color:var(--orange-d);min-width:42px">' + dateLabel + '</span>' +
           '<span style="flex:1;font-size:13px;font-weight:700;color:var(--text)">' + escapeHtml(r.name) + (periodLabel ? ' <span style="font-size:11px;color:var(--muted)">' + periodLabel + '</span>' : '') + '</span>' +
@@ -11791,7 +11803,7 @@ function openUnfilledSupervision() {
       el.innerHTML = '<div style="font-size:13px;color:var(--muted);text-align:center;padding:16px">未記入の監督報告はありません 🎉</div>';
     } else {
       el.innerHTML = list.map(a => {
-        const periodLabel = a.period ? (a.period + '限') : '';
+        const periodLabel = hasPer(a.period) ? (a.period + '限') : '';
         const dateLabel = svRepDateLabel(a.sv_date);
         return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px">' +
           '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
@@ -11853,7 +11865,7 @@ async function svLoadReportList() {
   const html = filled.map(r => {
     const d = new Date(r.sv_date + 'T00:00:00+09:00');
     const dateLabel = (d.getMonth() + 1) + '/' + d.getDate() + '（' + WD[d.getDay()] + '）';
-    const per = r.period ? r.period + '限' : '';
+    const per = hasPer(r.period) ? r.period + '限' : '';
     const rep = (r.report_text && r.report_text.trim()) ? r.report_text.trim() : '';
     const han = (r.handover_text && r.handover_text.trim()) ? r.handover_text.trim() : '';
     return '<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fff">' +
@@ -16282,7 +16294,7 @@ async function loadAttendanceAppeals() {
         const cname = cinfo.name || '授業';
         const subj = cinfo.subject || '';
         const dateStr = (a.session_date || '').replace(/-/g, '/');
-        const perStr = a.period ? ('　' + a.period + '限') : '';
+        const perStr = hasPer(a.period) ? ('　' + a.period + '限') : '';
         const rlab = APPEAL_REASON_LABEL[a.reason] || a.reason;
         const reasonBadge = a.reason === 'video'
           ? '<span style="font-size:9px;background:#E6DAF0;color:#6B4FA0;padding:2px 7px;border-radius:9px;font-weight:700">📺 ' + rlab + '</span>'
@@ -22047,6 +22059,7 @@ async function staffForceCheckout(studentId, studentName, withPoints) {
     }
 
     const checkin = checkins[0];
+    await wkLoadOverrides();   // 20260929onl32
     const inTime = new Date(checkin.created_at);
     const now = new Date();
     const stayMin = Math.floor((now - inTime) / 60000);
@@ -22354,6 +22367,11 @@ function periodsForDate(dateStr) {
   });
   return out;
 }
+// 20260929onl30: 0限（共通テスト期）を「限なし」と取り違えないための判定。
+// period は数値 or null。0 は有効な限なので、真偽値ではなく null/空文字かどうかで判定する。
+function hasPer(p) { return p !== null && p !== undefined && p !== ''; }
+// キー・引数用の文字列（null→''、0→'0'）。以前の「x.period または空文字」の置き換え。
+function perKey(p) { return hasPer(p) ? String(p) : ''; }
 // その日の p 限の [開始,終了]。その日に無い限は null。
 function periodTimeOnDate(dateStr, p) {
   const t = periodsForDate(dateStr)[parseInt(p, 10)];
@@ -23116,7 +23134,7 @@ async function openClassAttendanceLatest(classId) {
       'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
       '&select=session_date,period&order=session_date.desc,period&limit=1') || [];
     if (typeof openClassAttendance === 'function') {
-      if (rows.length) openClassAttendance(classId, rows[0].session_date, rows[0].period || '');
+      if (rows.length) openClassAttendance(classId, rows[0].session_date, perKey(rows[0].period));
       else openClassAttendance(classId, todayStr, '');
     }
   } catch(e) {
@@ -23136,7 +23154,7 @@ function gotoAttendanceForClass() {
         'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
         '&select=session_date,period&order=session_date.desc,period&limit=1') || [];
       if (rows.length && typeof openClassAttendance === 'function') {
-        openClassAttendance(classId, rows[0].session_date, rows[0].period || '');
+        openClassAttendance(classId, rows[0].session_date, perKey(rows[0].period));
       } else if (typeof openClassAttendance === 'function') {
         // 実施済みがなければ授業選択だけした状態で出欠タブへ
         openClassAttendance(classId, todayStr, '');
@@ -23239,7 +23257,7 @@ async function loadKarteAttendance(classId) {
     const attByKey = {};
     let allPresent = 0, allRecorded = 0, allInPerson = 0;
     atts.forEach(a => {
-      const k = a.session_date + '|' + (a.period || '');
+      const k = a.session_date + '|' + perKey(a.period);
       const o = attByKey[k] || (attByKey[k] = { present:0, absent:0, makeup:0, recorded:0 });
       if (a.status === 'present') o.present++;
       else if (a.status === 'absent') o.absent++;
@@ -23289,8 +23307,8 @@ async function loadKarteAttendance(classId) {
     const wlabels = ['日','月','火','水','木','金','土'];
     el.innerHTML = sessions.map(s => {
       const d = new Date(s.session_date + 'T00:00:00+09:00');
-      const label = (d.getMonth()+1) + '/' + d.getDate() + '（' + wlabels[d.getDay()] + '）' + (s.period ? ' ' + s.period + '限' : '');
-      const o = attByKey[s.session_date + '|' + (s.period || '')] || { present:0, absent:0, makeup:0, recorded:0 };
+      const label = (d.getMonth()+1) + '/' + d.getDate() + '（' + wlabels[d.getDay()] + '）' + (hasPer(s.period) ? ' ' + s.period + '限' : '');
+      const o = attByKey[s.session_date + '|' + perKey(s.period)] || { present:0, absent:0, makeup:0, recorded:0 };
       const unrec = Math.max(0, total - o.recorded);
       const rate = total ? Math.round(((o.present + o.makeup) / total) * 100) : 0;
       const ipRate = total ? Math.round((o.present / total) * 100) : 0;
@@ -29409,7 +29427,7 @@ function ttGradeNum(g) {
   const m = String(g).match(/([1-3])/);
   return m ? parseInt(m[1], 10) : null;
 }
-const TT_PERIOD_LABEL = { '1':'1限','2':'2限','3':'3限','4':'4限','5':'5限','6':'6限' };
+const TT_PERIOD_LABEL = { '0':'0限','1':'1限','2':'2限','3':'3限','4':'4限','5':'5限','6':'6限','7':'7限' };
 
 // 時間割かぶり検知：今日以降の class_sessions を走査し、
 // 同じ生徒が同じ session_date × period に2授業以上いる箇所を検出。
@@ -30322,7 +30340,7 @@ function renderStaffCalMonth() {
     const tappable = true;  // 全日タップ可（空の日もモーダルから予定追加できる）
 
     const titleParts = [];
-    sess.forEach(s => titleParts.push((s.period ? s.period + '限 ' : '') + s.class_name + (s.teacher_name ? '（' + s.teacher_name + '）' : '')));
+    sess.forEach(s => titleParts.push((hasPer(s.period) ? s.period + '限 ' : '') + s.class_name + (s.teacher_name ? '（' + s.teacher_name + '）' : '')));
     evs.forEach(ev => titleParts.push('🎪 ' + ev.title));
     bdays.forEach(b => titleParts.push('🎂 ' + b.name));
     (staffCalSupervisions[dateISO] || []).forEach(p => titleParts.push('🪑 自習監督 ' + p + '限'));
@@ -30411,7 +30429,7 @@ function openStaffCalModal(dateISO, simple) {
           repHtml = '<div style="font-size:11px;color:var(--green-d);margin-top:4px">📝 授業報告 記入済み</div>';
         } else {
           repHtml = '<div style="margin-top:6px"><span style="font-size:11px;color:var(--red);font-weight:700">📝 授業報告 未記入</span>' +
-            '<button onclick="openClassAttendance(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period || '') + '\')" style="margin-left:8px;font-size:11px;font-weight:700;color:#fff;background:var(--orange);border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">入力する</button></div>';
+            '<button onclick="openClassAttendance(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + perKey(s.period) + '\')" style="margin-left:8px;font-size:11px;font-weight:700;color:#fff;background:var(--orange);border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">入力する</button></div>';
         }
       }
       const editBtn = s.class_master_id
@@ -30430,7 +30448,7 @@ function openStaffCalModal(dateISO, simple) {
         ? '<span style="font-size:9px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:10px;padding:1px 6px;margin-left:6px">🔁 補習</span>'
         : (s.cycle_label ? '<span style="font-size:9px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);border-radius:10px;padding:1px 6px;margin-left:6px">' + escapeHtml(s.cycle_label) + '</span>' : '');
       body += '<div style="background:' + (s.mine ? 'var(--orange-l)' : 'var(--surface)') + ';border:1px solid ' + (s.mine ? 'var(--orange)' : 'var(--border)') + ';border-radius:8px;padding:8px 10px;margin-bottom:6px">' +
-        '<div style="font-size:13px;font-weight:700;color:var(--text)">' + (s.period ? s.period + '限 ' : '') + escapeHtml(s.class_name) + mineBadge + cycBadge + '</div>' +
+        '<div style="font-size:13px;font-weight:700;color:var(--text)">' + (hasPer(s.period) ? s.period + '限 ' : '') + escapeHtml(s.class_name) + mineBadge + cycBadge + '</div>' +
         '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + (time ? time : '時刻未設定') + (s.teacher_name ? '　' + escapeHtml(s.teacher_name) + '先生' : '') + editBtn + '</div>' +
         chgBadge +
         repHtml +
@@ -30444,7 +30462,7 @@ function openStaffCalModal(dateISO, simple) {
   if (svModalPeriods.length) {
     body += '<div style="margin-top:10px"><div style="font-size:12px;font-weight:700;color:#2D6CB6;margin-bottom:6px">🪑 自習監督</div>';
     svModalPeriods.forEach(p => {
-      const t = svPeriodTimeLabel(p);
+      const t = svPeriodTimeLabel(p, dateISO);
       body += '<div style="background:#EAF2FB;border:1px solid #9CC0E8;border-radius:8px;padding:8px 10px;margin-bottom:6px">' +
         '<div style="font-size:13px;font-weight:700;color:#1E4276">' + p + '限 自習監督' +
         '<span style="font-size:9px;background:#2D6CB6;color:#fff;padding:1px 6px;border-radius:10px;margin-left:6px">担当</span></div>' +
@@ -31926,7 +31944,7 @@ async function loadMyAttendance() {
         'student_id=eq.' + currentStudent.id +
         '&class_master_id=in.(' + myClassIds.join(',') +
         ')&status=eq.pending&select=class_master_id,session_date,period') || [];
-      apps.forEach(a => appealSet.add(a.class_master_id + '|' + a.session_date + '|' + (a.period || '')));
+      apps.forEach(a => appealSet.add(a.class_master_id + '|' + a.session_date + '|' + perKey(a.period)));
     } catch (e) { /* テーブル未作成は無視 */ }
 
     renderMyAttendance(sessions, classInfo, atts, myCheckins, makeupSet, todayStr, appealSet);
@@ -31944,7 +31962,7 @@ function renderMyAttendance(sessions, classInfo, atts, checkins, makeupSet, toda
   // 手動記録マップ: 'classId|date|period' -> {status,note}
   const attMap = {};
   atts.forEach(a => {
-    attMap[a.class_master_id + '|' + a.session_date + '|' + (a.period || '')] =
+    attMap[a.class_master_id + '|' + a.session_date + '|' + perKey(a.period)] =
       { status: a.status, note: a.note || '' };
   });
 
@@ -31960,7 +31978,7 @@ function renderMyAttendance(sessions, classInfo, atts, checkins, makeupSet, toda
   // 1セッションの自分の状態を返す: 'present'|'absent'|'planned'
   function statusOf(s) {
     const isPast = s.session_date <= todayStr;
-    const k = s.class_master_id + '|' + s.session_date + '|' + (s.period || '');
+    const k = s.class_master_id + '|' + s.session_date + '|' + perKey(s.period);
     if (attMap[k]) return attMap[k].status; // 手動記録優先
     if (makeupSet.has(s.class_master_id + '|' + s.session_date)) return 'present'; // 補習承認
     if (!isPast) return 'planned';
@@ -32000,7 +32018,7 @@ function renderMyAttendance(sessions, classInfo, atts, checkins, makeupSet, toda
 
   // 全体集計（過去＝present/makeup/absentのみ。plannedは母数に含めない）
   let totPresent = 0, totMakeup = 0, totAbsent = 0, totPlanned = 0;
-  const periodLabel = { '1': '1限', '2': '2限', '3': '3限', '4': '4限', '5': '5限', '6': '6限' };
+  const periodLabel = { '0': '0限', '1': '1限', '2': '2限', '3': '3限', '4': '4限', '5': '5限', '6': '6限', '7': '7限' };
   const stMeta = {
     present: { bg: 'var(--green-d)', fg: '#fff', label: '出席' },
     makeup:  { bg: '#6B4FA0', fg: '#fff', label: '補習' },
@@ -32009,7 +32027,7 @@ function renderMyAttendance(sessions, classInfo, atts, checkins, makeupSet, toda
   };
 
   const classCards = Object.values(byClass).map(cl => {
-    cl.rows.sort((a, b) => (a.s.session_date + (a.s.period || '')).localeCompare(b.s.session_date + (b.s.period || '')));
+    cl.rows.sort((a, b) => (a.s.session_date + perKey(a.s.period)).localeCompare(b.s.session_date + perKey(b.s.period)));
     let p = 0, mk = 0, ab = 0, pl = 0;
     cl.rows.forEach(r => {
       if (r.st === 'present') p++;
@@ -32032,16 +32050,16 @@ function renderMyAttendance(sessions, classInfo, atts, checkins, makeupSet, toda
     const cnameForAppeal = cl.info.name || '授業';
     const rowsHtml = rowsDesc.map(r => {
       const m = stMeta[r.st];
-      const per = r.s.period ? periodLabel[String(r.s.period)] || (r.s.period + '限') : '';
-      const note = (attMap[r.s.class_master_id + '|' + r.s.session_date + '|' + (r.s.period || '')] || {}).note || '';
+      const per = hasPer(r.s.period) ? periodLabel[String(r.s.period)] || (r.s.period + '限') : '';
+      const note = (attMap[r.s.class_master_id + '|' + r.s.session_date + '|' + perKey(r.s.period)] || {}).note || '';
       // 欠席の日だけ：出席申請ボタン（申請中なら「申請中」バッジ）
       let appealCtrl = '';
       if (r.st === 'absent') {
-        const akey = r.s.class_master_id + '|' + r.s.session_date + '|' + (r.s.period || '');
+        const akey = r.s.class_master_id + '|' + r.s.session_date + '|' + perKey(r.s.period);
         if (appealSet.has(akey)) {
           appealCtrl = '<span style="font-size:9px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);padding:2px 7px;border-radius:9px;flex-shrink:0">申請中</span>';
         } else {
-          const perArg = r.s.period ? r.s.period : 'null';
+          const perArg = hasPer(r.s.period) ? r.s.period : 'null';
           appealCtrl = '<button onclick="openAttAppeal(\'' + r.s.class_master_id + '\',\'' + r.s.session_date + '\',' + perArg + ',\'' + escapeAttr(cnameForAppeal) + '\')" style="font-size:9px;font-weight:700;color:var(--orange-d);background:#fff;border:1px solid var(--orange);padding:3px 8px;border-radius:9px;flex-shrink:0;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">出席申請</button>';
         }
       }
@@ -32312,7 +32330,7 @@ function renderUnifiedMonth() {
       const MAX = 6;
       itemsHtml = '<div class="u-items">';
       sorted.slice(0, MAX).forEach(c => {
-        const tm = c.start_time ? String(c.start_time).slice(0, 5) + ' ' : (c.period ? c.period + '限 ' : '');
+        const tm = c.start_time ? String(c.start_time).slice(0, 5) + ' ' : (hasPer(c.period) ? c.period + '限 ' : '');
         const safe = (tm + (c.name || '')).replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         const bandBg = st.band || 'rgba(0,0,0,0.42)';
         itemsHtml += '<span class="u-sess-name" title="' + safe + '" style="background:' + bandBg + '">' + safe + '</span>';
@@ -33977,7 +33995,7 @@ async function loadQuizStatusDetail(classId, targetElId, clsNameArg) {
     assigns.forEach(a => {
       const title = setMap[a.quiz_set_id] || '(小テスト)';
       const dateLabel = a.session_date ? a.session_date : '';
-      const periodLabel = a.period ? (' ' + a.period + '限') : '';
+      const periodLabel = hasPer(a.period) ? (' ' + a.period + '限') : '';
       const statusLabel = a.status === 'open' ? '受付中' : (a.status === 'closed' ? '終了' : (a.status === 'ready' ? '準備中' : a.status || ''));
       const rows = (resByAsg[a.id] || []).slice().sort((x, y) => (y.correct_count || 0) - (x.correct_count || 0));
       html += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:10px">';
@@ -34369,7 +34387,7 @@ async function openClassAttendance(classId, date, period) {
   // 対象セッションを選択（period一致を優先、なければ同日の先頭）
   const ssel = document.getElementById('att-session-select');
   if (ssel) {
-    const wantKey = date + '|' + (period || '');
+    const wantKey = date + '|' + perKey(period);
     let matched = '';
     for (const opt of ssel.options) {
       if (opt.value === wantKey) { matched = opt.value; break; }
@@ -34498,7 +34516,7 @@ async function loadAttOverview() {
     };
     const attMapG = {};           // classId|date|period|student -> status
     atts.forEach(a => {
-      attMapG[a.class_master_id + '|' + a.session_date + '|' + (a.period || '') + '|' + a.student_id] = a.status;
+      attMapG[a.class_master_id + '|' + a.session_date + '|' + perKey(a.period) + '|' + a.student_id] = a.status;
     });
 
     // 並び替え：教科→学年→名前
@@ -34551,14 +34569,14 @@ async function loadAttOverview() {
       let clsAbsent = 0, clsUnrec = 0;
       const dayStat = {};   // key(date|period) -> {present,absent,makeup,unrec,past}
       csess.forEach(s => {
-        const key = s.session_date + '|' + (s.period || '');
+        const key = s.session_date + '|' + perKey(s.period);
         const past = s.session_date <= todayStr;
         const st = { present: 0, absent: 0, makeup: 0, unrec: 0, past: past };
         if (past) {
           sids.forEach(sid => {
             // 長文読解などで担当コマ(preferred_period)が違う生徒は、この時限には出ない予定なので数えない
             if (!stuInPeriod(m.id, sid, s.period)) return;
-            const status = attMapG[m.id + '|' + s.session_date + '|' + (s.period || '') + '|' + sid];
+            const status = attMapG[m.id + '|' + s.session_date + '|' + perKey(s.period) + '|' + sid];
             if (status === 'present') st.present++;
             else if (status === 'absent') { st.absent++; clsAbsent++; }
             else if (status === 'makeup') st.makeup++;
@@ -34593,8 +34611,8 @@ async function loadAttOverview() {
         const d = new Date(s.session_date + 'T00:00:00+09:00');
         const md = (d.getMonth() + 1) + '/' + d.getDate();
         const wd = wlabels[d.getDay()];
-        const per = s.period ? s.period + '限' : '';
-        const st = dayStat[s.session_date + '|' + (s.period || '')];
+        const per = hasPer(s.period) ? s.period + '限' : '';
+        const st = dayStat[s.session_date + '|' + perKey(s.period)];
         const headBg = (st && st.past && st.absent > 0) ? '#FDE7E7' : (st && st.past ? '#fff' : '#FAFAFA');
         html += '<th style="padding:4px 2px;border-bottom:1px solid var(--border);font-size:10px;font-weight:700;color:var(--text);width:44px;min-width:44px;background:' + headBg + '">' +
           md + '<br><span style="font-size:9px;color:var(--muted);font-weight:400">' + wd + (per ? ' ' + per : '') + '</span></th>';
@@ -34630,7 +34648,7 @@ async function loadAttOverview() {
             html += '<td style="text-align:center;padding:3px;background:repeating-linear-gradient(135deg,#f2f2f2,#f2f2f2 3px,#fafafa 3px,#fafafa 6px)"></td>';
             return;
           }
-          const status = attMapG[m.id + '|' + s.session_date + '|' + (s.period || '') + '|' + sid];
+          const status = attMapG[m.id + '|' + s.session_date + '|' + perKey(s.period) + '|' + sid];
           let bg, col, mark;
           if (status === 'present') { bg = 'var(--green-l)'; col = 'var(--green-d)'; mark = '○'; n++; p++; }
           else if (status === 'makeup') { bg = '#EDE7F8'; col = '#6B4FA0'; mark = '◐'; n++; p++; }
@@ -34842,7 +34860,7 @@ async function loadAttSheet() {
     const sessByClass = {};
     sessions.forEach(s => { (sessByClass[s.class_master_id] || (sessByClass[s.class_master_id] = [])).push(s); });
     const attMap = {}; // classId|date|period|student -> status
-    atts.forEach(a => { attMap[a.class_master_id + '|' + a.session_date + '|' + (a.period || '') + '|' + a.student_id] = a.status; });
+    atts.forEach(a => { attMap[a.class_master_id + '|' + a.session_date + '|' + perKey(a.period) + '|' + a.student_id] = a.status; });
 
     // 生徒 -> 受講クラス（classId -> ended_on）。ended_on は日付カット用（null=継続中）。
     const classesByStu = {};
@@ -34955,7 +34973,7 @@ async function loadAttSheet() {
         const days = csess.map(s => {
           const d = new Date(s.session_date + 'T00:00:00+09:00');
           // 出欠も映し元(srcId)から拾う（演習は超感覚英語(2、3年)の出欠）。
-          const status = attMap[srcId + '|' + s.session_date + '|' + (s.period || '') + '|' + sid] || '';
+          const status = attMap[srcId + '|' + s.session_date + '|' + perKey(s.period) + '|' + sid] || '';
           // 回数ラベル：補習=🔁／通常(月あり)=「8-③」／講習・夏期(月なし)=「③」／未登録=空
           let cyc = '';
           if (s.is_makeup) cyc = '🔁';
@@ -34965,7 +34983,7 @@ async function loadAttSheet() {
             date: s.session_date,
             md: (d.getMonth() + 1) + '/' + d.getDate(),
             wd: wlabels[d.getDay()],
-            per: s.period || '',
+            per: perKey(s.period),
             cyc: cyc,
             status: status,
             enshu: isEnshu   // dlm162: 演習は 欠席・未登録とも「―」で表記
@@ -36521,7 +36539,7 @@ let _rbTeacherName = '';
 // 丸数字（①〜⑳、超過はそのまま数字）
 function rbCircled(n) {
   const CIRC = ['⓪','①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳'];
-  return (n >= 1 && n <= 20) ? CIRC[n] : String(n);
+  return (n >= 0 && n <= 20) ? CIRC[n] : String(n);
 }
 // 報告書の staff_id（コード fit0xx or UUID）を講師名に解決する。
 // class_reports.staff_id はコード値(fit0xx)保存だが、旧データでUUIDの可能性もあるため両対応。
@@ -37051,7 +37069,7 @@ function reRenderRows() {
     }
     const p = r.date.split('-').map(Number);
     const dateLabel = p[1] + '/' + p[2] + '（' + reWd(r.date) + '）';
-    const periodLabel = r.period ? (r.period + '限') : '';
+    const periodLabel = hasPer(r.period) ? (r.period + '限') : '';
     const cyc = r.cycleLabel ? ('<span style="font-size:10px;color:var(--muted);margin-left:6px">' + escapeHtml(r.cycleLabel) + '</span>') : '';
     const statusChip = r.hasRecord
       ? '<span id="re-status-' + i + '" style="font-size:10px;font-weight:700;color:#2E7D32;background:#EAF6EA;border:1px solid #BFE3BF;border-radius:20px;padding:1px 8px">記入済</span>'
@@ -38114,7 +38132,7 @@ function kcCsv() {
 // 権限: 希望=canWishSupervision()（fit001以外）／決定=canDecideSupervision()（admin/fit002/fit003/fit010）
 // 要SQL: dlm29_supervision.sql（未実行でも落とさず案内）
 // ============================================================
-const SV_PERIOD_LABEL = { 1:'1限', 2:'2限', 3:'3限', 4:'4限', 5:'5限', 6:'6限' };
+const SV_PERIOD_LABEL = { 0:'0限', 1:'1限', 2:'2限', 3:'3限', 4:'4限', 5:'5限', 6:'6限', 7:'7限' };
 function svMyStaffId() {
   return (currentStaff && currentStaff.staff_id) ? String(currentStaff.staff_id)
     : (localStorage.getItem('fit_staff_id') || '');
@@ -38184,9 +38202,31 @@ async function svGetConfirmedSlotsForStaff(staffCode, fromIso, toIso) {
 }
 
 // 監督コマの表示ラベル（時限→時刻帯）。カレンダー・ホーム共通。
-function svPeriodTimeLabel(period) {
-  const times = { 1:'10:20', 2:'12:30', 3:'14:20', 4:'16:10', 5:'18:00', 6:'19:50' };
-  return times[period] || '';
+// 20260929onl31: iso（任意）を渡すと、その日の時間割（共通テスト期など）の開始時刻を返す。
+function svPeriodTimeLabel(period, iso) {
+  const t = iso ? periodTimeOnDate(iso, period) : (PERIODS[period] || null);
+  return t ? t[0] : '';
+}
+// 20260929onl31: その日が通常と違う時間割（共通テスト期など）か。
+function svIsSpecialDay(iso) {
+  const a = periodsForDate(iso);
+  return Object.keys(a).some(p => !PERIODS[p] || PERIODS[p][0] !== a[p][0] || PERIODS[p][1] !== a[p][1]);
+}
+// 20260929onl31: 定型シフト t={from,to}（通常期の限で登録）が、その日の p 限を勤務内とみなすか。
+//  通常の日：限番号の範囲で判定（従来どおり）。
+//  共通テスト期などの日：限の時間の半分以上が「通常期の from限開始〜to限終了」の勤務時間帯に入れば勤務内。
+function svShiftCovers(t, p, iso) {
+  if (!t || t.off || t.from == null || !t.from) return false;
+  if (!iso || !svIsSpecialDay(iso)) return p >= t.from && p <= t.to;
+  const f = PERIODS[t.from], e = PERIODS[t.to], tt = periodTimeOnDate(iso, p);
+  if (!f || !e || !tt) return false;
+  const m = (x) => { const a = String(x).split(':'); return parseInt(a[0], 10) * 60 + parseInt(a[1], 10); };
+  const ov = Math.min(m(tt[1]), m(e[1])) - Math.max(m(tt[0]), m(f[0]));   // 重なっている分数
+  return ov > 0 && ov * 2 >= (m(tt[1]) - m(tt[0]));                         // 限の半分以上が勤務時間帯に入れば勤務内
+}
+// その日の時間割に無い限のセル（例：共通テスト期の土日の0限・7限）
+function svNoSlotCellTd() {
+  return '<td style="border:1px solid var(--line);padding:2px;vertical-align:top"><div style="min-height:30px;background:#f4f4f4;border-radius:5px;color:#c4c4c4;text-align:center;font-size:10px;line-height:30px" title="この日の時間割にない限">—</div></td>';
 }
 
 
@@ -38247,11 +38287,11 @@ async function svLoadMyShiftTemplate() {
 }
 
 // 定型シフト上、その曜日×限が「勤務内」か。社会人以外は常に true（勤務概念なし）。
-function svIsWorkingCell(dow, period) {
+function svIsWorkingCell(dow, period, iso) {
   if (_svEmploymentType !== 'shakaijin') return true;
   const t = _svMyShiftTemplate[dow];
   if (!t) return false; // 休み
-  return period >= t.from && period <= t.to;
+  return svShiftCovers(t, period, iso);   // 20260929onl31: 共通テスト期は時刻で判定
 }
 
 // ---- 定型シフト登録UI（社会人） ----
@@ -38301,6 +38341,8 @@ function svRenderShiftTemplateUI() {
     h += '</div>';
   });
   h += '</div>';
+  // 20260929onl31: 共通テスト期（平日0〜7限）の扱いを明記
+  h += '<div style="font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:6px">※ 定型シフトは通常期の限で登録します。共通テスト期の平日は、この勤務時間帯（例：4〜6限＝16:10〜21:20）に半分以上入る限が勤務内になります。</div>';
   // 保存ボタン（未変更のときは淡く）
   h += '<div style="display:flex;align-items:center;gap:10px;margin-top:10px">' +
     '<button onclick="svSaveShiftTemplate()" style="opacity:' + (_svShiftDirty ? '1' : '0.55') + ';font-size:12px;font-weight:700;background:var(--orange);color:#fff;border:1px solid var(--orange);border-radius:8px;padding:7px 16px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">定型シフトを保存</button>' +
@@ -38584,18 +38626,21 @@ function svPaintGrid() {
   });
   h += '</tr>';
 
-  for (let p = 1; p <= 6; p++) {
-    const t = (typeof PERIODS !== 'undefined' && PERIODS[p]) ? PERIODS[p] : null;
+  const _svIsoDates = dates.map(svIsoFromDate);   // 20260929onl31: その週の時間割の限（共通テスト期の平日は0〜7限）
+  for (const p of periodNumsForDates(_svIsoDates)) {
+    const t = periodTimeForDates(_svIsoDates, p);
+    const tVar = periodTimeVaries(_svIsoDates, p);
     h += '<tr><td style="border:1px solid var(--line);background:#faf8f4;padding:4px 3px;font-size:10px;text-align:center;font-weight:700">' +
-      (SV_PERIOD_LABEL[p] || (p+'限')) + (t ? '<br><span style="font-weight:400;color:var(--muted);font-size:8.5px">' + t[0] + '</span>' : '') + '</td>';
+      (SV_PERIOD_LABEL[p] || (p+'限')) + (t ? '<br><span style="font-weight:400;color:var(--muted);font-size:8.5px">' + t[0] + (tVar ? '*' : '') + '</span>' : '') + '</td>';
     dates.forEach(d => {
       const iso = svIsoFromDate(d);
+      if (!periodTimeOnDate(iso, p)) { h += svNoSlotCellTd(); return; }
       const dow = d.getDay();
       const key = iso + '|' + p;
       const past = iso < todayIso;
       const cls = _svMyClassCells[key];
       const draft = _svDraft[key];
-      const working = svIsWorkingCell(dow, p);
+      const working = svIsWorkingCell(dow, p, iso);
       let cell;
       if (cls) {
         cell = '<div style="min-height:34px;background:#FDF4EA;border-radius:5px;padding:3px 2px;font-size:9px;color:#B87A2D;font-weight:700;line-height:1.2;overflow:hidden;text-overflow:ellipsis" title="授業のため監督不可">授業<br><span style="font-weight:400;font-size:8px">' + escapeHtml(cls) + '</span></div>';
@@ -38639,7 +38684,7 @@ function svPaintGrid() {
   } else {
     helpTxt = 'タップで <b style="color:#1A7340">○入れる</b> → <b style="color:#9A7A15">△できたら避けたい</b> → <b style="color:#C0392B">×入れない</b> → 未設定 を切替。';
   }
-  h += '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">' + helpTxt + '授業のある時間は自動で監督不可です。<b>変更は「保存」を押すまで反映されません。</b></div>';
+  h += '<div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.6">' + helpTxt + (periodNumsForDates(dates.map(svIsoFromDate)).some(p => periodTimeVaries(dates.map(svIsoFromDate), p)) ? '<b>*</b>の時刻は平日（共通テスト期）のもので、土日は通常の時刻です。「—」はその日の時間割に無い限です。' : '') + '授業のある時間は自動で監督不可です。<b>変更は「保存」を押すまで反映されません。</b></div>';
   grid.innerHTML = h;
 }
 
@@ -38650,7 +38695,8 @@ function svTapCell(iso, period) {
   if (_svMyClassCells[key]) { showToast('この時間は授業があるため希望できません', 'info'); return; }
   const [yy, mm, dd] = iso.split('-').map(Number);
   const dow = new Date(yy, mm-1, dd).getDay();
-  if (!svIsWorkingCell(dow, period)) { showToast('勤務時間外のため監督対象外です', 'info'); return; }
+  if (!periodTimeOnDate(iso, period)) return;
+  if (!svIsWorkingCell(dow, period, iso)) { showToast('勤務時間外のため監督対象外です', 'info'); return; }
 
   const cur = _svDraft[key] ? _svDraft[key].type : null;
   // 区分ごとに循環順を変える（未設定＝区分の初期値。最初のタップは初期値と逆向きの例外へ）。
@@ -38690,7 +38736,7 @@ function svRenderDayReasons() {
     const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
     const iso = svIsoFromDate(d);
     let hasCross = false, hasTri = false;
-    for (let p = 1; p <= 6; p++) {
+    for (const p of periodNumsForDates([iso])) {
       const dr = _svDraft[iso + '|' + p];
       if (dr && dr.type === 'cross') hasCross = true;
       if (dr && dr.type === 'triangle') hasTri = true;
@@ -39111,7 +39157,7 @@ async function svLoadDecide() {
       // dlm164: 限(period)未設定のイレギュラー時間授業は開始時刻から最寄りの限に寄せる。
       //   週間グリッドと同じ nearestPeriodFromTime を使い、監督不可判定の漏れを防ぐ。
       //   （例: 石井中2国語 18:40-20:00 は period=null のため従来はブロックされず監督可能に化けていた）
-      const p = (s.period != null) ? s.period : nearestPeriodFromTime(s.start_time);
+      const p = (s.period != null) ? s.period : nearestPeriodFromTime(s.start_time, s.session_date);
       if (p == null) return;
       (classByStaff[code] || (classByStaff[code] = new Set())).add(s.session_date + '|' + p);
     });
@@ -39121,7 +39167,7 @@ async function svLoadDecide() {
       'event_date=gte.' + fromIso + '&event_date=lte.' + toIso +
       '&scope=in.(personal,target)&select=event_date,scope,created_by,target_ids,start_time,end_time') || [];
     (evRows || []).forEach(ev => {
-      const periods = periodsOverlappingTime(ev.start_time, ev.end_time);
+      const periods = periodsOverlappingTime(ev.start_time, ev.end_time, ev.event_date);
       if (!periods.length) return;
       const codes = [];
       if (ev.scope === 'personal') {
@@ -39174,7 +39220,7 @@ async function svLoadDecide() {
 
   // ---- マトリクス組み立て ----
   // 縦横スクロールできる枠。ヘッダ3段（曜日/限/日付）と左のスタッフ名列を固定(sticky)する。
-  const P = [1,2,3,4,5,6];
+  const PD = (iso) => periodNumsForDates([iso]);   // 20260929onl31: 日ごとの時間割の限（共通テスト期の平日は0〜7限）
   const NAMEW = 118;  // スタッフ名列の幅（dlm114: 負荷指標を併記するため拡張）
   const CELLW = 40;   // 1コマの幅
   const CELLH = 34;   // 1コマの高さ
@@ -39186,7 +39232,7 @@ async function svLoadDecide() {
   mt += '<th style="position:sticky;left:0;top:0;z-index:6;background:#E8E8E8;border:1px solid #ccc;padding:4px 6px;min-width:' + NAMEW + 'px;height:' + RH1 + 'px"><span style="font-size:11px">曜日</span><span style="font-size:9px;color:#777;font-weight:400"> ／ 週授業・週監督</span></th>';
   dates.forEach((d, di) => {
     const bg = (di % 2 === 0) ? '#EDEDED' : '#FFFFFF';
-    mt += '<th colspan="6" style="position:sticky;top:0;z-index:4;background:' + bg + ';border:1px solid #ccc;padding:4px 6px;font-weight:800;height:' + RH1 + 'px">' + wlabels[di] + '</th>';
+    mt += '<th colspan="' + PD(svIsoFromDate(d)).length + '" style="position:sticky;top:0;z-index:4;background:' + bg + ';border:1px solid #ccc;padding:4px 6px;font-weight:800;height:' + RH1 + 'px">' + wlabels[di] + '</th>';
   });
   mt += '</tr>';
   // ヘッダ2：限（top:RH1）。未決定コマ（担当も現場も無い）は限番号を赤くして分かりやすくする。
@@ -39194,7 +39240,7 @@ async function svLoadDecide() {
   mt += '<th style="position:sticky;left:0;top:' + RH1 + 'px;z-index:6;background:#E8E8E8;border:1px solid #ccc;padding:3px 6px;height:' + RH2 + 'px">時間</th>';
   dates.forEach((d, di) => {
     const iso = svIsoFromDate(d);
-    P.forEach(p => {
+    PD(iso).forEach(p => {
       const undecided = !weekConfirmed && !slotDecided(iso, p);
       const cellBg = undecided ? '#FBE3E1' : '#F5F5F5';
       const cellColor = undecided ? '#C0392B' : '#333';
@@ -39207,7 +39253,7 @@ async function svLoadDecide() {
   mt += '<th style="position:sticky;left:0;top:' + (RH1 + RH2) + 'px;z-index:6;background:#E8E8E8;border:1px solid #ccc;padding:3px 6px;height:' + RH3 + 'px">日付</th>';
   dates.forEach((d, di) => {
     const bg = (di % 2 === 0) ? '#F7F7F7' : '#FFFFFF';
-    mt += '<th colspan="6" style="position:sticky;top:' + (RH1 + RH2) + 'px;z-index:4;background:' + bg + ';border:1px solid #ccc;padding:3px 6px;color:#555;height:' + RH3 + 'px">' + (d.getMonth()+1) + '/' + d.getDate() + '</th>';
+    mt += '<th colspan="' + PD(svIsoFromDate(d)).length + '" style="position:sticky;top:' + (RH1 + RH2) + 'px;z-index:4;background:' + bg + ';border:1px solid #ccc;padding:3px 6px;color:#555;height:' + RH3 + 'px">' + (d.getMonth()+1) + '/' + d.getDate() + '</th>';
   });
   mt += '</tr>';
   // 本体：スタッフ行（名前列は左固定）
@@ -39221,7 +39267,7 @@ async function svLoadDecide() {
     dates.forEach(d => {
       const iso = svIsoFromDate(d);
       const ym = ymOf(d);
-      P.forEach(p => { if (isAssignedEff(iso, p, code)) m[ym] = (m[ym] || 0) + 1; });
+      PD(iso).forEach(p => { if (isAssignedEff(iso, p, code)) m[ym] = (m[ym] || 0) + 1; });
     });
     return m;
   };
@@ -39248,7 +39294,7 @@ async function svLoadDecide() {
     dates.forEach((d, di) => {
       const iso = svIsoFromDate(d);
       const dow = d.getDay();
-      P.forEach(p => {
+      PD(iso).forEach(p => {
         const key = iso + '|' + p + '|' + code;
         const isAssigned = isAssignedEff(iso, p, code);
         const wtype = wishMap[key];
@@ -39257,7 +39303,7 @@ async function svLoadDecide() {
         let offDuty = false;
         if (empByStaff[code] === 'shakaijin') {
           const t = shiftByStaff[code] && shiftByStaff[code][dow];
-          offDuty = !t || t.off || p < t.from || p > t.to;
+          offDuty = !svShiftCovers(t, p, iso);   // 20260929onl31: 共通テスト期は時刻で判定
         }
         // セルの見た目を状態優先で決める
         let bg = '#fff', txt = '', color = '#333', title = nm + ' ' + (d.getMonth()+1)+'/'+d.getDate() + ' ' + p + '限';
@@ -39299,7 +39345,7 @@ async function svLoadDecide() {
   mt += '<tr><td style="position:sticky;left:0;z-index:2;background:#FCEFD9;border:1px solid #ccc;padding:4px 8px;font-weight:800;min-width:' + NAMEW + 'px;color:#8a5a1a;font-size:12.5px">現場対応</td>';
   dates.forEach((d, di) => {
     const iso = svIsoFromDate(d);
-    P.forEach(p => {
+    PD(iso).forEach(p => {
       const on = isGenbaEff(iso, p);
       const title = '現場対応 ' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + p + '限' + (on ? '：現場（自習監督なし・タップで解除）' : '：タップで現場にする（監督を置かない）');
       const bg = on ? '#D9A441' : '#FFF8EC';
@@ -39332,7 +39378,7 @@ async function svLoadDecide() {
 
   // 実効の確定コマ数（下書き反映後）。genbaは除外。
   let assignCount = 0;
-  dates.forEach(d => { const iso = svIsoFromDate(d); P.forEach(p => { staffCodes.forEach(c => { if (isAssignedEff(iso, p, c)) assignCount++; }); }); });
+  dates.forEach(d => { const iso = svIsoFromDate(d); PD(iso).forEach(p => { staffCodes.forEach(c => { if (isAssignedEff(iso, p, c)) assignCount++; }); }); });
 
   let confirmUi = '';
   if (weekConfirmed) {
@@ -39595,12 +39641,15 @@ async function svRenderView() {
     h += '<th style="border:1px solid var(--line);background:' + (isToday ? '#FFF6E6' : '#f7f7f7') + ';padding:5px 3px;font-size:10px">' + wlabels[i] + '<br>' + (d.getMonth()+1) + '/' + d.getDate() + '</th>';
   });
   h += '</tr>';
-  for (let p = 1; p <= 6; p++) {
-    const t = (typeof PERIODS !== 'undefined' && PERIODS[p]) ? PERIODS[p] : null;
+  const _svIsoDates = dates.map(svIsoFromDate);   // 20260929onl31: その週の時間割の限（共通テスト期の平日は0〜7限）
+  for (const p of periodNumsForDates(_svIsoDates)) {
+    const t = periodTimeForDates(_svIsoDates, p);
+    const tVar = periodTimeVaries(_svIsoDates, p);
     h += '<tr><td style="border:1px solid var(--line);background:#faf8f4;padding:4px 3px;font-size:10px;text-align:center;font-weight:700">' +
-      (SV_PERIOD_LABEL[p] || (p+'限')) + (t ? '<br><span style="font-weight:400;color:var(--muted);font-size:8.5px">' + t[0] + '</span>' : '') + '</td>';
+      (SV_PERIOD_LABEL[p] || (p+'限')) + (t ? '<br><span style="font-weight:400;color:var(--muted);font-size:8.5px">' + t[0] + (tVar ? '*' : '') + '</span>' : '') + '</td>';
     dates.forEach(d => {
       const iso = svIsoFromDate(d);
+      if (!periodTimeOnDate(iso, p)) { h += svNoSlotCellTd(); return; }
       const names = asgBySlot[iso + '|' + p];
       const isGenba = !!genbaSlot[iso + '|' + p];
       let cell;
@@ -39641,12 +39690,15 @@ async function svRenderView() {
       h += '<th style="border:1px solid var(--line);background:' + (isToday ? '#FFF6E6' : '#f7f7f7') + ';padding:5px 3px;font-size:10px">' + wlabels[i] + '<br>' + (d.getMonth()+1) + '/' + d.getDate() + '</th>';
     });
     h += '</tr>';
-    for (let p = 1; p <= 6; p++) {
-      const t = (typeof PERIODS !== 'undefined' && PERIODS[p]) ? PERIODS[p] : null;
+    const _svIsoDates = dates.map(svIsoFromDate);
+    for (const p of periodNumsForDates(_svIsoDates)) {
+      const t = periodTimeForDates(_svIsoDates, p);
+      const tVar = periodTimeVaries(_svIsoDates, p);
       h += '<tr><td style="border:1px solid var(--line);background:#faf8f4;padding:4px 3px;font-size:10px;text-align:center;font-weight:700">' +
-        (SV_PERIOD_LABEL[p] || (p+'限')) + (t ? '<br><span style="font-weight:400;color:var(--muted);font-size:8.5px">' + t[0] + '</span>' : '') + '</td>';
+        (SV_PERIOD_LABEL[p] || (p+'限')) + (t ? '<br><span style="font-weight:400;color:var(--muted);font-size:8.5px">' + t[0] + (tVar ? '*' : '') + '</span>' : '') + '</td>';
       dates.forEach(d => {
         const iso = svIsoFromDate(d);
+        if (!periodTimeOnDate(iso, p)) { h += svNoSlotCellTd(); return; }
         const slot = wishBySlot[iso + '|' + p];
         let cell;
         if (slot && (slot.circle.length || slot.triangle.length)) {
@@ -40769,7 +40821,9 @@ async function onAttClassChange() {
     if (t && !t.value) t.value = getTodayJST();
   }
   if (!classId) { ssel.innerHTML = '<option value="">📅 授業日を選択</option>'; return; }
-  const sessions = await sbGet('class_sessions',
+  // 20261001onl33: 学校別回（school）も取得してプルダウンに「🏫◯◯」と出す（school列が無い環境は従来どおり）
+  const sessions = await sbGetTolerant('class_sessions',
+    'class_master_id=eq.' + classId + '&select=session_date,period,start_time,cycle_year,cycle_month,cycle_no,is_makeup,school&order=session_date.desc,period',
     'class_master_id=eq.' + classId + '&select=session_date,period,start_time,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date.desc,period') || [];
   if (!sessions.length) {
     ssel.innerHTML = '<option value="">授業日がありません</option>';
@@ -40779,8 +40833,8 @@ async function onAttClassChange() {
         const d = new Date(s.session_date + 'T00:00:00+09:00');
         const wd = ['日','月','火','水','木','金','土'][d.getDay()];
         const cyc = s.is_makeup ? '・🔁補習' : (s.cycle_no != null ? '・' + sessionCycleLabel(s) : '');
-        const label = (d.getMonth()+1) + '/' + d.getDate() + '（' + wd + '）' + (s.period ? ' ' + s.period + '限' : '') + cyc;
-        return '<option value="' + s.session_date + '|' + (s.period||'') + '">' + label + '</option>';
+        const label = (d.getMonth()+1) + '/' + d.getDate() + '（' + wd + '）' + (hasPer(s.period) ? ' ' + s.period + '限' : '') + cyc + calSchoolSuffix(s.school);
+        return '<option value="' + s.session_date + '|' + perKey(s.period) + '">' + label + '</option>';
       }).join('');
   }
   // デフォルトはマトリクス表ビュー
@@ -40822,13 +40876,17 @@ async function loadAttendanceRoster() {
   // dlm145: この授業回が補習回(is_makeup)かを先に取得。補習回は「来ない子＝欠」ではなく
   //  初期値を「記録なし(none)」にする（補習は出る必要がない子まで自動で欠にしないため）。
   let attSessionIsMakeup = false;
+  let attSessSchool = '';   // 20261001onl33: 学校別回の学校（通常回は空）
   try {
     let qm = 'class_master_id=eq.' + classId + '&session_date=eq.' + sdate;
     qm += (period === null) ? '&period=is.null' : '&period=eq.' + period;
-    const mrows = await sbGet('class_sessions', qm + '&select=is_makeup&limit=1') || [];
+    const mrows = await sbGetTolerant('class_sessions', qm + '&select=is_makeup,school&limit=1', qm + '&select=is_makeup&limit=1') || [];
     attSessionIsMakeup = !!(mrows[0] && mrows[0].is_makeup);
+    attSessSchool = (mrows[0] && mrows[0].school) ? String(mrows[0].school).trim() : '';
   } catch (e) { attSessionIsMakeup = false; }
   attCurrentSessionIsMakeup = attSessionIsMakeup;
+  attCurrentSessSchool = attSessSchool;
+  attOutGroupOpen = false;
   // 授業回数（何月何回目）バッジを表示
   (async () => {
     try {
@@ -40878,7 +40936,7 @@ async function loadAttendanceRoster() {
     try {
       saved = await sbGet('session_attendance',
         'class_master_id=eq.' + classId + '&session_date=eq.' + sdate +
-        (period ? '&period=eq.' + period : '&period=is.null') +
+        (hasPer(period) ? '&period=eq.' + period : '&period=is.null') +
         '&select=student_id,status,note') || [];
     } catch(e) { saved = []; }
     const savedMap = {};
@@ -40930,8 +40988,15 @@ async function loadAttendanceRoster() {
         status = inTime ? 'present' : 'absent';
         note = '';
       }
-      return { student: stu, status: status, note: note, checkinTime: inTime, noteOpen: !!note, isMakeup: makeupSet.has(sid), review: reviewMap[sid] || null, reviewOpen: false };
+      // 20261001onl33: 学校別回の対象判定。他校の生徒は記録を作らない（保存済みの記録がある子だけは表示して直せるようにする）
+      const scope = schoolScopeOfStudent(stu, attSessSchool);
+      const hadSaved = !!savedMap[sid];
+      if (scope === 'out' && !hadSaved) { status = 'none'; note = ''; }
+      return { student: stu, status: status, note: note, checkinTime: inTime, noteOpen: !!note, isMakeup: makeupSet.has(sid), review: reviewMap[sid] || null, reviewOpen: false, scope: scope, hadSaved: hadSaved };
     }).sort((a,b) => {
+      // 学校別回で対象外（記録なし）の生徒はいちばん下にまとめる
+      const oa = attRowIsOut(a) ? 1 : 0, ob = attRowIsOut(b) ? 1 : 0;
+      if (oa !== ob) return oa - ob;
       // 2周目（無料）の生徒は末尾にまとめる
       const la = attLapDone[a.student.id] ? 1 : 0;
       const lb = attLapDone[b.student.id] ? 1 : 0;
@@ -40949,10 +41014,36 @@ async function loadAttendanceRoster() {
   }
 }
 
+// 20261001onl33: 学校別回の状態
+let attCurrentSessSchool = '';
+let attOutGroupOpen = false;
+// 他校の回で対象外、かつ保存済みの出欠も無い行（表示は折りたたみ・保存しない・集計に入れない）
+function attRowIsOut(row) { return !!row && row.scope === 'out' && !row.hadSaved; }
+function attInScopeRows() { return attRosterRows.filter(r => !attRowIsOut(r)); }
+function toggleAttOutGroup() { attOutGroupOpen = !attOutGroupOpen; renderAttendanceRoster(); }
+
 // 名簿描画
 function renderAttendanceRoster() {
   const el = document.getElementById('att-roster');
-  el.innerHTML = attRosterRows.map((row, i) => {
+  const outRows = attRosterRows.filter(attRowIsOut);
+  let banner = '';
+  if (attCurrentSessSchool) {
+    const inN = attRosterRows.length - outRows.length;
+    banner = '<div style="background:#EAF2FB;border:1px solid #9CC0E8;border-radius:12px;padding:9px 12px;font-size:12px;color:#1E4276;line-height:1.6">' +
+      '<b>' + escapeHtml(calSchoolSuffix(attCurrentSessSchool).trim()) + ' の回</b>です。対象 <b>' + inN + '</b>人' +
+      (outRows.length ? '（他校の ' + outRows.length + '人は対象外。出欠は付けず、集計にも入りません）' : '') + '</div>';
+  }
+  let outGroup = '';
+  if (outRows.length) {
+    outGroup = '<div style="background:#F6F6F6;border:1px dashed #CCC;border-radius:12px;padding:9px 12px">' +
+      '<div onclick="toggleAttOutGroup()" style="font-size:12px;color:#777;cursor:pointer;font-weight:700">🏫 他校の回のため対象外（' + outRows.length + '人） ' + (attOutGroupOpen ? '▲' : '▼') + '</div>' +
+      (attOutGroupOpen
+        ? '<div style="margin-top:6px;font-size:12px;color:#888;line-height:1.8">' + outRows.map(r => escapeHtml(r.student.name || '(不明)') + '<span style="font-size:10px;color:#aaa">（' + escapeHtml(r.student.school || '学校未設定') + (r.student.school === 'SSS' && r.student.school_detail ? '：' + escapeHtml(r.student.school_detail) : '') + '）</span>').join('　') + '</div>'
+        : '') +
+      '</div>';
+  }
+  el.innerHTML = banner + attRosterRows.map((row, i) => {
+    if (attRowIsOut(row)) return '';
     const s = row.student;
     const st = row.status; // 'present' | 'makeup' | 'absent'
     // 来塾時刻表示（JST）
@@ -40971,6 +41062,10 @@ function renderAttendanceRoster() {
       const eff = s.withdraw_effective_date ? (parseInt(s.withdraw_effective_date.slice(5,7),10) + '月末で') : '';
       withdrawTag = '<span style="font-size:9px;background:#FDECEC;color:#C0392B;border:1px solid #E8A9A9;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="退塾登録済み。受講終了処理（この月で終了）をお願いします">🚪 ' + eff + '退塾</span>';
     }
+    // 20261001onl33: 学校別回の注意タグ
+    let schoolTag = '';
+    if (row.scope === 'undecided') schoolTag = '<span style="font-size:9px;background:#FFF6E5;color:#8F5F12;border:1px solid #E8C193;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="SSSの実際の高校が未登録のため、この回の対象か判定できません">⚠️ 実校未設定</span>';
+    else if (row.scope === 'out') schoolTag = '<span style="font-size:9px;background:#EAF2FB;color:#2D6CB6;border:1px solid #9CC0E8;padding:1px 6px;border-radius:10px;margin-left:5px;white-space:nowrap" title="他校の回なのに出欠が登録されています。誤りなら「記録なし」にして保存してください">🏫 他校の回</span>';
     const sub = [s.school, fmtGrade(s.grade), inLabel].filter(Boolean).join(' ・ ');
     // アバター
     const avatar = s.photo_url
@@ -41000,7 +41095,7 @@ function renderAttendanceRoster() {
       '<div style="display:flex;align-items:center;gap:10px">' +
         avatar +
         '<div style="flex:1;min-width:0">' +
-          '<div style="font-size:14px;font-weight:500;color:var(--text)">' + (s.name||'(不明)') + ' ' + noteBadge + makeupTag + provTag + lapTag + withdrawTag + '</div>' +
+          '<div style="font-size:14px;font-weight:500;color:var(--text)">' + (s.name||'(不明)') + ' ' + noteBadge + makeupTag + provTag + lapTag + withdrawTag + schoolTag + '</div>' +
           '<div style="font-size:11px;color:var(--muted)">' + sub + '</div>' +
         '</div>' +
         linyContactBtns(s, {small:true}) +
@@ -41010,7 +41105,7 @@ function renderAttendanceRoster() {
       '<div style="margin-top:6px"><span onclick="toggleAttNote(' + i + ')" style="font-size:11px;color:var(--muted);cursor:pointer">📝 メモ' + (row.noteOpen ? ' ▲' : ' ▼') + '</span></div>' +
       noteArea +
     '</div>';
-  }).join('');
+  }).join('') + outGroup;
   updateAttSummary();
   updateAttReviewBar();
   document.getElementById('att-summary').style.display = 'flex';
@@ -41069,10 +41164,11 @@ function updateAttReviewBar() {
   if (!bar || !sm) return;
   bar.style.display = 'flex';
   if (tg) tg.checked = attReviewShow;
-  const total = attRosterRows.length;
-  const reported = attRosterRows.filter(r => r.review).length;
-  const approved = attRosterRows.filter(r => r.review && r.review.status === 'approved').length;
-  const rates = attRosterRows.map(r => r.review && r.review.review_self_rating).filter(v => v != null);
+  const rowsIn = attInScopeRows();   // 20261001onl33
+  const total = rowsIn.length;
+  const reported = rowsIn.filter(r => r.review).length;
+  const approved = rowsIn.filter(r => r.review && r.review.status === 'approved').length;
+  const rates = rowsIn.map(r => r.review && r.review.review_self_rating).filter(v => v != null);
   const avg = rates.length ? (rates.reduce((a,b)=>a+b,0) / rates.length) : null;
   let txt = '📝 復習提出 <b>' + reported + '</b>/' + total + '人';
   if (approved) txt += '（承認済 ' + approved + '）';
@@ -41095,9 +41191,10 @@ function setAttNote(i, val) {
   attRosterRows[i].note = val; // 再描画しない（入力中フォーカス保持のため）
 }
 function updateAttSummary() {
-  const present = attRosterRows.filter(r => r.status === 'present').length;
-  const makeup = attRosterRows.filter(r => r.status === 'makeup').length;
-  const absent = attRosterRows.filter(r => r.status === 'absent').length;
+  const rowsIn = attInScopeRows();   // 20261001onl33: 学校別回の他校生は数えない
+  const present = rowsIn.filter(r => r.status === 'present').length;
+  const makeup = rowsIn.filter(r => r.status === 'makeup').length;
+  const absent = rowsIn.filter(r => r.status === 'absent').length;
   const pEl = document.getElementById('att-count-present');
   const mEl = document.getElementById('att-count-makeup');
   const aEl = document.getElementById('att-count-absent');
@@ -41105,7 +41202,7 @@ function updateAttSummary() {
   if (pEl) pEl.textContent = present;
   if (mEl) mEl.textContent = makeup;
   if (aEl) aEl.textContent = absent;
-  if (tEl) tEl.textContent = attRosterRows.length;
+  if (tEl) tEl.textContent = rowsIn.length;
 }
 
 // 保存：session_attendance に1行ずつ upsert（UNIQUE制約 + Prefer: resolution=merge-duplicates）
@@ -41238,7 +41335,8 @@ async function saveAttendance() {
   try {
     const staffId = (currentStaff && currentStaff.staff_id) ? currentStaff.staff_id : null;
     const nowIso = new Date().toISOString();
-    const rows = attRosterRows.map(r => ({
+    const saveRows = attInScopeRows();   // 20261001onl33: 学校別回の他校生（保存済み記録なし）は保存しない
+    const rows = saveRows.map(r => ({
       class_master_id: attSelectedClassId,
       session_date: attSelectedSession.session_date,
       period: attSelectedSession.period,
@@ -41261,10 +41359,10 @@ async function saveAttendance() {
       attSelectedClassId,
       attSelectedSession.session_date,
       attSelectedSession.period,
-      attRosterRows.map(r => r.student.id)
+      saveRows.map(r => r.student.id)
     );
     hideLoading();
-    showToast('出欠を保存しました（出席' + attRosterRows.filter(r=>r.status==='present').length + '・補習' + attRosterRows.filter(r=>r.status==='makeup').length + '・欠席' + attRosterRows.filter(r=>r.status==='absent').length + '・記録なし' + attRosterRows.filter(r=>r.status==='none').length + '）', 'success');
+    showToast('出欠を保存しました（出席' + saveRows.filter(r=>r.status==='present').length + '・補習' + saveRows.filter(r=>r.status==='makeup').length + '・欠席' + saveRows.filter(r=>r.status==='absent').length + '・記録なし' + attRosterRows.filter(r=>r.status==='none').length + '）', 'success');
   } catch(e) {
     hideLoading();
     showToast('エラー: ' + e.message, 'error');
@@ -41402,7 +41500,7 @@ async function exportAttendanceCsv() {
 
     // マップ化
     const attMap = {}; // 'date|period|sid' -> status
-    atts.forEach(a => { attMap[a.session_date + '|' + (a.period||'') + '|' + a.student_id] = a.status; });
+    atts.forEach(a => { attMap[a.session_date + '|' + perKey(a.period) + '|' + a.student_id] = a.status; });
     const makeupByDate = {}; // date -> Set(sid)
     makeups.forEach(m => { (makeupByDate[m.session_date] = makeupByDate[m.session_date] || new Set()).add(m.student_id); });
     const reportByDate = {};
@@ -41419,7 +41517,7 @@ async function exportAttendanceCsv() {
     // 各セッションの状態を算出（手動記録優先、未記録の過去回は来塾から推定）
     // 戻り値: 'present' | 'makeup' | 'absent' | 'planned'
     function statusFor(sid, s) {
-      const k = s.session_date + '|' + (s.period||'') + '|' + sid;
+      const k = s.session_date + '|' + perKey(s.period) + '|' + sid;
       if (attMap[k]) return attMap[k]; // 手動記録（present/makeup/absent）優先
       if (makeupByDate[s.session_date] && makeupByDate[s.session_date].has(sid)) return 'makeup'; // 承認補習
       if (s.session_date > todayStr) return 'planned';
@@ -41465,7 +41563,7 @@ async function exportAttendanceCsv() {
         className,
         s.session_date,
         weekNames[d.getDay()],
-        s.period ? (s.period + '限') : '',
+        hasPer(s.period) ? (s.period + '限') : '',
         s.is_makeup ? '補習' : (s.cycle_no != null ? sessionCycleLabel(s) : ''),
         present, makeup, absent, studentIds.length,
         (s.session_date > todayStr && recorded === 0) ? '予定' : rate,
@@ -41507,7 +41605,7 @@ let attPrefByStu = {};  // student_id -> preferred_period（担当コマ）。�
 function attStuInPeriod(sid, period) {
   const pref = attPrefByStu[sid];
   if (pref == null) return true;          // 未設定＝全コマ対象
-  return String(pref) === String(period || '');
+  return String(pref) === perKey(period);
 }
 
 function toggleAttGroupBySchool() {
@@ -41672,14 +41770,14 @@ async function loadAttMatrix() {
 }
 
 function buildAttMatrix(sessions, studentIds, atts, checkins, trials) {
-  const sessKeys = sessions.map(s => s.session_date + '|' + (s.period || ''));
+  const sessKeys = sessions.map(s => s.session_date + '|' + perKey(s.period));
   const sessInfo = {};
-  sessions.forEach(s => { sessInfo[s.session_date + '|' + (s.period || '')] = s; });
+  sessions.forEach(s => { sessInfo[s.session_date + '|' + perKey(s.period)] = s; });
 
   // 保存済みセル
   const cells = {};
   atts.forEach(a => {
-    const k = a.session_date + '|' + (a.period || '');
+    const k = a.session_date + '|' + perKey(a.period);
     cells[a.student_id + '|' + k] = { status: a.status, note: a.note || null, auto: false, dirty: false };
   });
 
@@ -41832,7 +41930,7 @@ function attMatrixHeaderHtml() {
   attMatrix.sessKeys.forEach(k => {
     const lab = attMatrix.dateLabels[k];
     const info = attMatrix.sessInfo[k];
-    const per = info.period ? info.period + '限' : '';
+    const per = hasPer(info.period) ? info.period + '限' : '';
     const cyc = attMatrixCycleLabel(info);
     const schoolBadge = info.school
       ? '<br><span style="display:inline-block;font-size:8px;color:#1E4276;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:8px;padding:0 4px;font-weight:700;line-height:1.4;white-space:nowrap">🏫' + escapeHtml(info.school) + '</span>'
@@ -42087,9 +42185,14 @@ function attStartLabel(sid) {
 function attSchoolScope(sid, sessKey) {
   if (!attMatrix || !attMatrix.sessInfo) return 'in';
   const info = attMatrix.sessInfo[sessKey];
-  const sc = info && info.school ? String(info.school).trim() : '';
-  if (!sc) return 'in';                       // 通常回（学校指定なし）＝全員対象
   const stu = attMatrix.students.find(s => s.id === sid);
+  return schoolScopeOfStudent(stu, info && info.school);
+}
+// 20261001onl33: 学校別回の対象判定を1か所に（出欠一望・出席入力で共用）。
+// sc=授業日の school。戻り値 'in' / 'out'（他校＝対象外）/ 'undecided'（SSS実校未設定＝保留）。
+function schoolScopeOfStudent(stu, school) {
+  const sc = school ? String(school).trim() : '';
+  if (!sc) return 'in';                       // 通常回（学校指定なし）＝全員対象
   if (!stu) return 'in';
   const stuSchool = (stu.school || '').trim();
   // SSS系の回：「SSS」または「SSS：実校名」
@@ -49681,7 +49784,7 @@ async function karteLoadAttendance(sid) {
 
     // ---- renderMyAttendance と同じ判定ロジック（マーク種別を返す） ----
     const attMap = {};
-    atts.forEach(a => { attMap[a.class_master_id + '|' + a.session_date + '|' + (a.period || '')] = { status: a.status }; });
+    atts.forEach(a => { attMap[a.class_master_id + '|' + a.session_date + '|' + perKey(a.period)] = { status: a.status }; });
     const ciByDate = {};
     myCheckins.forEach(c => {
       if (!ciByDate[c.checkin_date]) ciByDate[c.checkin_date] = [];
@@ -49693,7 +49796,7 @@ async function karteLoadAttendance(sid) {
     // 手入力(session_attendance)を最優先。次にビデオ補習。未実施は planned。過去で記録なしは来塾から自動判定。
     function karteMarkOf(s) {
       const isPast = s.session_date <= todayStr;
-      const k = s.class_master_id + '|' + s.session_date + '|' + (s.period || '');
+      const k = s.class_master_id + '|' + s.session_date + '|' + perKey(s.period);
       if (attMap[k]) return attMap[k].status; // 'present'|'makeup'|'absent'
       if (makeupSet.has(s.class_master_id + '|' + s.session_date)) return 'video';
       if (!isPast) return 'planned';
@@ -66078,16 +66181,16 @@ function renderClassAnalysis(sessions, studentIds, atts, checkins) {
   }
 
   // セッションキー（日付|時限）一覧（時系列）
-  const sessKeys = sessions.map(s => s.session_date + '|' + (s.period || ''));
+  const sessKeys = sessions.map(s => s.session_date + '|' + perKey(s.period));
   // セッション情報マップ: key -> {start_time,end_time,session_date}
   const sessInfo = {};
-  sessions.forEach(s => { sessInfo[s.session_date + '|' + (s.period || '')] = s; });
+  sessions.forEach(s => { sessInfo[s.session_date + '|' + perKey(s.period)] = s; });
 
   // 出欠マップ: key -> {student_id -> {status,note,auto}}
   // auto=true は来塾から自動判定した推定値（手動保存はauto=false）
   const attMap = {};
   atts.forEach(a => {
-    const k = a.session_date + '|' + (a.period || '');
+    const k = a.session_date + '|' + perKey(a.period);
     if (!attMap[k]) attMap[k] = {};
     attMap[k][a.student_id] = { status: a.status, note: a.note || '', auto: false };
   });
@@ -66414,7 +66517,7 @@ function caMatrixHeaderHtml() {
   caMatrix.sessKeys.forEach(k => {
     const lab = caMatrix.dateLabels[k];
     const info = caMatrix.sessInfo[k];
-    const per = info && info.period ? info.period + '限' : '';
+    const per = info && hasPer(info.period) ? info.period + '限' : '';
     const schoolBadge = (info && info.school)
       ? '<br><span style="display:inline-block;font-size:8px;color:#1E4276;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:8px;padding:0 4px;font-weight:700;line-height:1.4;white-space:nowrap">🏫' + escapeHtml(info.school) + '</span>'
       : '';
