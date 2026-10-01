@@ -2013,6 +2013,11 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       <span id="quiz-notice-text">📝 受けられる小テストがあります</span>
       <span style="font-size:18px;margin-left:8px">›</span>
     </button>
+    <!-- 20261001onl34: 数学アプリの特訓配信（未クリアの配信があるときのみ表示） -->
+    <button id="math-assign-card" onclick="openMathAssignFromHome()" style="display:none;width:100%;padding:14px 16px;margin-bottom:12px;background:linear-gradient(135deg,#7B2D8B,#4A1060);border:none;border-radius:var(--radius-sm);color:#fff;font-size:14px;font-weight:700;cursor:pointer;align-items:center;justify-content:space-between;text-align:left;font-family:'Noto Sans JP',sans-serif;box-shadow:0 4px 14px rgba(123,45,139,0.3)">
+      <span id="math-assign-text">📐 数学の特訓が届いています</span>
+      <span style="font-size:18px;margin-left:8px">›</span>
+    </button>
     <button id="exam-req-card" onclick="openStudentExamEntry()" style="display:none;width:100%;padding:14px 16px;margin-bottom:12px;background:linear-gradient(135deg,#B5651D,#8A4B14);border:none;border-radius:var(--radius-sm);color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif;text-align:left;box-shadow:0 3px 10px rgba(181,101,29,0.3);align-items:center;justify-content:space-between">
       <span id="exam-req-text">📈 成績の入力をお願いします</span>
       <span style="font-size:18px;margin-left:8px">›</span>
@@ -6981,7 +6986,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261001onl33';
+const APP_VERSION = '20261001onl34';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -7980,6 +7985,46 @@ function openEitangoApp() {
 // 生徒ホーム：受けられる小テスト案内カード
 // 自分の受講授業(class_enrollments) × status=open の配信(mini_quiz_assignments)が
 // 1件以上あるときだけ案内カードを表示する。0件なら非表示。
+// 20261001onl34: 生徒ホーム：数学アプリの特訓配信カード
+// 自分の受講授業に status=open の math_assignments があり、まだ全問正解（クリア）していないものがあるときだけ表示。
+let mathAssignPendingIds = [];
+async function loadMathAssignNotice() {
+  const card = document.getElementById('math-assign-card');
+  if (!card || !currentStudent) return;
+  card.style.display = 'none';
+  mathAssignPendingIds = [];
+  try {
+    const enrolls = await sbGetActiveEnrollments('student_id=eq.' + currentStudent.id + '&select=class_master_id');
+    const classIds = [...new Set(enrolls.map(e => e.class_master_id).filter(Boolean))];
+    if (!classIds.length) return;
+    const asgs = await sbGet('math_assignments', 'class_master_id=in.(' + classIds.join(',') + ')&status=eq.open&select=id,title,due_date&order=created_at.desc') || [];
+    if (!asgs.length) return;
+    const logs = await sbGet('math_logs', 'student_id=eq.' + currentStudent.id + '&assignment_id=in.(' + asgs.map(a => a.id).join(',') + ')&perfect=eq.true&select=assignment_id') || [];
+    const cleared = new Set(logs.map(l => l.assignment_id));
+    const pending = asgs.filter(a => !cleared.has(a.id));
+    if (!pending.length) return;
+    mathAssignPendingIds = pending.map(a => a.id);
+    const txt = document.getElementById('math-assign-text');
+    if (txt) {
+      if (pending.length === 1) {
+        const d = pending[0].due_date ? '（' + parseInt(pending[0].due_date.slice(5, 7), 10) + '/' + parseInt(pending[0].due_date.slice(8, 10), 10) + 'まで）' : '';
+        txt.textContent = '📐 数学の特訓が届いています：' + (pending[0].title || '特訓') + d;
+      } else {
+        txt.textContent = '📐 数学の特訓が' + pending.length + '件届いています';
+      }
+    }
+    card.style.display = 'flex';
+  } catch (e) {
+    // math_assignments 未作成・通信失敗時はカードを出さない（ホーム表示を妨げない）
+    console.warn('loadMathAssignNotice error:', e);
+  }
+}
+// カードから数学アプリへ。1件ならその特訓を直接開く。
+function openMathAssignFromHome() {
+  const base = 'https://holyknight1005-collab.github.io/fit-point-card/math.html';
+  window.location.href = (mathAssignPendingIds.length === 1) ? (base + '?assign=' + encodeURIComponent(mathAssignPendingIds[0])) : base;
+}
+
 async function loadQuizNotice() {
   const card = document.getElementById('quiz-notice-card');
   if (!card || !currentStudent) return;
@@ -8672,6 +8717,7 @@ function initStudentScreen() {
   if (typeof loadStudentTrials === 'function') { try { loadStudentTrials(); } catch (e) {} }
   loadKoushuNotice();
   loadQuizNotice();
+  loadMathAssignNotice();   // 20261001onl34
   loadExamRequestNotice();
   setTimeout(updateHomeCheckBadge, 1200);
   setTimeout(checkForgotCheckout, 600);
