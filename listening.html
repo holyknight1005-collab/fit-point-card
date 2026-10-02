@@ -55,9 +55,10 @@ details.how li{margin:3px 0}
 .ib.play{background:var(--accent);color:#fff}
 .ib.dl{background:var(--blue-soft);color:var(--blue)}
 .ib svg{width:18px;height:18px}
-.local-list{margin-top:8px}
-.local-list .row{padding-left:10px}
-.empty{font-size:13px;color:var(--muted);padding:6px 0}
+.local-status{font-size:13px;font-weight:700;margin-top:10px;color:var(--blue)}
+.local-status .bar{height:6px;border-radius:3px;background:var(--line);margin-top:6px;overflow:hidden}
+.local-status .bar i{display:block;height:100%;background:var(--blue)}
+.badge{display:inline-block;font-size:10.5px;font-weight:800;color:var(--blue);background:var(--blue-soft);border-radius:6px;padding:1px 6px;margin-left:6px;vertical-align:1px}
 .player{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -6px 18px rgba(0,0,0,.08);padding:10px 0 calc(10px + env(safe-area-inset-bottom));z-index:20}
 .player .wrap{display:flex;flex-direction:column;gap:6px}
 .p-title{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -107,19 +108,28 @@ footer{font-size:11px;color:var(--muted);padding:16px 0 8px}
   </section>
 
   <section class="card">
-    <h2>📱 保存したファイルをこのページで再生</h2>
-    <p class="note" style="margin-top:0">スマホに保存した mp3 を選ぶと、このページの再生ボタン（速度変更・10秒戻し・リピート）で聞けます。電波がなくても再生できます。</p>
+    <h2>📱 ダウンロードした音声をこのページに取り込む（1回だけ）</h2>
+    <p class="note" style="margin-top:0">ダウンロードした mp3 を<b>まとめて全部選ぶ</b>と、下の各回の一覧に「📱端末」マークが付き、▶ で<b>電波なしでも</b>再生できるようになります。次からは選び直さなくてOKです。</p>
     <div class="zip">
-      <label class="btn blue" for="pick">🎧 保存した音声を選ぶ</label>
+      <label class="btn blue" for="pick">🎧 音声を取り込む</label>
       <input id="pick" type="file" accept="audio/*,.mp3" multiple hidden>
+      <button class="btn ghost" id="clearLocal" type="button" hidden>取り込みを消す</button>
     </div>
-    <div class="local-list" id="localList"></div>
+    <div class="local-status" id="localStatus"></div>
+    <details class="how">
+      <summary>選び方（iPhone）</summary>
+      <ol>
+        <li>「音声を取り込む」→「ファイルを選択」</li>
+        <li>解凍したフォルダを開き、右上「…」→「選択」→ 左下「すべて選択」→「開く」</li>
+        <li>CD-A・CD-B それぞれ1回ずつやれば完了です</li>
+      </ol>
+    </details>
   </section>
 
   <nav class="tabs" id="tabs" aria-label="回を選ぶ"></nav>
   <div id="lesson"></div>
 
-  <footer>音声の著作権はエミル出版に帰属します。このページは音声ファイルを保存・再配布していません（公式サイトへのリンクのみ）。<br>公式ダウンロードページ：<a href="https://emile-pub.com/dl/KyoLis10m_A.html" target="_blank" rel="noopener">CD-A</a> ／ <a href="https://emile-pub.com/dl/KyoLis10m_B.html" target="_blank" rel="noopener">CD-B</a></footer>
+  <footer>音声の著作権はエミル出版に帰属します。このページは音声ファイルを配布していません（公式サイトへのリンクのみ。取り込んだ音声はその人の端末の中だけに保存されます）。<br>公式ダウンロードページ：<a href="https://emile-pub.com/dl/KyoLis10m_A.html" target="_blank" rel="noopener">CD-A</a> ／ <a href="https://emile-pub.com/dl/KyoLis10m_B.html" target="_blank" rel="noopener">CD-B</a></footer>
 </div>
 
 <div class="player" id="player" hidden>
@@ -208,11 +218,12 @@ function renderLesson(){
   const l = LESSONS.find(x => x.n === cur) || LESSONS[0];
   let h = '<div class="lesson-title">第' + l.n + '回</div><div class="lesson-cd">CD-' + l.cd + '</div>';
   l.secs.forEach(s => {
-    h += '<div class="sec"><div class="sec-h">' + s.title + '<small>' + s.tracks.filter(t => !t.all).length + '曲</small></div>';
+    const nLoc = s.tracks.filter(t => localHas(t.url)).length;
+    h += '<div class="sec"><div class="sec-h">' + s.title + '<small>' + (nLoc ? '📱' + nLoc + '/' + s.tracks.length + '　' : '') + s.tracks.filter(t => !t.all).length + '曲</small></div>';
     s.tracks.forEach(t => {
       const title = '第' + l.n + '回 ' + s.title + ' ' + t.label;
       h += '<div class="row' + (t.all ? ' all' : '') + '" data-url="' + t.url + '">' +
-        '<div class="lbl">' + (t.all ? '▶▶ ' : '') + '<b>' + t.label + '</b></div>' +
+        '<div class="lbl">' + (t.all ? '▶▶ ' : '') + '<b>' + t.label + '</b>' + (localHas(t.url) ? '<span class="badge">📱端末</span>' : '') + '</div>' +
         '<button class="ib play" aria-label="再生" data-play="' + t.url + '" data-title="' + title + '">' + ICON_PLAY + '</button>' +
         '<a class="ib dl" aria-label="ダウンロード" href="' + t.url + '" download="' + fileName(t.url) + '" target="_blank" rel="noopener">' + ICON_DL + '</a>' +
       '</div>';
@@ -230,25 +241,79 @@ $('tabs').addEventListener('click', e => {
 });
 $('lesson').addEventListener('click', e => {
   const b = e.target.closest('[data-play]'); if (!b) return;
-  play(b.dataset.play, b.dataset.title);
+  playTrack(b.dataset.play, b.dataset.title);
 });
 
-// ===== 保存したファイル（端末内）を再生 =====
-let localUrls = [];
-$('pick').addEventListener('change', e => {
-  localUrls.forEach(u => URL.revokeObjectURL(u));
-  const files = [...e.target.files].sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric:true }));
-  localUrls = files.map(f => URL.createObjectURL(f));
-  $('localList').innerHTML = files.length ? files.map((f, i) =>
-    '<div class="row" data-url="' + localUrls[i] + '"><div class="lbl"><b>' + f.name.replace(/[<>&"]/g, '') + '</b></div>' +
-    '<button class="ib play" aria-label="再生" data-play="' + localUrls[i] + '" data-title="📱 ' + f.name.replace(/[<>&"]/g, '') + '">' + ICON_PLAY + '</button></div>').join('')
-    : '<div class="empty">ファイルが選ばれていません</div>';
-  markPlaying();
+// ===== 取り込んだ音声（端末内・IndexedDB）=====
+// キーは公式のファイル名（例: Tr.01_06_allplay_Lbunya4th_A.mp3）。端末側のファイル名に余計な前置き（0_ など）が付いていても拾う。
+const LOCAL = new Map();          // 公式ファイル名 -> Blob
+const ALL_KEYS = new Set(LESSONS.flatMap(l => l.secs.flatMap(sc => sc.tracks.map(t => fileName(t.url)))));
+function localHas(url){ return LOCAL.has(fileName(url)); }
+function keyFromName(name){
+  const m = String(name).match(/Tr\.(\d{2})(?:_(\d{2})_allplay)?_Lbunya4th_([AB])\.mp3$/i);
+  if (!m) return null;
+  const k = 'Tr.' + m[1] + (m[2] ? '_' + m[2] + '_allplay' : '') + '_Lbunya4th_' + m[3].toUpperCase() + '.mp3';
+  return ALL_KEYS.has(k) ? k : null;
+}
+let db = null;
+function idb(){
+  return new Promise((res) => {
+    try {
+      const rq = indexedDB.open('listening-audio', 1);
+      rq.onupgradeneeded = () => rq.result.createObjectStore('files');
+      rq.onsuccess = () => res(rq.result);
+      rq.onerror = () => res(null);
+    } catch (e) { res(null); }
+  });
+}
+function idbAll(){
+  return new Promise((res) => {
+    if (!db) return res([]);
+    try {
+      const out = [], tx = db.transaction('files', 'readonly'), st = tx.objectStore('files');
+      const cur = st.openCursor();
+      cur.onsuccess = () => { const c = cur.result; if (c) { out.push([c.key, c.value]); c.continue(); } else res(out); };
+      cur.onerror = () => res(out);
+    } catch (e) { res([]); }
+  });
+}
+function idbPut(k, v){ return new Promise((res) => { if (!db) return res(false); try { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').put(v, k); tx.oncomplete = () => res(true); tx.onerror = () => res(false); } catch (e) { res(false); } }); }
+function idbClear(){ return new Promise((res) => { if (!db) return res(); try { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').clear(); tx.oncomplete = () => res(); tx.onerror = () => res(); } catch (e) { res(); } }); }
+function renderLocalStatus(msg){
+  const n = LOCAL.size, all = ALL_KEYS.size;
+  $('clearLocal').hidden = !n;
+  $('localStatus').innerHTML = (msg ? msg + '<br>' : '') + (n ? '📱 取り込み済み ' + n + ' / ' + all + ' 曲' + '<div class="bar"><i style="width:' + Math.round(n / all * 100) + '%"></i></div>' : '');
+}
+$('pick').addEventListener('change', async e => {
+  const files = [...e.target.files];
+  let ok = 0, skip = 0;
+  $('localStatus').textContent = '取り込み中…';
+  for (const f of files) {
+    const k = keyFromName(f.name);
+    if (!k) { skip++; continue; }
+    const blob = new Blob([await f.arrayBuffer()], { type: 'audio/mpeg' });
+    LOCAL.set(k, blob); await idbPut(k, blob); ok++;
+  }
+  e.target.value = '';
+  renderLocalStatus('✅ ' + ok + '曲を取り込みました' + (skip ? '（この本の音声ではない ' + skip + '件は無視）' : '') + (db ? '' : '<br>※ このブラウザでは保存できないため、ページを閉じると消えます'));
+  renderLesson();
 });
-$('localList').addEventListener('click', e => {
-  const b = e.target.closest('[data-play]'); if (!b) return;
-  play(b.dataset.play, b.dataset.title);
+$('clearLocal').addEventListener('click', async () => {
+  LOCAL.clear(); await idbClear(); renderLocalStatus('取り込みを消しました'); renderLesson();
 });
+(async () => {
+  db = await idb();
+  (await idbAll()).forEach(([k, v]) => LOCAL.set(k, v));
+  renderLocalStatus(''); renderLesson();
+})();
+let objUrl = '';
+function playTrack(url, title){
+  const blob = LOCAL.get(fileName(url));
+  if (blob) {
+    if (nowUrl !== url) { if (objUrl) URL.revokeObjectURL(objUrl); objUrl = URL.createObjectURL(blob); au.src = objUrl; nowUrl = url; }
+    play(url, title + '　📱');
+  } else play(url, title);
+}
 
 // ===== プレーヤー =====
 const au = $('au');
@@ -264,10 +329,10 @@ function markPlaying(){
 }
 function play(url, title){
   $('player').hidden = false;
-  if (nowUrl !== url) { au.src = url; nowUrl = url; }
+  if (nowUrl !== url) { au.src = url; nowUrl = url; }   // 端末の音声は playTrack 側で src 設定済み
   $('pTitle').textContent = title;
   au.playbackRate = rate;
-  au.play().catch(() => { $('pTitle').innerHTML = title + ' <span>— 読み込めませんでした（電波を確認してください）</span>'; });
+  au.play().catch(() => { $('pTitle').innerHTML = title + ' <span>— ' + (String(au.src).startsWith('blob:') ? '再生できませんでした（取り込み直してください）' : '読み込めませんでした（電波を確認してください）') + '</span>'; });
   markPlaying();
 }
 $('pToggle').onclick = () => { if (!au.src) return; au.paused ? au.play() : au.pause(); };
