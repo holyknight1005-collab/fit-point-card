@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>本文穴埋めメーカー</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+<style>
+/* Layout: left control column (settings + passage input), right A4 worksheet preview that prints as-is */
+:root{
+  --bg:#f3f4f1; --panel:#ffffff; --ink:#1d2421; --muted:#5f6b66; --line:#d5dbd7;
+  --accent:#1f5c4b; --accent-soft:#e1ede8; --sel:#fbe7a6; --ans:#c0392b;
+  --ui:'Zen Kaku Gothic New','Hiragino Sans','Yu Gothic','Noto Sans JP',sans-serif;
+  --text:'Source Serif 4','Times New Roman','Noto Serif JP',serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:14px}
+.app{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:20px;padding:20px 16px;max-width:1280px;margin:0 auto}
+@media (max-width:860px){.app{grid-template-columns:1fr}}
+.side{display:flex;flex-direction:column;gap:14px;min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px;display:flex;flex-direction:column;gap:10px}
+h1{font-size:20px;margin:0;color:var(--accent);letter-spacing:.02em}
+.lead{color:var(--muted);margin:0;line-height:1.6;font-size:13px}
+h2{font-size:13px;margin:0;color:var(--muted);letter-spacing:.08em}
+label{font-size:13px;display:flex;flex-direction:column;gap:4px}
+input[type=text],input[type=number],textarea,select{font:inherit;border:1px solid var(--line);border-radius:4px;padding:6px 8px;background:#fff;color:var(--ink);width:100%}
+textarea{font-family:var(--text);font-size:14px;line-height:1.6;resize:vertical}
+#src{min-height:200px}
+#keys{min-height:140px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.row > label{flex:1;min-width:120px}
+.chk{flex-direction:row;align-items:center;gap:6px}
+button{font:inherit;border:1px solid var(--accent);background:#fff;color:var(--accent);border-radius:4px;padding:7px 12px;cursor:pointer}
+button.primary{background:var(--accent);color:#fff}
+button:hover{background:var(--accent-soft)} button.primary:hover{background:#174a3c}
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.hint{font-size:12px;color:var(--muted);line-height:1.6;margin:0}
+.stat{font-size:12px;color:var(--accent);font-weight:700}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.tabs button[aria-pressed=true]{background:var(--accent);color:#fff}
+.main{min-width:0;display:flex;flex-direction:column;gap:12px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+.sheetwrap{overflow-x:auto}
+/* A4 sheet */
+.sheet{background:#fff;color:#111;width:210mm;max-width:100%;min-height:297mm;margin:0 auto;padding:16mm 16mm;box-shadow:0 1px 4px rgba(0,0,0,.12)}
+.sh-head{display:flex;justify-content:space-between;align-items:flex-end;gap:10px;border-bottom:2px solid #1f5c4b;padding-bottom:5px;margin-bottom:10px;flex-wrap:wrap}
+.sh-title{font-size:17px;font-weight:700;color:#1f5c4b}
+.sh-sub{font-size:12px;color:#444;margin-left:8px;font-weight:500}
+.sh-name{font-size:12px;white-space:nowrap}
+.sh-name span{display:inline-block;border-bottom:1px solid #333;width:30mm;margin:0 3mm 0 1mm}
+.sh-inst{font-size:12.5px;margin:0 0 8px}
+.passage{font-family:var(--text);font-size:15px;line-height:2.25;color:#111}
+.passage p{margin:0 0 6px;text-indent:1em}
+.tok{cursor:pointer;border-radius:2px}
+.tok:hover{background:#eef3f1}
+.tok.on{background:var(--sel)}
+.blank{white-space:nowrap}
+.blank .no{font-family:var(--ui);font-size:11px;color:#333;margin-right:2px}
+.blank .ul{display:inline-block;border-bottom:1px solid #111;height:1.1em;vertical-align:-.15em}
+.blank .ini{font-weight:600}
+.answ{color:var(--ans);font-weight:600}
+.anskey{margin-top:12px;border-top:1px dashed #999;padding-top:8px}
+.anskey h3{font-size:12.5px;margin:0 0 6px;font-family:var(--ui)}
+.agrid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px 14px;font-size:13px}
+.agrid div{display:flex;gap:6px;align-items:flex-end;min-height:24px;border-bottom:1px solid #bbb;font-family:var(--text)}
+.agrid b{font-family:var(--ui);font-size:12px;min-width:2.4em}
+.agrid .answ{border:none}
+.score{text-align:right;font-size:12px;margin-top:6px}
+.page-ans{display:none}
+.empty{color:#777;font-family:var(--ui);font-size:13px;line-height:1.8}
+@media print{
+  @page{size:A4;margin:0}
+  body{background:#fff}
+  .side,.toolbar{display:none!important}
+  .app{display:block;padding:0;max-width:none}
+  .sheet{box-shadow:none;width:auto;min-height:0;margin:0;padding:15mm 16mm;page-break-after:always}
+  .sheetwrap{overflow:visible}
+  .tok.on,.tok:hover{background:none}
+  .page-ans{display:block}
+  .sheet.hide-print{display:none}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="card">
+      <h1>本文穴埋めメーカー</h1>
+      <p class="lead">本文を貼り付けて「プリントに反映」を押し、右のプレビューで抜きたい語をクリックします。続けて選んだ語は1つの（　）になります。</p>
+    </div>
+
+    <div class="card">
+      <h2>1. 本文</h2>
+      <label for="title">タイトル<input type="text" id="title" value="Lesson 3 本文穴埋めテスト"></label>
+      <label for="sub">サブタイトル<input type="text" id="sub" value="The Rise of the Smart Age　Part 1"></label>
+      <label for="src">本文（段落は空行で区切る）<textarea id="src" spellcheck="false"></textarea></label>
+      <div class="row"><button class="primary" id="build">プリントに反映</button><button id="clearsrc">本文を消す</button></div>
+      <p class="hint">反映すると、それまでの選択はリセットされます。</p>
+    </div>
+
+    <div class="card">
+      <h2>2. 空所を選ぶ</h2>
+      <div class="row">
+        <button id="autoKey">重要語句を自動で抜く</button>
+        <button id="clearSel">すべて解除</button>
+      </div>
+      <div class="row">
+        <label for="rn">ランダムに追加する数<input type="number" id="rn" min="1" max="40" value="5"></label>
+        <button id="rand" style="align-self:flex-end">ランダムに抜く</button>
+      </div>
+      <p class="stat" id="stat">空所 0 個</p>
+      <details>
+        <summary style="cursor:pointer;font-size:13px">重要語句リストを編集</summary>
+        <p class="hint">1行に1つ。<code>|</code> で活用形を並べる、<code>[ ]</code> の語は空所にしない、<code>*</code> は間に入る語（5語まで・空所にしない）。</p>
+        <textarea id="keys" spellcheck="false"></textarea>
+        <div class="row"><button id="resetKeys">Lesson 3 の初期リストに戻す</button></div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>3. 体裁</h2>
+      <label class="chk" for="optNum"><input type="checkbox" id="optNum" checked> 空所に番号を付ける</label>
+      <label class="chk" for="optIni"><input type="checkbox" id="optIni"> 頭文字をヒントに出す</label>
+      <label class="chk" for="optLen"><input type="checkbox" id="optLen"> 空所の長さを答えの語数に合わせる</label>
+      <label class="chk" for="optKey"><input type="checkbox" id="optKey" checked> 下に解答欄を付ける</label>
+      <label class="chk" for="optName"><input type="checkbox" id="optName" checked> 名前・得点欄を付ける</label>
+      <label for="pts">1問の配点（得点欄に使用）<input type="number" id="pts" min="1" max="20" value="2"></label>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="toolbar">
+      <div class="tabs" role="group" aria-label="表示">
+        <button id="vQ" aria-pressed="true">問題</button>
+        <button id="vA" aria-pressed="false">解答</button>
+      </div>
+      <div class="row">
+        <label class="chk" for="printAns" style="font-size:12px"><input type="checkbox" id="printAns" checked> 解答ページも印刷</label>
+        <button class="primary" id="print">印刷・PDF保存</button>
+      </div>
+    </div>
+    <div class="sheetwrap"><div class="sheet" id="sheetQ"></div></div>
+    <div class="sheetwrap page-ans" id="ansWrap"><div class="sheet" id="sheetA"></div></div>
+  </main>
+</div>
+
+<script>
+const SAMPLE = `【サンプル文】この文章を消して、教科書の本文を貼り付けてください。
+
+Most people in Japan carry a smartphone every day. Thanks to these small devices, we can send messages, take pictures, and pay for things instead of using a wallet.
+
+In the past, phones were so heavy that people could not carry them easily. Since then, companies have added many new functions to them, and smartphones have taken over the market.`;
+
+const DEFAULT_KEYS = `in use
+make|made|making|makes [a] [phone] call
+so * that
+along with
+add|added|adding|adds * to
+thanks to
+come|came|comes|coming to
+instead of
+take|took|taken|taking|takes over
+turn|turned|turning|turns * into
+go|goes|went|going|gone through
+not * at all
+link|linked|linking|links * to
+since then
+out of date
+such as
+more like
+evolution
+evolve|evolved
+worldwide
+telecommunication|telecommunications
+weigh|weighed
+battery
+handheld
+portable
+release|released
+function|functions
+quality
+wallet
+feature|features
+device|devices
+completely
+appearance
+toolbox|toolboxes
+solution
+physical
+telepathy
+technologically
+assist|assisted
+arrival
+invent|invented`;
+
+const STOP = new Set("the a an and or but of to in on at for with by from is are was were be been am it its this that these those they we you he she i his her their our my your them us him as if so not do does did have has had will would can could may might must which who what when where there here than then also very".split(" "));
+
+const $ = id => document.getElementById(id);
+let paras = [];   // [[token]] ; token = {pre, core, post, sel, word}
+let view = "Q";
+let gidSeq = 1;
+const newGid = () => gidSeq++;
+
+function store(k, v){ try{ localStorage.setItem("anaume_"+k, JSON.stringify(v)); }catch(e){} }
+function load(k, d){ try{ const v = localStorage.getItem("anaume_"+k); return v===null ? d : JSON.parse(v); }catch(e){ return d; } }
+
+function tokenize(text){
+  return text.replace(/\r/g,"").split(/\n\s*\n/).map(p => p.trim()).filter(Boolean).map(p =>
+    p.split(/\s+/).map(w => {
+      const m = w.match(/^([^A-Za-z0-9]*)([A-Za-z0-9][A-Za-z0-9'’\-.]*?[A-Za-z0-9]|[A-Za-z0-9])([^A-Za-z0-9]*)$/);
+      if(!m) return {pre:w, core:"", post:"", sel:0, word:false};
+      return {pre:m[1], core:m[2], post:m[3], sel:0, word:true};
+    })
+  );
+}
+const norm = s => s.toLowerCase().replace(/[’]/g,"'");
+
+function parseKeys(){
+  return $("keys").value.split("\n").map(l => l.trim()).filter(Boolean).map(l =>
+    l.split(/\s+/).map(t => t === "*" ? {gap:true} :
+      {alts: t.replace(/^\[|\]$/g,"").toLowerCase().split("|"), blank: !/^\[.*\]$/.test(t)})
+  ).sort((a,b) => b.length - a.length);
+}
+
+function matchAt(toks, i, pat, pi, hits){
+  if(pi === pat.length) return hits;
+  const p = pat[pi];
+  if(p.gap){
+    for(let g = 0; g <= 5; g++){
+      const r = matchAt(toks, i+g, pat, pi+1, hits);
+      if(r) return r;
+    }
+    return null;
+  }
+  const t = toks[i];
+  if(!t || !t.word || !p.alts.includes(norm(t.core))) return null;
+  return matchAt(toks, i+1, pat, pi+1, p.blank ? hits.concat(i) : hits);
+}
+
+function autoKey(){
+  const pats = parseKeys();
+  paras.forEach(toks => {
+    for(let i = 0; i < toks.length; i++){
+      for(const pat of pats){
+        const r = matchAt(toks, i, pat, 0, []);
+        if(r){ let g = 0, prev = -2; r.forEach(k => { if(k !== prev+1) g = newGid(); toks[k].sel = g; prev = k; }); break; }
+      }
+    }
+  });
+  render();
+}
+
+function randomPick(){
+  const n = Math.max(1, Math.min(40, +$("rn").value || 5));
+  const pool = [];
+  paras.forEach(toks => toks.forEach(t => {
+    if(t.word && !t.sel && t.core.length >= 4 && !STOP.has(norm(t.core)) && !/^\d+$/.test(t.core)) pool.push(t);
+  }));
+  for(let k = 0; k < n && pool.length; k++){
+    const j = Math.floor(Math.random()*pool.length);
+    pool.splice(j,1)[0].sel = newGid();
+  }
+  render();
+}
+
+/* group consecutive selected words into blanks */
+function groups(){
+  const out = []; let no = 0;
+  paras.forEach((toks, pi) => {
+    let cur = null;
+    toks.forEach((t, ti) => {
+      if(t.word && t.sel){
+        if(cur && !t.pre && toks[ti-1].sel === t.sel){ cur.idx.push(ti); }
+        else { cur = {pi, idx:[ti], no: ++no}; out.push(cur); }
+        if(t.post) cur = null;
+      } else cur = null;
+    });
+  });
+  return out;
+}
+
+function esc(s){ return s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+function headHTML(isAns){
+  const name = $("optName").checked && !isAns
+    ? `<div class="sh-name">組・番号<span></span>氏名<span></span>得点<span style="width:14mm"></span>/ ${groups().length * (+$("pts").value || 0)}</div>` : "";
+  return `<div class="sh-head"><div><span class="sh-title">${esc($("title").value)}${isAns ? "　解答" : ""}</span><span class="sh-sub">${esc($("sub").value)}</span></div>${name}</div>`;
+}
+
+function sheetHTML(isAns, interactive){
+  if(!paras.length) return headHTML(isAns) + `<p class="empty">左の「本文」に教科書の文章を貼り付けて「プリントに反映」を押すと、ここにプリントが表示されます。</p>`;
+  const gs = groups();
+  const byStart = new Map(); const inGroup = new Set();
+  gs.forEach(g => { byStart.set(g.pi+":"+g.idx[0], g); g.idx.forEach(i => inGroup.add(g.pi+":"+i)); });
+  const num = $("optNum").checked, ini = $("optIni").checked, byLen = $("optLen").checked;
+  let html = headHTML(isAns);
+  html += `<p class="sh-inst">次の英文の（　）に入る適切な語を書きなさい。${ini ? "（　）内の文字で始まる語を入れること。" : ""}</p><div class="passage">`;
+  paras.forEach((toks, pi) => {
+    const parts = [];
+    for(let ti = 0; ti < toks.length; ti++){
+      const t = toks[ti], key = pi+":"+ti;
+      if(byStart.has(key)){
+        const g = byStart.get(key);
+        const ans = g.idx.map(i => toks[i].core).join(" ");
+        const first = toks[g.idx[0]], last = toks[g.idx[g.idx.length-1]];
+        const w = byLen ? Math.max(14, 8 + g.idx.length * 16) : 26;
+        const no = num ? `<span class="no">(${g.no})</span>` : "";
+        const body = isAns ? `<span class="answ">${esc(ans)}</span>`
+          : `${ini ? `<span class="ini">${esc(ans[0])}</span>` : ""}<span class="ul" style="width:${w}mm"></span>`;
+        const clickAttr = interactive ? ` data-g="${g.idx.map(i=>pi+":"+i).join(",")}" class="tok on"` : "";
+        parts.push(`${esc(first.pre)}<span class="blank"><span${clickAttr}>${no}( ${body} )</span></span>${esc(last.post)}`);
+        ti = g.idx[g.idx.length-1];
+        continue;
+      }
+      if(inGroup.has(key)) continue;
+      const inner = t.word
+        ? (interactive ? `<span class="tok" data-k="${key}">${esc(t.core)}</span>` : esc(t.core))
+        : "";
+      parts.push(esc(t.pre) + inner + esc(t.post));
+    }
+    html += `<p>${parts.join(" ")}</p>`;
+  });
+  html += `</div>`;
+  if($("optKey").checked && gs.length){
+    html += `<div class="anskey"><h3>${isAns ? "解答一覧" : "解答欄"}</h3><div class="agrid">` +
+      gs.map(g => `<div><b>(${g.no})</b>${isAns ? `<span class="answ">${esc(g.idx.map(i=>paras[g.pi][i].core).join(" "))}</span>` : ""}</div>`).join("") +
+      `</div></div>`;
+  }
+  return html;
+}
+
+function render(){
+  const n = groups().length;
+  $("stat").textContent = `空所 ${n} 個` + (n ? `（${n * (+$("pts").value||0)}点満点）` : "");
+  $("sheetQ").innerHTML = sheetHTML(view === "A", true);
+  $("sheetA").innerHTML = sheetHTML(true, false);
+  $("ansWrap").classList.toggle("page-ans", true);
+  $("sheetA").classList.toggle("hide-print", !$("printAns").checked);
+  save();
+}
+
+$("sheetQ").addEventListener("click", e => {
+  const el = e.target.closest("[data-k],[data-g]");
+  if(!el) return;
+  if(el.dataset.k){
+    const [p,i] = el.dataset.k.split(":").map(Number), toks = paras[p], t = toks[i];
+    const L = toks[i-1], R = toks[i+1];
+    if(L && L.word && L.sel && !L.post && !t.pre) t.sel = L.sel;
+    else if(R && R.word && R.sel && !t.post && !R.pre) t.sel = R.sel;
+    else t.sel = newGid();
+  }
+  else el.dataset.g.split(",").forEach(k => { const [p,i] = k.split(":").map(Number); paras[p][i].sel = 0; });
+  render();
+});
+
+function save(){
+  store("src", $("src").value); store("keys", $("keys").value);
+  store("title", $("title").value); store("sub", $("sub").value);
+  store("sel", paras.map(t => t.map(x => x.sel)));
+  ["optNum","optIni","optLen","optKey","optName","printAns"].forEach(id => store(id, $(id).checked));
+  store("pts", $("pts").value);
+}
+
+function setView(v){ view = v; $("vQ").setAttribute("aria-pressed", v==="Q"); $("vA").setAttribute("aria-pressed", v==="A"); render(); }
+
+$("build").onclick = () => { paras = tokenize($("src").value); render(); };
+$("clearsrc").onclick = () => { $("src").value = ""; $("src").focus(); };
+$("autoKey").onclick = autoKey;
+$("rand").onclick = randomPick;
+$("clearSel").onclick = () => { paras.forEach(t => t.forEach(x => x.sel = 0)); render(); };
+$("resetKeys").onclick = () => { $("keys").value = DEFAULT_KEYS; save(); };
+$("vQ").onclick = () => setView("Q");
+$("vA").onclick = () => setView("A");
+$("print").onclick = () => { const v = view; view = "Q"; render(); window.print(); view = v; render(); };
+["optNum","optIni","optLen","optKey","optName","printAns","pts","title","sub"].forEach(id => $(id).addEventListener("input", render));
+$("keys").addEventListener("input", save);
+
+/* init */
+$("src").value = load("src", SAMPLE);
+$("keys").value = load("keys", DEFAULT_KEYS);
+$("title").value = load("title", $("title").value);
+$("sub").value = load("sub", $("sub").value);
+["optNum","optIni","optLen","optKey","optName","printAns"].forEach(id => $(id).checked = load(id, $(id).checked));
+$("pts").value = load("pts", $("pts").value);
+paras = tokenize($("src").value);
+const savedSel = load("sel", null);
+if(savedSel && savedSel.length === paras.length && savedSel.every((s,i) => s.length === paras[i].length)){
+  savedSel.forEach((s,i) => s.forEach((v,j) => { paras[i][j].sel = +v || 0; gidSeq = Math.max(gidSeq, (+v||0)+1); }));
+} else if($("src").value === SAMPLE){ autoKey(); }
+render();
+</script>
+</body>
+</html>
