@@ -6986,7 +6986,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261001onl37';
+const APP_VERSION = '20261002onl39';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -37466,6 +37466,7 @@ async function rbLoadClasses() {
         filled: isFilled(r),
         staff_id: repStaffId,
         reporterName: repStaffId ? rbResolveReporterName(repStaffId) : '',
+        koma: sInfo ? (sInfo.periods || 1) : 1,   // 20261002onl39: その日のコマ数（同じ日に5限・6限なら2）
         total: total, menRate: menRate, makeup: makeup, denom: denom
       };
     });
@@ -37547,7 +37548,7 @@ function rbPrint() {
       '<colgroup><col style="width:8%"><col style="width:7%"><col style="width:9%"><col style="width:16%"><col style="width:24%"><col style="width:25%"><col style="width:11%"></colgroup>' +
       // 授業名＋受講人数 行
       '<tr><td colspan="7" style="border:1px solid #999;background:#f1ede3;padding:5px 10px;font-size:11pt;font-weight:800">' +
-        escapeHtml(c.name || '') + '　<span style="font-size:9pt;font-weight:600;color:#555">受講人数 ' + (enroll || '—') + '人</span></td></tr>' +
+        escapeHtml(c.name || '') + '　<span style="font-size:9pt;font-weight:600;color:#555">受講人数 ' + (enroll || '—') + '人　報告 ' + rows.filter(r => r.filled).length + '回／' + rows.filter(r => r.filled).reduce((a, r) => a + (r.koma || 1), 0) + 'コマ</span></td></tr>' +
       // ヘッダー行
       '<tr style="background:#faf8f4">' +
         '<th style="border:1px solid #999;padding:4px;font-size:9pt">日付</th>' +
@@ -37568,7 +37569,8 @@ function rbPrint() {
       const contentCell = hideContent ? '' : cellTxt(r.content);
       const notesCell = hideContent ? '' : cellTxt(r.student_notes);
       inner += '<tr style="page-break-inside:avoid">' +
-        '<td style="border:1px solid #999;padding:5px 4px;font-size:9pt;text-align:center;vertical-align:top;white-space:nowrap">' + fmtDate(r.date) + '</td>' +
+        '<td style="border:1px solid #999;padding:5px 4px;font-size:9pt;text-align:center;vertical-align:top;white-space:nowrap">' + fmtDate(r.date) +
+          ((r.koma || 1) > 1 ? '<br><span style="display:inline-block;margin-top:2px;font-size:8pt;font-weight:800;color:#fff;background:#C0392B;border-radius:6px;padding:0 5px">' + r.koma + 'コマ</span>' : '') + '</td>' +
         '<td style="border:1px solid #999;padding:5px 4px;font-size:10pt;text-align:center;vertical-align:top">' + escapeHtml(r.cycleLabel || '') + '</td>' +
         '<td style="border:1px solid #999;padding:5px 4px;font-size:8.5pt;text-align:center;vertical-align:top;overflow-wrap:anywhere">' + teacherCell + '</td>' +
         '<td style="border:1px solid #999;padding:5px 6px;font-size:9.5pt;font-weight:700;vertical-align:top;overflow-wrap:anywhere">' + themeCell + '</td>' +
@@ -37613,13 +37615,13 @@ function rbCsv() {
   const orderedIds = _rbClasses.map(c => c.id).filter(id => ids.indexOf(id) >= 0);
   const wlabels = ['日', '月', '火', '水', '木', '金', '土'];
 
-  const rows = [['対象講師', '回の担当', '種別', '授業名', '日付', '回数', 'テーマ', '授業内容', '生徒様子', '出席率(全体)', '出席率(対面)']];
+  const rows = [['対象講師', '回の担当', '種別', '授業名', '日付', 'コマ数', '回数', 'テーマ', '授業内容', '生徒様子', '出席率(全体)', '出席率(対面)']];
   let count = 0;
   orderedIds.forEach(cid => {
     const c = classById[cid] || {};
     const drows = ((_rbDataByClass[cid] || {}).rows || []).filter(r => r.filled || r.denom > 0);
     drows.forEach(r => {
-      rows.push([teacherName, r.reporterName || '', AS_CAT_LABEL[cat] || cat, c.name || '', r.date, r.cycleLabel || '',
+      rows.push([teacherName, r.reporterName || '', AS_CAT_LABEL[cat] || cat, c.name || '', r.date, String(r.koma || 1), r.cycleLabel || '',
         r.theme || '', r.content || '', r.student_notes || '',
         (r.total != null ? r.total + '%' : ''), (r.total != null && r.makeup > 0 ? r.menRate + '%' : '')]);
       count++;
@@ -37846,17 +37848,31 @@ async function loadKomaCount() {
     sessionHasReport[k] = true;
   });
 
-  // 実施者ごとのコマ数（＝自分が書いた報告書の数）と、講座別内訳
+  // 実施者ごとのコマ数と、講座別内訳。
+  // 20261002onl39: 報告書は「授業×日付」で1件なので、同じ授業を同じ日に複数コマ（5限・6限など）やった日は
+  //   その日の授業日（class_sessions）の数だけコマに数える（報告書1件で2コマ）。授業日が無い報告書は1コマ。
+  const sessCountByKey = {};   // 'cid|date' -> その日のコマ数
+  sess.forEach(s => { if (!s.class_master_id) return; const k = s.class_master_id + '|' + s.session_date; sessCountByKey[k] = (sessCountByKey[k] || 0) + 1; });
+  // 同じ授業・同じ日に記入済み報告が複数（5限A先生・6限B先生など）ある場合は、その日の合計がコマ数になるよう最初の報告に残りを寄せる
+  const filledCntByKey = {}, extraGiven = {};
+  reps.forEach(r => { if (!isFilled(r)) return; const k = (r.class_master_id || '(不明)') + '|' + r.session_date; filledCntByKey[k] = (filledCntByKey[k] || 0) + 1; });
+  const komaOfReport = (r) => {
+    const k = (r.class_master_id || '(不明)') + '|' + r.session_date;
+    const extra = Math.max(0, (sessCountByKey[k] || 0) - (filledCntByKey[k] || 1));
+    if (!extra || extraGiven[k]) return 1;
+    extraGiven[k] = true; return 1 + extra;
+  };
   const byStaff = {};        // sid -> 合計コマ（授業のみ）
   const byStaffClass = {};   // sid -> { cid -> コマ }
   let unknown = 0;
   reps.forEach(r => {
     if (!isFilled(r)) return;
+    const n = komaOfReport(r);
     const sid = r.staff_id ? String(r.staff_id) : '';
-    if (!sid) { unknown++; return; }
-    byStaff[sid] = (byStaff[sid] || 0) + 1;
+    if (!sid) { unknown += n; return; }
+    byStaff[sid] = (byStaff[sid] || 0) + n;
     const cid = r.class_master_id || '(不明)';
-    (byStaffClass[sid] || (byStaffClass[sid] = {}))[cid] = (byStaffClass[sid][cid] || 0) + 1;
+    (byStaffClass[sid] || (byStaffClass[sid] = {}))[cid] = (byStaffClass[sid][cid] || 0) + n;
   });
 
   // 講師の担当授業（主担当∪追加担当）: staff_idコード -> Set(cid)
@@ -67178,7 +67194,7 @@ async function kubsSaveStudent(sid) {
 }
 
 
-/* ===== テスト対策（臨時授業）  20261001onl36 =====
+/* ===== テスト対策（臨時授業）  20261001onl36（onl38: 日付ごとの時限・変則時刻） =====
    授業マスターを増やさず、events の scope='testprep' として1回＝1行で持つ。
    ・created_by＝担当講師（staff.id）… 講師本人のカレンダー・週間時間割に出る
    ・target_schools / target_grades … その学校の担当スタッフと、対象の生徒のカレンダーに出る
@@ -67196,9 +67212,20 @@ function tpShortClass(division, school, grade, subject) {
 }
 function tpTitle(division, school, grade, subject) { return '📝 ' + tpShortClass(division, school, grade, subject) + '（テスト対策）'; }
 function tpPeriodLabel(ev) {
-  if (ev.period_from == null) return ev.start_time ? String(ev.start_time).slice(0, 5) + (ev.end_time ? '〜' + String(ev.end_time).slice(0, 5) : '') : '';
+  // 20261001onl38: 時刻で入れた変則は時刻を表示
+  if (ev.start_time) return String(ev.start_time).slice(0, 5) + (ev.end_time ? '〜' + String(ev.end_time).slice(0, 5) : '') + '（変則）';
+  if (ev.period_from == null) return '';
   const a = parseInt(ev.period_from, 10), b = (ev.period_to != null ? parseInt(ev.period_to, 10) : a);
   return (a === b ? a + '限' : a + '〜' + b + '限');
+}
+// コマ数：限で入れたものは限の数、時刻で入れた変則は 90分＝1コマ（四捨五入・最低1）
+function tpKomaOf(ev) {
+  if (ev.start_time && ev.end_time) {
+    const m = (x) => { const a = String(x).slice(0, 5).split(':').map(Number); return a[0] * 60 + a[1]; };
+    return Math.max(1, Math.round((m(ev.end_time) - m(ev.start_time)) / 90));
+  }
+  if (ev.period_from != null && ev.period_to != null) return Math.max(1, parseInt(ev.period_to, 10) - parseInt(ev.period_from, 10) + 1);
+  return 1;
 }
 function tpDateLabel(iso) { const p = iso.split('-').map(Number); const d = new Date(p[0], p[1] - 1, p[2]); return p[1] + '/' + p[2] + '（' + ['日', '月', '火', '水', '木', '金', '土'][d.getDay()] + '）'; }
 
@@ -67243,6 +67270,8 @@ function closeTestPrep() {
 }
 
 function tpNewForm() {
+  // dates: [{ d:'YYYY-MM-DD', pf:'', pt:'', start:'', end:'' }]  … 20261001onl38: 日付ごとに時限・時刻を変えられる（変則対応）
+  // pf/pt/start/end（上段）は「これから追加する日」に入る時限
   return { division: '高校部', school: '', grade: '', subject: '', teacher: currentStaff ? currentStaff.id : '', dates: [], pf: '', pt: '', start: '', end: '', memo: '' };
 }
 
@@ -67256,8 +67285,12 @@ async function tpRender() {
       const rows = await sbGet('events', 'id=eq.' + encodeURIComponent(tpEditId) + '&select=*') || [];
       const ev = rows[0];
       if (ev) {
-        tpForm = { division: ev.tp_division || '高校部', school: (ev.target_schools || '').split(',')[0] || '', grade: String(ev.target_grades || ''), subject: ev.tp_subject || '', teacher: ev.created_by || '', dates: [ev.event_date],
-          pf: ev.period_from != null ? String(ev.period_from) : '', pt: ev.period_to != null ? String(ev.period_to) : '', start: ev.start_time ? String(ev.start_time).slice(0, 5) : '', end: ev.end_time ? String(ev.end_time).slice(0, 5) : '', memo: ev.detail || '', editing: ev };
+        const timeMode = !!ev.start_time;
+        tpForm = { division: ev.tp_division || '高校部', school: (ev.target_schools || '').split(',')[0] || '', grade: String(ev.target_grades || ''), subject: ev.tp_subject || '', teacher: ev.created_by || '',
+          dates: [{ d: ev.event_date,
+            pf: (!timeMode && ev.period_from != null) ? String(ev.period_from) : '', pt: (!timeMode && ev.period_to != null) ? String(ev.period_to) : '',
+            start: ev.start_time ? String(ev.start_time).slice(0, 5) : '', end: ev.end_time ? String(ev.end_time).slice(0, 5) : '' }],
+          pf: '', pt: '', start: '', end: '', memo: ev.detail || '', editing: ev };
       }
     } catch (e) {}
     tpEditId = null;
@@ -67274,7 +67307,7 @@ function tpFormHtml() {
   const chip = (on) => 'padding:6px 11px;border-radius:16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;border:1.5px solid ' + (on ? TP_COLOR : 'var(--border)') + ';background:' + (on ? TP_COLOR : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--text)');
   let h = '<div style="' + card + '">';
   h += '<div style="font-size:14px;font-weight:800;color:' + TP_COLOR + '">' + (ed ? '✏️ テスト対策を編集' : '＋ テスト対策を登録') + '</div>';
-  h += '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-top:4px">授業マスターは作りません。担当講師のカレンダー・週間時間割、その学校の担当スタッフ、対象の学校・学年の生徒のカレンダーに出ます。実施後に「実施報告」をするとコマ数（給与）に入ります（6〜7限なら2コマ）。</div>';
+  h += '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-top:4px">授業マスターは作りません。担当講師のカレンダー・週間時間割、その学校の担当スタッフ、対象の学校・学年の生徒のカレンダーに出ます。実施後に「実施報告」をするとコマ数（給与）に入ります（6〜7限なら2コマ／時刻で入れた変則は90分＝1コマ換算）。</div>';
   h += '<div style="' + lab + '">部門・学校</div><div style="display:flex;gap:6px;flex-wrap:wrap">' +
     ['高校部', '中学部'].map(dv => '<button type="button" onclick="tpSet(\'division\',\'' + dv + '\')" style="' + chip(f.division === dv) + '">' + dv + '</button>').join('') + '</div>';
   h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + (tpSchools[f.division] || []).map(sc => '<button type="button" onclick="tpSet(\'school\',\'' + escapeAttr(sc) + '\')" style="' + chip(f.school === sc) + '">' + escapeHtml(sc) + '</button>').join('') + '</div>';
@@ -67283,11 +67316,18 @@ function tpFormHtml() {
     '<datalist id="tp-subject-list">' + TP_SUBJECTS.map(s => '<option value="' + s + '">').join('') + '</datalist>';
   h += '<div style="' + lab + '">担当講師</div><select onchange="tpForm.teacher=this.value" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:9px;font-family:inherit">' +
     (tpStaffList || []).map(s => '<option value="' + escapeAttr(s.id) + '"' + (s.id === f.teacher ? ' selected' : '') + '>' + escapeHtml(s.name) + '</option>').join('') + '</select>';
-  h += '<div style="' + lab + '">日付' + (ed ? '' : '（複数選べます）') + '</div><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
-    '<input type="date" id="tp-date-in" ' + (ed ? 'value="' + escapeAttr(f.dates[0] || '') + '" onchange="tpForm.dates=[this.value];tpRefreshPeriods()"' : '') + ' style="padding:7px 9px;border:1px solid var(--border);border-radius:9px;font-family:inherit">' +
-    (ed ? '' : '<button type="button" onclick="tpAddDate()" style="padding:7px 12px;border-radius:9px;border:1.5px solid ' + TP_COLOR + ';background:var(--surface);color:' + TP_COLOR + ';font-weight:700;cursor:pointer;font-family:inherit">追加</button>') + '</div>' +
-    (ed ? '' : '<div id="tp-dates" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + tpDatesHtml() + '</div>');
-  h += '<div style="' + lab + '">時限（または時刻）</div><div id="tp-period-box">' + tpPeriodHtml() + '</div>';
+  h += '<div style="' + lab + '">日付と時限</div>';
+  if (!ed) {
+    h += '<div style="background:#F7F5FE;border:1px solid #DDD6FB;border-radius:10px;padding:9px 10px;margin-bottom:8px">' +
+      '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">① 時限（または時刻）を選んでから ② 日付を「追加」。日ごとに違う場合（変則）は、下の一覧で1日ずつ変えられます。</div>' +
+      '<div id="tp-common-box">' + tpCommonHtml() + '</div>' +
+      '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px">' +
+        '<input type="date" id="tp-date-in" style="padding:7px 9px;border:1px solid var(--border);border-radius:9px;font-family:inherit">' +
+        '<button type="button" onclick="tpAddDate()" style="padding:7px 14px;border-radius:9px;border:none;background:' + TP_COLOR + ';color:#fff;font-weight:700;cursor:pointer;font-family:inherit">日付を追加</button>' +
+        (f.dates.length ? '<button type="button" onclick="tpApplyAll()" style="padding:7px 10px;border-radius:9px;border:1px solid ' + TP_COLOR + ';background:#fff;color:' + TP_COLOR + ';font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">この時限を全部の日にそろえる</button>' : '') +
+      '</div></div>';
+  }
+  h += '<div id="tp-dates">' + tpDatesHtml() + '</div>';
   h += '<div style="' + lab + '">メモ（任意・生徒にも見えます）</div><input value="' + escapeAttr(f.memo) + '" oninput="tpForm.memo=this.value" placeholder="例：範囲 p.40〜62／自習室で実施" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:9px;font-family:inherit">';
   h += '<div id="tp-preview" style="font-size:12px;color:' + TP_COLOR + ';font-weight:700;margin-top:10px">' + tpPreviewText() + '</div>';
   h += '<div style="display:flex;gap:8px;margin-top:10px">' +
@@ -67298,8 +67338,12 @@ function tpFormHtml() {
 function tpSet(k, v) {
   tpForm[k] = v;
   if (k === 'division') tpForm.school = '';
+  tpRedrawForm();
+}
+function tpRedrawForm() {
   const box = document.getElementById('tp-body');
-  const top = box ? box.scrollTop : 0;
+  if (!box) return;
+  const top = box.scrollTop;
   const listHtml = (document.getElementById('tp-list') || {}).innerHTML || '';
   box.innerHTML = tpFormHtml() + '<div id="tp-list">' + listHtml + '</div>';
   box.scrollTop = top;
@@ -67310,31 +67354,79 @@ function tpPreviewText() {
   return 'カレンダー表示：' + tpTitle(f.division, f.school, f.grade, String(f.subject).trim());
 }
 function tpPreview() { const el = document.getElementById('tp-preview'); if (el) el.textContent = tpPreviewText(); }
-function tpDatesHtml() {
-  return tpForm.dates.slice().sort().map(d => '<span style="font-size:12px;background:#EFEBFD;color:' + TP_COLOR + ';border-radius:14px;padding:4px 10px;font-weight:700">' + tpDateLabel(d) +
-    ' <span onclick="tpRemoveDate(\'' + d + '\')" style="cursor:pointer;margin-left:2px">✕</span></span>').join('') || '<span style="font-size:11px;color:var(--muted)">日付を選んで「追加」</span>';
+
+// 限の選択肢。dates を渡すとその日の時間割（共通テスト期の平日は0〜7限）、無ければ全部の限（0〜7限）
+function tpPeriodOptions(dates, val) {
+  const ds = (dates || []).filter(Boolean);
+  const nums = ds.length ? periodNumsForDates(ds) : periodNumsAll();
+  return '<option value="">―</option>' + nums.map(p => {
+    const t = ds.length ? periodTimeForDates(ds, p) : null;
+    return '<option value="' + p + '"' + (String(val) === String(p) ? ' selected' : '') + '>' + p + '限' + (t ? '（' + t[0] + '〜）' : (!ds.length && !PERIODS[p] ? '（平日のみ）' : '')) + '</option>';
+  }).join('');
 }
+const TP_SEL = 'padding:6px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px';
+// 上段：これから追加する日に入る時限
+function tpCommonHtml() {
+  const f = tpForm;
+  return '<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">' +
+    '<select onchange="tpForm.pf=this.value;if(!tpForm.pt||parseInt(tpForm.pt,10)<parseInt(this.value,10)){tpForm.pt=this.value;tpRefreshCommon();}" style="' + TP_SEL + '">' + tpPeriodOptions(null, f.pf) + '</select>〜' +
+    '<select onchange="tpForm.pt=this.value" style="' + TP_SEL + '">' + tpPeriodOptions(null, f.pt) + '</select>' +
+    '<span style="font-size:11px;color:var(--muted);margin:0 2px">または時刻</span>' +
+    '<input type="time" value="' + escapeAttr(f.start) + '" onchange="tpForm.start=this.value" style="' + TP_SEL + '">〜' +
+    '<input type="time" value="' + escapeAttr(f.end) + '" onchange="tpForm.end=this.value" style="' + TP_SEL + '"></div>';
+}
+function tpRefreshCommon() { const el = document.getElementById('tp-common-box'); if (el) el.innerHTML = tpCommonHtml(); }
+// 下段：日付ごとの行（変則はここで1日ずつ変える）
+function tpDatesHtml() {
+  const f = tpForm;
+  if (!f.dates.length) return '<div style="font-size:11px;color:var(--muted);padding:4px 2px">まだ日付がありません</div>';
+  return f.dates.map((r, i) => {
+    const ok = tpRowCheck(r);
+    return '<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;padding:7px 9px;margin-bottom:5px;border-radius:9px;border:1px solid ' + (ok ? 'var(--border)' : '#E0A0A0') + ';background:' + (ok ? 'var(--surface)' : '#FDF3F3') + '">' +
+      '<b style="min-width:76px;font-size:13px;color:' + TP_COLOR + '">' + tpDateLabel(r.d) + '</b>' +
+      '<select onchange="tpRowSet(' + i + ',\'pf\',this.value)" style="' + TP_SEL + '">' + tpPeriodOptions([r.d], r.pf) + '</select>〜' +
+      '<select onchange="tpRowSet(' + i + ',\'pt\',this.value)" style="' + TP_SEL + '">' + tpPeriodOptions([r.d], r.pt) + '</select>' +
+      '<span style="font-size:11px;color:var(--muted)">または時刻</span>' +
+      '<input type="time" value="' + escapeAttr(r.start) + '" onchange="tpRowSet(' + i + ',\'start\',this.value)" style="' + TP_SEL + '">〜' +
+      '<input type="time" value="' + escapeAttr(r.end) + '" onchange="tpRowSet(' + i + ',\'end\',this.value)" style="' + TP_SEL + '">' +
+      (f.editing ? '' : '<span onclick="tpRemoveDate(' + i + ')" style="cursor:pointer;color:#C0392B;font-weight:700;margin-left:auto;padding:0 4px">✕</span>') +
+      (ok ? '' : '<div style="width:100%;font-size:11px;color:#C0392B">' + escapeHtml(tpRowProblem(r)) + '</div>') + '</div>';
+  }).join('');
+}
+function tpRefreshDates() { const el = document.getElementById('tp-dates'); if (el) el.innerHTML = tpDatesHtml(); }
+function tpRowSet(i, k, v) {
+  const r = tpForm.dates[i]; if (!r) return;
+  r[k] = v;
+  if (k === 'pf' && v !== '' && (r.pt === '' || parseInt(r.pt, 10) < parseInt(v, 10))) r.pt = v;
+  tpRefreshDates();
+}
+// その日の行に問題があれば文言（なければ ''）
+function tpRowProblem(r) {
+  const hasP = r.pf !== '' && r.pf != null, hasT = !!r.start;
+  if (!hasP && !hasT) return '時限か開始時刻を入れてください';
+  if (hasT) {
+    if (!r.end) return '終了時刻を入れてください';
+    if (r.end <= r.start) return '終了時刻は開始より後にしてください';
+    return '';
+  }
+  const pf = parseInt(r.pf, 10), pt = (r.pt === '' ? pf : parseInt(r.pt, 10));
+  if (pt < pf) return '終わりの限は始まりの限以降にしてください';
+  if (!periodTimeOnDate(r.d, pf) || !periodTimeOnDate(r.d, pt)) return 'この日の時間割にない限です（0限・7限は共通テスト期の平日のみ）';
+  return '';
+}
+function tpRowCheck(r) { return !tpRowProblem(r); }
 function tpAddDate() {
   const v = (document.getElementById('tp-date-in') || {}).value;
   if (!v) { showToast('日付を選んでください', 'info'); return; }
-  if (tpForm.dates.indexOf(v) === -1) tpForm.dates.push(v);
-  const el = document.getElementById('tp-dates'); if (el) el.innerHTML = tpDatesHtml();
-  tpRefreshPeriods();
+  if (tpForm.dates.some(r => r.d === v)) { showToast('その日はもう入っています', 'info'); return; }
+  tpForm.dates.push({ d: v, pf: tpForm.pf, pt: tpForm.pt || tpForm.pf, start: tpForm.start, end: tpForm.end });
+  tpForm.dates.sort((a, b) => a.d < b.d ? -1 : 1);
+  tpRedrawForm();
 }
-function tpRemoveDate(d) { tpForm.dates = tpForm.dates.filter(x => x !== d); const el = document.getElementById('tp-dates'); if (el) el.innerHTML = tpDatesHtml(); tpRefreshPeriods(); }
-function tpRefreshPeriods() { const el = document.getElementById('tp-period-box'); if (el) el.innerHTML = tpPeriodHtml(); }
-// 選んだ日の時間割に合わせて限の選択肢を出す（共通テスト期の平日は0〜7限）
-function tpPeriodHtml() {
-  const f = tpForm, ds = f.dates.slice().sort();
-  const nums = (typeof periodNumsForDates === 'function') ? periodNumsForDates(ds) : [1, 2, 3, 4, 5, 6];
-  const lbl = (p) => { const t = (typeof periodTimeForDates === 'function') ? periodTimeForDates(ds, p) : null; const v = (typeof periodTimeVaries === 'function') && periodTimeVaries(ds, p); return p + '限' + (t ? '（' + t[0] + (v ? '〜*' : '〜') + '）' : ''); };
-  const sel = (id, val) => '<select id="' + id + '" onchange="tpForm.' + (id === 'tp-pf' ? 'pf' : 'pt') + '=this.value" style="padding:7px;border:1px solid var(--border);border-radius:9px;font-family:inherit"><option value="">―</option>' +
-    nums.map(p => '<option value="' + p + '"' + (String(val) === String(p) ? ' selected' : '') + '>' + lbl(p) + '</option>').join('') + '</select>';
-  return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' + sel('tp-pf', f.pf) + '<span>〜</span>' + sel('tp-pt', f.pt) +
-    '<span style="font-size:11px;color:var(--muted);margin-left:6px">または時刻</span>' +
-    '<input type="time" value="' + escapeAttr(f.start) + '" onchange="tpForm.start=this.value" style="padding:6px;border:1px solid var(--border);border-radius:8px;font-family:inherit">〜' +
-    '<input type="time" value="' + escapeAttr(f.end) + '" onchange="tpForm.end=this.value" style="padding:6px;border:1px solid var(--border);border-radius:8px;font-family:inherit"></div>' +
-    (nums.some(p => (typeof periodTimeVaries === 'function') && periodTimeVaries(ds, p)) ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">* 日によって時刻が違う限（共通テスト期の平日と土日など）。各日の時間割で表示されます。</div>' : '');
+function tpRemoveDate(i) { tpForm.dates.splice(i, 1); tpRedrawForm(); }
+function tpApplyAll() {
+  tpForm.dates.forEach(r => { r.pf = tpForm.pf; r.pt = tpForm.pt || tpForm.pf; r.start = tpForm.start; r.end = tpForm.end; });
+  tpRefreshDates();
 }
 
 async function tpSave() {
@@ -67344,44 +67436,43 @@ async function tpSave() {
   if (!f.grade) return showToast('学年を選んでください', 'error');
   if (!subject) return showToast('授業名を入力してください', 'error');
   if (!f.teacher) return showToast('担当講師を選んでください', 'error');
-  if (!f.dates.length) return showToast('日付を選んで「追加」してください', 'error');
-  const pf = f.pf === '' ? null : parseInt(f.pf, 10);
-  let pt = f.pt === '' ? null : parseInt(f.pt, 10);
-  if (pf == null && !f.start) return showToast('時限か開始時刻を入れてください', 'error');
-  if (pf != null && pt == null) pt = pf;
-  if (pf != null && pt < pf) return showToast('終わりの限は始まりの限以降にしてください', 'error');
-  if (pf != null && typeof periodTimeOnDate === 'function') {
-    const bad = f.dates.filter(d => !periodTimeOnDate(d, pf) || !periodTimeOnDate(d, pt));
-    if (bad.length) return showToast(bad.map(tpDateLabel).join('・') + ' はその限が時間割にありません', 'error');
-  }
-  const base = {
+  if (!f.dates.length) return showToast('日付を「追加」してください', 'error');
+  const bad = f.dates.filter(r => !tpRowCheck(r));
+  if (bad.length) { tpRefreshDates(); return showToast(bad.map(r => tpDateLabel(r.d)).join('・') + ' の時限・時刻を直してください', 'error'); }
+  const common = {
     title: tpTitle(f.division, f.school, f.grade, subject), color: TP_COLOR, scope: 'testprep',
     target_schools: f.school, target_grades: String(f.grade), created_by: f.teacher,
-    period_from: pf, period_to: pf == null ? null : pt, start_time: f.start || null, end_time: f.end || null,
     all_day: false, blocks_class: false, detail: (f.memo || '').trim() || null,
     tp_subject: subject, tp_division: f.division
+  };
+  // 1日分の行。時刻で入れた変則は、時間割に表示するため重なる限も入れておく（コマ数は時間で数える）
+  const rowFor = (r) => {
+    let pf = null, pt = null, st = null, et = null;
+    if (r.start) {
+      st = r.start; et = r.end;
+      const ps = periodsOverlappingTime(st, et, r.d);
+      if (ps.length) { pf = Math.min.apply(null, ps); pt = Math.max.apply(null, ps); }
+    } else {
+      pf = parseInt(r.pf, 10); pt = (r.pt === '' ? pf : parseInt(r.pt, 10));
+    }
+    return Object.assign({}, common, { event_date: r.d, period_from: pf, period_to: pt, start_time: st, end_time: et });
   };
   showLoading(ed ? '保存中...' : '登録中...');
   try {
     if (ed) {
-      await sbPatch('events', 'id=eq.' + encodeURIComponent(ed.id), Object.assign({}, base, { event_date: f.dates[0] }));
+      await sbPatch('events', 'id=eq.' + encodeURIComponent(ed.id), rowFor(f.dates[0]));
     } else {
       const by = (currentStaff && currentStaff.staff_id) || null;
-      const rows = f.dates.slice().sort().map(d => Object.assign({}, base, { event_date: d, registered_by: by }));
-      await sbPost('events', rows);
+      await sbPost('events', f.dates.map(r => Object.assign(rowFor(r), { registered_by: by })));
     }
     hideLoading();
     showToast(ed ? '変更しました' : f.dates.length + '回分を登録しました', 'success');
-    const keepMonth = f.dates.slice().sort()[0];
+    const keepMonth = f.dates[0].d;
     tpForm = tpNewForm();
     if (keepMonth) tpMonth = keepMonth.slice(0, 7);
     tpRender();
   } catch (e) {
     hideLoading();
-    // updated_at 列が無い環境向けに一度だけ外して再試行
-    if (ed && /updated_at/.test(String(e.message || ''))) {
-      try { await sbPatch('events', 'id=eq.' + encodeURIComponent(ed.id), Object.assign({}, base, { event_date: f.dates[0] })); showToast('変更しました', 'success'); tpForm = tpNewForm(); tpRender(); return; } catch (e2) {}
-    }
     alert('保存に失敗しました（testprep.sql の実行が必要です）\n' + String(e.message || e).slice(0, 200));
   }
 }
@@ -67460,7 +67551,7 @@ async function tpDelete(id) {
 async function tpKomaByStaffCode(from, to) {
   const out = {};
   try {
-    const evs = await sbGetAll('events', 'scope=eq.testprep&event_date=gte.' + from + '&event_date=lte.' + to + '&select=id,event_date,created_by,done_at,period_from,period_to&order=event_date') || [];
+    const evs = await sbGetAll('events', 'scope=eq.testprep&event_date=gte.' + from + '&event_date=lte.' + to + '&select=id,event_date,created_by,done_at,period_from,period_to,start_time,end_time&order=event_date') || [];
     if (!evs.length) return out;
     const staff = await sbGet('staff', 'select=id,staff_id') || [];
     const code = {}; staff.forEach(s => { code[s.id] = String(s.staff_id); });
@@ -67468,15 +67559,13 @@ async function tpKomaByStaffCode(from, to) {
     evs.forEach(ev => {
       const c = code[ev.created_by]; if (!c) return;
       const o = out[c] || (out[c] = { done: 0, plan: 0, pending: 0 });
-      // 「6〜7限」のように続けて登録したものは限の数だけコマに数える（時刻だけの登録は1コマ）
-      const n = (ev.period_from != null && ev.period_to != null) ? Math.max(1, parseInt(ev.period_to, 10) - parseInt(ev.period_from, 10) + 1) : 1;
+      const n = tpKomaOf(ev);   // 限の数／変則は90分＝1コマ
       o.plan += n;
       if (ev.done_at) o.done += n; else if (ev.event_date <= today) o.pending += n;
     });
   } catch (e) { /* 列未追加なら集計しない */ }
   return out;
 }
-
 
 /* ===== 期間設定（schedule_terms）  20261001onl37 =====
    期間（開始日〜終了日・曜日）ごとに、各限の時刻（period_time_overrides）と
