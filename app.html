@@ -4906,7 +4906,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
     <!-- 未入力一覧タブ（報告書・出席の未入力を全スタッフで共有） -->
     <div id="smcontent-missing" style="display:none">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">昨日までの授業で、<b>報告書</b>または<b>出席</b>がまだ入っていないものの一覧です。全スタッフが見られます。高卒生の授業は対象外です。ぐんぐんゼミ・超感覚英語・超感覚演習・長文読解は、報告書は数えず出席だけ数えます。行をタップすると、その授業の出欠・報告書の画面が開きます。</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">昨日までの授業で、<b>報告書</b>または<b>出席</b>がまだ入っていないものの一覧です。全スタッフが見られます。高卒生の授業は対象外です。補習会の回は、出席した子だけ記録する運用なので出席を数えません。ぐんぐんゼミ・超感覚英語・超感覚演習・長文読解は、報告書は数えず出席だけ数えます。行をタップすると、その授業の出欠・報告書の画面が開きます。</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
         <select class="form-select" id="ms-range" onchange="loadMissingList()" style="font-size:12px;padding:6px 8px;width:auto">
           <option value="14">直近2週間</option>
@@ -7032,7 +7032,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261008ui5';
+const APP_VERSION = '20261008ui6';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -68176,7 +68176,7 @@ function openMissingList(who) {
 async function countMyAttendanceMissing(classIds, from, to) {
   if (!classIds || !classIds.length || from > to) return 0;
   const [sessions, atts, enrolls] = await Promise.all([
-    sbGetAll('class_sessions', 'class_master_id=in.(' + classIds.join(',') + ')&session_date=gte.' + from + '&session_date=lte.' + to + '&select=class_master_id,session_date'),
+    sbGetAll('class_sessions', 'class_master_id=in.(' + classIds.join(',') + ')&session_date=gte.' + from + '&session_date=lte.' + to + '&is_makeup=not.eq.true&select=class_master_id,session_date'),   // ui6: 補習会の回は除く
     sbGetAll('session_attendance', 'class_master_id=in.(' + classIds.join(',') + ')&session_date=gte.' + from + '&session_date=lte.' + to + '&select=class_master_id,session_date'),
     sbGetActiveEnrollments('class_master_id=in.(' + classIds.join(',') + ')&select=class_master_id,student_id')
   ]);
@@ -68210,7 +68210,7 @@ async function loadMissingList() {
     for (let i = 0; i < classIds.length; i += 60) chunks.push(classIds.slice(i, i + 60));
     const range2 = '&session_date=gte.' + from + '&session_date=lte.' + to;
     const res = await Promise.all(chunks.map(ids => Promise.all([
-      sbGetAll('class_sessions', 'class_master_id=in.(' + ids.join(',') + ')' + range2 + '&select=class_master_id,session_date,period&order=session_date.desc,period'),
+      sbGetAll('class_sessions', 'class_master_id=in.(' + ids.join(',') + ')' + range2 + '&select=class_master_id,session_date,period,is_makeup&order=session_date.desc,period'),
       sbGetAll('class_reports', 'class_master_id=in.(' + ids.join(',') + ')' + range2 + '&select=class_master_id,session_date,theme,content,student_notes'),
       sbGetAll('session_attendance', 'class_master_id=in.(' + ids.join(',') + ')' + range2 + '&select=class_master_id,session_date'),
       sbGetActiveEnrollments('class_master_id=in.(' + ids.join(',') + ')&select=class_master_id,student_id')
@@ -68224,6 +68224,10 @@ async function loadMissingList() {
       (atts || []).forEach(a => attSet.add(a.class_master_id + '|' + a.session_date));
       (enr || []).forEach(e => hasStu.add(e.class_master_id));
     });
+    // ui6: 補習会の回（is_makeup）は出席した子だけ記録する運用なので、出席の未入力に数えない。
+    //   同じ日に通常の回もあれば、その日は出席を数える。
+    const regularDay = new Set();
+    sessions.forEach(s => { if (!s.is_makeup) regularDay.add(s.class_master_id + '|' + s.session_date); });
     // 授業×日で1件にまとめる（同じ日に複数コマある授業は、最初のコマで代表）
     const seen = new Set();
     const out = [];
@@ -68232,7 +68236,7 @@ async function loadMissingList() {
       if (seen.has(k)) return;
       seen.add(k);
       const noReport = !isReportExemptClass(classById[s.class_master_id]) && !repSet.has(k);
-      const noAtt = hasStu.has(s.class_master_id) && !attSet.has(k);
+      const noAtt = hasStu.has(s.class_master_id) && regularDay.has(k) && !attSet.has(k);
       if (!noReport && !noAtt) return;
       const c = classById[s.class_master_id] || {};
       out.push({ cid: s.class_master_id, date: s.session_date, period: s.period, name: c.name || '授業', noReport: noReport, noAtt: noAtt });
