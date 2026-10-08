@@ -545,7 +545,7 @@
 
 </div>
 <script>
-const APP_VERSION = '20261007s1';
+const APP_VERSION = '20261008b1';
 
 /* ==== Supabase ==== */
 const SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
@@ -632,6 +632,22 @@ function fitLoginErrorText(j, fallback) {
   if (j.error === 'blocked') return 'このアカウントは現在ご利用いただけません。塾までお問い合わせください。';
   if (j.error === 'network' || j.error === 'server') return '通信がうまくつながりませんでした。電波の良い場所でもう一度お試しください。';
   return fallback;
+}
+// ===== 段階B：サーバー関数（RPC）=====
+// ポイント加算・ログインボーナス・面談共有メモなどは、サーバー側の関数で行う（生徒は直接書き換えできない）。
+async function fitRpc(name, args) {
+  const r = await fetch(FIT_SB_URL + '/rest/v1/rpc/' + name, {
+    method: 'POST',
+    headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' },
+    body: JSON.stringify(args || {})
+  });
+  const tx = await r.text();
+  if (!r.ok) throw new Error('rpc ' + name + ' ' + r.status + ' ' + tx);
+  return tx ? JSON.parse(tx) : null;
+}
+// 戻り値 { awarded: 実際に加算された点, points: 加算後の合計 }
+async function fitAwardPoints(type, points, reason, ref) {
+  return await fitRpc('fit_award_points', { p_type: type, p_points: points, p_reason: reason || null, p_ref: ref == null ? null : String(ref) });
 }
 function fitLogout() {
   const s = fitSession || fitLoadSession();
@@ -1620,19 +1636,16 @@ async function showResult(){
   if(isOnline){ logOnlineStudy(((selectedBook&&!quiz.weak)?selectedBook.name:'苦手な単語')+' テスト（'+c+'/'+total+'問）'); }
   if(pct===100 && isOnline && !quiz.weak && total>=10){
     try{
-      const rows=await sbGet('online_students','id=eq.'+encodeURIComponent(currentStudent.id)+'&select=points&limit=1');
-      const cur=Number((rows&&rows[0]&&rows[0].points)||currentStudent.points||0);
-      await sbPatch('online_students','id=eq.'+encodeURIComponent(currentStudent.id),{ points:cur+1 });
-      await sbPost('online_point_logs',{ online_student_id:currentStudent.id, points:1, reason:'英単語テスト（'+total+'問）全問正解', type:'eitango' });
-      currentStudent.points=cur+1;
+      const r=await fitAwardPoints('eitango', 1, '英単語テスト（'+total+'問）全問正解');
+      currentStudent.points=r.points;
       const sp=document.getElementById('student-points'); if(sp) sp.textContent=currentStudent.points.toLocaleString();
       rp.className='point-earned'; rp.textContent='＋1pt 獲得！'; rp.style.display='inline-block';
     }catch(e){}
   } else if(pct===100 && !isStaff && !quiz.weak && total>=10){
     try{
-      await sbPost('point_logs',{student_id:currentStudent.id, points:1, reason:'英単語テスト（'+total+'問）全問正解', type:'eitango'});
-      currentStudent.points=(currentStudent.points||0)+1;
-      document.getElementById('student-points').textContent=(currentStudent.points||0).toLocaleString();
+      const r=await fitAwardPoints('eitango', 1, '英単語テスト（'+total+'問）全問正解');
+      currentStudent.points=r.points;
+      document.getElementById('student-points').textContent=(r.points||0).toLocaleString();
       rp.className='point-earned'; rp.textContent='＋1 fitポイント獲得！'; rp.style.display='inline-block';
     }catch(e){ /* 加算失敗は握りつぶす */ }
   }

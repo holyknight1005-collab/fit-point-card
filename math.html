@@ -512,6 +512,22 @@ function fitLoginErrorText(j, fallback) {
   if (j.error === 'network' || j.error === 'server') return '通信がうまくつながりませんでした。電波の良い場所でもう一度お試しください。';
   return fallback;
 }
+// ===== 段階B：サーバー関数（RPC）=====
+// ポイント加算・ログインボーナス・面談共有メモなどは、サーバー側の関数で行う（生徒は直接書き換えできない）。
+async function fitRpc(name, args) {
+  const r = await fetch(FIT_SB_URL + '/rest/v1/rpc/' + name, {
+    method: 'POST',
+    headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' },
+    body: JSON.stringify(args || {})
+  });
+  const tx = await r.text();
+  if (!r.ok) throw new Error('rpc ' + name + ' ' + r.status + ' ' + tx);
+  return tx ? JSON.parse(tx) : null;
+}
+// 戻り値 { awarded: 実際に加算された点, points: 加算後の合計 }
+async function fitAwardPoints(type, points, reason, ref) {
+  return await fitRpc('fit_award_points', { p_type: type, p_points: points, p_reason: reason || null, p_ref: ref == null ? null : String(ref) });
+}
 function fitLogout() {
   const s = fitSession || fitLoadSession();
   fitSaveSession(null);
@@ -587,7 +603,7 @@ window.fetch = async function (input, init) {
 setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && fitLoadSession()) fitRefresh(false); });
 // ===== /fit 共通ログイン =====
-const MATH_VERSION = '20261007s';
+const MATH_VERSION = '20261008b';
 
 /* ===== 数式レンダリング（quiz.htmlと共通：KaTeX + toLatex）===== */
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -983,11 +999,9 @@ async function bShowResult(){
     try{
       await sbPost('math_logs',{student_id:currentStudent.id,correct_count:bOK,total_count:total,perfect:perfect,points_earned:perfect?1:0,log_date:getTodayJST()});
       if(perfect){
-        const newPts=(currentStudent.points||0)+1;
-        await sbPatch('students','id=eq.'+currentStudent.id,{points:newPts});
-        await sbPost('point_logs',{student_id:currentStudent.id,points:1,reason:'数学演習（'+bankRangeLabel+'）全問正解',type:'math'});
-        currentStudent.points=newPts;
-        document.getElementById('student-points').textContent=newPts.toLocaleString();
+        const r=await fitAwardPoints('math', 1, '数学演習（'+bankRangeLabel+'）全問正解');
+        currentStudent.points=r.points;
+        document.getElementById('student-points').textContent=(r.points||0).toLocaleString();
         showToast('🏆 全問正解！+1pt獲得！','success');
       }
     }catch(e){ console.error(e); }
@@ -1630,11 +1644,9 @@ async function mShowResult(){
         body:JSON.stringify({student_id:currentStudent.id,correct_count:mOK,total_count:5,perfect:perfect,points_earned:pts,log_date:getTodayJST()})
       });
       if(perfect){
-        const newPts=currentStudent.points+1;
-        await sbPatch('students','id=eq.'+currentStudent.id,{points:newPts});
-        await sbPost('point_logs',{student_id:currentStudent.id, points:1, reason:'数学テスト（平方完成）全問正解', type:'math'});
-        currentStudent.points=newPts;
-        document.getElementById('student-points').textContent=newPts.toLocaleString();
+        const r=await fitAwardPoints('math', 1, '数学テスト（平方完成）全問正解');
+        currentStudent.points=r.points;
+        document.getElementById('student-points').textContent=(r.points||0).toLocaleString();
         showToast('🏆 全問正解！+1pt獲得！','success');
       }
     }catch(e){console.error(e);}
@@ -1948,11 +1960,9 @@ async function dShowResult(){
         body:JSON.stringify({student_id:currentStudent.id,correct_count:dOK,total_count:5,perfect:perfect,points_earned:pts,log_date:getTodayJST()})
       });
       if(perfect){
-        const newPts=currentStudent.points+1;
-        await sbPatch('students','id=eq.'+currentStudent.id,{points:newPts});
-        await sbPost('point_logs',{student_id:currentStudent.id, points:1, reason:'数学テスト（2次関数の決定）全問正解', type:'math'});
-        currentStudent.points=newPts;
-        document.getElementById('student-points').textContent=newPts.toLocaleString();
+        const r=await fitAwardPoints('math', 1, '数学テスト（2次関数の決定）全問正解');
+        currentStudent.points=r.points;
+        document.getElementById('student-points').textContent=(r.points||0).toLocaleString();
         showToast('🏆 全問正解！+1pt獲得！','success');
       }
     }catch(e){console.error(e);}
@@ -2252,11 +2262,9 @@ async function tShowResult() {
       let res = await fetch(SB_URL + '/rest/v1/math_logs', { method: 'POST', headers: SB_HDR, body: JSON.stringify(ext) });
       if (!res.ok) { res = await fetch(SB_URL + '/rest/v1/math_logs', { method: 'POST', headers: SB_HDR, body: JSON.stringify(base) }); } // 列追加前の環境
       if (perfect) {
-        const newPts = currentStudent.points + 1;
-        await sbPatch('students', 'id=eq.' + currentStudent.id, { points: newPts });
-        await sbPost('point_logs', { student_id: currentStudent.id, points: 1, reason: '数学テスト（三角比の対応特訓・' + tModeLabel(tMode) + '）全問正解', type: 'math' });
-        currentStudent.points = newPts;
-        document.getElementById('student-points').textContent = newPts.toLocaleString();
+        const r = await fitAwardPoints('math', 1, '数学テスト（三角比の対応特訓・' + tModeLabel(tMode) + '）全問正解');
+        currentStudent.points = r.points;
+        document.getElementById('student-points').textContent = (r.points || 0).toLocaleString();
         showToast('🏆 全問正解！+1pt獲得！', 'success');
       }
     } catch (e) { console.error(e); }
