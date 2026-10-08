@@ -62,9 +62,167 @@
 <div id="app" class="wrap"><div class="card center">読み込み中…</div></div>
 <script>
 /* ===== ホール座席登録アプリ hall.html v3（受付チェックイン・前詰め着席） ===== */
-const APP_VERSION = 'hall-4.5.3';
+const APP_VERSION = 'hall-4.6.0';
 const SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
+// ===== fit 共通ログイン（Supabase Auth セッション）sec1 =====
+// ・ID＋PINの照合はサーバー（Edge Function fit-login）で行い、ブラウザには PIN を残さない。
+// ・発行されたセッションは localStorage 'fit_session_v1' に保存し、同じサイトの全アプリで共有する。
+// ・Supabase への fetch は自動でログイン中のトークンに差し替え、期限切れなら自動更新して1回だけ再送する。
+const FIT_SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
+const FIT_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
+const FIT_SESSION_KEY = 'fit_session_v1';
+const FIT_LEGACY_KEYS = ['fit_pin', 'fit_parent_pin', 'fit_staff_hash', 'fit_staff_pin'];
+let fitSession = null;
+let fitRefreshing = null;
+const fitRawFetch = window.fetch.bind(window);
+
+function fitLoadSession() {
+  try { fitSession = JSON.parse(localStorage.getItem(FIT_SESSION_KEY) || 'null'); } catch (e) { fitSession = fitSession || null; }
+  return fitSession;
+}
+function fitSaveSession(s) {
+  fitSession = s || null;
+  try { if (s) localStorage.setItem(FIT_SESSION_KEY, JSON.stringify(s)); else localStorage.removeItem(FIT_SESSION_KEY); } catch (e) {}
+}
+function fitClearLegacy() {
+  try { FIT_LEGACY_KEYS.forEach(k => localStorage.removeItem(k)); } catch (e) {}
+}
+// 'ok' | 'invalid'（ログインし直しが必要） | 'error'（通信エラー等。セッションは残す）| 'none'
+async function fitRefresh(force) {
+  const cur = fitLoadSession();
+  if (!cur || !cur.refresh_token) return 'none';
+  const now = Math.floor(Date.now() / 1000);
+  if (!force && (cur.expires_at || 0) - now > 300) return 'ok';
+  if (fitRefreshing) return fitRefreshing;
+  fitRefreshing = (async () => {
+    try {
+      const r = await fitRawFetch(FIT_SB_URL + '/auth/v1/token?grant_type=refresh_token', {
+        method: 'POST',
+        headers: { 'apikey': FIT_ANON, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: cur.refresh_token })
+      });
+      if (r.status === 400 || r.status === 401 || r.status === 403) {
+        // 別タブが先に更新していればそちらを使う
+        const latest = fitLoadSession();
+        if (latest && latest.refresh_token !== cur.refresh_token) return 'ok';
+        fitSaveSession(null);
+        return 'invalid';
+      }
+      if (!r.ok) return 'error';
+      const j = await r.json();
+      fitSaveSession(Object.assign({}, cur, {
+        access_token: j.access_token,
+        refresh_token: j.refresh_token,
+        expires_at: j.expires_at || (now + (j.expires_in || 3600))
+      }));
+      return 'ok';
+    } catch (e) { return 'error'; }
+    finally { fitRefreshing = null; }
+  })();
+  return fitRefreshing;
+}
+// ログイン：kind = 'staff' | 'student' | 'parent' | 'online'
+// 戻り値 { ok:true, kind, account } / { ok:false, error:'invalid'|'blocked'|'locked'|... }
+async function fitLogin(kind, id, pin) {
+  let r, j = null;
+  try {
+    r = await fitRawFetch(FIT_SB_URL + '/functions/v1/fit-login', {
+      method: 'POST',
+      headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: kind, id: id, pin: pin })
+    });
+    j = await r.json();
+  } catch (e) { return { ok: false, error: 'network' }; }
+  if (!j) return { ok: false, error: 'network' };
+  if (j.ok) {
+    fitSaveSession(Object.assign({}, j.session, { kind: j.kind, account_id: String(j.account.id) }));
+    fitClearLegacy();
+  }
+  return j;
+}
+function fitLoginErrorText(j, fallback) {
+  if (!j) return fallback;
+  if (j.error === 'locked') return 'ログインの失敗が続いたため、15分ほど待ってからお試しください。';
+  if (j.error === 'blocked') return 'このアカウントは現在ご利用いただけません。塾までお問い合わせください。';
+  if (j.error === 'network' || j.error === 'server') return '通信がうまくつながりませんでした。電波の良い場所でもう一度お試しください。';
+  return fallback;
+}
+function fitLogout() {
+  const s = fitSession || fitLoadSession();
+  fitSaveSession(null);
+  fitClearLegacy();
+  if (s && s.access_token) {
+    fitRawFetch(FIT_SB_URL + '/auth/v1/logout?scope=local', {
+      method: 'POST', headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token }
+    }).catch(() => {});
+  }
+}
+// 保存済みセッションから本人の行を取り直す。旧方式（PIN保存）の端末は1回だけ自動で移行する。
+// 戻り値 { kind, row } / null（未ログイン）。通信エラー時は例外（ログイン情報は消さない）。
+async function fitResume() {
+  let s = fitLoadSession();
+  if (!s) {
+    let email = null, pin = null, pid = null, ppin = null, role = null;
+    try {
+      email = localStorage.getItem('fit_email'); pin = localStorage.getItem('fit_pin');
+      pid = localStorage.getItem('fit_parent_id'); ppin = localStorage.getItem('fit_parent_pin');
+      role = localStorage.getItem('fit_role');
+    } catch (e) {}
+    let j = null;
+    if (email && pin) j = await fitLogin(role === 'staff' ? 'staff' : 'student', email, pin);
+    else if (pid && ppin) j = await fitLogin('parent', pid, ppin);
+    if (j && j.error === 'network') throw new Error('network');
+    fitClearLegacy();
+    s = fitLoadSession();
+    if (!s) return null;
+  }
+  const rr = await fitRefresh(false);
+  if (rr === 'invalid' || rr === 'none') return null;
+  s = fitLoadSession();
+  if (!s) return null;
+  const table = { staff: 'staff', student: 'students', parent: 'parent_accounts', online: 'online_students' }[s.kind];
+  if (!table) { fitLogout(); return null; }
+  const res = await fitRawFetch(FIT_SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(s.account_id) + '&select=*', {
+    headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token }
+  });
+  if (res.status === 401 || res.status === 403) {
+    const again = await fitRefresh(true);
+    if (again === 'invalid' || again === 'none') return null;
+    throw new Error('auth ' + res.status);
+  }
+  if (!res.ok) throw new Error('resume ' + res.status);
+  const rows = await res.json();
+  if (!rows.length || rows[0].is_active === false && s.kind !== 'student') { fitLogout(); return null; }
+  return { kind: s.kind, row: rows[0] };
+}
+// Supabase への fetch をログイン中のトークンに差し替える（各画面のコードはそのまま使える）
+window.fetch = async function (input, init) {
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  if (url.indexOf(FIT_SB_URL) !== 0 || url.indexOf('/auth/v1/') > 0 || url.indexOf('/functions/v1/fit-login') > 0) {
+    return fitRawFetch(input, init);
+  }
+  // 呼び出し時点のトークンを控えておく（直後にログアウトしても、その前に始めた保存は通す）
+  const tokenAtCall = fitLoadSession() ? fitSession.access_token : null;
+  if (tokenAtCall) await fitRefresh(false);
+  const send = () => {
+    const opt = Object.assign({}, init || {});
+    const h = new Headers(opt.headers || (input && typeof input !== 'string' ? input.headers : undefined));
+    const tok = (fitSession && fitSession.access_token) || tokenAtCall;
+    if (tok) h.set('Authorization', 'Bearer ' + tok);
+    opt.headers = h;
+    return fitRawFetch(input, opt);
+  };
+  let res = await send();
+  if (res.status === 401 && fitSession && fitSession.refresh_token) {
+    const rr = await fitRefresh(true);
+    if (rr === 'ok') res = await send();
+  }
+  return res;
+};
+setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && fitLoadSession()) fitRefresh(false); });
+// ===== /fit 共通ログイン =====
 const REST = SB_URL + '/rest/v1/';
 const EVENT = 'main';
 const FORM_BASE = 'https://docs.google.com/forms/d/e/1FAIpQLSdLfbS_VNWSbyz7OFv4n1igouJlKQIkRBFnDawWKMVlZleAzA/viewform?usp=pp_url';
@@ -148,12 +306,22 @@ function holdGroupList(){ const map={}; holdRows().forEach(r=>{ const g=r.hold_g
 function nextFreeSeatsFrom(startKey, n){ /* startKey から row-major に前方の空席を n 席集める（占有席・確保席・着席不可席はスキップ） */ const taken=takenSet(), dis=disabledSet(), rows=S.cfg.layout.rows||20, blocks=S.cfg.layout.blocks||[]; const flat=[]; for(let r=1;r<=rows;r++){ for(const b of blocks){ for(let c=1;c<=(b.seats||0);c++){ flat.push({key:seatKey(b.id,r,c),blk:b.id,row:r,col:c}); } } } let si=flat.findIndex(s=>s.key===startKey); if(si<0) si=0; const out=[]; for(let i=si;i<flat.length&&out.length<n;i++){ if(!taken.has(flat[i].key)&&!dis.has(flat[i].key)) out.push(flat[i]); } return out; }
 
 async function boot(){
+  // sec1: 登録データはスタッフのみ閲覧可。参加者向けの受付はイベント終了につき停止中
+  //   （次回イベントで参加者登録を再開する際は、参加者用の RPC を用意してから有効化する）
+  let me=null; try{ me=await fitResume(); }catch(e){}
+  if(!(me && me.kind==='staff')){
+    S.role='staff'; S.staffAuthed=false;
+    if(location.hash.indexOf('staff')>=0) return renderStaffLogin();
+    $('app').innerHTML='<div class="card center"><h1>受付は終了しました</h1><div class="sub">ご参加ありがとうございました。</div><div class="foot"><a id="toStaff">スタッフの方はこちら</a></div></div>';
+    $('toStaff').onclick=()=>{ location.hash='staff'; renderStaffLogin(); };
+    return;
+  }
   try{ S.cfg=await loadCfg(); S.regs=await loadRegs(); }
   catch(e){
     if(String(e.message).includes('config-missing')||String(e.message).includes('400')){ $('app').innerHTML='<div class="card"><h1>準備ができていません</h1><div class="msg err">初期設定が見つかりません。Supabaseで <b>hall_event.sql</b> → <b>hall_v2_migration.sql</b> → <b>hall_v3_migration.sql</b> を実行してから開き直してください。</div></div>'; return; }
     $('app').innerHTML='<div class="card"><h1>通信エラー</h1><div class="msg err">'+esc(e.message)+'</div><button class="btn" onclick="location.reload()">再読み込み</button></div>'; return;
   }
-  if(location.hash.indexOf('staff')>=0){ S.role='staff'; S.staffAuthed=(sessionStorage.getItem('hall_staff')==='1'); return render(); }
+  if(location.hash.indexOf('staff')>=0){ S.role='staff'; S.staffAuthed=true; return render(); }
   try{ const tok=new URLSearchParams(location.search).get('t'); if(tok){ const d=await sbGet('hall_event_regs','event_id=eq.'+EVENT+'&token=eq.'+encodeURIComponent(tok)+'&select=*'); if(d.length){ const reg=d[0]; setMyRec({reg_id:reg.id,receipt_no:reg.receipt_no}); S.screen='ticket'; return render(); } } }catch(e){}
   const m=myRec(); if(m&&m.reg_id){ const r=S.regs.find(x=>x.id===m.reg_id); if(r){ S.screen='ticket'; return render(); } }
   S.screen='register'; render();
@@ -282,10 +450,19 @@ function renderTicket(){
 
 /* ---------- スタッフ ---------- */
 function renderStaffLogin(){
-  $('app').innerHTML='<div class="card"><h1>スタッフ用</h1><div class="sub">パスコードを入力してください。</div><input type="password" id="pass" inputmode="numeric" placeholder="パスコード"><div id="loginerr"></div><button class="btn" id="login">ログイン</button><div class="foot"><a id="toPart">← 参加者画面へ</a></div></div>';
-  $('login').onclick=()=>{ if(($('pass').value||'')===String(S.cfg.staff_pass||'')){ S.staffAuthed=true; sessionStorage.setItem('hall_staff','1'); render(); } else $('loginerr').innerHTML='<div class="msg err">パスコードが違います。</div>'; };
+  // sec1: スタッフは fit のスタッフID＋パスワードでログイン（共通パスコードは廃止）
+  $('app').innerHTML='<div class="card"><h1>スタッフ用</h1><div class="sub">fitアプリのスタッフID・パスワードでログインしてください。</div><input type="text" id="sid" autocomplete="username" placeholder="スタッフID"><input type="password" id="pass" autocomplete="current-password" inputmode="numeric" placeholder="パスワード"><div id="loginerr"></div><button class="btn" id="login">ログイン</button></div>';
+  $('login').onclick=async()=>{
+    const sid=($('sid').value||'').trim().toLowerCase(), pin=($('pass').value||'').trim();
+    if(!sid||!pin){ $('loginerr').innerHTML='<div class="msg err">IDとパスワードを入力してください。</div>'; return; }
+    $('login').disabled=true;
+    const j=await fitLogin('staff',sid,pin);
+    $('login').disabled=false;
+    if(!j.ok){ $('loginerr').innerHTML='<div class="msg err">'+esc(fitLoginErrorText(j,'IDまたはパスワードが違います。'))+'</div>'; return; }
+    try{ localStorage.setItem('fit_staff_id', j.account.staff_id); localStorage.setItem('fit_role','staff'); }catch(e){}
+    location.hash='staff'; boot();
+  };
   $('pass').onkeydown=e=>{ if(e.key==='Enter') $('login').click(); };
-  $('toPart').onclick=()=>{ location.hash=''; S.role='participant'; S.screen='register'; render(); };
 }
 function renderStaff(){
   const t=S.staffTab;
@@ -598,7 +775,7 @@ function showURL(){
 }
 
 function footer(){ return '<div class="foot"><a id="staffLink">スタッフ用ページ</a></div>'; }
-function wireFooter(){ const l=$('staffLink'); if(l) l.onclick=()=>{ location.hash='staff'; S.role='staff'; S.staffAuthed=(sessionStorage.getItem('hall_staff')==='1'); render(); }; }
+function wireFooter(){ const l=$('staffLink'); if(l) l.onclick=()=>{ location.hash='staff'; S.role='staff'; S.staffAuthed=true; render(); }; }
 
 boot();
 </script>
