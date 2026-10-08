@@ -4906,7 +4906,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
     <!-- 未入力一覧タブ（報告書・出席の未入力を全スタッフで共有） -->
     <div id="smcontent-missing" style="display:none">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">昨日までの授業で、<b>報告書</b>または<b>出席</b>がまだ入っていないものの一覧です。全スタッフが見られます。高卒生の授業は対象外です。行をタップすると、その授業の出欠・報告書の画面が開きます。</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">昨日までの授業で、<b>報告書</b>または<b>出席</b>がまだ入っていないものの一覧です。全スタッフが見られます。高卒生の授業は対象外です。ぐんぐんゼミ・超感覚英語・超感覚演習・長文読解は、報告書は数えず出席だけ数えます。行をタップすると、その授業の出欠・報告書の画面が開きます。</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
         <select class="form-select" id="ms-range" onchange="loadMissingList()" style="font-size:12px;padding:6px 8px;width:auto">
           <option value="14">直近2週間</option>
@@ -7032,7 +7032,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261008ui2';
+const APP_VERSION = '20261008ui4';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -10684,7 +10684,8 @@ async function loadTodayTasks() {
     // 自分の担当授業ID（class_master.teacher_staff_id=自分）
     let myClasses = await sbGet('class_master', 'teacher_staff_id=eq.' + currentStaff.id + '&select=id,name,category') || [];
     // dlm94: 浪人生授業（category='kosotsu'）は報告書の催促対象外（授業登録のみ）
-    myClasses = myClasses.filter(c => c.category !== 'kosotsu');
+    const myAttClassIds = myClasses.filter(c => c.category !== 'kosotsu').map(c => c.id);   // 出席チェック用（高卒生のみ除外）
+    myClasses = myClasses.filter(c => !isReportExemptClass(c));   // ui3: 報告書を書かない授業は催促しない
     const myClassIds = myClasses.map(c => c.id);
     const myClassNameMap = {};
     myClasses.forEach(c => { myClassNameMap[c.id] = c.name; });
@@ -10747,7 +10748,7 @@ async function loadTodayTasks() {
     const teacherByClass = {};
     if (classIds.length) {
       try {
-        const cms = await sbGet('class_master', 'id=in.(' + classIds.join(',') + ')&select=id,name,teacher_staff_id') || [];
+        const cms = await sbGet('class_master', 'id=in.(' + classIds.join(',') + ')&select=id,name,teacher_staff_id,category') || [];
         cms.forEach(cm => { teacherByClass[cm.id] = cm; });
       } catch(e) { /* 担当情報が引けなくても授業名は表示する */ }
     }
@@ -10794,11 +10795,11 @@ async function loadTodayTasks() {
 
     // 出席未入力（自分の担当授業・昨日まで・高卒生除く）。在籍生徒がいない授業は数えない。
     try {
-      const myAttMissing = await countMyAttendanceMissing(myClassIds, msFromDate('30'), reportUpTo, mySessionsAll || []);   // 未入力一覧の既定（直近30日）とそろえる
+      const myAttMissing = await countMyAttendanceMissing(myAttClassIds, msFromDate('30'), reportUpTo);   // 未入力一覧の既定（直近30日）とそろえる
       window._myAttMissingCount = myAttMissing;
       if (myAttMissing > 0) {
         items.push(taskRow('📋', '出席', '未入力 ' + myAttMissing + '件', false, "openMissingList('me')", true));
-      } else if ((mySessionsAll || []).length) {
+      } else if (myAttClassIds.length) {
         items.push(taskRow('📋', '出席', '未入力なし', true, "openMissingList('me')"));
       }
     } catch (e) { /* 取得できなくても他のタスクは表示 */ }
@@ -11140,7 +11141,7 @@ async function loadHomeSchedule() {
     const cmMap = {};
     if (classIds.length) {
       try {
-        const cms = await sbGet('class_master', 'id=in.(' + classIds.join(',') + ')&select=id,name,teacher_staff_id') || [];
+        const cms = await sbGet('class_master', 'id=in.(' + classIds.join(',') + ')&select=id,name,teacher_staff_id,category') || [];
         cms.forEach(cm => { cmMap[cm.id] = cm; });
       } catch(e) { /* 名前が引けなくても続行 */ }
     }
@@ -11660,7 +11661,7 @@ async function loadStaffHomeCalendar() {
     const teacherByClass = {};
     if (classIds.length) {
       try {
-        const cms = await sbGet('class_master', 'id=in.(' + classIds.join(',') + ')&select=id,name,teacher_staff_id,subject,color,division') || [];
+        const cms = await sbGet('class_master', 'id=in.(' + classIds.join(',') + ')&select=id,name,teacher_staff_id,subject,color,division,category') || [];
         cms.forEach(cm => { teacherByClass[cm.id] = cm; });
       } catch(e) { /* 担当が引けなくても授業名は出す */ }
     }
@@ -11692,6 +11693,7 @@ async function loadStaffHomeCalendar() {
         start_time: s.start_time, end_time: s.end_time,
         class_name: (cm.name || '授業') + calSchoolSuffix(s.school),
         class_master_id: s.class_master_id,
+        report_exempt: isReportExemptClass(cm),
         color: classColorOf(cm),
         division: cm.division || '高校部',
         teacher_id: teacherId,
@@ -20142,6 +20144,17 @@ async function loadRecurringTodos() {
 // 両方から集める。学校担当（charge_schools）とは別のくくり。
 // 高卒生区分は浪人生が未実装のため対象外。fit001（代表）は配布対象にしない。
 const TEACHER_CHECK_EXCLUDE_CODES = ['fit001'];
+
+// ui3: 報告書を書かない授業（報告書の未記入に数えない）。
+//   高卒生（category='kosotsu'）に加えて、授業名に次の語を含む授業：ぐんぐんゼミ／超感覚英語／超感覚演習／長文読解
+//   コマ数集計は従来どおり報告書の記入数で数える（書いた分は反映）。未記入には数えないだけ。
+//   ※出席の未入力チェックの対象には残す（高卒生は従来どおり出席も対象外）。
+const REPORT_EXEMPT_NAME_RE = /ぐんぐんゼミ|超感覚英語|超感覚演習|長文読解/;
+function isReportExemptClass(cm) {
+  if (!cm) return false;
+  if ((cm.category || 'normal') === 'kosotsu') return true;
+  return REPORT_EXEMPT_NAME_RE.test(String(cm.name || ''));
+}
 
 // dlm101: 英語授業の「メイン講師」コード。英語授業は多数のスタッフに編集権限のため追加担当登録されているが、
 // 実際に授業を行うのはこのメイン講師のみ。メイン講師の英語授業だけ監督ロック＆コマ数計上し、
@@ -29264,7 +29277,7 @@ async function loadWeekGrid() {
       if (!it || !it.cmid || !it.date) return false;
       // dlm94方針：高卒生授業(category='kosotsu')は報告書義務なし＝未記入(赤)を出さない
       const _m = mName[it.cmid];
-      if (_m && _m.category === 'kosotsu') return false;
+      if (_m && isReportExemptClass(_m)) return false;   // ui3: 高卒生＋ぐんぐんゼミ・超感覚英語・超感覚演習・長文読解
       if (it.date < REPORT_RED_SINCE) return false;   // 8/1より前は対象外
       if (it.date >= todayISO0) return false;          // 今日・未来は対象外（翌日以降に赤くなる）
       return !reportFilledSet.has(it.cmid + '|' + it.date);
@@ -30418,7 +30431,7 @@ async function loadStaffCalendar() {
     const teacherByClass = {};
     if (classIds.length) {
       try {
-        const cms = await sbGet('class_master', 'id=in.(' + classIds.join(',') + ')&select=id,name,teacher_staff_id') || [];
+        const cms = await sbGet('class_master', 'id=in.(' + classIds.join(',') + ')&select=id,name,teacher_staff_id,category') || [];
         cms.forEach(cm => { teacherByClass[cm.id] = cm; });
       } catch(e) { /* 担当が引けなくても授業名は出す */ }
     }
@@ -30448,6 +30461,7 @@ async function loadStaffCalendar() {
         end_time: s.end_time,
         class_name: (s.class_name || cm.name || '授業') + calSchoolSuffix(s.school),
         class_master_id: s.class_master_id,
+        report_exempt: isReportExemptClass(cm),
         teacher_id: teacherId,
         teacher_name: teacherId ? (staffNameMap[teacherId] || '') : '',
         mine: !!(teacherId && currentStaff && teacherId === currentStaff.id),
@@ -30545,7 +30559,7 @@ function staffCalReportMissingOn(dateISO) {
   const todayStr = getTodayJST();
   if (dateISO > todayStr) return false;
   // 自分担当の授業だけ
-  const mine = staffCalSessions.filter(s => s.date === dateISO && s.mine && s.class_master_id);
+  const mine = staffCalSessions.filter(s => s.date === dateISO && s.mine && s.class_master_id && !s.report_exempt);
   if (!mine.length) return false;
   // 1つでも報告未記入があれば true
   return mine.some(s => !staffCalReportSet.has(s.class_master_id + '|' + dateISO));
@@ -38126,6 +38140,7 @@ async function loadKomaCount() {
       const bucket = catBucket(cm);
       // 浪人(kosotsu)は報告書を書かない運用のため、報告書ベースの count は常に0になる。
       // 担当負荷としては「その月に実際に開講したコマ数(plan)」で数える。
+      const exempt = isReportExemptClass(cm);   // ui4: 報告書を書かなくてもよい授業（コマ数は報告書の記入数のまま。未記入には数えない）
       const count = (bucket === 'ronin') ? plan : ((byStaffClass[sid] || {})[cid] || 0);
       return {
         cid: cid,
@@ -38136,7 +38151,7 @@ async function loadKomaCount() {
         count: count,
         plan: plan,
         // 浪人は未記入の催促対象外なので、内訳の未記入も0扱いにする。
-        unfilled: (bucket === 'ronin') ? 0 : unfilled,
+        unfilled: (bucket === 'ronin' || exempt) ? 0 : unfilled,
         people: enrollCountBy[cid] || 0
       };
     });
@@ -38158,7 +38173,7 @@ async function loadKomaCount() {
     let classUnfilled = 0;
     myClassIds.forEach(cid => {
       const cm = cmById[cid] || {};
-      if ((cm.category || 'normal') === 'kosotsu') return; // 浪人は未記入に数えない
+      if (isReportExemptClass(cm)) return; // 浪人・ぐんぐんゼミ・超感覚英語・超感覚演習・長文読解は未記入に数えない
       classUnfilled += (classPlan[cid] || {}).unfilled || 0;
     });
 
@@ -68137,10 +68152,10 @@ function openMissingList(who) {
 }
 
 // ホーム用：自分の担当授業のうち、出席が1件も入っていない授業日の数
-async function countMyAttendanceMissing(classIds, from, to, sessions) {
-  sessions = (sessions || []).filter(s => s.session_date >= from && s.session_date <= to);
-  if (!classIds || !classIds.length || !sessions.length) return 0;
-  const [atts, enrolls] = await Promise.all([
+async function countMyAttendanceMissing(classIds, from, to) {
+  if (!classIds || !classIds.length || from > to) return 0;
+  const [sessions, atts, enrolls] = await Promise.all([
+    sbGetAll('class_sessions', 'class_master_id=in.(' + classIds.join(',') + ')&session_date=gte.' + from + '&session_date=lte.' + to + '&select=class_master_id,session_date'),
     sbGetAll('session_attendance', 'class_master_id=in.(' + classIds.join(',') + ')&session_date=gte.' + from + '&session_date=lte.' + to + '&select=class_master_id,session_date'),
     sbGetActiveEnrollments('class_master_id=in.(' + classIds.join(',') + ')&select=class_master_id,student_id')
   ]);
@@ -68148,7 +68163,7 @@ async function countMyAttendanceMissing(classIds, from, to, sessions) {
   const attSet = new Set((atts || []).map(a => a.class_master_id + '|' + a.session_date));
   const seen = new Set();
   let n = 0;
-  sessions.forEach(s => {
+  (sessions || []).forEach(s => {
     const k = s.class_master_id + '|' + s.session_date;
     if (seen.has(k)) return;
     seen.add(k);
@@ -68195,7 +68210,7 @@ async function loadMissingList() {
       const k = s.class_master_id + '|' + s.session_date;
       if (seen.has(k)) return;
       seen.add(k);
-      const noReport = !repSet.has(k);
+      const noReport = !isReportExemptClass(classById[s.class_master_id]) && !repSet.has(k);
       const noAtt = hasStu.has(s.class_master_id) && !attSet.has(k);
       if (!noReport && !noAtt) return;
       const c = classById[s.class_master_id] || {};
