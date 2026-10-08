@@ -7032,7 +7032,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261008ui4';
+const APP_VERSION = '20261008ui5';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -11668,10 +11668,14 @@ async function loadStaffHomeCalendar() {
 
     // 追加担当（class_teachers）: class_master_id -> Set(staff_id)。複数講師の授業を個人時間割に出すため。
     const coTeachersByClass = {};
+    const coMainByClass = {};   // ui5: role='main' の追加担当
     if (classIds.length) {
       try {
-        const cts = await sbGet('class_teachers', 'class_master_id=in.(' + classIds.join(',') + ')&select=class_master_id,staff_id') || [];
-        cts.forEach(ct => { (coTeachersByClass[ct.class_master_id] || (coTeachersByClass[ct.class_master_id] = new Set())).add(ct.staff_id); });
+        const cts = await sbGet('class_teachers', 'class_master_id=in.(' + classIds.join(',') + ')&select=class_master_id,staff_id,role') || [];
+        cts.forEach(ct => {
+          (coTeachersByClass[ct.class_master_id] || (coTeachersByClass[ct.class_master_id] = new Set())).add(ct.staff_id);
+          if (ct.role === 'main') (coMainByClass[ct.class_master_id] || (coMainByClass[ct.class_master_id] = new Set())).add(ct.staff_id);
+        });
       } catch(e) { /* class_teachers 未作成なら主担当のみ */ }
     }
 
@@ -11693,7 +11697,8 @@ async function loadStaffHomeCalendar() {
         start_time: s.start_time, end_time: s.end_time,
         class_name: (cm.name || '授業') + calSchoolSuffix(s.school),
         class_master_id: s.class_master_id,
-        report_exempt: isReportExemptClass(cm),
+        // ui5: サポートだけで担当している授業は、自分の報告未記入に数えない
+        report_exempt: isReportExemptClass(cm) || (isMine && myId !== teacherId && !(coMainByClass[s.class_master_id] && coMainByClass[s.class_master_id].has(myId))),
         color: classColorOf(cm),
         division: cm.division || '高校部',
         teacher_id: teacherId,
@@ -20175,9 +20180,9 @@ async function loadTeacherClassMap(opts) {
   let cm = [], ct = [], staffRows = [];
   try {
     cm = await sbGet('class_master', 'is_active=eq.true&select=id,name,subject,category,grade_level,teacher_staff_id') || [];
-    ct = await sbGet('class_teachers', 'select=class_master_id,staff_id') || [];
+    ct = await sbGet('class_teachers', 'select=class_master_id,staff_id,role') || [];
     staffRows = await sbGet('staff', 'select=id,staff_id,name') || [];
-  } catch (e) { return { byTeacher: {}, classById: {}, staffById: {} }; }
+  } catch (e) { return { byTeacher: {}, classById: {}, staffById: {}, supportOnly: new Set() }; }
 
   const excludeUuids = new Set();
   const staffById = {};
@@ -20213,7 +20218,13 @@ async function loadTeacherClassMap(opts) {
   // 主担当は isMain=true で常に載せる。追加担当のみ英語フィルタを通す。
   Object.values(classById).forEach(c => add(c.teacher_staff_id, c, true));
   ct.forEach(r => { add(r.staff_id, classById[r.class_master_id], false); });
-  return { byTeacher, classById, staffById };
+  // ui5: サポートだけの担当（主担当でも role='main' でもない）＝報告書の未報告は出さない
+  const mainKeys = new Set();
+  Object.values(classById).forEach(c => { if (c.teacher_staff_id) mainKeys.add(c.teacher_staff_id + '|' + c.id); });
+  ct.forEach(r => { if (r.role === 'main') mainKeys.add(r.staff_id + '|' + r.class_master_id); });
+  const supportOnly = new Set();
+  ct.forEach(r => { const k = r.staff_id + '|' + r.class_master_id; if (r.role !== 'main' && !mainKeys.has(k)) supportOnly.add(k); });
+  return { byTeacher, classById, staffById, supportOnly };
 }
 
 // 講師のスタッフID一覧（ToDo配布先）
@@ -29170,7 +29181,7 @@ async function loadWeekGrid() {
       sbGet('class_sessions', 'session_date=gte.' + firstISO + '&session_date=lte.' + lastISO +
         '&select=class_master_id,session_date,period,start_time,end_time&order=session_date,period').catch(() => []),
       sbGet('class_master', 'select=id,name,subject,color,division,teacher_staff_id,category').catch(() => []),
-      sbGet('class_teachers', 'select=class_master_id,staff_id').catch(() => []),
+      sbGet('class_teachers', 'select=class_master_id,staff_id,role').catch(() => []),
       sbGet('staff', 'select=id,staff_id,name').catch(() => []),
       sbGet('events', 'event_date=lte.' + lastISO + '&or=(end_date.gte.' + firstISO +
         ',and(end_date.is.null,event_date.gte.' + firstISO + '))' +
@@ -29205,12 +29216,18 @@ async function loadWeekGrid() {
     // dlm131: 自分が担当する授業(class_master_id)の集合。主担当(teacher_staff_id)＋追加担当(class_teachers)。
     // staff.id(uuid) と staff_id(fit0NN) の両方で突合する。
     const wkMineClassIds = new Set();
+    const wkMySupportOnly = new Set();
     {
       const myUuid = currentStaff ? currentStaff.id : null;
       const myStaffId = currentStaff ? currentStaff.staff_id : null;
       const isMe = (sid) => sid != null && (String(sid) === String(myUuid) || String(sid) === String(myStaffId));
       (masters || []).forEach(m => { if (isMe(m.teacher_staff_id)) wkMineClassIds.add(m.id); });
       (cts || []).forEach(c => { if (isMe(c.staff_id)) wkMineClassIds.add(c.class_master_id); });
+      // ui5: 自分がサポートだけで担当している授業
+      const mainMine = new Set();
+      (masters || []).forEach(m => { if (isMe(m.teacher_staff_id)) mainMine.add(m.id); });
+      (cts || []).forEach(c => { if (isMe(c.staff_id) && c.role === 'main') mainMine.add(c.class_master_id); });
+      wkMineClassIds.forEach(id => { if (!mainMine.has(id)) wkMySupportOnly.add(id); });
     }
     const wkMineOnly = (typeof staffHomeCalFilter !== 'undefined' && staffHomeCalFilter === 'mine');
 
@@ -29278,6 +29295,7 @@ async function loadWeekGrid() {
       // dlm94方針：高卒生授業(category='kosotsu')は報告書義務なし＝未記入(赤)を出さない
       const _m = mName[it.cmid];
       if (_m && isReportExemptClass(_m)) return false;   // ui3: 高卒生＋ぐんぐんゼミ・超感覚英語・超感覚演習・長文読解
+      if (wkMineOnly && wkMySupportOnly.has(it.cmid)) return false;   // ui5: 自分の予定表示ではサポートの授業を赤にしない
       if (it.date < REPORT_RED_SINCE) return false;   // 8/1より前は対象外
       if (it.date >= todayISO0) return false;          // 今日・未来は対象外（翌日以降に赤くなる）
       return !reportFilledSet.has(it.cmid + '|' + it.date);
@@ -38081,11 +38099,13 @@ async function loadKomaCount() {
   const byTeacher = (tmap && tmap.byTeacher) || {};
   const staffById = (tmap && tmap.staffById) || {};
   const codeToClassIds = {};   // 'fit003' -> Set(cid)
+  const codeSupportOnly = new Set();   // ui5: 'fit003|cid'（サポートだけの担当＝未記入に数えない）
+  const kcSup = (tmap && tmap.supportOnly) || new Set();
   Object.keys(byTeacher).forEach(uuid => {
     const code = (staffById[uuid] && staffById[uuid].staff_id) ? String(staffById[uuid].staff_id) : null;
     if (!code) return;
     const set = codeToClassIds[code] || (codeToClassIds[code] = new Set());
-    (byTeacher[uuid] || []).forEach(c => set.add(c.id));
+    (byTeacher[uuid] || []).forEach(c => { set.add(c.id); if (kcSup.has(uuid + '|' + c.id)) codeSupportOnly.add(code + '|' + c.id); });
   });
 
   // 講師の担当授業ごとの「その月の予定セッション数」と「未記入(誰も書いていない)セッション数」
@@ -38151,7 +38171,7 @@ async function loadKomaCount() {
         count: count,
         plan: plan,
         // 浪人は未記入の催促対象外なので、内訳の未記入も0扱いにする。
-        unfilled: (bucket === 'ronin' || exempt) ? 0 : unfilled,
+        unfilled: (bucket === 'ronin' || exempt || codeSupportOnly.has(sid + '|' + cid)) ? 0 : unfilled,
         people: enrollCountBy[cid] || 0
       };
     });
@@ -38174,6 +38194,7 @@ async function loadKomaCount() {
     myClassIds.forEach(cid => {
       const cm = cmById[cid] || {};
       if (isReportExemptClass(cm)) return; // 浪人・ぐんぐんゼミ・超感覚英語・超感覚演習・長文読解は未記入に数えない
+      if (codeSupportOnly.has(sid + '|' + cid)) return; // ui5: サポートだけの担当は未記入に数えない
       classUnfilled += (classPlan[cid] || {}).unfilled || 0;
     });
 
@@ -68183,7 +68204,7 @@ async function loadMissingList() {
     const map = await loadTeacherClassMap();   // 高卒生の授業・fit001 は含まれない
     const classById = map.classById || {};
     const classIds = Object.keys(classById);
-    if (!classIds.length || from > to) { _msData = { sessions: [], byTeacher: map.byTeacher || {}, staffById: map.staffById || {} }; renderMissingList(); return; }
+    if (!classIds.length || from > to) { _msData = { sessions: [], byTeacher: map.byTeacher || {}, staffById: map.staffById || {}, supportOnly: map.supportOnly || new Set() }; renderMissingList(); return; }
     // URLが長くなりすぎないよう、授業IDを分けて取得
     const chunks = [];
     for (let i = 0; i < classIds.length; i += 60) chunks.push(classIds.slice(i, i + 60));
@@ -68216,7 +68237,7 @@ async function loadMissingList() {
       const c = classById[s.class_master_id] || {};
       out.push({ cid: s.class_master_id, date: s.session_date, period: s.period, name: c.name || '授業', noReport: noReport, noAtt: noAtt });
     });
-    _msData = { sessions: out, byTeacher: map.byTeacher || {}, staffById: map.staffById || {}, from: from, to: to };
+    _msData = { sessions: out, byTeacher: map.byTeacher || {}, staffById: map.staffById || {}, supportOnly: map.supportOnly || new Set(), from: from, to: to };
     renderMissingList();
   } catch (e) {
     if (seq !== _msSeq) return;
@@ -68233,15 +68254,25 @@ function renderMissingList() {
   const byClass = {};   // class_master_id -> [講師uuid]
   Object.keys(_msData.byTeacher).forEach(sid => (_msData.byTeacher[sid] || []).forEach(c => { (byClass[c.id] || (byClass[c.id] = [])).push(sid); }));
   const want = r => (kind === 'all' ? (r.noReport || r.noAtt) : kind === 'report' ? r.noReport : r.noAtt);
+  const sup = _msData.supportOnly || new Set();
   const groups = {};
   let totalRep = 0, totalAtt = 0;
-  _msData.sessions.forEach(r => {
-    if (!want(r)) return;
-    const teachers = byClass[r.cid] || [];
-    if (who === 'me' && teachers.indexOf(myId) === -1) return;
-    if (r.noReport && kind !== 'att') totalRep++;
-    if (r.noAtt && kind !== 'report') totalAtt++;
-    (teachers.length ? teachers : ['(none)']).forEach(t => { (groups[t] || (groups[t] = [])).push(r); });
+  _msData.sessions.forEach(r0 => {
+    const teachers = byClass[r0.cid] || [];
+    let counted = false;
+    (teachers.length ? teachers : ['(none)']).forEach(t => {
+      if (who === 'me' && t !== myId) return;
+      // ui5: サポートだけの担当者には報告書の未報告を出さない（出席は出す）
+      const r = Object.assign({}, r0, { noReport: r0.noReport && !sup.has(t + '|' + r0.cid) });
+      if (!want(r)) return;
+      (groups[t] || (groups[t] = [])).push(r);
+      if (!counted) {
+        counted = true;
+        const anyRep = r0.noReport && (teachers.length === 0 || teachers.some(x => !sup.has(x + '|' + r0.cid)) && (who !== 'me' || !sup.has(myId + '|' + r0.cid)));
+        if (anyRep && kind !== 'att') totalRep++;
+        if (r0.noAtt && kind !== 'report') totalAtt++;
+      }
+    });
   });
   const nameOf = sid => sid === '(none)' ? '担当未設定' : ((_msData.staffById[sid] || {}).name || '（不明）');
   const keys = Object.keys(groups).sort((a, b) => (a === myId ? -1 : b === myId ? 1 : groups[b].length - groups[a].length));
