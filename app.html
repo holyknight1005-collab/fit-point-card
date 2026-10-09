@@ -7032,7 +7032,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261008ui6';
+const APP_VERSION = '20261009ui7';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -31094,9 +31094,13 @@ async function saveSessionCycle(classId, dateISO, periodStr, isNormal) {
   } catch (e) { hideLoading(); showToast('エラー: ' + (e && e.message ? e.message : e), 'error'); }
 }
 
-// 既存の授業回を「通常⇄補習」に切り替える（案C：cycle_no は変更しない。番号調整が要る場合は🔢回数編集で手動）。
+// 既存の授業回を「通常⇄補習」に切り替える（ui7: 切り替え後に回数を詰めるか確認する）。
 // 対象1回だけを is_makeup トグル。curMakeup は現在値（0/1文字列）。
 async function toggleSessionMakeup(classId, dateISO, periodStr, curMakeup) {
+  // ui7: 補習⇄通常を切り替えたあと、以降の回数を詰める／繰り下げるかを確認する。
+  //   補習にする：この回の番号を外し、後ろの通常回がこの番号から順に繰り上がる（削除と同じ詰め方）。
+  //   通常に戻す：直前の通常回の続き番号をこの回に付け、後ろの通常回を順に繰り下げる。
+  //   前（過去方向）の回は一切触らない。
   const curPeriod = periodStr === '' ? null : parseInt(periodStr);
   const isMakeupNow = (curMakeup === '1' || curMakeup === true || curMakeup === 1);
   const toMakeup = !isMakeupNow;
@@ -31104,17 +31108,71 @@ async function toggleSessionMakeup(classId, dateISO, periodStr, curMakeup) {
   const wd = ['日','月','火','水','木','金','土'];
   const dt = new Date(p[0], p[1]-1, p[2]);
   const dateLabel = p[1] + '月' + p[2] + '日（' + wd[dt.getDay()] + '）' + (curPeriod != null ? '／' + curPeriod + '限' : '');
+  let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + dateISO;
+  q += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
+
+  // 対象回・授業区分・直前の通常回を取得（番号の計算に使う）
+  let target = null, isNormal = true, prev = null;
+  try {
+    const rows = await sbGet('class_sessions', q + '&select=id,cycle_year,cycle_month,cycle_no,is_makeup&limit=1') || [];
+    target = rows[0] || null;
+    const cm = await sbGet('class_master', 'id=eq.' + classId + '&select=category') || [];
+    isNormal = isNormalCategory(cm[0] ? cm[0].category : 'normal');
+    if (!toMakeup) {
+      const pr = await sbGet('class_sessions',
+        'class_master_id=eq.' + classId + '&session_date=lt.' + dateISO +
+        '&is_makeup=not.eq.true&cycle_no=not.is.null&select=cycle_year,cycle_month,cycle_no&order=session_date.desc,period.desc&limit=1') || [];
+      prev = pr[0] || null;
+    }
+  } catch (e) { /* 取れなければ番号はそのまま（切り替えのみ） */ }
+  const fmtCyc = c => (c && c.cycle_no != null) ? ((c.cycle_month != null ? c.cycle_month + '月' : '') + '第' + c.cycle_no + '回') : '';
+
   const msg = toMakeup
-    ? ('この回を「🔁 補習」に変更しますか？\n' + dateLabel + '\n\n※ 回数（サイクル番号）はそのまま残ります。番号を空けたい場合は「🔢 回数編集」で調整してください。')
-    : ('この回を「通常授業」に戻しますか？\n' + dateLabel + '\n\n※ 回数（サイクル番号）はそのまま残ります。連番を振り直したい場合は「🔢 回数編集」で調整してください。');
+    ? ('この回を「🔁 補習」に変更しますか？\n' + dateLabel)
+    : ('この回を「通常授業」に戻しますか？\n' + dateLabel);
   if (!confirm(msg)) return;
+
+  // 以降の回数を詰めるか（番号の計算ができるときだけ聞く）
+  let startCyc = null;   // 後ろの通常回（＋通常に戻すときはこの回）に振り始める番号
+  if (toMakeup && target && target.cycle_no != null) {
+    startCyc = { year: target.cycle_year, month: isNormal ? target.cycle_month : null, no: target.cycle_no };
+  } else if (!toMakeup && (prev || (target && target.cycle_no != null))) {
+    startCyc = prev
+      ? cycleNext({ year: prev.cycle_year, month: isNormal ? prev.cycle_month : null, no: prev.cycle_no }, isNormal)
+      : { year: target.cycle_year, month: isNormal ? target.cycle_month : null, no: target.cycle_no };
+  }
+  let renumber = false;
+  if (startCyc) {
+    const label = fmtCyc({ cycle_month: startCyc.month, cycle_no: startCyc.no });
+    renumber = confirm(toMakeup
+      ? ('以降の回数を詰めますか？\n\nOK：この回（' + fmtCyc(target) + '）を番号なしの補習にして、これより後の通常の回を ' + label + ' から順に振り直します。\nキャンセル：回数はそのまま残します（あとで「🔢 回数編集」で直せます）。')
+      : ('以降の回数を振り直しますか？\n\nOK：この回を ' + label + ' にして、これより後の通常の回を続きの番号に振り直します。\nキャンセル：回数はそのまま残します（あとで「🔢 回数編集」で直せます）。'));
+  }
+
   showLoading('保存中...');
   try {
-    let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + dateISO;
-    q += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
-    await sbPatch('class_sessions', q, { is_makeup: toMakeup });
+    const body = { is_makeup: toMakeup };
+    if (renumber && toMakeup) { body.cycle_year = null; body.cycle_month = null; body.cycle_no = null; }
+    if (renumber && !toMakeup) { body.cycle_year = startCyc.year; body.cycle_month = startCyc.month; body.cycle_no = startCyc.no; }
+    await sbPatch('class_sessions', q, body);
+    let moved = 0;
+    if (renumber) {
+      const later = await sbGet('class_sessions',
+        'class_master_id=eq.' + classId + '&session_date=gt.' + dateISO +
+        '&select=id,session_date,period,is_makeup&order=session_date,period') || [];
+      // 補習にした場合：最初の後続回がこの回の番号を引き継ぐ。通常に戻した場合：この回の次の番号から。
+      let cyc = Object.assign({}, startCyc);
+      let first = toMakeup;
+      for (const s of later) {
+        if (s.is_makeup) continue; // 補習は番号なしのまま
+        if (!first) cyc = cycleNext(cyc, isNormal);
+        first = false;
+        await sbPatch('class_sessions', 'id=eq.' + s.id, { cycle_year: cyc.year, cycle_month: cyc.month, cycle_no: cyc.no });
+        moved++;
+      }
+    }
     hideLoading();
-    showToast(toMakeup ? '🔁 補習に変更しました' : '通常授業に戻しました', 'success');
+    showToast((toMakeup ? '🔁 補習に変更しました' : '通常授業に戻しました') + (renumber ? '（以降' + moved + '回の回数を振り直し）' : ''), 'success');
     if (typeof loadStaffCalendar === 'function') { try { loadStaffCalendar(); } catch (e) {} }
     if (typeof loadTodayClasses === 'function') { try { loadTodayClasses(); } catch (e) {} }
     if (typeof loadSessionList === 'function') { try { loadSessionList(); } catch (e) {} }
