@@ -5190,11 +5190,16 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <option value="中学部">🎓 中学部</option>
           <option value="高校部">📗 高校部</option>
         </select>
-        <select class="form-select" id="ao-category-select" onchange="loadAttOverview()" style="flex:1;min-width:110px;font-size:13px">
+        <!-- ui9: 通常講座を基本に表示。「時期別講習」を押すと夏期・冬期・春期などを選べる -->
+        <div style="display:flex;gap:4px;flex:2;min-width:220px">
+          <button type="button" id="ao-cat-normal" onclick="aoSetCatMode('normal')" style="flex:1;padding:8px 6px;font-size:12px;font-weight:700;border-radius:8px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📗 通常講座</button>
+          <button type="button" id="ao-cat-season" onclick="aoSetCatMode('season')" style="flex:1;padding:8px 6px;font-size:12px;font-weight:700;border-radius:8px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🗓 時期別講習</button>
+        </div>
+        <select class="form-select" id="ao-category-select" onchange="aoOnSeasonChange()" style="display:none;flex:1;min-width:110px;font-size:13px">
+          <option value="normal">📗 通常授業</option>
           <option value="summer">☀️ 夏期講習</option>
           <option value="winter">⛄ 冬期講習</option>
           <option value="spring">🌸 春期講習</option>
-          <option value="normal">📗 通常授業</option>
           <option value="kosotsu">🎓 高卒</option>
           <option value="">📚 すべて</option>
         </select>
@@ -5215,9 +5220,14 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
           <option value="中学部">🎓 中学部</option>
           <option value="高校部">📗 高校部</option>
         </select>
-        <select class="form-select" id="as-category-select" onchange="loadAttSheet()" style="flex:1;min-width:100px;font-size:13px">
-          <option value="summer">☀️ 夏期講習</option>
+        <!-- ui10: 通常講座を基本に表示。「時期別講習」を押すと夏期・冬期・春期を選べる -->
+        <div style="display:flex;gap:4px;flex:2;min-width:220px">
+          <button type="button" id="as-cat-normal" onclick="asSetCatMode('normal')" style="flex:1;padding:8px 6px;font-size:12px;font-weight:700;border-radius:8px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📗 通常講座</button>
+          <button type="button" id="as-cat-season" onclick="asSetCatMode('season')" style="flex:1;padding:8px 6px;font-size:12px;font-weight:700;border-radius:8px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🗓 時期別講習</button>
+        </div>
+        <select class="form-select" id="as-category-select" onchange="asOnSeasonChange()" style="display:none;flex:1;min-width:100px;font-size:13px">
           <option value="normal">📗 通常授業</option>
+          <option value="summer">☀️ 夏期講習</option>
           <option value="winter">⛄ 冬期講習</option>
           <option value="spring">🌸 春期講習</option>
         </select>
@@ -7032,7 +7042,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261009ui8';
+const APP_VERSION = '20261009ui10';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -34747,7 +34757,43 @@ async function openClassAttendance(classId, date, period) {
 // ============================================================
 let _aoLoaded = false;
 
+// ui9: 出欠一望の講座区分。基本は通常講座、「時期別講習」で季節講習（夏期・冬期・春期）や高卒・すべてを選ぶ。
+var _aoSeasonLast = 'summer';
+function aoSetCatMode(mode) {
+  const sel = document.getElementById('ao-category-select');
+  if (!sel) return;
+  if (mode === 'season') {
+    sel.value = (_aoSeasonLast && _aoSeasonLast !== 'normal') ? _aoSeasonLast : 'summer';
+    if (sel.value === 'normal') sel.value = 'summer';
+  } else {
+    sel.value = 'normal';
+  }
+  aoRenderCatButtons();
+  loadAttOverview();
+}
+function aoOnSeasonChange() {
+  const sel = document.getElementById('ao-category-select');
+  if (sel && sel.value !== 'normal') _aoSeasonLast = sel.value;
+  aoRenderCatButtons();
+  loadAttOverview();
+}
+function aoRenderCatButtons() {
+  const sel = document.getElementById('ao-category-select');
+  const isNormal = !sel || sel.value === 'normal';
+  const on = 'background:var(--orange-l);color:var(--orange-d);border:1.5px solid var(--orange)';
+  const off = 'background:var(--surface);color:var(--muted);border:1.5px solid var(--border)';
+  const bn = document.getElementById('ao-cat-normal'), bs = document.getElementById('ao-cat-season');
+  if (bn) bn.style.cssText = bn.style.cssText.replace(/background:[^;]*;?|color:[^;]*;?|border:[^;]*;?/g, '') + ';' + (isNormal ? on : off);
+  if (bs) bs.style.cssText = bs.style.cssText.replace(/background:[^;]*;?|color:[^;]*;?|border:[^;]*;?/g, '') + ';' + (isNormal ? off : on);
+  if (sel) {
+    sel.style.display = isNormal ? 'none' : '';
+    // 時期別のときは「通常授業」を選択肢から隠す（通常は左のボタンで選ぶ）
+    const o = sel.querySelector('option[value="normal"]'); if (o) o.hidden = !isNormal;
+  }
+}
+
 function initAttOverview() {
+  aoRenderCatButtons();
   // 現在の部門トグル（fit_division）を初期選択に反映
   try {
     const dv = localStorage.getItem('fit_division');
@@ -35062,7 +35108,38 @@ let _asImage = null;         // この年月×種別の季節イラスト { id, 
 const AS_CAT_LABEL = { summer:'夏期講習', normal:'通常授業', winter:'冬期講習', spring:'春期講習' };
 const AS_CAT_SHORT = { summer:'夏期', normal:'通常', winter:'冬期', spring:'春期' };
 
+// ui10: 出席表の講座区分。基本は通常講座、「時期別講習」で夏期・冬期・春期を選ぶ（出欠一望と同じ操作）。
+var _asSeasonLast = 'summer';
+function asSetCatMode(mode) {
+  const sel = document.getElementById('as-category-select');
+  if (!sel) return;
+  sel.value = (mode === 'season') ? ((_asSeasonLast && _asSeasonLast !== 'normal') ? _asSeasonLast : 'summer') : 'normal';
+  asRenderCatButtons();
+  loadAttSheet();
+}
+function asOnSeasonChange() {
+  const sel = document.getElementById('as-category-select');
+  if (sel && sel.value !== 'normal') _asSeasonLast = sel.value;
+  asRenderCatButtons();
+  loadAttSheet();
+}
+function asRenderCatButtons() {
+  const sel = document.getElementById('as-category-select');
+  const isNormal = !sel || sel.value === 'normal';
+  const on = 'background:var(--orange-l);color:var(--orange-d);border:1.5px solid var(--orange)';
+  const off = 'background:var(--surface);color:var(--muted);border:1.5px solid var(--border)';
+  const strip = st => st.replace(/background:[^;]*;?|color:[^;]*;?|border:[^;]*;?/g, '');
+  const bn = document.getElementById('as-cat-normal'), bs = document.getElementById('as-cat-season');
+  if (bn) bn.style.cssText = strip(bn.style.cssText) + ';' + (isNormal ? on : off);
+  if (bs) bs.style.cssText = strip(bs.style.cssText) + ';' + (isNormal ? off : on);
+  if (sel) {
+    sel.style.display = isNormal ? 'none' : '';
+    const o = sel.querySelector('option[value="normal"]'); if (o) o.hidden = !isNormal;
+  }
+}
+
 function initAttSheet() {
+  asRenderCatButtons();
   // 部門トグルを初期選択に反映
   try {
     const dv = localStorage.getItem('fit_division');
