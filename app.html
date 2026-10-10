@@ -7042,7 +7042,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261009ui10';
+const APP_VERSION = '20261010sd1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -7228,9 +7228,16 @@ async function fitResume() {
   if (!s) return null;
   const table = { staff: 'staff', student: 'students', parent: 'parent_accounts', online: 'online_students' }[s.kind];
   if (!table) { fitLogout(); return null; }
-  const res = await fitRawFetch(FIT_SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(s.account_id) + '&select=*', {
-    headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token }
-  });
+  // sec4: 生徒・保護者は students を直接読まず、表示用の列だけ返す関数から受け取る（生徒は自分の1行）
+  const res = s.kind === 'student'
+    ? await fitRawFetch(FIT_SB_URL + '/rest/v1/rpc/fit_my_students', {
+        method: 'POST',
+        headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token, 'Content-Type': 'application/json' },
+        body: '{}'
+      })
+    : await fitRawFetch(FIT_SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(s.account_id) + '&select=*', {
+        headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token }
+      });
   if (res.status === 401 || res.status === 403) {
     const again = await fitRefresh(true);
     if (again === 'invalid' || again === 'none') return null;
@@ -7792,6 +7799,8 @@ function isStudentHiddenAsWithdrawn(s) {
 //  翌月8日以降、または物理的に is_active=false の退塾者はログイン不可。卒業生は可。
 function isStudentLoginBlocked(s) {
   if (!s) return true;
+  // sec4: 生徒本人の行には退塾理由・日付を渡さず、サーバーで計算した login_blocked だけが入る
+  if ('login_blocked' in s) return !!s.login_blocked;
   if (s.is_active === false && s.inactive_reason === '退塾') return true; // 物理退塾済み
   if (isStudentHiddenAsWithdrawn(s)) return true;                          // 猶予切れ（翌月8日以降）
   return false;
@@ -8732,7 +8741,7 @@ async function saveMyProfile() {
   const birthday = getBirthdayValue('my');
   showLoading('保存中...');
   try {
-    await sbPatch('students', 'id=eq.' + currentStudent.id, { gender: gender || null, course_track: courseTrack || null, club: club || null, birthday: birthday });
+    await fitRpc('fit_save_my_profile', { p: { gender: gender || null, course_track: courseTrack || null, club: club || null, birthday: birthday || null } });   // sec4
     currentStudent.gender = gender;
     currentStudent.course_track = courseTrack;
     currentStudent.club = club;
@@ -8771,12 +8780,12 @@ async function saveMyAspiration() {
   const data = readAspirationForm('my');
   showLoading('保存中...');
   try {
-    await sbPatch('students', 'id=eq.' + currentStudent.id, {
+    await fitRpc('fit_save_my_profile', { p: {   // sec4
       univ1: data.univ1 || null, faculty1: data.faculty1 || null,
       univ2: data.univ2 || null, faculty2: data.faculty2 || null,
       univ3: data.univ3 || null, faculty3: data.faculty3 || null,
       desired_subjects: data.desired_subjects || null
-    });
+    } });
     Object.assign(currentStudent, data);
     hideLoading();
     closeAspirationScreen();
@@ -9483,7 +9492,7 @@ async function checkForcedCheckout() {
       showRecheckinButtons(true);
       // 最新のポイントを反映
       try {
-        const st = await sbGet('students', 'id=eq.' + currentStudent.id + '&select=points');
+        const st = await fitRpc('fit_my_students', {});   // sec4: 自分の行は関数から
         if (st && st[0]) {
           currentStudent.points = st[0].points;
           document.getElementById('student-points').textContent = (st[0].points || 0).toLocaleString();
@@ -9539,13 +9548,13 @@ async function doCheckout(skipConfirm) {
     const pts = Math.floor(validMin / 30);
     // ポイント付与
     if (pts > 0) {
-      await sbPatch('students', 'id=eq.' + currentStudent.id, { last_checkin: getTodayJST() });
+      await fitRpc('fit_touch_checkin', {});   // sec4
       const r = await fitAwardPoints('checkin', pts, 'チェックアウト（授業時間 ' + validMin + '分）');
       currentStudent.points = r.points;
       document.getElementById('student-points').textContent = (r.points || 0).toLocaleString();
       loadTotalEarnedPoints();
     } else {
-      await sbPatch('students', 'id=eq.' + currentStudent.id, { last_checkin: getTodayJST() });
+      await fitRpc('fit_touch_checkin', {});   // sec4
     }
     // checkinsにチェックアウト時刻・在室時間・枠内時間を記録（未チェックアウトの最新行を締める）
     try {
@@ -55286,8 +55295,8 @@ async function initParentScreen() {
       return;
     }
     const ids = links.map(l => l.student_id);
-    const studs = await sbGet('students',
-      'id=in.(' + ids.join(',') + ')&select=id,name,grade,school_detail,is_tsushin,tsushin_days,tsushin_start,tsushin_end') || [];
+    // sec4: 子どもの情報は表示用の列だけ返す関数から（students は直接読まない）
+    const studs = ((await fitRpc('fit_my_students', {})) || []).filter(x => ids.indexOf(x.id) >= 0);
     parentChildren = studs;
     parentActiveSid = studs.length ? studs[0].id : '';
     parentCalYM = getTodayJST().slice(0, 7);

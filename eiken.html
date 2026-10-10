@@ -625,7 +625,7 @@ const MOCK_JP_ANNOUNCE = {
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impra2ZkdnZicHprYWdidHBxa3pwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYxNTg1ODIsImV4cCI6MjEwMTczNDU4Mn0.fRiZZeJVfxYh3XDarK9UDLWj94pAhB0Tnt3yl10_ovs";
 /* ========================================================= */
 
-const APP_VERSION = "eiken-20261007s";
+const APP_VERSION = "eiken-20261010sd1";
 
 /* ---- 級の定義 ---- */
 const GRADES = {
@@ -843,9 +843,16 @@ async function fitResume() {
   if (!s) return null;
   const table = { staff: 'staff', student: 'students', parent: 'parent_accounts', online: 'online_students' }[s.kind];
   if (!table) { fitLogout(); return null; }
-  const res = await fitRawFetch(FIT_SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(s.account_id) + '&select=*', {
-    headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token }
-  });
+  // sec4: 生徒・保護者は students を直接読まず、表示用の列だけ返す関数から受け取る（生徒は自分の1行）
+  const res = s.kind === 'student'
+    ? await fitRawFetch(FIT_SB_URL + '/rest/v1/rpc/fit_my_students', {
+        method: 'POST',
+        headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token, 'Content-Type': 'application/json' },
+        body: '{}'
+      })
+    : await fitRawFetch(FIT_SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(s.account_id) + '&select=*', {
+        headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token }
+      });
   if (res.status === 401 || res.status === 403) {
     const again = await fitRefresh(true);
     if (again === 'invalid' || again === 'none') return null;
@@ -892,11 +899,11 @@ function getJukuLoginEmail(){
 async function fetchJukuStudent(email){
   if(!email) return null;
   try{
-    const url=`${JUKU_URL}/rest/v1/students?email=eq.${encodeURIComponent(email.toLowerCase())}&is_active=eq.true&select=email,name,school,grade`;
-    const r=await fetch(url,{headers:{apikey:JUKU_KEY,Authorization:"Bearer "+JUKU_KEY}});
+    // sec4: students は直接読まず、自分の行だけ返す関数から（ログイン中のトークンが自動で付く）
+    const r=await fetch(`${JUKU_URL}/rest/v1/rpc/fit_my_students`,{method:"POST",headers:{apikey:JUKU_KEY,Authorization:"Bearer "+JUKU_KEY,"Content-Type":"application/json"},body:"{}"});
     if(!r.ok) return null;
-    const rows=await r.json();
-    return rows.length? rows[0] : null;
+    const rows=(await r.json()||[]).filter(x=>x && x.is_active!==false && String(x.email||"").toLowerCase()===email.toLowerCase());
+    return rows.length? {email:rows[0].email,name:rows[0].name,school:rows[0].school,grade:rows[0].grade} : null;
   }catch(e){ return null; }
 }
 
