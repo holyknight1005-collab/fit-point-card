@@ -1495,7 +1495,9 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
         <option value="">-- 学校を選ぶ --</option>
         <option value="松山東">松山東</option><option value="松山南">松山南</option><option value="松山北">松山北</option><option value="松山中央">松山中央</option><option value="松山西">松山西</option><option value="愛大附属">愛大附属</option><option value="済美">済美</option><option value="SSS">SSS</option><option value="その他">その他</option>
       </select>
-      <input type="text" id="course-school-note" placeholder="高校名を入力（例：鹿島朝日）" style="display:none;width:100%;box-sizing:border-box;padding:9px 10px;font-size:13px;border:1.5px solid #6FA8E0;border-radius:8px;font-family:'Noto Sans JP',sans-serif">
+      <datalist id="sss-school-list"></datalist>
+      <div id="course-school-sss-hint" style="display:none;font-size:11px;line-height:1.6;margin:-2px 0 6px"></div>
+      <input type="text" id="course-school-note" list="sss-school-list" oninput="previewCourseSssTargets()" placeholder="高校名を選ぶか入力（例：愛光）" style="display:none;width:100%;box-sizing:border-box;padding:9px 10px;font-size:13px;border:1.5px solid #6FA8E0;border-radius:8px;font-family:'Noto Sans JP',sans-serif">
       <div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.5">選択した全日を、この学校の回として登録します。出席表では回の見出しに🏫バッジが付きます。SSSは高校名を添えられます。</div>
       <!-- dkr: 学校別回は「同じ回を学校別に分ける」ので、分割元の回番号を引き継ぐ -->
       <div style="margin-top:8px;font-size:11px;color:#1E4276;font-weight:700">引き継ぐ回番号（この回は何回目の分割か）</div>
@@ -2878,7 +2880,8 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
             </select>
           </div>
         </div>
-        <input type="text" class="form-select" id="detail-school-detail" placeholder="実際の高校名を入力" style="width:100%;font-size:13px;margin-bottom:8px;display:none">
+        <input type="text" class="form-select" id="detail-school-detail" list="sss-school-list-karte" onfocus="fillSssSchoolDatalist('sss-school-list-karte')" placeholder="実際の高校名を選ぶか入力（例：愛光）" style="width:100%;font-size:13px;margin-bottom:8px;display:none">
+        <datalist id="sss-school-list-karte"></datalist>
         <div style="margin-bottom:8px">
           <div style="font-size:11px;color:var(--muted);margin-bottom:4px">部活</div>
           <select class="form-select" id="detail-club-cat" onchange="onClubCategoryChange('detail')" style="width:100%;font-size:13px;margin-bottom:6px">
@@ -6743,7 +6746,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261011sc1';
+const APP_VERSION = '20261011ss1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -31374,6 +31377,71 @@ function onCourseSchoolChange() {
   const note = document.getElementById('course-school-note');
   if (!sel || !note) return;
   note.style.display = (sel.value === 'SSS') ? 'block' : 'none';
+  const hint = document.getElementById('course-school-sss-hint');
+  if (hint) hint.style.display = (sel.value === 'SSS') ? 'block' : 'none';
+  if (sel.value === 'SSS') { loadSssSchoolList(); previewCourseSssTargets(); }
+}
+
+// 20261011ss1: SSS生の実校名（school_detail）を候補に。表記ゆれは sssSchoolNorm でまとめる。
+let _sssStudentsCache = null;
+async function loadSssStudents() {
+  if (_sssStudentsCache) return _sssStudentsCache;
+  try {
+    _sssStudentsCache = await sbGet('students', 'school=eq.SSS&is_active=eq.true&select=id,name,grade,school_detail') || [];
+  } catch (e) { _sssStudentsCache = []; }
+  return _sssStudentsCache;
+}
+async function fillSssSchoolDatalist(id) {
+  const dl = document.getElementById(id);
+  if (!dl || dl.dataset.filled) return;
+  _sssStudentsCache = null;
+  const rows = await loadSssStudents();
+  // 学校別回に使われている実校名も候補に入れる
+  let sess = [];
+  try { sess = await sbGet('class_sessions', 'school=like.SSS*&select=school&limit=500') || []; } catch (e) {}
+  const seen = {}, names = [];
+  rows.map(r => r.school_detail).concat(sess.map(x => String(x.school || '').replace(/^SSS[：:]/, ''))).forEach(v => {
+    const n = sssSchoolNorm(v);
+    if (n && !seen[n]) { seen[n] = true; names.push(n); }
+  });
+  names.sort((a, b) => a.localeCompare(b, 'ja'));
+  dl.innerHTML = names.map(n => '<option value="' + escapeAttr(n) + '"></option>').join('');
+  dl.dataset.filled = '1';
+}
+async function loadSssSchoolList() {
+  const dl = document.getElementById('sss-school-list');
+  if (!dl) return;
+  const rows = await loadSssStudents();
+  const seen = {}, names = [];
+  rows.forEach(r => {
+    const n = sssSchoolNorm(r.school_detail);
+    if (n && !seen[n]) { seen[n] = true; names.push(n); }
+  });
+  names.sort((a, b) => a.localeCompare(b, 'ja'));
+  dl.innerHTML = names.map(n => '<option value="' + escapeAttr(n) + '"></option>').join('');
+}
+// この授業の受講生のうち、選んだ実校名の回の対象になるSSS生と、実校名が未設定のSSS生を表示
+async function previewCourseSssTargets() {
+  const hint = document.getElementById('course-school-sss-hint');
+  if (!hint) return;
+  const classId = document.getElementById('course-class-select')?.value;
+  const detail = (document.getElementById('course-school-note')?.value || '').trim();
+  const rows = await loadSssStudents();
+  let enrolled = null;
+  if (classId) {
+    try {
+      const en = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id');
+      enrolled = new Set((en || []).map(e => e.student_id));
+    } catch (e) { enrolled = null; }
+  }
+  const pool = rows.filter(r => !enrolled || enrolled.has(r.id));
+  const hit = detail ? pool.filter(r => r.school_detail && sssSchoolNorm(r.school_detail) === sssSchoolNorm(detail)) : pool.filter(r => r.school_detail);
+  const unset = pool.filter(r => !String(r.school_detail || '').trim());
+  let h = '';
+  if (detail) h += '<span style="color:#1E4276">対象：' + (hit.length ? hit.map(r => escapeHtml(r.name)).join('、') : '<b style="color:var(--red)">この授業に該当するSSS生がいません</b>') + '</span>';
+  else h += '<span style="color:var(--muted)">高校名を空欄にすると、SSS生全員の回になります。</span>';
+  if (unset.length) h += '<br><span style="color:#B26A00">⚠ 実校名が未設定のSSS生：' + unset.map(r => escapeHtml(r.name)).join('、') + '（どのSSSの回にも表示されます。生徒カルテで実校名を入れてください）</span>';
+  hint.innerHTML = h;
 }
 // 保存する school 文字列を組み立てる。学校別OFFなら null。SSS＋補足は「SSS：高校名」。
 function courseSchoolValue() {
@@ -42508,6 +42576,10 @@ function attSchoolScope(sid, sessKey) {
 }
 // 20261001onl33: 学校別回の対象判定を1か所に（出欠一望・出席入力で共用）。
 // sc=授業日の school。戻り値 'in' / 'out'（他校＝対象外）/ 'undecided'（SSS実校未設定＝保留）。
+// 20261011ss1: SSSの実校名の比較用。空白と「高等学校・高校・中等教育学校・中学校・中学」を除いて比べる（「愛光高校」＝「愛光」）
+function sssSchoolNorm(x) {
+  return String(x || '').replace(/[\s\u3000]/g, '').replace(/(高等学校|高校|中等教育学校|中学校|中学)$/, '');
+}
 function schoolScopeOfStudent(stu, school) {
   const sc = school ? String(school).trim() : '';
   if (!sc) return 'in';                       // 通常回（学校指定なし）＝全員対象
@@ -42516,11 +42588,11 @@ function schoolScopeOfStudent(stu, school) {
   // SSS系の回：「SSS」または「SSS：実校名」
   if (sc === 'SSS' || sc.indexOf('SSS：') === 0 || sc.indexOf('SSS:') === 0) {
     if (stuSchool !== 'SSS') return 'out';    // そもそもSSS生徒でなければ対象外
-    const detail = sc.replace(/^SSS[：:]/, '').trim();
+    const detail = (sc === 'SSS') ? '' : sc.replace(/^SSS[：:]/, '').trim();   // 20261011ss1: 「SSS」だけのときも全員対象に
     if (!detail) return 'in';                 // 「SSS」だけ＝SSS全員対象
     const stuDetail = (stu.school_detail || '').trim();
     if (!stuDetail) return 'undecided';       // SSS生徒だが実校未設定＝取りこぼし防止で保留
-    return (stuDetail === detail) ? 'in' : 'out';
+    return (sssSchoolNorm(stuDetail) === sssSchoolNorm(detail)) ? 'in' : 'out';   // 20261011ss1
   }
   // 通常校の回：students.school 完全一致
   return (stuSchool === sc) ? 'in' : 'out';
