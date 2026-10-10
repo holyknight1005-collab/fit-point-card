@@ -72,6 +72,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
 .wk thead th.today .offt{color:#fff}
 .x{font-size:10px;color:#B0632A;display:block}
 .x.s{color:var(--muted);display:inline}
+.cy{margin-left:3px;font-weight:700;color:#9A5A00;white-space:nowrap}
 .day{background:#fff;border:1px solid var(--line);margin-bottom:10px;scroll-margin-top:60px}
 .day-h{background:var(--head);border-bottom:1px solid var(--line);padding:6px 10px;font-weight:700}
 .day-h .sat{color:var(--sat)} .day-h .sun{color:var(--sun)}
@@ -165,6 +166,30 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return res.json();
   }
+  // 授業の回（①／11-①）。別の公開関数から受け取る。無い（SQL未実行・失敗）ときは回を出さないだけ。
+  async function fetchCycles() {
+    try {
+      var res = await fetch(SB_URL + '/rest/v1/rpc/fit_public_timetable_cycles', {
+        method: 'POST',
+        headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_month: state.month, p_division: state.div === 'chu' ? '中学部' : '高校部' })
+      });
+      if (!res.ok) return {};
+      var rows = await res.json(), map = {};
+      (rows || []).forEach(function (r) {
+        var lab = cycLabel(r.d, r.cycle_month, r.cycle_no);
+        if (lab) map[r.d + '|' + r.name + '|' + String(r.school || '').replace(/^SSS[：:]\s*/, '')] = lab;
+      });
+      return map;
+    } catch (e) { return {}; }
+  }
+  // その日の月と同じ月の回は「①」、違う月の回は「11-①」「9-④」
+  function circ(n) { n = parseInt(n, 10); if (isNaN(n) || n < 1) return ''; return n <= 20 ? String.fromCharCode(0x2460 + n - 1) : '(' + n + ')'; }
+  function cycLabel(ds, cm, no) {
+    if (!ds || cm == null || no == null) return '';
+    var c = circ(no); if (!c) return '';
+    return (parseInt(cm, 10) === parseInt(String(ds).slice(5, 7), 10)) ? c : (parseInt(cm, 10) + '-' + c);
+  }
 
   function build() {
     var D = state.data, q = state.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -185,7 +210,8 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
       used[p] = true;
       var std = ptime(s.date, p);
       var odd = (s.start && std && s.start !== std[0]) ? s.start + (s.end ? '〜' + s.end : '') : '';
-      (cells[s.date + '|' + p] = cells[s.date + '|' + p] || []).push({ name: s.name, subject: s.subject, school: school, makeup: s.makeup, odd: odd, kosotsu: s.kosotsu });
+      var cy = s.makeup ? '' : ((state.cycles || {})[s.date + '|' + s.name + '|' + school] || '');
+      (cells[s.date + '|' + p] = cells[s.date + '|' + p] || []).push({ name: s.name, subject: s.subject, school: school, makeup: s.makeup, odd: odd, kosotsu: s.kosotsu, cy: cy });
     });
     var periods = Object.keys(used).map(Number);
     [1, 2, 3, 4, 5, 6].forEach(function (p) { if (periods.indexOf(p) === -1) periods.push(p); });
@@ -214,6 +240,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
   }
   function label(c) {
     return esc(c.name) +
+      (c.cy ? '<span class="cy">' + esc(c.cy) + '</span>' : '') +
       (c.school ? '<span class="x s">（' + esc(c.school) + '）</span>' : '') +
       (c.makeup ? '<span class="x s">（補習）</span>' : '') +
       (c.odd ? '<span class="x">' + esc(c.odd) + '</span>' : '');
@@ -324,9 +351,11 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     document.getElementById('content').innerHTML = '<div class="empty">読み込み中…</div>';
     var key = state.month + '|' + state.div;
     try {
-      var d = await fetchData();
+      var both = await Promise.all([fetchData(), fetchCycles()]);
+      var d = both[0];
       if (key !== state.month + '|' + state.div) return;
       state.data = d;
+      state.cycles = both[1];
       render(scrollToday);
     } catch (e) {
       document.getElementById('content').innerHTML = '<div class="err">時間割を読み込めませんでした。時間をおいて開き直してください。</div>';
