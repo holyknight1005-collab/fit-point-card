@@ -6673,7 +6673,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261010cl2';
+const APP_VERSION = '20261010tt1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -14896,6 +14896,7 @@ var FEATURE_CATALOG = [
   { key:'attendance',    icon:'📋', label:'授業出欠',     action:function(){ openHomeFeature('attendance'); } },
   { key:'attoverview',   icon:'📅', label:'出欠一望',     action:function(){ openHomeFeature('attoverview'); } },
   { key:'attsheet',      icon:'🖨', label:'出席表',       action:function(){ openHomeFeature('attsheet'); } },
+  { key:'monthtt',       icon:'🗓', label:'月間時間割',   action:function(){ openMonthTimetable(); } },   // 20261010tt1: 閲覧のみ
   { key:'timetable',     icon:'🕐', label:'時間割かぶり', action:function(){ openHomeFeature('timetable'); } },
   { key:'quizstatus',    icon:'📝', label:'小テスト状況', action:function(){ openHomeFeature('quizstatus'); } },
   { key:'appusage',      icon:'📊', label:'教科アプリ',   action:function(){ openHomeFeature('appusage'); } },
@@ -65974,6 +65975,268 @@ async function termsDelete() {
 }
 
 
+// ===== 月間時間割（閲覧のみ）20261010tt1 =====
+// 授業日登録（class_sessions）から、その月の時間割を「週ごとの表（縦=限・横=曜日）」で並べる。
+// 中学部／高校部を切り替えて表示。高校部は高卒生の授業を含めるかを切り替えられる（初期は含める）。
+// 編集はできない（授業の追加・変更はこれまでどおり授業管理から）。印刷ボタンでA4横の印刷用ページを開く。
+var mttMonth = null;          // 'YYYY-MM'
+var mttDiv = null;            // '中学部' | '高校部'
+var mttKosotsu = true;        // 高校部で高卒生の授業を含めるか
+var mttData = null;           // 直近に読み込んだデータ { month, sessions, masters, events }
+var MTT_EXCLUDE_CATS = ['dmm_lesson', 'eitango'];
+var MTT_CIRCLED = ['⓪', '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨'];
+
+function mttThisMonth() { return getTodayJST().slice(0, 7); }
+function mttShiftMonth(n) {
+  var p = mttMonth.split('-'), d = new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1 + n, 1);
+  mttMonth = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  mttLoad();
+}
+function mttIso(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+
+function openMonthTimetable() {
+  var el = document.getElementById('mtt-screen');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'mtt-screen';
+    el.style.cssText = 'position:fixed;inset:0;z-index:690;background:var(--bg);display:flex;flex-direction:column;overflow:hidden';
+    el.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border)">' +
+        '<div style="font-size:17px;font-weight:800;color:var(--text);flex:1">📅 月間時間割</div>' +
+        '<button onclick="mttPrint()" style="background:#fff;border:1px solid var(--orange);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--orange-d);cursor:pointer;font-family:inherit">🖨 印刷</button>' +
+        '<button onclick="closeMonthTimetable()" style="background:none;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;color:var(--muted);cursor:pointer;font-family:inherit">閉じる</button>' +
+      '</div>' +
+      '<div id="mtt-bar" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface)"></div>' +
+      '<div id="mtt-body" style="flex:1;overflow:auto;padding:12px 16px 40px;box-sizing:border-box"></div>';
+    document.body.appendChild(el);
+    window.addEventListener('resize', function () { var s = document.getElementById('mtt-screen'); if (s && s.style.display !== 'none' && mttData) mttRender(); });
+  }
+  el.style.display = 'flex';
+  if (!mttMonth) mttMonth = mttThisMonth();
+  if (!mttDiv) mttDiv = (typeof currentDivision !== 'undefined' && currentDivision === '中学部') ? '中学部' : '高校部';
+  mttLoad();
+}
+function closeMonthTimetable() { var el = document.getElementById('mtt-screen'); if (el) el.style.display = 'none'; }
+function mttSetDiv(d) { mttDiv = d; mttRender(); }
+function mttToggleKosotsu() { mttKosotsu = !mttKosotsu; mttRender(); }
+
+function mttRenderBar() {
+  var bar = document.getElementById('mtt-bar');
+  if (!bar) return;
+  var p = mttMonth.split('-');
+  var btn = function (on, label, onclick) {
+    return '<button onclick="' + onclick + '" style="padding:6px 12px;font-size:12px;font-weight:700;border-radius:16px;cursor:pointer;font-family:inherit;' +
+      (on ? 'border:1.5px solid var(--orange);background:var(--orange);color:#fff' : 'border:1px solid var(--border);background:#fff;color:var(--text)') + '">' + label + '</button>';
+  };
+  bar.innerHTML =
+    '<button onclick="mttShiftMonth(-1)" style="padding:6px 12px;font-size:14px;font-weight:800;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer">‹</button>' +
+    '<span style="font-size:15px;font-weight:800;min-width:96px;text-align:center">' + p[0] + '年' + parseInt(p[1], 10) + '月</span>' +
+    '<button onclick="mttShiftMonth(1)" style="padding:6px 12px;font-size:14px;font-weight:800;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer">›</button>' +
+    '<span style="width:8px"></span>' +
+    btn(mttDiv === '高校部', '🎓 高校', "mttSetDiv('高校部')") +
+    btn(mttDiv === '中学部', '📗 中学', "mttSetDiv('中学部')") +
+    (mttDiv === '高校部' ? '<label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text);margin-left:6px;cursor:pointer"><input type="checkbox" ' + (mttKosotsu ? 'checked' : '') + ' onchange="mttToggleKosotsu()">高卒の授業も表示</label>' : '') +
+    '<span style="flex:1"></span>' +
+    '<span style="font-size:11px;color:var(--muted)">閲覧のみ（変更は授業管理から）</span>';
+}
+
+async function mttLoad() {
+  mttRenderBar();
+  var body = document.getElementById('mtt-body');
+  body.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:20px;text-align:center">読み込み中...</div>';
+  var month = mttMonth;
+  var p = month.split('-');
+  var first = month + '-01';
+  var last = mttIso(new Date(parseInt(p[0], 10), parseInt(p[1], 10), 0));
+  try {
+    try { await wkLoadOverrides(); } catch (e) {}
+    var res = await Promise.all([
+      sbGetAll('class_sessions', 'session_date=gte.' + first + '&session_date=lte.' + last +
+        '&select=class_master_id,session_date,period,start_time,end_time,is_makeup,school&order=session_date,period'),
+      sbGetAll('class_master', 'select=id,name,subject,division,category'),
+      sbGet('events', 'blocks_class=eq.true&event_date=lte.' + last + '&or=(end_date.gte.' + first + ',and(end_date.is.null,event_date.gte.' + first + '))' +
+        '&select=title,event_date,end_date,scope').catch(function () { return []; })
+    ]);
+    if (month !== mttMonth) return;   // 連打で月が変わっていたら捨てる
+    mttData = { month: month, first: first, last: last, sessions: res[0] || [], masters: res[1] || [], events: res[2] || [] };
+    mttRender();
+  } catch (e) {
+    body.innerHTML = '<div style="font-size:13px;color:var(--red);padding:20px;text-align:center">読み込みに失敗しました：' + escapeHtml(e.message || e) + '</div>';
+  }
+}
+
+// 表示用のデータを組み立てる（画面・印刷で共通）
+function mttBuild() {
+  var D = mttData, div = mttDiv;
+  var mById = {};
+  D.masters.forEach(function (m) { mById[m.id] = m; });
+  var cells = {}, used = {};
+  D.sessions.forEach(function (s) {
+    var m = mById[s.class_master_id];
+    if (!m) return;
+    var mdiv = m.division || '高校部';
+    if (div === '中学部' ? mdiv !== '中学部' : mdiv === '中学部') return;
+    if (MTT_EXCLUDE_CATS.indexOf(m.category) !== -1) return;
+    if (div === '高校部' && !mttKosotsu && m.category === 'kosotsu') return;
+    var per = (s.period == null) ? nearestPeriodFromTime(s.start_time, s.session_date) : parseInt(s.period, 10);
+    if (per == null || isNaN(per)) return;
+    used[per] = true;
+    // 決まった時刻と違う回だけ時刻を添える
+    var tt = periodTimeFor(s.session_date, per, mdiv);
+    var st = s.start_time ? String(s.start_time).slice(0, 5) : '', et = s.end_time ? String(s.end_time).slice(0, 5) : '';
+    var odd = (st && tt && st !== tt[0]) ? (st + (et ? '〜' + et : '')) : '';
+    var key = s.session_date + '|' + per;
+    var arr = cells[key] || (cells[key] = []);
+    var school = String(s.school || '').trim().replace(/^SSS[：:]\s*/, '');
+    var label = m.name + (school ? '（' + school + '）' : '');
+    if (arr.some(function (x) { return x.label === label && x.odd === odd; })) return;   // 同じ授業の重複登録は1つに
+    arr.push({ label: label, odd: odd, makeup: s.is_makeup === true, kosotsu: m.category === 'kosotsu', subject: m.subject || '', st: st });
+  });
+  Object.keys(cells).forEach(function (k) {
+    cells[k].sort(function (a, b) { return (a.st || '').localeCompare(b.st || '') || a.label.localeCompare(b.label, 'ja'); });
+  });
+  var periods = [1, 2, 3, 4, 5, 6];
+  Object.keys(used).forEach(function (k) { k = parseInt(k, 10); if (periods.indexOf(k) === -1) periods.push(k); });
+  periods.sort(function (a, b) { return a - b; });
+  // 休講・休校などの予定（授業をブロックする予定）
+  var off = {};
+  D.events.forEach(function (ev) {
+    var s = ev.event_date, e = ev.end_date || ev.event_date;
+    var d = new Date(s + 'T00:00:00');
+    for (var i = 0; i < 62; i++) {
+      var iso = mttIso(d);
+      if (iso > e) break;
+      (off[iso] || (off[iso] = [])).push(ev.title || '休み');
+      d.setDate(d.getDate() + 1);
+    }
+  });
+  // 週（月曜はじまり）
+  var p = D.month.split('-'), y = parseInt(p[0], 10), mo = parseInt(p[1], 10) - 1;
+  var start = new Date(y, mo, 1);
+  start.setDate(start.getDate() - (start.getDay() === 0 ? 6 : start.getDay() - 1));
+  var weeks = [];
+  for (var w = 0; w < 6; w++) {
+    var days = [];
+    for (var i = 0; i < 7; i++) {
+      var d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + w * 7 + i);
+      days.push({ iso: mttIso(d), d: d.getDate(), wd: WK_WD[i], inMonth: d.getMonth() === mo, weekend: i >= 5 });
+    }
+    if (!days.some(function (x) { return x.inMonth; })) break;
+    weeks.push(days);
+  }
+  // 時刻の凡例（その月の最初の平日・最初の土曜で代表）
+  var firstWk = null, firstWe = null;
+  weeks.forEach(function (wk) { wk.forEach(function (x) { if (!x.inMonth) return; if (!x.weekend && !firstWk) firstWk = x.iso; if (x.weekend && !firstWe) firstWe = x.iso; }); });
+  var legend = function (iso, label) {
+    if (!iso) return '';
+    var parts = periods.map(function (pp) {
+      var t = periodTimeFor(iso, pp, div);
+      return t ? (MTT_CIRCLED[pp] || pp) + t[0] + '〜' + t[1] : '';
+    }).filter(Boolean);
+    return '<div><b>' + label + '：</b>' + parts.join('　') + '</div>';
+  };
+  return { cells: cells, periods: periods, weeks: weeks, off: off, legend: legend(firstWk, '月〜金') + legend(firstWe, '土日') };
+}
+
+function mttCellHtml(list) {
+  return list.map(function (it) {
+    return '<div class="mtt-cls' + (it.kosotsu ? ' k' : '') + '">' + escapeHtml(it.label) +
+      (it.makeup ? '<span class="mtt-tag">補</span>' : '') +
+      (it.odd ? '<span class="mtt-odd">' + escapeHtml(it.odd) + '</span>' : '') + '</div>';
+  }).join('');
+}
+
+var MTT_CSS =
+  '.mtt-legend{font-size:12px;line-height:1.8;margin:0 0 10px;color:#333}' +
+  '.mtt-week{border-collapse:collapse;width:100%;table-layout:fixed;margin:0 0 16px;background:#fff;page-break-inside:avoid;break-inside:avoid}' +
+  '.mtt-week th,.mtt-week td{border:1px solid #999;padding:3px 4px;vertical-align:top;text-align:center;font-size:12px}' +
+  '.mtt-week thead th{background:#F4F1EA;font-weight:700}' +
+  '.mtt-week thead th.sat{color:#2D5FA6}.mtt-week thead th.sun{color:#C0392B}' +
+  '.mtt-week th.per{width:34px;background:#F4F1EA;vertical-align:middle;font-size:15px}' +
+  '.mtt-week td.out{background:#EEE}' +
+  '.mtt-week td.off{background:#FBEAEA}' +
+  '.mtt-off{font-size:10px;color:#C0392B;font-weight:700}' +
+  '.mtt-cls{padding:2px 0;border-bottom:1px dotted #DDD;line-height:1.35;word-break:break-all}' +
+  '.mtt-cls:last-child{border-bottom:none}' +
+  '.mtt-cls.k{color:#555}' +
+  '.mtt-tag{display:inline-block;margin-left:3px;padding:0 4px;border-radius:6px;background:#FDE8C8;color:#9A5A00;font-size:10px}' +
+  '.mtt-odd{display:block;font-size:10px;color:#B0632A}' +
+  '.mtt-day{background:#fff;border:1px solid var(--border,#ddd);border-radius:10px;padding:10px 12px;margin-bottom:10px}' +
+  '.mtt-day h4{margin:0 0 6px;font-size:14px}' +
+  '.mtt-row{display:flex;gap:8px;padding:4px 0;border-top:1px solid #EEE;font-size:13px}' +
+  '.mtt-row .p{flex:0 0 28px;font-weight:800;color:#9A5A00;font-size:15px}' +
+  '.mtt-row .c{flex:1}';
+
+function mttWeekTables(b) {
+  return b.weeks.map(function (wk) {
+    var head = '<tr><th class="per">日</th>' + wk.map(function (x) {
+      return '<th class="' + (x.wd === '土' ? 'sat' : x.wd === '日' ? 'sun' : '') + '">' + (x.inMonth ? x.d : '') + '<br>' + x.wd +
+        (x.inMonth && b.off[x.iso] ? '<div class="mtt-off">' + escapeHtml(b.off[x.iso].join('・')) + '</div>' : '') + '</th>';
+    }).join('') + '</tr>';
+    var rows = b.periods.map(function (pp) {
+      return '<tr><th class="per">' + (MTT_CIRCLED[pp] || pp) + '</th>' + wk.map(function (x) {
+        if (!x.inMonth) return '<td class="out"></td>';
+        var list = b.cells[x.iso + '|' + pp] || [];
+        return '<td' + (b.off[x.iso] && !list.length ? ' class="off"' : '') + '>' + mttCellHtml(list) + '</td>';
+      }).join('') + '</tr>';
+    }).join('');
+    return '<table class="mtt-week"><thead>' + head + '</thead><tbody>' + rows + '</tbody></table>';
+  }).join('');
+}
+
+function mttRender() {
+  mttRenderBar();
+  var body = document.getElementById('mtt-body');
+  if (!body || !mttData) return;
+  var b = mttBuild();
+  var total = Object.keys(b.cells).reduce(function (a, k) { return a + b.cells[k].length; }, 0);
+  var html = '<style>' + MTT_CSS + '</style>';
+  html += '<div class="mtt-legend">' + b.legend + '</div>';
+  if (!total) html += '<div style="font-size:13px;color:var(--muted);padding:16px;text-align:center">この月の' + (mttDiv === '中学部' ? '中学' : '高校') + 'の授業はまだ登録されていません。</div>';
+  var narrow = (document.getElementById('mtt-screen') || document.body).clientWidth < 720;
+  if (!narrow) {
+    html += '<div style="max-width:1300px;margin:0 auto">' + mttWeekTables(b) + '</div>';
+  } else {
+    // スマホ：1日ずつ縦に並べる（授業のある日・休みの日だけ）
+    var today = getTodayJST();
+    b.weeks.forEach(function (wk) {
+      wk.forEach(function (x) {
+        if (!x.inMonth) return;
+        var rows = b.periods.map(function (pp) {
+          var list = b.cells[x.iso + '|' + pp] || [];
+          return list.length ? '<div class="mtt-row"><div class="p">' + (MTT_CIRCLED[pp] || pp) + '</div><div class="c">' + mttCellHtml(list) + '</div></div>' : '';
+        }).join('');
+        if (!rows && !b.off[x.iso]) return;
+        html += '<div class="mtt-day" id="mtt-d-' + x.iso + '"' + (x.iso === today ? ' style="border:2px solid var(--orange)"' : '') + '><h4 style="color:' + (x.wd === '土' ? '#2D5FA6' : x.wd === '日' ? '#C0392B' : 'inherit') + '">' +
+          parseInt(x.iso.slice(5, 7), 10) + '/' + x.d + '（' + x.wd + '）' + (b.off[x.iso] ? ' <span class="mtt-off">' + escapeHtml(b.off[x.iso].join('・')) + '</span>' : '') + '</h4>' + rows + '</div>';
+      });
+    });
+  }
+  body.innerHTML = html;
+  // スマホ表示で今月なら、今日（無ければ次の授業日）までスクロール
+  if (narrow && mttMonth === mttThisMonth()) {
+    var t = getTodayJST(), cards = body.querySelectorAll('.mtt-day');
+    for (var i = 0; i < cards.length; i++) { if (cards[i].id.slice(6) >= t) { body.scrollTop = cards[i].offsetTop - 8; break; } }
+  }
+}
+
+// 印刷：A4横の印刷用ページを別ウィンドウで開く（1週ずつ改ページしない表）
+function mttPrint() {
+  if (!mttData) return;
+  var b = mttBuild();
+  var p = mttData.month.split('-');
+  var title = p[0] + '年 ' + parseInt(p[1], 10) + '月　' + (mttDiv === '中学部' ? '中学部' : '高校部') + ' 時間割';
+  var w = window.open('', '_blank');
+  if (!w) { showToast('ポップアップがブロックされました。許可してからもう一度押してください', 'error'); return; }
+  w.document.write('<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>' + escapeHtml(title) + '</title>' +
+    '<style>@page{size:A4 landscape;margin:8mm}body{font-family:"Noto Sans JP","Hiragino Sans",sans-serif;margin:0;padding:8px;color:#111}' +
+    'h1{font-size:18px;margin:0 0 4px}' + MTT_CSS + '.mtt-week th,.mtt-week td{font-size:11px}</style></head><body>' +
+    '<h1>' + escapeHtml(title) + '</h1><div class="mtt-legend">' + b.legend + '</div>' + mttWeekTables(b) +
+    '<script>setTimeout(function(){window.print();},300)<\/script></body></html>');
+  w.document.close();
+}
+
+
 // ===== ui1: PC用 左メニュー（カテゴリ別一覧）と「別タブで開く」 =====
 // ・PC表示（body.view-desktop）でスタッフ画面を開いているときだけ、左にカテゴリ別のメニューを出す。
 // ・各項目は app.html#f=キー のリンク。普通にクリックするとこの画面で開き、Ctrl/⌘クリック・中クリックで別タブに開ける。
@@ -65981,7 +66244,7 @@ async function termsDelete() {
 var SIDENAV_CATS = [
   ['今日の運営', ['home', 'missing', 'proxycheckin', 'checkinqr', 'attendance', 'attoverview', 'attsheet', 'supervision', 'makeup', 'seats', 'reghistory']],
   ['生徒', ['interview', 'examreq', 'alert', 'studentanalysis', 'schoolview', 'birthday', 'tsushin', 'shakei']],
-  ['授業・教材', ['class-master', 'timetable', 'check-item', 'quizstatus', 'classanalysis', 'appusage', 'testprep', 'app-math', 'app-chem', 'app-quiz', 'app-kobun', 'app-eitango']],
+  ['授業・教材', ['monthtt', 'class-master', 'timetable', 'check-item', 'quizstatus', 'classanalysis', 'appusage', 'testprep', 'app-math', 'app-chem', 'app-quiz', 'app-kobun', 'app-eitango']],
   ['連絡・予定', ['todo', 'calreg', 'line']],
   ['入塾', ['prospects', 'demo']],
   ['事務・集計', ['jimu', 'reportedit', 'reportbatch', 'komacount', 'billcheck', 'revenue']],
