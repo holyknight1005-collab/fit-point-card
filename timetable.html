@@ -36,6 +36,12 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
 .timebox .ts span{white-space:nowrap;margin-right:12px;display:inline-block}
 .tools{display:flex;align-items:center;gap:8px;margin:0 0 12px;flex-wrap:wrap}
 .tools input{flex:1;min-width:180px;max-width:360px;border:1px solid #E6DFD3;border-radius:8px;padding:7px 10px;font-size:14px;background:#fff}
+.gsel{display:inline-flex}
+.gsel button{border:1px solid #E6DFD3;background:#fff;padding:6px 12px;font-size:13px;font-weight:700;cursor:pointer;color:#444}
+.gsel button+button{border-left:0}
+.gsel button:first-child{border-radius:8px 0 0 8px}
+.gsel button:last-child{border-radius:0 8px 8px 0}
+.gsel button.on{background:var(--orange);border-color:var(--orange);color:#fff}
 .tools .clr{border:0;background:none;color:var(--muted);font-size:13px;cursor:pointer;padding:4px}
 #viewtabs{display:inline-flex;margin-left:auto}
 #viewtabs button{border:1px solid #E6DFD3;background:#fff;padding:5px 12px;font-size:12px;cursor:pointer;color:var(--muted)}
@@ -51,7 +57,12 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
 .wk thead th{background:var(--head);font-weight:700;line-height:1.35}
 .wk thead th.sat{color:var(--sat)} .wk thead th.sun{color:var(--sun)}
 .wk thead th.today{background:var(--orange);color:#fff}
-.wk th.p{width:34px;background:var(--head);vertical-align:middle;font-size:15px}
+.wk th.p{position:sticky;left:0;z-index:2;box-shadow:1px 0 0 var(--line),-1px 0 0 var(--line);width:34px;background:var(--head);vertical-align:middle;font-size:15px}
+.wk td.none{background:repeating-linear-gradient(135deg,#E9E5DE 0,#E9E5DE 4px,#F7F5F1 4px,#F7F5F1 8px)}
+.wtimes{font-size:12px;color:#444;line-height:1.7;margin:0 0 4px}
+.wt b{display:inline-block;margin-right:8px;font-weight:700}
+.wt b.we{color:var(--sat)}
+.wt span{white-space:nowrap;margin-right:10px;display:inline-block}
 .wk td.out{background:#EEE}
 .wk td.off{background:var(--off)}
 .wk td.today{background:var(--orange-l)}
@@ -92,7 +103,8 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
   <div class="upd" id="upd"></div>
   <div class="timebox" id="timebox"></div>
   <div class="tools">
-    <input id="q" type="search" placeholder="授業名でしぼりこみ（例：附属、2年）" enterkeyhint="search"><button class="clr" id="qclear">クリア</button>
+    <div class="gsel" id="gsel"><button data-g="">全学年</button><button data-g="1">1年</button><button data-g="2">2年</button><button data-g="3">3年</button></div>
+    <input id="q" type="search" placeholder="授業名でしぼりこみ（例：附属）" enterkeyhint="search"><button class="clr" id="qclear">クリア</button>
     <div id="viewtabs"><button data-v="week">1ヶ月の表</button><button data-v="day">日ごと</button></div>
   </div>
   <div id="content"><div class="empty">読み込み中…</div></div>
@@ -111,11 +123,12 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     div: qs.get('d') === 'chu' ? 'chu' : 'ko',
     month: /^\d{4}-\d{2}$/.test(qs.get('m') || '') ? qs.get('m') : null,
     kosotsu: qs.get('k') === '1',
-    view: null, q: '', data: null
+    view: null, q: '', g: '', data: null
   };
   function store(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} }
   function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   state.q = load('fit_tt_q') || '';
+  state.g = /^[123]$/.test(qs.get('g') || '') ? qs.get('g') : (load('fit_tt_g') || '');
   state.view = load('fit_tt_view2') || 'week';
 
   function pad(n) { return String(n).padStart(2, '0'); }
@@ -158,6 +171,8 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     var cells = {}, used = {};
     (D.sessions || []).forEach(function (s) {
       var school = String(s.school || '').replace(/^SSS[：:]\s*/, '');
+      // 学年でしぼる：その学年の授業と、学年の決まっていない授業（全学年向け）を残す
+      if (state.g && s.grades && String(s.grades).split(/[^0-9]+/).indexOf(state.g) === -1) return;
       var hay = (s.name + ' ' + school + ' ' + (s.subject || '')).toLowerCase();
       if (q.length && !q.every(function (w) { return hay.indexOf(w) !== -1; })) return;
       var p = s.period;
@@ -245,15 +260,24 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
       var h1 = '<tr><th class="p">日</th>' + w.map(function (x) {
         return '<th class="' + cls(x) + '">' + (x.inMonth ? x.d : '') + '<br>' + x.wd + (x.inMonth && b.off[x.iso] ? '<span class="offt">' + esc(b.off[x.iso].join('・')) + '</span>' : '') + '</th>';
       }).join('') + '</tr>';
+      // 左の限の列に、その週の時間（平日・土日）を小さく書く
+      var wd0 = w.filter(function (x) { return x.dow >= 1 && x.dow <= 5 && x.inMonth; })[0] || w[0], we0 = w.filter(function (x) { return x.dow === 6 && x.inMonth; })[0] || w.filter(function (x) { return x.dow === 0 && x.inMonth; })[0] || w[5];
       var rows = b.periods.map(function (p) {
         return '<tr><th class="p">' + (CIRC[p] || p) + '</th>' + w.map(function (x) {
           if (!x.inMonth) return '<td class="out"></td>';
           var list = b.cells[x.iso + '|' + p] || [];
+          if (!list.length && !ptime(x.iso, p)) return '<td class="none"></td>';   // その日には無い限（土日の7限など）は網掛け
           var c = x.iso === t ? 'today' : (b.off[x.iso] && !list.length ? 'off' : '');
           return '<td' + (c ? ' class="' + c + '"' : '') + '>' + list.map(function (it) { return '<div class="c">' + label(it) + '</div>'; }).join('') + '</td>';
         }).join('') + '</tr>';
       }).join('');
-      return '<div class="wkwrap"><table class="wk"><thead>' + h1 + '</thead><tbody>' + rows + '</tbody></table></div>';
+      var line = function (x, cls, lab) {
+        if (!x) return '';
+        var parts = b.periods.map(function (p) { var t = ptime(x.iso, p); return t ? '<span>' + (CIRC[p] || p) + t[0] + '〜' + t[1] + '</span>' : ''; }).join('');
+        return '<div class="wt"><b class="' + cls + '">' + lab + '</b>' + parts + '</div>';
+      };
+      var wkTimes = '<div class="wtimes">' + line(wd0, '', '平日') + line(we0, 'we', '土日') + '</div>';
+      return wkTimes + '<div class="wkwrap"><table class="wk"><thead>' + h1 + '</thead><tbody>' + rows + '</tbody></table></div>';
     }).join('');
   }
 
@@ -262,16 +286,21 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     document.getElementById('mlabel').textContent = mp[0] + '年' + (+mp[1]) + '月';
     document.querySelectorAll('#seg button').forEach(function (bt) { bt.classList.toggle('on', bt.getAttribute('data-d') === state.div); });
     document.querySelectorAll('#viewtabs button').forEach(function (bt) { bt.classList.toggle('on', bt.getAttribute('data-v') === state.view); });
+    document.querySelectorAll('#gsel button').forEach(function (bt) { bt.classList.toggle('on', bt.getAttribute('data-g') === state.g); });
     document.title = 'fit 時間割（' + (state.div === 'chu' ? '中学' : '高校') + '）' + (+mp[1]) + '月';
     var el = document.getElementById('content');
     if (!state.data) return;
     var b = build();
     renderLegend(b);
+    document.getElementById('timebox').style.display = state.view === 'week' ? 'none' : '';   // 表のときは週ごとに上に出すので、まとめは日ごと表示だけ
     document.getElementById('upd').textContent = state.data.updated_at ? '最終更新：' + fmtUpd(state.data.updated_at) : '';
     var body = state.view === 'week' ? renderWeek(b) : renderDay(b);
     var total = Object.keys(b.cells).length;
     if (!total) body = '<div class="empty">' + (state.q ? '「' + esc(state.q) + '」に合う授業はこの月にありません。' : 'この月の授業はまだ登録されていません。') + '</div>' + (state.view === 'week' ? body : '');
-    el.innerHTML = (state.q ? '<div class="note">「' + esc(state.q) + '」でしぼりこみ中</div>' : '') + body;
+    var notes = [];
+    if (state.g) notes.push(state.g + '年');
+    if (state.q) notes.push('「' + esc(state.q) + '」');
+    el.innerHTML = (notes.length ? '<div class="note">' + notes.join('・') + 'でしぼりこみ中（学年の決まっていない授業も表示）</div>' : '') + body;
     if (scrollToday) goToday(true);
   }
 
@@ -286,7 +315,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
       if (th) {
         var wrap = th.closest('.wkwrap');
         wrap.scrollIntoView({ block: 'start' });
-        if (wrap.scrollWidth > wrap.clientWidth) wrap.scrollLeft = Math.max(0, th.offsetLeft - 40);   // スマホ：今日の列が見えるように横へ
+        if (wrap.scrollWidth > wrap.clientWidth) { var pc = wrap.querySelector('th.p'); wrap.scrollLeft = Math.max(0, th.offsetLeft - (pc ? pc.offsetWidth : 0)); }   // スマホ：今日の列が見えるように横へ
       }
     }
   }
@@ -319,6 +348,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
   document.getElementById('todayBtn').onclick = function () { goToday(false); };
   document.querySelectorAll('#seg button').forEach(function (bt) { bt.onclick = function () { state.div = bt.getAttribute('data-d'); reload(false); }; });
   document.querySelectorAll('#viewtabs button').forEach(function (bt) { bt.onclick = function () { state.view = bt.getAttribute('data-v'); store('fit_tt_view2', state.view); render(true); }; });
+  document.querySelectorAll('#gsel button').forEach(function (bt) { bt.onclick = function () { state.g = bt.getAttribute('data-g'); store('fit_tt_g', state.g || null); render(false); }; });
   var qi = document.getElementById('q'), timer = null;
   qi.value = state.q;
   qi.oninput = function () { clearTimeout(timer); timer = setTimeout(function () { state.q = qi.value; store('fit_tt_q', state.q || null); render(false); }, 200); };
