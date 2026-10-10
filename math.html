@@ -610,7 +610,7 @@ window.fetch = async function (input, init) {
 setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && fitLoadSession()) fitRefresh(false); });
 // ===== /fit 共通ログイン =====
-const MATH_VERSION = '20261010sd1';
+const MATH_VERSION = '20261010se1';
 
 /* ===== 数式レンダリング（quiz.htmlと共通：KaTeX + toLatex）===== */
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -742,18 +742,6 @@ let bankSelIds=new Set();    // 選択中の unit id
 let bankQs=[], bIdx=0, bOK=0, bNG=0, bHistory=[], bTimer=null, bTimeLeft=0, bAnswered=false;
 let bankRangeLabel='';
 
-// 入力式の答え正規化（全角半角・空白・x= 有無を吸収）
-function normAns(s){
-  let t=String(s==null?'':s);
-  // 全角→半角（英数記号）
-  t=t.replace(/[Ａ-Ｚａ-ｚ０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0));
-  t=t.replace(/[＝]/g,'=').replace(/[＋]/g,'+').replace(/[－−ー]/g,'-')
-     .replace(/[／]/g,'/').replace(/[（]/g,'(').replace(/[）]/g,')')
-     .replace(/[，、]/g,',').replace(/　/g,' ');
-  t=t.replace(/\s+/g,'');          // 空白全除去
-  t=t.replace(/^x=/i,'');          // 先頭 x= を無視
-  return t.toLowerCase();
-}
 
 // 単元リスト取得
 async function loadBankUnits(){
@@ -859,8 +847,8 @@ async function startBank(){
   if(ids.length===0){ showToast('単元を選んでね','info'); return; }
   try{
     showLoading('問題を準備中...');
-    const q='unit_id=in.('+ids.join(',')+')&is_active=eq.true&select=id,unit_id,qtype,text,choices,answer,answer_alts,explanation,difficulty';
-    let pool=await sbGet('math_problems',q);
+    // sec5: 答え・解説を含まない問題を関数から受け取る（答え合わせは1問ずつサーバーで）
+    let pool=await fitRpc('fit_math_problems', { p_units: ids.map(Number) });
     hideLoading();
     if(!pool || pool.length===0){ showToast('この範囲にはまだ問題がありません','info'); return; }
     shuffle(pool);
@@ -911,12 +899,26 @@ function bShowQ(){
   }
 }
 
-function bAnswerChoice(chosen,btn){
+// sec5: 1問の答え合わせ（サーバー）。正誤・正解・解説を受け取り、q に入れる。失敗時は null
+async function bCheck(q, given){
+  try{
+    const r = await fitRpc('fit_math_check', { p_id: q.id, p_given: given });
+    if(!r) throw new Error('no result');
+    q.answer = r.answer; q.explanation = r.explanation;
+    return !!r.correct;
+  }catch(e){
+    showToast('答え合わせに失敗しました。もう一度押してね','error');
+    return null;
+  }
+}
+
+async function bAnswerChoice(chosen,btn){
   if(bAnswered)return;
   bAnswered=true;
   const q=bankQs[bIdx];
-  const correct = chosen===q.answer;
   document.querySelectorAll('#b-choices button').forEach(b=>{ b.disabled=true; });
+  const correct = await bCheck(q, chosen);
+  if(correct===null){ bAnswered=false; document.querySelectorAll('#b-choices button').forEach(b=>{ b.disabled=false; }); return; }
   const fb=document.getElementById('b-feedback');
   fb.style.display='block';
   if(correct){
@@ -933,11 +935,12 @@ function bAnswerChoice(chosen,btn){
   setTimeout(bNext,q.explanation?2600:1500);
 }
 
-function bGiveUp(btn){
+async function bGiveUp(btn){
   if(bAnswered)return;
   bAnswered=true;
   const q=bankQs[bIdx];
   document.querySelectorAll('#b-choices button').forEach(b=>{ b.disabled=true; });
+  if(await bCheck(q, null)===null){ bAnswered=false; document.querySelectorAll('#b-choices button').forEach(b=>{ b.disabled=false; }); return; }
   bNG++; bHistory.push({q,ok:false});
   const fb=document.getElementById('b-feedback');
   fb.style.display='block';
@@ -946,15 +949,14 @@ function bGiveUp(btn){
   setTimeout(bNext,q.explanation?2600:1500);
 }
 
-function bSubmitInput(){
+async function bSubmitInput(){
   if(bAnswered)return;
   const q=bankQs[bIdx];
   const val=document.getElementById('b-input').value;
   if(val.trim()===''){ showToast('答えを入力してね','info'); return; }
   bAnswered=true;
-  const alts=Array.isArray(q.answer_alts)?q.answer_alts:[];
-  const targets=[q.answer,...alts].map(normAns);
-  const correct=targets.includes(normAns(val));
+  const correct = await bCheck(q, val);   // 表記ゆれ（全角・x= など）と別解の判定もサーバー側
+  if(correct===null){ bAnswered=false; return; }
   const fb=document.getElementById('b-feedback');
   fb.style.display='block';
   if(correct){
