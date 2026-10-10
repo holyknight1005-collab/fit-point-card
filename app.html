@@ -6743,7 +6743,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261010bc1';
+const APP_VERSION = '20261010pc1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -27646,6 +27646,56 @@ function cycleNext(c, isNormal) {
 }
 
 
+// ===== 20261010pc1: 2コマ並行の授業（同じ日の別コマは同じ回）=====
+// 長文読解のように、生徒ごとに受講コマ（preferred_period＝5限/6限など）を分けている授業は、
+// 同じ日に2コマあっても内容は同じ回。回番号は「日付ごとに1つ」進める。
+// それ以外の授業は、同じ日に2コマあればそれぞれ1回として数える（まれにあるケース）。
+const parallelClassCache = {};
+async function isParallelClass(classId) {
+  if (!classId) return false;
+  if (parallelClassCache[classId] !== undefined) return parallelClassCache[classId];
+  let v = false;
+  try {
+    const rows = await sbGet('class_enrollments',
+      'class_master_id=eq.' + classId + '&preferred_period=not.is.null&ended_on=is.null&select=id&limit=1') || [];
+    v = rows.length > 0;
+  } catch (e) { v = false; }
+  parallelClassCache[classId] = v;
+  return v;
+}
+// 2コマ並行の授業で、その日に既に回番号の付いた本授業があればその回を返す（無ければ null）
+async function parallelCycleOnDate(classId, dateISO) {
+  try {
+    const rows = await sbGet('class_sessions',
+      'class_master_id=eq.' + classId + '&session_date=eq.' + dateISO +
+      '&is_makeup=not.eq.true&cycle_no=not.is.null&select=cycle_year,cycle_month,cycle_no&order=period&limit=1') || [];
+    if (rows[0]) return { year: rows[0].cycle_year, month: rows[0].cycle_month, no: rows[0].cycle_no };
+  } catch (e) {}
+  return null;
+}
+// 後ろの回の振り直し：later（日付・限の順）に start から番号を振る。補習は飛ばす。
+//   firstTakes=true … 最初の回が start をそのまま引き継ぐ（削除・補習化の詰め直し）
+//   firstTakes=false … start の次から振る（編集した回の続き）
+//   parallel=true … 同じ日の別コマは同じ番号
+function cycleRenumberPlan(later, start, isNormal, parallel, firstTakes) {
+  const out = [];
+  let cyc = Object.assign({}, start);
+  let first = !!firstTakes;
+  let lastDate = null;
+  for (const s of later) {
+    if (s.is_makeup) continue;
+    if (parallel && lastDate && s.session_date === lastDate) {
+      out.push({ id: s.id, cyc: Object.assign({}, cyc) });
+      continue;
+    }
+    if (!first) cyc = cycleNext(cyc, isNormal);
+    first = false;
+    lastDate = s.session_date;
+    out.push({ id: s.id, cyc: Object.assign({}, cyc) });
+  }
+  return out;
+}
+
 // 表示用ラベル（通常=「4月2回目」、講習=「第3回」）
 function cycleLabel(c) {
   if (!c || c.no == null) return '';
@@ -27751,7 +27801,7 @@ async function previewSessions() {
     showToast('回数の指定が不正です（月1〜12・回1以上）', 'error'); return;
   }
   // 授業(class_master_id)ごとに独立してカウントする。区分(通常/講習)で採番則が変わる。
-  const cycleCursor = {};
+  // 20261010pc1: 番号は行ごとではなく、授業ごとに「日付→限」の順で振る（下の csAssignCycles）。
   const isNormalMap = {};
   if (useCycle) {
     showLoading('確認中...');
@@ -27760,11 +27810,13 @@ async function previewSessions() {
         const sel = row.querySelector('.cs-class-sel');
         if (sel && sel.value && isNormalMap[sel.value] === undefined) {
           isNormalMap[sel.value] = await isNormalClass(sel.value);
+          if (csSameDayMode[sel.value] === undefined) csSameDayMode[sel.value] = await isParallelClass(sel.value);
         }
       }
     } catch (e) { hideLoading(); showToast('区分の確認に失敗: ' + e.message, 'error'); return; }
     hideLoading();
   }
+  csCycleStart = useCycle ? { year: cyYear, month: cyMonth || null, no: cyNo, isNormalMap: isNormalMap } : null;
   rows.forEach(row => {
     const classSel = row.querySelector('.cs-class-sel');
     const periodSel = row.querySelector('.cs-period-sel');
@@ -27776,15 +27828,7 @@ async function previewSessions() {
       const dsKey = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
       const times = periodTimeOnDate(dsKey, period);
       if (!times) { csMissing.push((d.getMonth()+1) + '/' + d.getDate() + ' ' + period + '限'); return; }
-      let cyc = null;
-      if (useCycle) {
-        if (!cycleCursor[classSel.value]) {
-          cycleCursor[classSel.value] = { year: cyYear, month: isNormal ? cyMonth : null, no: cyNo };
-        } else {
-          cycleCursor[classSel.value] = cycleNext(cycleCursor[classSel.value], isNormal);
-        }
-        cyc = { ...cycleCursor[classSel.value] };
-      }
+      const cyc = null;   // 20261010pc1: 番号はあとで csAssignCycles がまとめて振る
       pendingSessions.push({
         class_master_id: classSel.value,
         class_name: className,
@@ -27799,6 +27843,7 @@ async function previewSessions() {
   });
 
   if (!valid) { showToast('授業を選択してください', 'error'); return; }
+  csAssignCycles();   // 20261010pc1
   if (csMissing.length) {
     const head = csMissing.slice(0, 5).join('、') + (csMissing.length > 5 ? ' ほか' : '');
     if (!pendingSessions.length) { showToast('選んだ限がその日の時間割にありません（' + head + '）', 'error'); return; }
@@ -27860,12 +27905,17 @@ async function previewSpotSessions() {
   // 補習でなければ、授業ごとに登録済みの続き番号を自動採番
   const cursor = {};
   const isNormalMap = {};
+  const spotParallel = {}, spotFixed = {};   // 20261010pc1
   if (!isMakeup) {
     showLoading('回数を確認中...');
     try {
       for (const rd of rowData) {
         if (cursor[rd.classId] !== undefined) continue;
         isNormalMap[rd.classId] = await isNormalClass(rd.classId);
+        // 20261010pc1: 2コマ並行の授業で、その日に既に回があれば同じ回にする（もう片方のコマを足すとき）
+        spotParallel[rd.classId] = await isParallelClass(rd.classId);
+        const same = spotParallel[rd.classId] ? await parallelCycleOnDate(rd.classId, dateStr) : null;
+        if (same) { cursor[rd.classId] = same; spotFixed[rd.classId] = true; continue; }
         const last = await fetchLastCycle(rd.classId);
         cursor[rd.classId] = last ? cycleNext(last, isNormalMap[rd.classId]) : null;
       }
@@ -27882,7 +27932,8 @@ async function previewSpotSessions() {
     let cyc = null;
     if (!isMakeup && cursor[rd.classId]) {
       cyc = { ...cursor[rd.classId] };
-      cursor[rd.classId] = cycleNext(cursor[rd.classId], isNormalMap[rd.classId]); // 同じ授業を複数コマ足す場合に進める
+      // 同じ授業を複数コマ足す場合に進める（2コマ並行の授業・その日の回に合わせたときは進めない）20261010pc1
+      if (!spotParallel[rd.classId] && !spotFixed[rd.classId]) cursor[rd.classId] = cycleNext(cursor[rd.classId], isNormalMap[rd.classId]);
     }
     pendingSessions.push({
       class_master_id: rd.classId,
@@ -27897,6 +27948,7 @@ async function previewSpotSessions() {
   });
 
   // プレビュー表示（定期登録と同じ見た目・同じ確定フローを使用。時間の一括変更も可能）
+  csCycleSource = 'spot';   // 20261010pc1: 単発登録では「同じ回にする」切り替えは出さない（番号は上で決定済み）
   renderCsPreview();
   document.getElementById('cs-preview').style.display = 'block';
   document.getElementById('cs-preview').scrollIntoView({behavior:'smooth'});
@@ -27924,6 +27976,13 @@ function renderCsPreview() {
     const timeLabel = (timeSet.length === 1) ? timeSet[0] : '（日により異なる）';
     const perSet = [...new Set(list.map(s => s.period == null ? '時間指定' : (s.period + '限')))];
     const perLabel = (perSet.length === 1) ? perSet[0] : '複数';
+    // 20261010pc1: 同じ日に2コマ以上ある授業は「同じ回にする」を切り替えられる（まとめて登録のときだけ）
+    const dupDay = list.some((s, i) => i > 0 && list[i - 1].session_date === s.session_date && !s.is_makeup && !list[i - 1].is_makeup);
+    const sameDayBox = (dupDay && csCycleStart && csCycleSource === 'bulk')
+      ? '<label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text);margin:2px 0 6px;cursor:pointer">' +
+          '<input type="checkbox"' + (csSameDayMode[k] ? ' checked' : '') + ' onchange="csToggleSameDay(\'' + escapeAttr(k) + '\', this.checked)">' +
+          '同じ日の2コマを同じ回にする<span style="color:var(--muted)">（長文読解のように同じ内容を2コマ開く授業）</span></label>'
+      : '';
     const rows = list.map(s => {
       const [py, pm, pd] = s.session_date.split('-').map(Number);
       const pDate = new Date(py, pm-1, pd);
@@ -27937,10 +27996,34 @@ function renderCsPreview() {
         '<div style="font-size:13px;font-weight:800;color:var(--text)">' + escapeHtml(g.name || '') +
           '<span style="font-size:11px;font-weight:600;color:var(--muted);margin-left:8px">' + list.length + '日 / ' + escapeHtml(perLabel) + ' ' + escapeHtml(timeLabel) + '</span></div>' +
         '<button onclick="csBulkTime(\'' + escapeAttr(k) + '\')" style="font-size:11px;font-weight:700;color:#2D6DB5;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:7px;padding:5px 12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">⏱ 時間を一括変更</button>' +
-      '</div>' + rows +
+      '</div>' + sameDayBox + rows +
     '</div>';
   }).join('');
   document.getElementById('cs-preview-list').innerHTML = html;
+}
+
+// 20261010pc1: まとめて登録の回番号を、授業ごとに「日付→限」の順で振る
+let csSameDayMode = {};     // classId -> true（同じ日の別コマは同じ回）
+let csCycleStart = null;    // { year, month, no, isNormalMap } まとめて登録の開始回
+let csCycleSource = '';     // 'bulk'（まとめて登録）| 'spot'
+function csAssignCycles() {
+  csCycleSource = 'bulk';
+  if (!csCycleStart) { pendingSessions.forEach(p => { p.cycle_year = null; p.cycle_month = null; p.cycle_no = null; }); return; }
+  const byClass = {};
+  pendingSessions.forEach(p => { (byClass[p.class_master_id] = byClass[p.class_master_id] || []).push(p); });
+  Object.keys(byClass).forEach(cid => {
+    const isNormal = csCycleStart.isNormalMap[cid] !== false;
+    const list = byClass[cid].slice().sort((a, b) =>
+      (a.session_date < b.session_date ? -1 : a.session_date > b.session_date ? 1 : (a.period || 0) - (b.period || 0)));
+    const start = { year: csCycleStart.year, month: isNormal ? csCycleStart.month : null, no: csCycleStart.no };
+    const plan = cycleRenumberPlan(list.map((p, i) => ({ id: i, session_date: p.session_date, is_makeup: p.is_makeup })), start, isNormal, !!csSameDayMode[cid], true);
+    plan.forEach(x => { const p = list[x.id]; p.cycle_year = x.cyc.year; p.cycle_month = x.cyc.month; p.cycle_no = x.cyc.no; });
+  });
+}
+function csToggleSameDay(classId, on) {
+  csSameDayMode[classId] = !!on;
+  csAssignCycles();
+  renderCsPreview();
 }
 
 // 指定授業（class_master_id）の全授業日の時間を一括で上書きする。
@@ -28126,7 +28209,20 @@ async function deleteSession(id) {
 
   // 詰め直しの対象になるか：通常授業の回（補習でなく cycle_no がある）だけ。
   //   補習・回番号なしの回は、削除しても連番に影響しないのでそのまま削除する。
-  const willRenumber = !!(target && !target.is_makeup && target.cycle_no != null);
+  let willRenumber = !!(target && !target.is_makeup && target.cycle_no != null);
+  // 20261010pc1: 2コマ並行の授業で、同じ日にもう片方のコマ（本授業）が残るなら回は減らないので詰めない
+  let delPar = false;
+  if (willRenumber) {
+    try {
+      delPar = await isParallelClass(target.class_master_id);
+      if (delPar) {
+        const sib = await sbGet('class_sessions',
+          'class_master_id=eq.' + target.class_master_id + '&session_date=eq.' + target.session_date +
+          '&is_makeup=not.eq.true&id=neq.' + id + '&select=id&limit=1') || [];
+        if (sib.length) willRenumber = false;
+      }
+    } catch (e) {}
+  }
 
   const baseMsg = 'この授業日を削除しますか？\n\n※出席の記録がすでにある場合、その記録は残る可能性があります（間違えて登録しただけならそのまま削除でOK）。';
   const renumMsg = willRenumber
@@ -28150,13 +28246,10 @@ async function deleteSession(id) {
         'class_master_id=eq.' + target.class_master_id + '&session_date=gt.' + target.session_date +
         '&select=id,session_date,period,is_makeup&order=session_date,period') || [];
       // 起点は「削除された回の番号」。最初の後続回がこの番号を引き継ぎ、以降 cycleNext で連番。
-      let cyc = { year: target.cycle_year, month: isNormal ? target.cycle_month : null, no: target.cycle_no };
-      let first = true;
-      for (const s of later) {
-        if (s.is_makeup) continue; // 補習は番号なしのまま飛ばす
-        if (!first) cyc = cycleNext(cyc, isNormal);
-        first = false;
-        await sbPatch('class_sessions', 'id=eq.' + s.id, { cycle_year: cyc.year, cycle_month: cyc.month, cycle_no: cyc.no });
+      // 20261010pc1: 2コマ並行の授業は同じ日の別コマを同じ番号に
+      const plan = cycleRenumberPlan(later, { year: target.cycle_year, month: isNormal ? target.cycle_month : null, no: target.cycle_no }, isNormal, delPar, true);
+      for (const x of plan) {
+        await sbPatch('class_sessions', 'id=eq.' + x.id, { cycle_year: x.cyc.year, cycle_month: x.cyc.month, cycle_no: x.cyc.no });
       }
     }
 
@@ -30671,6 +30764,13 @@ async function saveSessionCycle(classId, dateISO, periodStr, isNormal) {
     let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + dateISO;
     q += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
     await sbPatch('class_sessions', q, { cycle_year: y, cycle_month: isNormal ? m : null, cycle_no: no });
+    // 20261010pc1: 2コマ並行の授業は、同じ日のもう片方のコマ（本授業）も同じ回にそろえる
+    const editPar = await isParallelClass(classId);
+    if (editPar) {
+      await sbPatch('class_sessions',
+        'class_master_id=eq.' + classId + '&session_date=eq.' + dateISO + '&is_makeup=not.eq.true',
+        { cycle_year: y, cycle_month: isNormal ? m : null, cycle_no: no });
+    }
 
     if (cascade) {
       // 変更したこの回より「後」の同じ授業だけを、続きの番号に振り直す。
@@ -30678,11 +30778,9 @@ async function saveSessionCycle(classId, dateISO, periodStr, isNormal) {
       const later = await sbGet('class_sessions',
         'class_master_id=eq.' + classId + '&session_date=gt.' + dateISO +
         '&select=id,session_date,period,is_makeup&order=session_date,period') || [];
-      let cyc = { year: y, month: isNormal ? m : null, no: no };
-      for (const s of later) {
-        if (s.is_makeup) continue; // 補習は番号なしのまま
-        cyc = cycleNext(cyc, isNormal);
-        await sbPatch('class_sessions', 'id=eq.' + s.id, { cycle_year: cyc.year, cycle_month: cyc.month, cycle_no: cyc.no });
+      const plan = cycleRenumberPlan(later, { year: y, month: isNormal ? m : null, no: no }, isNormal, editPar, false);
+      for (const x of plan) {
+        await sbPatch('class_sessions', 'id=eq.' + x.id, { cycle_year: x.cyc.year, cycle_month: x.cyc.month, cycle_no: x.cyc.no });
       }
     }
     hideLoading();
@@ -30761,13 +30859,11 @@ async function toggleSessionMakeup(classId, dateISO, periodStr, curMakeup) {
         'class_master_id=eq.' + classId + '&session_date=gt.' + dateISO +
         '&select=id,session_date,period,is_makeup&order=session_date,period') || [];
       // 補習にした場合：最初の後続回がこの回の番号を引き継ぐ。通常に戻した場合：この回の次の番号から。
-      let cyc = Object.assign({}, startCyc);
-      let first = toMakeup;
-      for (const s of later) {
-        if (s.is_makeup) continue; // 補習は番号なしのまま
-        if (!first) cyc = cycleNext(cyc, isNormal);
-        first = false;
-        await sbPatch('class_sessions', 'id=eq.' + s.id, { cycle_year: cyc.year, cycle_month: cyc.month, cycle_no: cyc.no });
+      // 20261010pc1: 2コマ並行の授業は同じ日の別コマを同じ番号に
+      const mkPar = await isParallelClass(classId);
+      const plan = cycleRenumberPlan(later, startCyc, isNormal, mkPar, toMakeup);
+      for (const x of plan) {
+        await sbPatch('class_sessions', 'id=eq.' + x.id, { cycle_year: x.cyc.year, cycle_month: x.cyc.month, cycle_no: x.cyc.no });
         moved++;
       }
     }
@@ -31325,9 +31421,11 @@ async function submitCourseSessions() {
   }
   // 補習でなければ、登録済みの続きから自動採番（通常=月4回サイクル / 講習=通し番号）
   let cursor = null, isNormal = true;
+  let coursePar = false;   // 20261010pc1: 2コマ並行の授業
   if (!isMakeup && !fixedCyc) {
     try {
       isNormal = await isNormalClass(classId);
+      coursePar = await isParallelClass(classId);
       const last = await fetchLastCycle(classId);
       cursor = last ? cycleNext(last, isNormal) : null;
     } catch (e) { /* 回数が取れなくても登録は続行（番号なしになる） */ }
@@ -31335,8 +31433,10 @@ async function submitCourseSessions() {
   let success = 0;
   for (const d of dates) {
     const t = courseTimeOf(d);
+    // 20261010pc1: 2コマ並行の授業で、その日に既に回があれば同じ回を付け、続き番号は進めない
+    const sameDayCyc = (coursePar && !isMakeup && !fixedCyc) ? await parallelCycleOnDate(classId, d) : null;
     // fixedCyc があれば全日その番号、無ければ cursor（自動採番）
-    const useCyc = fixedCyc || cursor;
+    const useCyc = fixedCyc || sameDayCyc || cursor;
     const payload = {
       class_master_id: classId,
       session_date: d,
@@ -31352,7 +31452,7 @@ async function submitCourseSessions() {
     try {
       await sbPost('class_sessions', payload);
       success++;
-      if (!fixedCyc && cursor) cursor = cycleNext(cursor, isNormal);
+      if (!fixedCyc && !sameDayCyc && cursor) cursor = cycleNext(cursor, isNormal);
     } catch(e) {
       // dhu: school列が未追加の環境では school を外して再試行（それ以外＝重複はスキップ）
       if (/column|PGRST|400/i.test(e.message || '')) {
@@ -31360,7 +31460,7 @@ async function submitCourseSessions() {
           const p2 = Object.assign({}, payload); delete p2.school;
           await sbPost('class_sessions', p2);
           success++;
-          if (!fixedCyc && cursor) cursor = cycleNext(cursor, isNormal);
+          if (!fixedCyc && !sameDayCyc && cursor) cursor = cycleNext(cursor, isNormal);
         } catch(e2) { /* 重複はスキップ */ }
       }
     }
