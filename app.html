@@ -6743,7 +6743,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261010pc1';
+const APP_VERSION = '20261011sc1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -11410,6 +11410,7 @@ async function loadStaffHomeCalendar() {
       const names = teacherIds.map(id => staffNameMap[id]).filter(Boolean);
       return {
         date: s.session_date, period: s.period,
+        school: s.school || '',   // 20261011sc1
         start_time: s.start_time, end_time: s.end_time,
         class_name: (cm.name || '授業') + calSchoolSuffix(s.school),
         class_master_id: s.class_master_id,
@@ -27646,6 +27647,15 @@ function cycleNext(c, isNormal) {
 }
 
 
+// ===== 20261011sc1: 学校別の回を「授業×日付×限×学校」で区別する =====
+// 同じ授業・同じ日・同じ限に、学校の違う学校別の回を複数登録できるようにしたため（class_sessions_school_unique.sql）、
+// 1つの授業日を特定するときは学校も条件に入れる。school が undefined のとき（古い呼び出し）は条件を付けない。
+function sessSchoolQ(school) {
+  if (school === undefined || school === null) return '';
+  const sc = String(school).trim();
+  return sc ? '&school=eq.' + encodeURIComponent(sc) : '&or=(school.is.null,school.eq.)';
+}
+
 // ===== 20261010pc1: 2コマ並行の授業（同じ日の別コマは同じ回）=====
 // 長文読解のように、生徒ごとに受講コマ（preferred_period＝5限/6限など）を分けている授業は、
 // 同じ日に2コマあっても内容は同じ回。回番号は「日付ごとに1つ」進める。
@@ -28063,6 +28073,7 @@ function csBulkTime(classId) {
 async function confirmSessions() {
   if (!pendingSessions.length) return;
   showLoading('登録中...');
+  const csDupSkipped = [];   // 20261011sc1
   try {
     let success = 0;
     for (const s of pendingSessions) {
@@ -28079,10 +28090,11 @@ async function confirmSessions() {
           is_makeup: !!s.is_makeup
         });
         success++;
-      } catch(e) { /* 重複はスキップ */ }
+      } catch(e) { csDupSkipped.push(s.session_date.slice(5).replace('-', '/') + (s.period != null ? ' ' + s.period + '限' : '') + ' ' + (s.class_name || '')); }   // 20261011sc1
     }
     hideLoading();
     showToast('✅ ' + success + '件登録しました', 'success');
+    if (csDupSkipped.length) alert('次の授業日は登録できませんでした（同じ授業・同じ日・同じ限の授業日が既にあります）：\n' + csDupSkipped.join('\n'));
     document.getElementById('cs-preview').style.display = 'none';
     pendingSessions = [];
     loadSessionList();
@@ -28185,7 +28197,7 @@ async function loadSessionList() {
           '</div>' +
           '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">' +
             '<button onclick="openVideoLessonForSession(\'' + s.class_master_id + '\',\'' + date + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;color:#7B2D8B;background:#F3E6F7;border:1px solid #D9AEE3;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + videoBtnLabel + '</button>' +
-            '<button onclick="toggleSessionMakeup(\'' + s.class_master_id + '\',\'' + date + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.is_makeup ? '1' : '0') + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (s.is_makeup ? '↩ 通常に戻す' : '🔁 補習にする') + '</button>' +
+            '<button onclick="toggleSessionMakeup(\'' + s.class_master_id + '\',\'' + date + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.is_makeup ? '1' : '0') + '\',\'' + escapeAttr(s.school || '') + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (s.is_makeup ? '↩ 通常に戻す' : '🔁 補習にする') + '</button>' +
             '<button onclick="deleteSession(\'' + s.id + '\')" style="padding:2px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">削除</button>' +
           '</div>' +
         '</div>';
@@ -30171,6 +30183,7 @@ async function loadStaffCalendar() {
         start_time: s.start_time,
         end_time: s.end_time,
         class_name: (s.class_name || cm.name || '授業') + calSchoolSuffix(s.school),
+        school: s.school || '',   // 20261011sc1
         class_master_id: s.class_master_id,
         report_exempt: isReportExemptClass(cm),
         teacher_id: teacherId,
@@ -30405,10 +30418,10 @@ function openStaffCalModal(dateISO, simple) {
         }
       }
       const editBtn = s.class_master_id
-        ? '<button onclick="openSessionTimeEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.start_time ? String(s.start_time).slice(0,5) : '') + '\',\'' + (s.end_time ? String(s.end_time).slice(0,5) : '') + '\')" style="margin-left:8px;font-size:10px;font-weight:700;color:#2D6DB5;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">⏱ 時間変更</button>'
-          + '<button onclick="openSessionDateEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\')" style="margin-left:6px;font-size:10px;font-weight:700;color:#96690F;background:#FEF3E0;border:1px solid #E8C98A;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📅 日程変更</button>'
-          + '<button onclick="openSessionCycleEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\')" style="margin-left:6px;font-size:10px;font-weight:700;color:#7A3E9D;background:#F3EAFB;border:1px solid #C9A2E6;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🔢 回数編集</button>'
-          + '<button onclick="toggleSessionMakeup(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.is_makeup ? '1' : '0') + '\')" style="margin-left:6px;font-size:10px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (s.is_makeup ? '↩ 通常に戻す' : '🔁 補習にする') + '</button>'
+        ? '<button onclick="openSessionTimeEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.start_time ? String(s.start_time).slice(0,5) : '') + '\',\'' + (s.end_time ? String(s.end_time).slice(0,5) : '') + '\',\'' + escapeAttr(s.school || '') + '\')" style="margin-left:8px;font-size:10px;font-weight:700;color:#2D6DB5;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">⏱ 時間変更</button>'
+          + '<button onclick="openSessionDateEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + escapeAttr(s.school || '') + '\')" style="margin-left:6px;font-size:10px;font-weight:700;color:#96690F;background:#FEF3E0;border:1px solid #E8C98A;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">📅 日程変更</button>'
+          + '<button onclick="openSessionCycleEdit(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + escapeAttr(s.school || '') + '\')" style="margin-left:6px;font-size:10px;font-weight:700;color:#7A3E9D;background:#F3EAFB;border:1px solid #C9A2E6;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🔢 回数編集</button>'
+          + '<button onclick="toggleSessionMakeup(\'' + s.class_master_id + '\',\'' + dateISO + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.is_makeup ? '1' : '0') + '\',\'' + escapeAttr(s.school || '') + '\')" style="margin-left:6px;font-size:10px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:6px;padding:3px 8px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (s.is_makeup ? '↩ 通常に戻す' : '🔁 補習にする') + '</button>'
         : '';
       const chgBadge = s.change_log
         ? '<div style="font-size:10px;color:#96690F;background:#FEF3E0;border:1px solid #E8C98A;border-radius:6px;padding:2px 7px;margin-top:4px;display:inline-block">📅 ' +
@@ -30702,7 +30715,7 @@ function addEventFromCalModal(dateISO) {
 // 既存セッションの時間を変更（日付モーダルの授業 → 時間ピッカー → PATCH）
 // 登録済み授業日の「何月何回目（サイクル番号）」を後から編集。
 // 「この回以降を自動連番」ON なら、同じ授業の以降の授業日にも連番を振り直す（月4回で繰り上がり）。
-async function openSessionCycleEdit(classId, dateISO, periodStr) {
+async function openSessionCycleEdit(classId, dateISO, periodStr, schoolStr) {
   const curPeriod = periodStr === '' ? null : parseInt(periodStr);
   // この授業の区分・現在のサイクルを取得
   let isNormal = true, cur = { year: null, month: null, no: null };
@@ -30713,6 +30726,7 @@ async function openSessionCycleEdit(classId, dateISO, periodStr) {
   try {
     let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + dateISO;
     q += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
+    q += sessSchoolQ(schoolStr);   // 20261011sc1
     const rows = await sbGet('class_sessions', q + '&select=cycle_year,cycle_month,cycle_no&limit=1') || [];
     if (rows[0]) cur = { year: rows[0].cycle_year, month: rows[0].cycle_month, no: rows[0].cycle_no };
   } catch (e) {}
@@ -30741,13 +30755,13 @@ async function openSessionCycleEdit(classId, dateISO, periodStr) {
     '</div>' +
     '<label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;background:var(--surface2);border-radius:8px;padding:8px 10px;margin-bottom:14px">' +
       '<input type="checkbox" id="scyc-cascade" checked><span>この回より<b>後</b>の同じ授業も、続きの番号に自動で振り直す（前の回は変更しません）</span></label>' +
-    '<button onclick="saveSessionCycle(\'' + escapeAttr(classId) + '\',\'' + dateISO + '\',\'' + (curPeriod != null ? curPeriod : '') + '\',' + isNormal + ')" style="width:100%;padding:12px;background:linear-gradient(135deg,#7A3E9D,#5E2E7A);border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;margin-bottom:8px">保存する</button>' +
+    '<button onclick="saveSessionCycle(\'' + escapeAttr(classId) + '\',\'' + dateISO + '\',\'' + (curPeriod != null ? curPeriod : '') + '\',' + isNormal + (schoolStr !== undefined ? ',\'' + escapeAttr(schoolStr || '') + '\'' : '') + ')" style="width:100%;padding:12px;background:linear-gradient(135deg,#7A3E9D,#5E2E7A);border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;margin-bottom:8px">保存する</button>' +
     '<button onclick="document.getElementById(\'session-cycle-modal\').remove()" style="width:100%;padding:10px;background:transparent;border:none;color:var(--muted);font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">閉じる</button>' +
     '</div>';
   document.body.appendChild(overlay);
 }
 
-async function saveSessionCycle(classId, dateISO, periodStr, isNormal) {
+async function saveSessionCycle(classId, dateISO, periodStr, isNormal, schoolStr) {
   const curPeriod = periodStr === '' ? null : parseInt(periodStr);
   const y = parseInt(document.getElementById('scyc-y').value);
   const mEl = document.getElementById('scyc-m');
@@ -30763,6 +30777,7 @@ async function saveSessionCycle(classId, dateISO, periodStr, isNormal) {
     // この回を更新
     let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + dateISO;
     q += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
+    q += sessSchoolQ(schoolStr);   // 20261011sc1
     await sbPatch('class_sessions', q, { cycle_year: y, cycle_month: isNormal ? m : null, cycle_no: no });
     // 20261010pc1: 2コマ並行の授業は、同じ日のもう片方のコマ（本授業）も同じ回にそろえる
     const editPar = await isParallelClass(classId);
@@ -30794,7 +30809,7 @@ async function saveSessionCycle(classId, dateISO, periodStr, isNormal) {
 
 // 既存の授業回を「通常⇄補習」に切り替える（ui7: 切り替え後に回数を詰めるか確認する）。
 // 対象1回だけを is_makeup トグル。curMakeup は現在値（0/1文字列）。
-async function toggleSessionMakeup(classId, dateISO, periodStr, curMakeup) {
+async function toggleSessionMakeup(classId, dateISO, periodStr, curMakeup, schoolStr) {
   // ui7: 補習⇄通常を切り替えたあと、以降の回数を詰める／繰り下げるかを確認する。
   //   補習にする：この回の番号を外し、後ろの通常回がこの番号から順に繰り上がる（削除と同じ詰め方）。
   //   通常に戻す：直前の通常回の続き番号をこの回に付け、後ろの通常回を順に繰り下げる。
@@ -30808,6 +30823,7 @@ async function toggleSessionMakeup(classId, dateISO, periodStr, curMakeup) {
   const dateLabel = p[1] + '月' + p[2] + '日（' + wd[dt.getDay()] + '）' + (curPeriod != null ? '／' + curPeriod + '限' : '');
   let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + dateISO;
   q += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
+  q += sessSchoolQ(schoolStr);   // 20261011sc1
 
   // 対象回・授業区分・直前の通常回を取得（番号の計算に使う）
   let target = null, isNormal = true, prev = null;
@@ -30876,7 +30892,7 @@ async function toggleSessionMakeup(classId, dateISO, periodStr, curMakeup) {
 }
 
 // 授業日の「日付」を変更（生徒欠席などで日程を動かすとき）。session_date を PATCH。
-function openSessionDateEdit(classId, dateISO, periodStr) {
+function openSessionDateEdit(classId, dateISO, periodStr, schoolStr) {
   const curPeriod = periodStr === '' ? null : parseInt(periodStr);
   const p = dateISO.split('-').map(Number);
   const wd = ['日','月','火','水','木','金','土'];
@@ -30894,13 +30910,13 @@ function openSessionDateEdit(classId, dateISO, periodStr) {
     '<div class="form-label">新しい日付</div>' +
     '<input class="form-input-sm" type="date" id="session-date-new" value="' + dateISO + '" style="width:100%;margin-bottom:14px">' +
     '<div style="font-size:10px;color:var(--muted);margin-bottom:12px;line-height:1.5">※ 出席の記録がある場合は、その記録も新しい日付の授業として一緒に移動します。</div>' +
-    '<button onclick="saveSessionDate(\'' + escapeAttr(classId) + '\',\'' + dateISO + '\',\'' + (curPeriod != null ? curPeriod : '') + '\')" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;margin-bottom:8px">変更する</button>' +
+    '<button onclick="saveSessionDate(\'' + escapeAttr(classId) + '\',\'' + dateISO + '\',\'' + (curPeriod != null ? curPeriod : '') + '\'' + (schoolStr !== undefined ? ',\'' + escapeAttr(schoolStr || '') + '\'' : '') + ')" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;margin-bottom:8px">変更する</button>' +
     '<button onclick="document.getElementById(\'session-date-modal\').remove()" style="width:100%;padding:10px;background:transparent;border:none;color:var(--muted);font-size:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">閉じる</button>' +
     '</div>';
   document.body.appendChild(overlay);
 }
 
-async function saveSessionDate(classId, oldDate, periodStr) {
+async function saveSessionDate(classId, oldDate, periodStr, schoolStr) {
   const newDate = document.getElementById('session-date-new').value;
   if (!newDate) { showToast('新しい日付を選んでください', 'error'); return; }
   if (newDate === oldDate) { document.getElementById('session-date-modal').remove(); return; }
@@ -30909,9 +30925,20 @@ async function saveSessionDate(classId, oldDate, periodStr) {
   try {
     let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + oldDate;
     q += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
+    // 20261011sc1: 同じ限にほかの学校の学校別回が残るなら、出席記録はまとめて動かさない（ほかの学校の分まで動くため）
+    let otherSameSlot = 0;
+    if (schoolStr !== undefined) {
+      try {
+        const all = await sbGet('class_sessions', q + '&select=school') || [];
+        const mine = String(schoolStr || '').trim();
+        otherSameSlot = all.filter(r => String(r.school || '').trim() !== mine).length;
+      } catch (e) {}
+    }
+    q += sessSchoolQ(schoolStr);
     await sbPatch('class_sessions', q, { session_date: newDate });
+    if (otherSameSlot) showToast('同じ限にほかの学校の回があるため、出席記録は移動していません。必要なら出欠画面で付け直してください', 'info');
     // 出席記録（session_attendance）も同じ日付に移動（存在すれば）
-    try {
+    if (!otherSameSlot) try {
       let aq = 'class_master_id=eq.' + classId + '&session_date=eq.' + oldDate;
       aq += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
       await sbPatch('session_attendance', aq, { session_date: newDate });
@@ -30937,7 +30964,7 @@ async function saveSessionDate(classId, oldDate, periodStr) {
   } catch (e) { hideLoading(); showToast('エラー: ' + (e && e.message ? e.message : e), 'error'); }
 }
 
-function openSessionTimeEdit(classId, dateISO, periodStr, startStr, endStr) {
+function openSessionTimeEdit(classId, dateISO, periodStr, startStr, endStr, schoolStr) {
   const curPeriod = periodStr === '' ? null : parseInt(periodStr);
   const p = dateISO.split('-').map(Number);
   const wd = ['日','月','火','水','木','金','土'];
@@ -30953,6 +30980,7 @@ function openSessionTimeEdit(classId, dateISO, periodStr, startStr, endStr) {
         // 元のレコードを特定（class_master_id + session_date +（元period））
         let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + dateISO;
         q += (curPeriod === null) ? '&period=is.null' : '&period=eq.' + curPeriod;
+        q += sessSchoolQ(schoolStr);   // 20261011sc1
         await sbPatch('class_sessions', q, {
           period: res.period,
           start_time: res.start,
@@ -31431,6 +31459,7 @@ async function submitCourseSessions() {
     } catch (e) { /* 回数が取れなくても登録は続行（番号なしになる） */ }
   }
   let success = 0;
+  const courseDupSkipped = [];   // 20261011sc1
   for (const d of dates) {
     const t = courseTimeOf(d);
     // 20261010pc1: 2コマ並行の授業で、その日に既に回があれば同じ回を付け、続き番号は進めない
@@ -31454,6 +31483,8 @@ async function submitCourseSessions() {
       success++;
       if (!fixedCyc && !sameDayCyc && cursor) cursor = cycleNext(cursor, isNormal);
     } catch(e) {
+      // 20261011sc1: 重複（既に同じ授業日がある）は黙って飛ばさず、あとでまとめて知らせる
+      if (/23505|duplicate|unique|409/i.test(e.message || '')) { courseDupSkipped.push(d.slice(5).replace('-', '/') + (t.period != null ? ' ' + t.period + '限' : '')); continue; }
       // dhu: school列が未追加の環境では school を外して再試行（それ以外＝重複はスキップ）
       if (/column|PGRST|400/i.test(e.message || '')) {
         try {
@@ -31461,12 +31492,18 @@ async function submitCourseSessions() {
           await sbPost('class_sessions', p2);
           success++;
           if (!fixedCyc && !sameDayCyc && cursor) cursor = cycleNext(cursor, isNormal);
-        } catch(e2) { /* 重複はスキップ */ }
+        } catch(e2) { courseDupSkipped.push(d.slice(5).replace('-', '/') + (t.period != null ? ' ' + t.period + '限' : '')); }
+      } else {
+        courseDupSkipped.push(d.slice(5).replace('-', '/') + (t.period != null ? ' ' + t.period + '限' : '') + '（' + String(e.message || e).slice(0, 40) + '）');
       }
     }
   }
   hideLoading();
   showToast('✅ ' + success + '日分の授業を登録しました' + (isMakeup ? '（補習）' : ''), 'success');
+  if (courseDupSkipped.length) {
+    alert('次の授業日は登録できませんでした（同じ授業・同じ日・同じ限' + (schoolOn ? '・同じ学校' : '') + 'の授業日が既にあります）：\n' + courseDupSkipped.join('\n') +
+      (schoolOn ? '' : '\n\n学校別の回として別の学校の分を入れる場合は「学校別の回として登録」をONにしてください。'));
+  }
   closeCourseSessionModal();
   courseSelectedDates.clear();
   courseDateTimes = {};
@@ -34427,7 +34464,7 @@ async function openClassAttendance(classId, date, period) {
     const wantKey = date + '|' + perKey(period);
     let matched = '';
     for (const opt of ssel.options) {
-      if (opt.value === wantKey) { matched = opt.value; break; }
+      if (opt.value === wantKey || opt.value.indexOf(wantKey + '|') === 0) { matched = opt.value; break; }   // 20261011sc1: 末尾に学校
       if (!matched && opt.value.indexOf(date + '|') === 0) matched = opt.value;
     }
     if (matched) {
@@ -41111,7 +41148,7 @@ async function onAttClassChange() {
         const wd = ['日','月','火','水','木','金','土'][d.getDay()];
         const cyc = s.is_makeup ? '・🔁補習' : (s.cycle_no != null ? '・' + sessionCycleLabel(s) : '');
         const label = (d.getMonth()+1) + '/' + d.getDate() + '（' + wd + '）' + (hasPer(s.period) ? ' ' + s.period + '限' : '') + cyc + calSchoolSuffix(s.school);
-        return '<option value="' + s.session_date + '|' + perKey(s.period) + '">' + label + '</option>';
+        return '<option value="' + s.session_date + '|' + perKey(s.period) + '|' + escapeAttr(String(s.school || '').trim()) + '">' + label + '</option>';   // 20261011sc1: 学校も含める
       }).join('');
   }
   // デフォルトはマトリクス表ビュー
@@ -41146,9 +41183,11 @@ async function loadAttendanceRoster() {
     const rb = document.getElementById('att-review-bar'); if (rb) rb.style.display = 'none';
     return;
   }
-  const [sdate, periodStr] = sv.split('|');
+  const svParts = sv.split('|');
+  const sdate = svParts[0], periodStr = svParts[1];
+  const svSchool = svParts.length >= 3 ? svParts.slice(2).join('|') : undefined;   // 20261011sc1
   const period = periodStr ? parseInt(periodStr) : null;
-  attSelectedSession = { session_date: sdate, period: period };
+  attSelectedSession = { session_date: sdate, period: period, school: svSchool };
   loadClassReport(classId, sdate); // 授業報告（授業×日付）を読み込み
   // dlm145: この授業回が補習回(is_makeup)かを先に取得。補習回は「来ない子＝欠」ではなく
   //  初期値を「記録なし(none)」にする（補習は出る必要がない子まで自動で欠にしないため）。
@@ -41157,6 +41196,7 @@ async function loadAttendanceRoster() {
   try {
     let qm = 'class_master_id=eq.' + classId + '&session_date=eq.' + sdate;
     qm += (period === null) ? '&period=is.null' : '&period=eq.' + period;
+    qm += sessSchoolQ(svSchool);   // 20261011sc1
     const mrows = await sbGetTolerant('class_sessions', qm + '&select=is_makeup,school&limit=1', qm + '&select=is_makeup&limit=1') || [];
     attSessionIsMakeup = !!(mrows[0] && mrows[0].is_makeup);
     attSessSchool = (mrows[0] && mrows[0].school) ? String(mrows[0].school).trim() : '';
@@ -41169,6 +41209,7 @@ async function loadAttendanceRoster() {
     try {
       let q = 'class_master_id=eq.' + classId + '&session_date=eq.' + sdate;
       q += (period === null) ? '&period=is.null' : '&period=eq.' + period;
+      q += sessSchoolQ(svSchool);   // 20261011sc1
       const rows = await sbGet('class_sessions', q + '&select=cycle_year,cycle_month,cycle_no,is_makeup&limit=1') || [];
       const el = document.getElementById('att-report-cyc');
       if (el) {
