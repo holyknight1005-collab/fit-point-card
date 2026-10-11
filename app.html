@@ -2431,6 +2431,18 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
       </div>
       <div id="home-sent-todos" style="display:none;flex-direction:column;gap:6px;margin-top:8px"></div>
     </div>
+    <!-- 20261011sp1: 👥 スタッフのログイン状況（全員がお互いに見られる） -->
+    <div id="home-presence-section" style="display:none;background:var(--surface);border:1.5px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-top:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="font-size:14px;font-weight:700;color:var(--text)">👥 スタッフのログイン状況</span>
+        <span id="home-presence-count" style="font-size:11px;font-weight:700;color:#2E7D32;background:#E6F4E7;border-radius:20px;padding:2px 10px">―</span>
+        <button onclick="loadHomeStaffPresence(true)" style="margin-left:auto;font-size:11px;font-weight:700;color:var(--muted);background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:3px 10px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🔄</button>
+      </div>
+      <div id="home-presence-list" style="display:flex;flex-direction:column;gap:4px">
+        <div style="font-size:12px;color:var(--muted)">読み込み中...</div>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">🟢＝今アプリを開いている（2分以内）。利用時間は、アプリの画面が前に出ていた時間（1分単位）です。教科アプリの時間は入りません。</div>
+    </div>
     <div id="staff-home-cal-box">
       <div class="section-title">📅 カレンダー</div>
       <div class="card-box">
@@ -6749,7 +6761,7 @@ body.view-desktop #unified-cal-grid .cal-day-rich .u-sess-name{font-size:10px;li
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261011sb2';
+const APP_VERSION = '20261011sp1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -9701,6 +9713,7 @@ async function initStaff() {
     renderWkDivFilter();
     loadTodayTasks();
     loadHomeStaffPoints();
+    try { startStaffPresence(); loadHomeStaffPresence(true); } catch (e) {}   // 20261011sp1
     // 定期ToDoの今月ぶんを生成してから自分のToDoを描画する
     // （サーバー側スケジューラが無いので起動時に検出して作る）
     runRecurringTodoGeneration().then(() => { try { loadHomeMyTodos(); } catch (e) {} });
@@ -67877,6 +67890,156 @@ function renderMissingList() {
       }).join('') + '</div></details>';
   });
   body.innerHTML = h;
+}
+
+// ===== 20261011sp1: スタッフのログイン状況 =====
+// アプリの画面が前に出ている間だけ、1分ごとにサーバーへ記録（fit_staff_ping）。
+// 一覧は fit_staff_activity_summary、タップで fit_staff_activity_days（直近7日）。
+let spTimerStarted = false;
+let spShowAll = false;
+let spOpenId = null;
+let spCache = { staff: [], sum: {} };
+let spUnavailable = false;   // SQL未実行など
+function spPing() {
+  if (spUnavailable) return;
+  if (!currentStaff || !fitSession) return;
+  if (document.visibilityState !== 'visible') return;
+  fitRpc('fit_staff_ping', {}).catch(function (e) {
+    if (/ 404 /.test(String(e && e.message))) spUnavailable = true;
+  });
+}
+function startStaffPresence() {
+  spPing();
+  if (spTimerStarted) return;
+  spTimerStarted = true;
+  setInterval(function () {
+    spPing();
+    // ホームが開いているときは一覧も2分ごとに更新
+    const scr = document.getElementById('screen-staff');
+    if (scr && scr.classList.contains('active') && document.visibilityState === 'visible' && (Date.now() / 60000 | 0) % 2 === 0) {
+      loadHomeStaffPresence(false);
+    }
+  }, 60000);
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') spPing(); });
+}
+function spFmtMin(m) {
+  m = m || 0;
+  if (m < 60) return m + '分';
+  const h = Math.floor(m / 60), r = m % 60;
+  return h + '時間' + (r ? r + '分' : '');
+}
+function spJst(d) {   // Date → 日本時間の {ymd, hm, md}
+  const t = new Date(d.getTime() + 9 * 3600000);
+  const y = t.getUTCFullYear(), mo = t.getUTCMonth() + 1, da = t.getUTCDate();
+  return { ymd: y + '-' + String(mo).padStart(2, '0') + '-' + String(da).padStart(2, '0'),
+           hm: t.getUTCHours() + ':' + String(t.getUTCMinutes()).padStart(2, '0'), md: mo + '/' + da };
+}
+function spIsOnline(row) {
+  return !!(row && row.last_seen && (Date.now() - new Date(row.last_seen).getTime()) < 3 * 60000);
+}
+function spLastText(row) {
+  if (!row || !row.last_seen) return '記録なし';
+  const d = new Date(row.last_seen);
+  const diff = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (diff < 3) return 'ログイン中';
+  if (diff < 60) return diff + '分前';
+  const j = spJst(d), today = getTodayJST();
+  const yest = spJst(new Date(Date.now() - 86400000)).ymd;
+  if (j.ymd === today) return '今日 ' + j.hm;
+  if (j.ymd === yest) return '昨日 ' + j.hm;
+  return j.md + ' ' + j.hm;
+}
+async function loadHomeStaffPresence(force) {
+  const sec = document.getElementById('home-presence-section');
+  if (!sec || !currentStaff) return;
+  if (spUnavailable) { sec.style.display = 'none'; return; }
+  try {
+    const [staff, sum] = await Promise.all([
+      (force || !spCache.staff.length) ? sbGet('staff', 'is_active=eq.true&select=id,name,staff_id&order=staff_id') : Promise.resolve(spCache.staff),
+      fitRpc('fit_staff_activity_summary', {})
+    ]);
+    spCache.staff = staff || [];
+    spCache.sum = {};
+    (sum || []).forEach(function (r) { spCache.sum[r.staff_id] = r; });
+    sec.style.display = '';
+    renderHomeStaffPresence();
+  } catch (e) {
+    if (/ 404 /.test(String(e && e.message))) { spUnavailable = true; sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    const el = document.getElementById('home-presence-list');
+    if (el) el.innerHTML = '<div style="font-size:12px;color:var(--muted)">読み込めませんでした</div>';
+  }
+}
+function renderHomeStaffPresence() {
+  const el = document.getElementById('home-presence-list');
+  const cnt = document.getElementById('home-presence-count');
+  if (!el) return;
+  const rows = spCache.staff.map(function (s) { return { s: s, a: spCache.sum[s.staff_id] || null }; });
+  rows.sort(function (x, y) {
+    const ox = spIsOnline(x.a) ? 1 : 0, oy = spIsOnline(y.a) ? 1 : 0;
+    if (ox !== oy) return oy - ox;
+    const lx = x.a && x.a.last_seen ? new Date(x.a.last_seen).getTime() : 0;
+    const ly = y.a && y.a.last_seen ? new Date(y.a.last_seen).getTime() : 0;
+    return ly - lx;
+  });
+  const online = rows.filter(function (r) { return spIsOnline(r.a); });
+  if (cnt) cnt.textContent = '🟢 ' + online.length + '人ログイン中';
+  // 初期表示：ログイン中＋今日使った人。「全員を表示」で残りも。
+  const today = getTodayJST();
+  const shown = spShowAll ? rows : rows.filter(function (r) {
+    return spIsOnline(r.a) || (r.a && r.a.last_seen && spJst(new Date(r.a.last_seen)).ymd === today);
+  });
+  let h = '';
+  if (!shown.length) h += '<div style="font-size:12px;color:var(--muted);padding:4px 0">今日はまだ誰も使っていません</div>';
+  shown.forEach(function (r) {
+    const on = spIsOnline(r.a);
+    const open = (spOpenId === r.s.staff_id);
+    h += '<div onclick="toggleStaffPresenceDetail(\'' + escapeHtml(r.s.staff_id) + '\')" style="display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;cursor:pointer;background:' + (open ? '#F4F7FB' : 'transparent') + '">' +
+      '<span style="font-size:10px">' + (on ? '🟢' : '⚪') + '</span>' +
+      '<span style="font-size:13px;font-weight:700;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(r.s.name || r.s.staff_id) + '</span>' +
+      '<span style="font-size:11px;color:' + (on ? '#2E7D32' : 'var(--muted)') + ';font-weight:' + (on ? '700' : '400') + ';white-space:nowrap">' + escapeHtml(spLastText(r.a)) + '</span>' +
+      '<span style="margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap">今日 <b style="color:var(--text)">' + spFmtMin(r.a ? r.a.today_min : 0) + '</b>　7日 <b style="color:var(--text)">' + spFmtMin(r.a ? r.a.week_min : 0) + '</b></span>' +
+      '</div>' +
+      (open ? '<div id="sp-detail-' + escapeHtml(r.s.staff_id) + '" style="margin:0 8px 6px 28px;font-size:11px;color:var(--muted)">読み込み中...</div>' : '');
+  });
+  const rest = rows.length - shown.length;
+  if (spShowAll) h += '<button onclick="spShowAll=false;renderHomeStaffPresence()" style="margin-top:4px;font-size:11px;font-weight:700;color:var(--muted);background:none;border:none;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;text-align:left">▲ 今日使った人だけにする</button>';
+  else if (rest > 0) h += '<button onclick="spShowAll=true;renderHomeStaffPresence()" style="margin-top:4px;font-size:11px;font-weight:700;color:#2C5FA8;background:none;border:none;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;text-align:left">▼ 全員を表示（ほか' + rest + '人）</button>';
+  el.innerHTML = h;
+  if (spOpenId) loadStaffPresenceDetail(spOpenId);
+}
+function toggleStaffPresenceDetail(sid) {
+  spOpenId = (spOpenId === sid) ? null : sid;
+  renderHomeStaffPresence();
+}
+async function loadStaffPresenceDetail(sid) {
+  const box = document.getElementById('sp-detail-' + sid);
+  if (!box) return;
+  try {
+    const days = await fitRpc('fit_staff_activity_days', { p_staff: sid }) || [];
+    const byDay = {};
+    days.forEach(function (d) { byDay[d.day] = d; });
+    const wd = ['日', '月', '火', '水', '木', '金', '土'];
+    let h = '<div style="display:flex;flex-direction:column;gap:3px">';
+    for (let i = 0; i < 7; i++) {
+      const dt = new Date(Date.now() - i * 86400000);
+      const j = spJst(dt);
+      const w = wd[new Date(j.ymd + 'T00:00:00+09:00').getDay()];
+      const d = byDay[j.ymd];
+      const m = d ? d.minutes : 0;
+      const pct = Math.min(100, Math.round(m / 480 * 100));   // 8時間で満タン
+      h += '<div style="display:flex;align-items:center;gap:6px">' +
+        '<span style="width:58px;white-space:nowrap">' + j.md + '（' + w + '）</span>' +
+        '<span style="flex:1;height:8px;background:#EEF1F5;border-radius:4px;overflow:hidden"><span style="display:block;height:100%;width:' + pct + '%;background:#4A7FC0"></span></span>' +
+        '<span style="width:64px;text-align:right;color:var(--text);font-weight:700;white-space:nowrap">' + spFmtMin(m) + '</span>' +
+        '<span style="width:84px;white-space:nowrap">' + (d ? spJst(new Date(d.first_at)).hm + '〜' + spJst(new Date(d.last_at)).hm : '') + '</span>' +
+        '</div>';
+    }
+    h += '</div>';
+    box.innerHTML = h;
+  } catch (e) {
+    box.textContent = '読み込めませんでした';
+  }
 }
 </script>
 </body>
