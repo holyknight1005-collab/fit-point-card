@@ -6817,7 +6817,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261011os1';
+const APP_VERSION = '20261012tr1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -45188,21 +45188,27 @@ async function olLoadStudents() {
   if (!box) return;
   olSetAffType(olAffType);
   try {
-    const rows = await sbGet('online_students', 'select=*&order=created_at.desc');
-    olStudentsCache = rows;
-    if (!rows.length) { box.innerHTML = '<div style="color:var(--muted);font-size:13px">まだ受講者がいません</div>'; return; }
+    const allRows = await sbGet('online_students', 'select=*&order=created_at.desc');
+    olStudentsCache = allRows;
+    // 20261012tr1: 無料体験（受付設定・体験者の期限・重複の⚠）
+    const tr = await olTrialInfo(allRows);
+    const rows = allRows.filter(s => olStuFilter === 'trial' ? s.is_trial : olStuFilter === 'paid' ? !s.is_trial : true);
+    const head = olTrialPanelHtml(tr, allRows);
+    if (!rows.length) { box.innerHTML = head + '<div style="color:var(--muted);font-size:13px">' + (allRows.length ? 'この絞り込みの受講者はいません' : 'まだ受講者がいません') + '</div>'; return; }
     let olRanksL = null, olBadgeCnt = {};
     try { olRanksL = await sbGet('online_ranks', 'is_active=not.is.false&segment=is.null&select=name,min_points&order=min_points.asc'); } catch (e) { olRanksL = null; }
     try { const _sb = await sbGet('online_student_badges', 'is_active=not.is.false&select=online_student_id'); (_sb || []).forEach(b => { olBadgeCnt[b.online_student_id] = (olBadgeCnt[b.online_student_id] || 0) + 1; }); } catch (e) { olBadgeCnt = {}; }
-    box.innerHTML = rows.map(s => {
+    box.innerHTML = head + rows.map(s => {
       const active = (s.is_active !== false);
       const badge = active
         ? '<span style="font-size:9px;background:#E8F6EE;color:#1E6B3F;padding:2px 7px;border-radius:9px;font-weight:700">利用中</span>'
         : '<span style="font-size:9px;background:#FDECEA;color:#943126;padding:2px 7px;border-radius:9px;font-weight:700">停止中</span>';
       const copyText = 'ログインID：' + s.login_id + '\\nパスワード：' + s.password;
+      const trialHtml = s.is_trial ? olTrialCardHtml(s, tr) : '';
       return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;opacity:' + (active ? '1' : '0.6') + '">'
       + '<div style="font-weight:700;font-size:14px">' + olEsc(s.name) + '　' + badge
       +   ' <span style="font-size:11px;color:var(--muted);font-weight:600">透かしNo.' + String(s.id).padStart(4,'0') + '</span></div>'
+      + trialHtml
       + '<div style="font-size:12px;color:var(--muted);margin-top:2px">' + olEsc(olAffLabel(s)) + (s.nickname ? '　<span style="color:var(--text)">ニックネーム：<b>' + olEsc(s.nickname) + '</b></span>' : '') + '</div>'
       + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:7px">'
       +   (olRankName(Number(s.points||0), olRanksL) ? '<span style="font-size:11px;font-weight:800;color:#D9832A;background:#FFF3E0;border:1px solid #F0D0A0;padding:2px 9px;border-radius:9px">★ ' + olEsc(olRankName(Number(s.points||0), olRanksL)) + '</span>' : '')
@@ -45225,6 +45231,94 @@ async function olLoadStudents() {
       + '</div></div>';
     }).join('');
   } catch (e) { box.innerHTML = '<div style="color:#C0392B;font-size:12px">読み込み失敗: ' + olEsc(e.message) + '</div>'; }
+}
+
+// ===== 20261012tr1: 無料体験 =====
+// 体験希望者は online.html?trial=1 で「氏名・高校・都道府県・メール」を入れると、その場で
+// アカウントと体験講座の受講権（online_settings.trial_days 日、初期7日）ができる（trial_register.sql の fit_trial_register）。
+// ここでは受付の設定（体験講座・終了後の案内文）と、体験者の期限・重複（同じ端末・同じ回線）を表示する。
+var olStuFilter = 'all';   // all | paid | trial
+const OL_TRIAL_URL = 'https://holyknight1005-collab.github.io/fit-point-card/online.html?trial=1';
+async function olTrialInfo(rows) {
+  const info = { courseId: '', contact: '', days: '7', courses: [], exp: {}, dupDev: {}, dupIp: {}, ok: true };
+  try {
+    const st = await sbGet('online_settings', 'key=in.(trial_course_id,trial_contact,trial_days)&select=key,value') || [];
+    st.forEach(r => { if (r.key === 'trial_course_id') info.courseId = String(r.value || ''); if (r.key === 'trial_contact') info.contact = r.value || ''; if (r.key === 'trial_days') info.days = r.value || '7'; });
+    info.courses = await sbGet('online_courses', 'is_active=not.is.false&select=id,title&order=id') || [];
+    if (info.courseId) {
+      const en = await sbGet('online_enrollments', 'online_course_id=eq.' + encodeURIComponent(info.courseId) + '&select=online_student_id,expires_at') || [];
+      en.forEach(e => { info.exp[e.online_student_id] = e.expires_at; });
+    }
+  } catch (e) { info.ok = false; }
+  const dev = {}, ip = {};
+  (rows || []).filter(s => s.is_trial).forEach(s => {
+    if (s.trial_device) (dev[s.trial_device] = dev[s.trial_device] || []).push(s);
+    if (s.trial_ip) (ip[s.trial_ip] = ip[s.trial_ip] || []).push(s);
+  });
+  Object.keys(dev).forEach(k => { if (dev[k].length > 1) dev[k].forEach(s => { info.dupDev[s.id] = dev[k].filter(x => x.id !== s.id).map(x => x.name); }); });
+  Object.keys(ip).forEach(k => { if (ip[k].length > 1) ip[k].forEach(s => { info.dupIp[s.id] = ip[k].filter(x => x.id !== s.id).map(x => x.name); }); });
+  return info;
+}
+function olTrialPanelHtml(tr, rows) {
+  const trials = (rows || []).filter(s => s.is_trial);
+  const now = new Date();
+  const activeN = trials.filter(s => s.is_active !== false && tr.exp[s.id] && new Date(tr.exp[s.id]) > now).length;
+  const warnN = trials.filter(s => tr.dupDev[s.id] || tr.dupIp[s.id]).length;
+  const fbtn = (k, label) => '<button onclick="olStuFilter=\'' + k + '\';olLoadStudents()" style="padding:5px 12px;border:1px solid ' + (olStuFilter === k ? 'var(--orange)' : 'var(--border)') + ';border-radius:14px;background:' + (olStuFilter === k ? 'var(--orange)' : '#fff') + ';color:' + (olStuFilter === k ? '#fff' : 'var(--text)') + ';font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">' + label + '</button>';
+  if (!tr.ok) return '<div style="background:#FDECEA;border:1px solid #E6B0AA;color:#943126;border-radius:10px;padding:10px;font-size:12px;margin-bottom:10px">無料体験の設定を読み込めませんでした（trial_register.sql が未実行の可能性）。</div>';
+  return '<div style="background:#FFF8EC;border:1.5px solid #F2C38B;border-radius:12px;padding:12px;margin-bottom:12px">'
+    + '<div style="font-weight:800;font-size:14px;color:#8A4B0B">🎁 無料体験の受付 <span style="font-size:12px;font-weight:600;color:var(--muted)">体験中 ' + activeN + '人／これまで ' + trials.length + '人' + (warnN ? '　<span style="color:#C0392B">⚠ 重複の疑い ' + warnN + '人</span>' : '') + '</span></div>'
+    + '<div style="font-size:12px;color:var(--muted);margin:6px 0 4px">申込ページ（LINE・チラシに載せるURL）</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><code style="font-size:12px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:5px 8px;word-break:break-all">' + OL_TRIAL_URL + '</code>'
+    +   '<button onclick="olCopyTrialUrl()" style="padding:5px 10px;border:1px solid var(--border);border-radius:7px;background:#fff;font-size:12px;font-weight:700;cursor:pointer">📋 コピー</button></div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px">'
+    +   '<label style="font-size:12px;color:var(--muted)">体験講座<br><select id="ol-trial-course" style="padding:7px;border:1px solid var(--border);border-radius:7px;font-size:13px;font-family:inherit;min-width:200px"><option value="">（受付を休止）</option>'
+    +     tr.courses.map(c => '<option value="' + c.id + '"' + (String(c.id) === tr.courseId ? ' selected' : '') + '>' + olEsc(c.title) + '</option>').join('') + '</select></label>'
+    +   '<label style="font-size:12px;color:var(--muted)">期間<br><input id="ol-trial-days" type="number" min="1" max="60" value="' + olEsc(tr.days) + '" style="width:60px;padding:7px;border:1px solid var(--border);border-radius:7px;font-size:13px">日</label>'
+    +   '<label style="font-size:12px;color:var(--muted);flex:1;min-width:220px">体験中・終了後に出す案内文<br><input id="ol-trial-contact" type="text" value="' + olEsc(tr.contact) + '" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid var(--border);border-radius:7px;font-size:13px;font-family:inherit"></label>'
+    +   '<button onclick="olSaveTrialSettings()" style="padding:8px 14px;border:0;border-radius:8px;background:var(--orange);color:#fff;font-size:13px;font-weight:700;cursor:pointer">保存</button>'
+    + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">期間と講座の変更は、これから登録する人に効きます（登録済みの人の期限は変わりません）。メール1つにつき1回／同じ回線から1日3件まで。怪しい登録は、その人の「利用停止」で止められます。</div>'
+    + '<div style="display:flex;gap:6px;margin-top:10px">' + fbtn('all', 'すべて') + fbtn('paid', '本受講') + fbtn('trial', '🎁 体験') + '</div>'
+    + '</div>';
+}
+function olTrialCardHtml(s, tr) {
+  const fmt = t => { const d = new Date(t); return isNaN(d) ? '' : (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  const exp = tr.exp[s.id] ? new Date(tr.exp[s.id]) : null, now = new Date();
+  let state = '';
+  if (!exp) state = '<span style="color:var(--muted)">期限なし（体験講座の受講権が見つかりません）</span>';
+  else if (exp > now) state = '<b style="color:#C06A12">体験中・あと ' + Math.max(1, Math.ceil((exp - now) / 86400000)) + ' 日</b>（' + fmt(exp) + ' まで）';
+  else state = '<span style="color:#943126;font-weight:700">体験終了</span>（' + fmt(exp) + '）';
+  const warns = [];
+  if (tr.dupDev[s.id]) warns.push('同じ端末で別の登録：' + tr.dupDev[s.id].map(olEsc).join('、'));
+  if (tr.dupIp[s.id]) warns.push('同じ回線で別の登録：' + tr.dupIp[s.id].map(olEsc).join('、'));
+  return '<div style="font-size:12px;margin-top:4px;line-height:1.7"><span style="font-size:10px;background:#FFF3E0;color:#C06A12;border:1px solid #F2C38B;padding:1px 7px;border-radius:9px;font-weight:800">🎁 体験</span> ' + state
+    + '<br><span style="color:var(--muted)">メール：</span>' + olEsc(s.email || '') + '　<span style="color:var(--muted)">登録：' + fmt(s.trial_registered_at || s.created_at) + '</span>'
+    + (warns.length ? '<br><span style="color:#C0392B;font-weight:700">⚠ ' + warns.join('／') + '</span>' : '')
+    + '</div>';
+}
+function olCopyTrialUrl() {
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(OL_TRIAL_URL).then(() => showToast('申込ページのURLをコピーしました', 'success'), () => prompt('このURLをコピーしてください', OL_TRIAL_URL));
+  else prompt('このURLをコピーしてください', OL_TRIAL_URL);
+}
+async function olSaveTrialSettings() {
+  const cid = (document.getElementById('ol-trial-course') || {}).value || '';
+  const days = parseInt((document.getElementById('ol-trial-days') || {}).value, 10);
+  const contact = ((document.getElementById('ol-trial-contact') || {}).value || '').trim();
+  if (!(days >= 1 && days <= 60)) { alert('期間は1〜60日で入れてください'); return; }
+  try {
+    const cur = await sbGet('online_settings', 'key=in.(trial_course_id,trial_contact,trial_days)&select=key') || [];
+    const has = k => cur.some(r => r.key === k);
+    const put = async (k, v) => {
+      if (has(k)) await sbPatch('online_settings', 'key=eq.' + k, { value: v, updated_at: new Date().toISOString() });
+      else await sbPost('online_settings', { key: k, value: v });
+    };
+    await put('trial_course_id', cid);
+    await put('trial_days', String(days));
+    await put('trial_contact', contact);
+    showToast(cid ? '無料体験の設定を保存しました' : '無料体験の受付を休止にしました', 'success');
+    olLoadStudents();
+  } catch (e) { alert('保存に失敗しました: ' + e.message); }
 }
 
 async function olToggleStudentActive(id, next) {
