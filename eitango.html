@@ -556,7 +556,17 @@ const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 // ・Supabase への fetch は自動でログイン中のトークンに差し替え、期限切れなら自動更新して1回だけ再送する。
 const FIT_SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
 const FIT_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
-const FIT_SESSION_KEY = 'fit_session_v1';
+// 20261011os1: オンライン受講者モード（?online=1）は online.html と同じ専用の保存場所を使う（塾のログインと分ける）
+const FIT_ONLINE_MODE0 = new URLSearchParams(location.search).get('online') === '1';
+const FIT_SESSION_KEY = FIT_ONLINE_MODE0 ? 'fit_session_online_v1' : 'fit_session_v1';
+(function migrateOnlineSession() {   // 旧版で共有の場所に入ったオンライン受講のログインを引き取る
+  if (!FIT_ONLINE_MODE0) return;
+  try {
+    if (localStorage.getItem('fit_session_online_v1')) return;
+    const shared = JSON.parse(localStorage.getItem('fit_session_v1') || 'null');
+    if (shared && shared.kind === 'online') { localStorage.setItem('fit_session_online_v1', JSON.stringify(shared)); localStorage.removeItem('fit_session_v1'); }
+  } catch (e) {}
+})();
 const FIT_LEGACY_KEYS = ['fit_pin', 'fit_parent_pin', 'fit_staff_hash', 'fit_staff_pin'];
 let fitSession = null;
 let fitRefreshing = null;
@@ -571,6 +581,7 @@ function fitSaveSession(s) {
   try { if (s) localStorage.setItem(FIT_SESSION_KEY, JSON.stringify(s)); else localStorage.removeItem(FIT_SESSION_KEY); } catch (e) {}
 }
 function fitClearLegacy() {
+  if (FIT_ONLINE_MODE0) return;   // 20261011os1: オンライン受講者モードでは塾のアプリの旧ログイン情報に触らない
   try { FIT_LEGACY_KEYS.forEach(k => localStorage.removeItem(k)); } catch (e) {}
 }
 // 'ok' | 'invalid'（ログインし直しが必要） | 'error'（通信エラー等。セッションは残す）| 'none'
@@ -663,6 +674,7 @@ function fitLogout() {
 // 戻り値 { kind, row } / null（未ログイン）。通信エラー時は例外（ログイン情報は消さない）。
 async function fitResume() {
   let s = fitLoadSession();
+  if (!s && FIT_ONLINE_MODE0) return null;   // 20261011os1: オンライン受講者モードは専用の保存場所だけを見る
   if (!s) {
     let email = null, pin = null, pid = null, ppin = null, role = null;
     try {

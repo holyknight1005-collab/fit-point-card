@@ -642,11 +642,25 @@ const SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
 // ===== fit 共通ログイン（Supabase Auth セッション）sec1 =====
 // ・ID＋PINの照合はサーバー（Edge Function fit-login）で行い、ブラウザには PIN を残さない。
-// ・発行されたセッションは localStorage 'fit_session_v1' に保存し、同じサイトの全アプリで共有する。
+// ・発行されたセッションは localStorage に保存する。オンライン受講だけは塾のアプリ（'fit_session_v1'）と分けて
+//   'fit_session_online_v1' に保存する（20261011os1：同じブラウザでオンライン受講にログインすると、
+//   スタッフ・生徒のログインが上書きされ、塾のアプリが中身0件になる不具合があったため）。
 // ・Supabase への fetch は自動でログイン中のトークンに差し替え、期限切れなら自動更新して1回だけ再送する。
 const FIT_SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
 const FIT_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
-const FIT_SESSION_KEY = 'fit_session_v1';
+const FIT_SESSION_KEY = 'fit_session_online_v1';
+const FIT_SHARED_SESSION_KEY = 'fit_session_v1';   // 塾のアプリ側（触らない。旧版で入ったオンラインのログインだけ引き取る）
+// 旧版で共有の場所に保存されたオンライン受講のログインは、こちらへ移して共有の場所からは消す（1回だけ）。
+(function migrateOnlineSession() {
+  try {
+    if (localStorage.getItem(FIT_SESSION_KEY)) return;
+    const shared = JSON.parse(localStorage.getItem(FIT_SHARED_SESSION_KEY) || 'null');
+    if (shared && shared.kind === 'online') {
+      localStorage.setItem(FIT_SESSION_KEY, JSON.stringify(shared));
+      localStorage.removeItem(FIT_SHARED_SESSION_KEY);
+    }
+  } catch (e) {}
+})();
 const FIT_LEGACY_KEYS = ['fit_pin', 'fit_parent_pin', 'fit_staff_hash', 'fit_staff_pin'];
 let fitSession = null;
 let fitRefreshing = null;
@@ -661,7 +675,7 @@ function fitSaveSession(s) {
   try { if (s) localStorage.setItem(FIT_SESSION_KEY, JSON.stringify(s)); else localStorage.removeItem(FIT_SESSION_KEY); } catch (e) {}
 }
 function fitClearLegacy() {
-  try { FIT_LEGACY_KEYS.forEach(k => localStorage.removeItem(k)); } catch (e) {}
+  // 20261011os1: オンライン受講では塾のアプリの旧ログイン情報には触らない（何もしない）
 }
 // 'ok' | 'invalid'（ログインし直しが必要） | 'error'（通信エラー等。セッションは残す）| 'none'
 async function fitRefresh(force) {
@@ -753,7 +767,8 @@ function fitLogout() {
 // 戻り値 { kind, row } / null（未ログイン）。通信エラー時は例外（ログイン情報は消さない）。
 async function fitResume() {
   let s = fitLoadSession();
-  if (!s) {
+  if (!s) return null;   // 20261011os1: オンライン受講は自分の保存場所だけを見る（塾のアプリの旧方式ログインは使わない）
+  if (false) {
     let email = null, pin = null, pid = null, ppin = null, role = null;
     try {
       email = localStorage.getItem('fit_email'); pin = localStorage.getItem('fit_pin');
