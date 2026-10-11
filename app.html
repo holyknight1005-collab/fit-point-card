@@ -431,6 +431,9 @@ body.view-desktop #screen-staff #home-right-col > #home-chat-col #frt-main{heigh
 @media (min-width:1380px){
   body.view-desktop #screen-staff .staff-content{grid-template-columns:minmax(0,1fr) 340px 320px;grid-template-areas:"exec exec exec" "cal right chat" "stu stu stu"}
 }
+#home-chat-col.frt-folded #frt-main{height:auto!important}
+#home-chat-col.frt-folded #frt-body{display:none}
+#home-chat-col.frt-folded .frt-head{border-bottom:none}
 #home-chat-col #frt-main{display:flex;height:min(620px,calc(100vh - 120px));background:var(--surface);border:1.5px solid #4A7FC0;border-radius:var(--radius);overflow:hidden}
 </style>
 <style>
@@ -6824,7 +6827,7 @@ body.view-desktop #screen-staff #home-right-col > #home-chat-col #frt-main{heigh
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261011ch3';
+const APP_VERSION = '20261011ch4';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -67964,7 +67967,7 @@ let spTimerStarted = false;
 let spUnavailable = false;   // staff_presence.sql 未実行など
 let spCache = { staff: [], sum: {} };
 const frt = {
-  ready: false, forId: '', tab: 'rooms', room: null, msgs: [], more: false, reads: [],
+  ready: false, forId: '', tab: 'members', room: null, msgs: [], more: false, reads: [],
   ov: {}, lastId: 0, chatOk: true, mobileOpen: false, openDetail: null, home: false,
   loopStarted: false, sending: false, baseTitle: '', lastCls: ''
 };
@@ -68034,6 +68037,7 @@ async function loadHomeStaffPresence(force) {
     if (/ 404 /.test(String(e && e.message))) spUnavailable = true;
   }
   frtRenderStrip();
+  frtRenderHead();
   if (!frt.room && frt.tab === 'members') frtRenderBody();
 }
 
@@ -68062,7 +68066,19 @@ function frtTime(iso) {
 }
 function frtDesk() { return document.body.classList.contains('view-desktop'); }
 function frtCollapsed() { try { return localStorage.getItem('fit_rtool_collapsed') === '1'; } catch (e) { return false; } }
-function frtPanelVisible() { return frtShouldShow() && (frt.home || (frtDesk() ? !frtCollapsed() : frt.mobileOpen)); }
+function frtHomeFolded() { try { return localStorage.getItem('fit_rtool_home_folded') === '1'; } catch (e) { return false; } }
+function frtToggleHomeFold() {
+  const f = !frtHomeFolded();
+  try { localStorage.setItem('fit_rtool_home_folded', f ? '1' : '0'); } catch (e) {}
+  frtApplyHomeFold();
+  if (!f) { frtRenderBody(); if (frt.room) frtMarkRead(); }
+}
+function frtApplyHomeFold() {
+  const slot = document.getElementById('home-chat-col');
+  if (slot) slot.classList.toggle('frt-folded', frtHomeFolded());
+  frtRenderHead();
+}
+function frtPanelVisible() { return frtShouldShow() && (frt.home ? !frtHomeFolded() : (frtDesk() ? !frtCollapsed() : frt.mobileOpen)); }
 // 20261011ch2: PCのホーム画面か（このときは右側に出さず、「今日やること」の横の枠に入れる）
 function frtOnHome() {
   if (!frtDesk() || !document.getElementById('home-chat-col')) return false;
@@ -68104,7 +68120,7 @@ function frtUpdate() {
   }
   if (main) {
     const want = home ? slot : root;
-    if (want && main.parentNode !== want) { want.appendChild(main); frt.home = home; frtRenderHead(); }
+    if (want && main.parentNode !== want) { want.appendChild(main); frt.home = home; frtApplyHomeFold(); }
   }
   frt.home = home;
   const side = show && desk && !home;
@@ -68233,11 +68249,11 @@ function frtRenderStrip() {
   const n = frtUnreadTotal();
   const badge = n ? '<span class="frt-badge">' + (n > 99 ? '99+' : n) + '</span>' : '';
   if (!frtDesk()) {   // スマホ：右下の丸ボタン
-    el.innerHTML = '<button class="frt-fab" onclick="frtOpenPanel()" title="社内連絡">💬' + badge + '</button>';
+    el.innerHTML = '<button class="frt-fab" onclick="frtOpenPanel()" title="ログイン状況・連絡">👥' + badge + '</button>';
     return;
   }
   const on = frtOnlineList();
-  let h = '<button class="frt-sbtn" onclick="frtOpenPanel()" title="社内連絡を開く">💬' + badge + '</button>' +
+  let h = '<button class="frt-sbtn" onclick="frtOpenPanel()" title="ログイン状況・連絡を開く">👥' + badge + '</button>' +
     '<div style="font-size:9px;color:var(--muted);text-align:center;line-height:1.3">🟢' + on.length + '人</div>';
   on.slice(0, 12).forEach(function (s) {
     h += '<span class="frt-av" title="' + escapeHtml(s.name || s.staff_id) + '" onclick="frtOpenPanel();frtTab(\'members\')">' + escapeHtml(frtInitial(s.staff_id)) + '<i></i></span>';
@@ -68248,11 +68264,19 @@ function frtRenderStrip() {
 function frtRenderHead() {
   const el = document.getElementById('frt-headbox');
   if (!el) return;
+  // 20261011ch4: 見出しは「ログイン状況」。ホームでは見出しを押すとたためる（今日やることと同じ）
+  const folded = frt.home && frtHomeFolded();
+  const on = frtOnlineList().length;
   const bell = !frtNotifySupported() ? '' :
-    '<button class="frt-ib" onclick="frtBell()" title="' + (frtNotifyOn() ? '通知：オン（タップでオフ）' : '通知：オフ（タップでオン）') + '">' + (frtNotifyOn() ? '🔔' : '🔕') + '</button>';
-  el.innerHTML = '<b>💬 社内連絡</b><span id="frt-unread" class="frt-cnt" style="display:none;margin:0"></span>' +
-    '<span style="margin-left:auto"></span>' + bell +
-    '<button class="frt-ib" onclick="loadHomeStaffPresence(true);frtLoadOverview().then(frtRenderBody)" title="更新">🔄</button>' +
+    '<button class="frt-ib" onclick="event.stopPropagation();frtBell()" title="' + (frtNotifyOn() ? '連絡の通知：オン（タップでオフ）' : '連絡の通知：オフ（タップでオン）') + '">' + (frtNotifyOn() ? '🔔' : '🔕') + '</button>';
+  el.style.cursor = frt.home ? 'pointer' : '';
+  el.onclick = frt.home ? frtToggleHomeFold : null;
+  el.innerHTML = (frt.home ? '<span style="font-size:12px;color:#2C5FA8;display:inline-block;transition:transform .2s;transform:rotate(' + (folded ? '0' : '90') + 'deg)">▶</span>' : '') +
+    '<b>👥 ログイン状況</b>' +
+    '<span style="font-size:10px;font-weight:700;color:#2E7D32;background:#E6F4E7;border-radius:20px;padding:2px 8px;white-space:nowrap">🟢 ' + on + '人</span>' +
+    '<span id="frt-unread" class="frt-cnt" title="未読の連絡" style="display:none;margin:0"></span>' +
+    '<span style="margin-left:auto"></span>' + (folded ? '' : bell +
+    '<button class="frt-ib" onclick="event.stopPropagation();loadHomeStaffPresence(true);frtLoadOverview().then(frtRenderBody)" title="更新">🔄</button>') +
     (frt.home ? '' : '<button class="frt-ib" onclick="frtClosePanel()" title="' + (frtDesk() ? 'たたむ' : '閉じる') + '" style="font-size:' + (frtDesk() ? '15' : '20') + 'px">' + (frtDesk() ? '»' : '×') + '</button>');
   frtRenderBadges0();
 }
@@ -68268,8 +68292,8 @@ function frtRenderBody() {
   if (frt.room) { frtRenderChat(); return; }
   const n = frtUnreadTotal(), on = frtOnlineList().length;
   let h = '<div class="frt-tabs">' +
-    '<button id="frt-tab-rooms" class="frt-tab' + (frt.tab === 'rooms' ? ' on' : '') + '" onclick="frtTab(\'rooms\')">💬 連絡' + (n ? ' <span class="frt-cnt" style="margin:0">' + (n > 99 ? '99+' : n) + '</span>' : '') + '</button>' +
-    '<button class="frt-tab' + (frt.tab === 'members' ? ' on' : '') + '" onclick="frtTab(\'members\')">👥 メンバー 🟢' + on + '</button></div>';
+    '<button class="frt-tab' + (frt.tab === 'members' ? ' on' : '') + '" onclick="frtTab(\'members\')">👥 メンバー 🟢' + on + '</button>' +
+    '<button id="frt-tab-rooms" class="frt-tab' + (frt.tab === 'rooms' ? ' on' : '') + '" onclick="frtTab(\'rooms\')">💬 連絡' + (n ? ' <span class="frt-cnt" style="margin:0">' + (n > 99 ? '99+' : n) + '</span>' : '') + '</button></div>';
   h += '<div class="frt-scroll">' + (frt.tab === 'members' ? frtMembersHtml() : frtRoomsHtml()) + '</div>';
   el.innerHTML = h;
   if (frt.tab === 'members' && frt.openDetail) loadStaffPresenceDetail(frt.openDetail);
