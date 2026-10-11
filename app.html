@@ -6817,7 +6817,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261011ch6';
+const APP_VERSION = '20261011ae1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -35265,9 +35265,9 @@ async function loadAttSheet() {
         const srcId = (isEnshu && enshuSrcId) ? enshuSrcId : m.id;
         const endedOn = cidMap[m.id]; // null=継続中 / 'YYYY-MM-DD'=在籍最終日
         let csess = (sessByClass[srcId] || []);
-        // dlm121: 月途中退会（ended_on あり）は、在籍最終日を過ぎた回を出席表から除外。
-        //   ended_on 当日は在籍扱いで残す（例：ended_on=9/7 → 9/7は表示、9/14以降は非表示）。
-        if (endedOn) csess = csess.filter(s => s.session_date <= endedOn);
+        // dlm121 → 20261011ae1: 月途中で受講終了（ended_on あり）した授業は、在籍最終日を過ぎた回を
+        //   消さずに残し、出欠欄を網掛け（受講対象外）にする。ended_on 当日は在籍扱いで通常表示
+        //   （例：ended_on=9/7 → 9/7は通常、9/14以降は網掛け）。翌月以降のシートには授業ごと出ない。
         // 20261011sf1: 学校別の回（school あり）は、その生徒の学校の回だけ出す（出欠一望と同じ判定）。
         //   他校の回を出すと、同じ日・同じ限の出欠が他校の回にも映ってしまうため。
         csess = csess.filter(x => schoolScopeOfStudent(stu, x.school) !== 'out');
@@ -35308,6 +35308,7 @@ async function loadAttSheet() {
           else if (s.cycle_no != null && s.cycle_month != null) cyc = s.cycle_month + '-' + rbCircled(s.cycle_no);
           else if (s.cycle_no != null) cyc = rbCircled(s.cycle_no);
           return {
+            ended: !!(endedOn && s.session_date > endedOn),   // 20261011ae1: 受講終了後の回（網掛け）
             date: s.session_date,
             md: (d.getMonth() + 1) + '/' + d.getDate(),
             wd: wlabels[d.getDay()],
@@ -35324,7 +35325,7 @@ async function loadAttSheet() {
         //   あれば残す。通常シート(normal)は9月開始などで出欠ゼロが正常なため対象外。
         const isNormalSheet0 = (category === 'normal');
         if (!isNormalSheet0) {
-          const hasAnyAtt = days.some(d => d.status && d.status !== 'none');
+          const hasAnyAtt = days.some(d => !d.ended && d.status && d.status !== 'none');
           if (!hasAnyAtt) return;
         }
         // dlm159: 表示名は groupClassName で正規化（「超感覚英語(2、3年)」等→「超感覚英語」）。
@@ -36701,7 +36702,8 @@ function buildAttSheetDocHtml(st) {
       if (!d) { dayHead.push('<td style="border:1px solid #bbb;' + HATCH + '"></td>'); marks.push('<td style="border:1px solid #bbb;' + HATCH + '"></td>'); }
       else {
         dayHead.push('<td style="border:1px solid #bbb;text-align:center;font-size:8.5pt;color:#555;padding:2px 0;background:#faf8f2">' + d.md + '<br><span style="font-size:7.5pt;color:#888">' + d.wd + '</span>' + (d.cyc ? '<br><span style="font-size:7.5pt;color:#B5721B;font-weight:700">' + d.cyc + '</span>' : '') + (d.school ? '<br><span style="display:inline-block;margin-top:2px;padding:0 4px;border:1px solid #2D6CB6;border-radius:3px;font-size:6.5pt;color:#2D6CB6;font-weight:700;line-height:1.4;white-space:nowrap">学校別</span>' : '') + '</td>');   // 20261011sb2
-        marks.push(asMarkCell(d.status, null, null, d.enshu, d.hoshu));
+        if (d.ended) marks.push('<td title="受講終了後" style="border:1px solid #bbb;' + HATCH + '"></td>');   // 20261011ae1
+        else marks.push(asMarkCell(d.status, null, null, d.enshu, d.hoshu));
       }
     }
     return '<tr><td rowspan="2" style="border:1px solid #bbb;padding:4px 6px;font-size:9pt;font-weight:700;background:#f7f4ec;text-align:center;white-space:normal;word-break:break-all;overflow-wrap:anywhere;line-height:1.35">' + escapeHtml(sub.name) + '</td>' + dayHead.join('') + '</tr>' +
@@ -36739,6 +36741,9 @@ function buildAttSheetDocHtml(st) {
       '<div style="font-size:9pt;color:#555;margin-top:8px">◯ 出席　／　欠 欠席　／　ビデオ補習　　※授業出席は、出席カードに基づいて記載しております。</div>' +
       (st.subjects.some(sub => (sub.days || []).some(d => d && d.school))   // 20261011sb2: 学校別の回がある子だけ説明を出す
         ? '<div style="font-size:9pt;color:#555;margin-top:3px"><span style="display:inline-block;padding:0 4px;border:1px solid #2D6CB6;border-radius:3px;font-size:8pt;color:#2D6CB6;font-weight:700;line-height:1.4">学校別</span>　学校ごとに分かれて行う回です（在籍校の回のみ記載しています）。</div>'
+        : '') +
+      (st.subjects.some(sub => (sub.days || []).some(d => d && d.ended))   // 20261011ae1: 受講終了後の回がある子だけ説明を出す
+        ? '<div style="font-size:9pt;color:#555;margin-top:3px"><span style="display:inline-block;width:22px;height:11px;vertical-align:-1px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,#eee,#eee 3px,#f7f7f7 3px,#f7f7f7 6px)"></span>　受講終了後の授業日です。</div>'
         : '');
 
   const doc =
