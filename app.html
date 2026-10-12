@@ -6817,7 +6817,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261012tr1';
+const APP_VERSION = '20261012pk1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -67478,6 +67478,7 @@ function openMonthTimetable() {
     el.innerHTML =
       '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border)">' +
         '<div style="font-size:17px;font-weight:800;color:var(--text);flex:1">📅 月間時間割</div>' +
+        '<button onclick="mpkOpen()" style="background:#fff;border:1px solid #7B4FBF;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;color:#7B4FBF;cursor:pointer;font-family:inherit">📌 ピックアップ</button>' +
         '<button onclick="mttCopyPublicUrl()" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;font-family:inherit">🔗 保護者用URL</button>' +
         '<button onclick="mttPrint()" style="background:#fff;border:1px solid var(--orange);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--orange-d);cursor:pointer;font-family:inherit">🖨 印刷</button>' +
         '<button onclick="closeMonthTimetable()" style="background:none;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;color:var(--muted);cursor:pointer;font-family:inherit">閉じる</button>' +
@@ -67535,6 +67536,31 @@ async function mttLoad() {
     ]);
     if (month !== mttMonth) return;   // 連打で月が変わっていたら捨てる
     mttData = { month: month, first: first, last: last, sessions: res[0] || [], masters: res[1] || [], events: res[2] || [] };
+    // 20261012cy2: 時期別講座・共テ対策（通常・高卒以外）は「何回目か」を数えて講座名のうしろに出す（例：共通テスト対策英語②）。
+    //   補習を除き、日付・限の順に数える。前の月までの回数は別に数えて足す。
+    try {
+      var catById = {};
+      mttData.masters.forEach(function (m) { catById[m.id] = m.category || 'normal'; });
+      var seqIds = [];
+      mttData.sessions.forEach(function (x) {
+        var c = catById[x.class_master_id];
+        if (c && c !== 'normal' && c !== 'kosotsu' && seqIds.indexOf(x.class_master_id) === -1) seqIds.push(x.class_master_id);
+      });
+      var before = {};
+      if (seqIds.length) {
+        var prev = await sbGetAll('class_sessions', 'class_master_id=in.(' + seqIds.join(',') + ')&session_date=lt.' + first + '&is_makeup=not.is.true&select=class_master_id') || [];
+        prev.forEach(function (x) { before[x.class_master_id] = (before[x.class_master_id] || 0) + 1; });
+      }
+      var seq = {}, cnt = {};
+      mttData.sessions.slice().sort(function (a, b) {
+        return a.session_date < b.session_date ? -1 : a.session_date > b.session_date ? 1 : (parseInt(a.period, 10) || 0) - (parseInt(b.period, 10) || 0);
+      }).forEach(function (x) {
+        if (seqIds.indexOf(x.class_master_id) === -1 || x.is_makeup === true) return;
+        cnt[x.class_master_id] = (cnt[x.class_master_id] || before[x.class_master_id] || 0) + 1;
+        seq[x.class_master_id + '|' + x.session_date + '|' + x.period + '|' + (x.school || '')] = cnt[x.class_master_id];
+      });
+      mttData.seq = seq;
+    } catch (e) { mttData.seq = {}; }
     mttRender();
   } catch (e) {
     body.innerHTML = '<div style="font-size:13px;color:var(--red);padding:20px;text-align:center">読み込みに失敗しました：' + escapeHtml(e.message || e) + '</div>';
@@ -67565,7 +67591,8 @@ function mttBuild() {
     var arr = cells[key] || (cells[key] = []);
     var school = String(s.school || '').trim().replace(/^SSS[：:]\s*/, '');
     var label = m.name + (school ? '（' + school + '）' : '');
-    var cyc = s.is_makeup === true ? '' : mttCycleLabel(s);   // 20261010cy1: 補習は回を付けない
+    var seqN = (D.seq || {})[s.class_master_id + '|' + s.session_date + '|' + s.period + '|' + (s.school || '')];
+    var cyc = s.is_makeup === true ? '' : (seqN ? mttCircled(seqN) : mttCycleLabel(s));   // 20261010cy1: 補習は回を付けない / 20261012cy2: 時期別・共テは何回目か
     if (arr.some(function (x) { return x.label === label && x.odd === odd && x.cyc === cyc; })) return;   // 同じ授業の重複登録は1つに
     arr.push({ label: label, odd: odd, cyc: cyc, makeup: s.is_makeup === true, kosotsu: m.category === 'kosotsu', subject: m.subject || '', st: st });
   });
@@ -67725,6 +67752,171 @@ async function mttCopyPublicUrl() {
   try { await navigator.clipboard.writeText(url); ok = true; } catch (e) {}
   showToast(ok ? '🔗 ' + (mttDiv === '中学部' ? '中学' : '高校') + 'の保護者用URLをコピーしました（LINEに貼れます）' : url, ok ? 'success' : 'info');
   try { window.open(url, '_blank'); } catch (e) {}
+}
+
+// ===== 20261012pk1: 保護者向け時間割の「ピックアップ」設定 =====
+// ・時期別講習（夏期・冬期・春期）や共テ対策などを、決めた期間だけ timetable.html の「1年・2年・3年」の右にボタンで出す。
+// ・1件ごとに：ボタン名／授業の区分（class_master.category）／高校部・中学部／ボタンを出す期間／載せる授業日の範囲／並び順。
+// ・その区分の授業（有効なもの）は自動ですべて載る。表は timetable_picks（timetable_picks.sql）。保護者側は公開関数で読む。
+var mpkList = [];
+var mpkEditId = null;   // null＝一覧、'new'＝新規、数値＝編集中
+function mpkCats() { return CLASS_CATEGORIES.filter(function (c) { return c.key !== 'normal' && c.key !== 'kosotsu'; }); }
+function mpkCatLabel(k) { var c = CLASS_CATEGORIES.find(function (x) { return x.key === k; }); return c ? c.icon + ' ' + c.label : k; }
+function mpkMD(ds) { if (!ds) return ''; var p = String(ds).split('-'); return parseInt(p[0], 10) + '/' + parseInt(p[1], 10) + '/' + parseInt(p[2], 10); }
+function mpkState(r) {
+  var t = getTodayJST();
+  if (t < r.show_from) return '<span style="font-size:11px;font-weight:800;color:#2D5FA6;background:#EAF1FB;border-radius:9px;padding:1px 8px">これから</span>';
+  if (t > r.show_until) return '<span style="font-size:11px;font-weight:800;color:var(--muted);background:var(--surface2);border-radius:9px;padding:1px 8px">終了</span>';
+  return '<span style="font-size:11px;font-weight:800;color:#fff;background:#7B4FBF;border-radius:9px;padding:1px 8px">表示中</span>';
+}
+async function mpkOpen() {
+  var ov = document.getElementById('mpk-ov');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'mpk-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:700;background:rgba(0,0,0,.35);display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:24px 12px';
+    ov.onclick = function (e) { if (e.target === ov) mpkClose(); };
+    document.body.appendChild(ov);
+  }
+  ov.style.display = 'flex';
+  mpkEditId = null;
+  ov.innerHTML = mpkBox('<div style="padding:20px;text-align:center;color:var(--muted)">読み込み中…</div>');
+  await mpkLoad();
+}
+function mpkClose() { var ov = document.getElementById('mpk-ov'); if (ov) ov.style.display = 'none'; }
+function mpkBox(inner) {
+  return '<div style="background:var(--surface);border-radius:14px;width:100%;max-width:680px;box-shadow:0 8px 30px rgba(0,0,0,.2)">' +
+    '<div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)"><div style="font-weight:800;font-size:16px;flex:1">📌 時間割のピックアップ</div>' +
+    '<button onclick="mpkClose()" style="background:none;border:1px solid var(--border);border-radius:8px;padding:5px 12px;font-size:12px;color:var(--muted);cursor:pointer;font-family:inherit">閉じる</button></div>' +
+    '<div style="padding:14px 16px" id="mpk-body">' + inner + '</div></div>';
+}
+async function mpkLoad() {
+  var body = document.getElementById('mpk-body');
+  try {
+    mpkList = await sbGet('timetable_picks', 'select=*&order=division,sort_order,show_from,id') || [];
+  } catch (e) {
+    body.innerHTML = '<div style="background:#FDECEA;border:1px solid #E6B0AA;color:#943126;border-radius:10px;padding:12px;font-size:13px;line-height:1.6">ピックアップの設定を読み込めませんでした。<b>timetable_picks.sql</b> が未実行の可能性があります。</div>';
+    return;
+  }
+  mpkRenderList();
+}
+function mpkRenderList() {
+  var body = document.getElementById('mpk-body');
+  var url = 'https://holyknight1005-collab.github.io/fit-point-card/timetable.html?d=';
+  var rows = mpkList.map(function (r) {
+    return '<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:#fff">' +
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:15px">' + escapeHtml(r.label) + '</b>' + mpkState(r) +
+        '<span style="font-size:12px;color:var(--muted)">' + escapeHtml(r.division) + '・' + escapeHtml(mpkCatLabel(r.category)) + '</span><span style="flex:1"></span>' +
+        '<button onclick="mpkEdit(' + r.id + ')" style="padding:4px 12px;border:1px solid var(--border);border-radius:7px;background:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">編集</button>' +
+        '<button onclick="mpkDelete(' + r.id + ')" style="padding:4px 10px;border:1px solid #E6B0AA;border-radius:7px;background:#fff;color:#C0392B;font-size:12px;cursor:pointer;font-family:inherit">削除</button></div>' +
+      '<div style="font-size:12px;color:var(--text);margin-top:4px;line-height:1.7">ボタンを出す期間：<b>' + mpkMD(r.show_from) + '〜' + mpkMD(r.show_until) + '</b>　／　載せる授業日：' + mpkMD(r.sess_from) + '〜' + mpkMD(r.sess_until) +
+        '　<a href="' + url + (r.division === '中学部' ? 'chu' : 'ko') + '&p=' + r.id + '" target="_blank" style="font-size:12px">保護者画面で見る</a></div>' +
+    '</div>';
+  }).join('');
+  body.innerHTML =
+    '<div style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:10px">保護者向け時間割の「1年・2年・3年」の右に、期間中だけボタンを出します。選んだ区分の授業（有効なもの）は自動ですべて載り、講座ごとの一覧表と日付順で見られます。表示中のものは、期間に入ると自動で出て、期間が終わると自動で消えます。</div>' +
+    (rows || '<div style="font-size:13px;color:var(--muted);padding:12px;text-align:center;border:1px dashed var(--border);border-radius:10px;margin-bottom:8px">まだありません</div>') +
+    '<button onclick="mpkEdit(\'new\')" style="width:100%;padding:10px;border:1.5px dashed var(--orange);border-radius:10px;background:#FFF8EC;color:var(--orange-d);font-size:14px;font-weight:800;cursor:pointer;font-family:inherit">＋ ピックアップを追加</button>';
+}
+function mpkEdit(id) {
+  mpkEditId = id;
+  var r = id === 'new' ? null : mpkList.find(function (x) { return x.id === id; });
+  if (id !== 'new' && !r) return;
+  var t = getTodayJST();
+  r = r || { label: '', category: 'winter', division: mttDiv || '高校部', show_from: t, show_until: '', sess_from: '', sess_until: '', sort_order: (mpkList.length ? Math.max.apply(null, mpkList.map(function (x) { return x.sort_order || 0; })) + 1 : 0) };
+  var inp = 'padding:7px 8px;border:1px solid var(--border);border-radius:7px;font-size:14px;font-family:inherit;background:#fff';
+  var lab = function (t) { return '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:10px 0 4px">' + t + '</div>'; };
+  document.getElementById('mpk-body').innerHTML =
+    '<div style="font-weight:800;font-size:15px">' + (id === 'new' ? '＋ ピックアップを追加' : '✏️ ' + escapeHtml(r.label) + ' を編集') + '</div>' +
+    lab('ボタン名（20字まで・保護者画面のボタンと見出しになります）') +
+    '<input id="mpk-label" maxlength="20" value="' + escapeHtml(r.label) + '" placeholder="例：冬期講習" style="' + inp + ';width:100%;box-sizing:border-box">' +
+    '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+      '<div>' + lab('授業の区分') + '<select id="mpk-cat" onchange="mpkPreview()" style="' + inp + '">' +
+        mpkCats().map(function (c) { return '<option value="' + c.key + '"' + (c.key === r.category ? ' selected' : '') + '>' + c.icon + ' ' + c.label + '</option>'; }).join('') + '</select></div>' +
+      '<div>' + lab('部') + '<select id="mpk-div" onchange="mpkPreview()" style="' + inp + '"><option' + (r.division === '高校部' ? ' selected' : '') + '>高校部</option><option' + (r.division === '中学部' ? ' selected' : '') + '>中学部</option></select></div>' +
+      '<div>' + lab('並び順（小さいほど左）') + '<input id="mpk-sort" type="number" value="' + (r.sort_order || 0) + '" style="' + inp + ';width:80px"></div>' +
+    '</div>' +
+    lab('ボタンを出す期間（この間だけ保護者画面に出ます）') +
+    '<input id="mpk-sf" type="date" value="' + (r.show_from || '') + '" style="' + inp + '"> 〜 <input id="mpk-su" type="date" value="' + (r.show_until || '') + '" style="' + inp + '">' +
+    lab('載せる授業日の範囲（この間にある、その区分の授業日を載せます）') +
+    '<input id="mpk-ef" type="date" value="' + (r.sess_from || '') + '" onchange="mpkPreview()" style="' + inp + '"> 〜 <input id="mpk-eu" type="date" value="' + (r.sess_until || '') + '" onchange="mpkPreview()" style="' + inp + '"> ' +
+    '<button onclick="mpkFillRange()" style="padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:#fff;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">登録済みの授業日から入れる</button>' +
+    '<div id="mpk-prev" style="font-size:12px;color:var(--text);background:var(--surface2);border-radius:8px;padding:8px 10px;margin-top:10px;line-height:1.6">―</div>' +
+    '<div style="display:flex;gap:8px;margin-top:14px">' +
+      '<button onclick="mpkRenderList()" style="flex:1;padding:10px;border:1px solid var(--border);border-radius:9px;background:#fff;font-size:14px;cursor:pointer;font-family:inherit">戻る</button>' +
+      '<button id="mpk-save" onclick="mpkSave()" style="flex:2;padding:10px;border:0;border-radius:9px;background:var(--orange);color:#fff;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit">保存</button>' +
+    '</div>';
+  mpkPreview();
+}
+function mpkVal(id) { var e = document.getElementById(id); return e ? String(e.value || '').trim() : ''; }
+// その区分・部の有効な授業（部が空の授業も含める＝公開関数と同じ）
+async function mpkMasters(cat, div) {
+  var ms = await sbGet('class_master', 'category=eq.' + encodeURIComponent(cat) + '&is_active=not.is.false&select=id,name,division') || [];
+  return ms.filter(function (m) { return !m.division || m.division === div; });
+}
+async function mpkFillRange() {
+  var cat = mpkVal('mpk-cat'), div = mpkVal('mpk-div');
+  try {
+    var ms = await mpkMasters(cat, div);
+    if (!ms.length) { showToast('この区分・部の授業がありません', 'error'); return; }
+    var since = new Date(Date.now() - 120 * 86400000); since = since.getFullYear() + '-' + String(since.getMonth() + 1).padStart(2, '0') + '-' + String(since.getDate()).padStart(2, '0');
+    var ss = await sbGetAll('class_sessions', 'class_master_id=in.(' + ms.map(function (m) { return m.id; }).join(',') + ')&session_date=gte.' + since + '&select=session_date&order=session_date') || [];
+    if (!ss.length) { showToast('最近〜これからの授業日が登録されていません', 'error'); return; }
+    document.getElementById('mpk-ef').value = ss[0].session_date;
+    document.getElementById('mpk-eu').value = ss[ss.length - 1].session_date;
+    if (!mpkVal('mpk-su')) document.getElementById('mpk-su').value = ss[ss.length - 1].session_date;
+    mpkPreview();
+  } catch (e) { showToast('読み込めませんでした：' + e.message, 'error'); }
+}
+var mpkPrevSeq = 0;
+async function mpkPreview() {
+  var box = document.getElementById('mpk-prev'); if (!box) return;
+  var cat = mpkVal('mpk-cat'), div = mpkVal('mpk-div'), ef = mpkVal('mpk-ef'), eu = mpkVal('mpk-eu');
+  if (!ef || !eu) { box.textContent = '載せる授業日の範囲を入れると、載る講座と授業日の数が出ます。'; return; }
+  var seq = ++mpkPrevSeq;
+  box.textContent = '数えています…';
+  try {
+    var ms = await mpkMasters(cat, div);
+    var ss = ms.length ? (await sbGetAll('class_sessions', 'class_master_id=in.(' + ms.map(function (m) { return m.id; }).join(',') + ')&session_date=gte.' + ef + '&session_date=lte.' + eu + '&select=class_master_id,session_date&order=session_date') || []) : [];
+    if (seq !== mpkPrevSeq) return;
+    var cnt = {}; ss.forEach(function (x) { cnt[x.class_master_id] = (cnt[x.class_master_id] || 0) + 1; });
+    var names = ms.filter(function (m) { return cnt[m.id]; }).map(function (m) { return escapeHtml(m.name) + '（' + cnt[m.id] + '）'; });
+    box.innerHTML = ss.length ? '載る授業日：<b>' + ss.length + '件</b>（' + names.length + '講座）<br>' + names.join('、')
+      : '<span style="color:#C0392B">この範囲に、この区分・部の授業日がありません。</span>';
+  } catch (e) { if (seq === mpkPrevSeq) box.textContent = '数えられませんでした'; }
+}
+async function mpkSave() {
+  var row = {
+    label: mpkVal('mpk-label'), category: mpkVal('mpk-cat'), division: mpkVal('mpk-div'),
+    show_from: mpkVal('mpk-sf'), show_until: mpkVal('mpk-su'), sess_from: mpkVal('mpk-ef'), sess_until: mpkVal('mpk-eu'),
+    sort_order: parseInt(mpkVal('mpk-sort'), 10) || 0,
+    updated_at: new Date().toISOString(), updated_by: (currentStaff && currentStaff.staff_id) || null
+  };
+  var miss = [];
+  if (!row.label) miss.push('ボタン名');
+  if (!row.show_from || !row.show_until) miss.push('ボタンを出す期間');
+  if (!row.sess_from || !row.sess_until) miss.push('載せる授業日の範囲');
+  if (miss.length) { alert(miss.join('・') + 'を入れてください'); return; }
+  if (row.show_from > row.show_until || row.sess_from > row.sess_until) { alert('期間の始まりと終わりが逆になっています'); return; }
+  var btn = document.getElementById('mpk-save'); btn.disabled = true; btn.textContent = '保存中…';
+  try {
+    if (mpkEditId === 'new') await sbPostReturn('timetable_picks', row);
+    else await sbPatch('timetable_picks', 'id=eq.' + mpkEditId, row);
+    showToast('📌 ピックアップを保存しました', 'success');
+    await mpkLoad();
+  } catch (e) {
+    alert('保存できませんでした：' + e.message);
+    btn.disabled = false; btn.textContent = '保存';
+  }
+}
+async function mpkDelete(id) {
+  var r = mpkList.find(function (x) { return x.id === id; }); if (!r) return;
+  if (!confirm('「' + r.label + '」のピックアップを削除しますか？\n（授業や授業日は消えません。保護者画面のボタンが無くなるだけです）')) return;
+  try {
+    await sbDelete('timetable_picks', 'id=eq.' + id);
+    showToast('削除しました', 'success');
+    await mpkLoad();
+  } catch (e) { alert('削除できませんでした：' + e.message); }
 }
 
 

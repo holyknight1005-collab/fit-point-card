@@ -89,7 +89,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
 .foot{font-size:12px;color:var(--muted);text-align:center;margin-top:20px;line-height:1.7}
 .wk .c.ct,.slot .cl div.ct{background:#F3EDFB;box-shadow:inset 3px 0 0 #7B4FBF}
 .ctb{display:inline-block;margin-right:3px;padding:0 4px;border-radius:4px;background:#7B4FBF;color:#fff;font-size:10px;font-weight:700;vertical-align:1px}
-.gsel button#gct.on{background:#7B4FBF;border-color:#7B4FBF;color:#fff}
+.gsel button#gct.on,.gsel button.gpk.on{background:#7B4FBF;border-color:#7B4FBF;color:#fff}
 .ct-h{font-size:18px;font-weight:800;margin:0 0 2px}
 .ct-sub{font-size:13px;color:var(--muted);margin:0 0 10px}
 .ct-sub b{color:#7B4FBF}
@@ -173,6 +173,11 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
   state.view = load('fit_tt_view2') || 'week';
   if (state.view === 'ct') state.view = 'week';   // 共テ対策の表示は覚えない（URLの v=ct で開いたときだけ）
   if (qs.get('v') === 'ct' && state.div === 'ko') state.view = 'ct';
+  // 20261012pk1: ピックアップ（スタッフが期間を決めて出すボタン。?p=番号 で直接開く）
+  state.picks = null;    // null＝未取得・公開関数なし（そのときは従来の「共テ対策日程」ボタン）
+  state.pickId = null;
+  state.pcache = {};     // ピックアップの授業日（番号ごと）
+  if (/^\d+$/.test(qs.get('p') || '')) { state.view = 'pick'; state.pickId = +qs.get('p'); }
   state.ctMode = load('fit_tt_ctmode') === 'date' ? 'date' : 'course';
 
   function pad(n) { return String(n).padStart(2, '0'); }
@@ -226,11 +231,24 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
       return map;
     } catch (e) { return {}; }
   }
+  // ピックアップの一覧（今日が表示期間に入っているもの）。公開関数が無い・失敗のときは null。
+  async function fetchPicks() {
+    try {
+      var res = await fetch(SB_URL + '/rest/v1/rpc/fit_public_timetable_picks', {
+        method: 'POST',
+        headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_division: state.div === 'chu' ? '中学部' : '高校部' })
+      });
+      if (!res.ok) return null;
+      return (await res.json()) || [];
+    } catch (e) { return null; }
+  }
   // その日の月と同じ月の回は「①」、違う月の回は「11-①」「9-④」
   function circ(n) { n = parseInt(n, 10); if (isNaN(n) || n < 1) return ''; return n <= 20 ? String.fromCharCode(0x2460 + n - 1) : '(' + n + ')'; }
   function cycLabel(ds, cm, no) {
-    if (!ds || cm == null || no == null) return '';
+    if (!ds || no == null) return '';
     var c = circ(no); if (!c) return '';
+    if (cm == null) return c;   // 20261012cy2: 時期別講座・共テ対策は「何回目か」だけ（例：共通テスト対策英語②）
     return (parseInt(cm, 10) === parseInt(String(ds).slice(5, 7), 10)) ? c : (parseInt(cm, 10) + '-' + c);
   }
 
@@ -367,10 +385,11 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     var y0 = m === 1 ? y - 1 : y;
     return { y0: y0, months: [y0 + '-10', y0 + '-11', y0 + '-12', (y0 + 1) + '-01'], key: 'ct' + y0 };
   }
-  function ctShort(name) { return String(name).replace(/^(共通テスト対策|共通テスト|共テ対策|共テ)\s*/, '') || name; }
+  function ctShort(name) { return String(name).replace(/^(共通テスト対策|共通テスト|共テ対策|共テ|夏期講習|冬期講習|春期講習|夏期|冬期|春期)\s*/, '') || name; }
   async function loadCT() {
     var se = ctSeason();
     if (state.ct && state.ct.key === se.key) return state.ct;
+    var title = '共通テスト対策 日程', sub = se.y0 + '年10月〜' + (se.y0 + 1) + '年1月' + (CT_EXAM[se.y0 + 1] ? '　／　共通テスト本番：<b>' + CT_EXAM[se.y0 + 1] + '</b>' : '');
     var res = await Promise.all(se.months.map(function (m) { return fetchData(m).catch(function () { return null; }); }));
     var list = [];
     res.forEach(function (D) {
@@ -385,8 +404,45 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     list.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.period || 0) - (b.period || 0); });
     var cnt = {};   // 講座ごとの通し番号（補習は数えない）
     list.forEach(function (x) { if (x.makeup) return; cnt[x.name] = (cnt[x.name] || 0) + 1; x.no = cnt[x.name]; });
-    state.ct = { key: se.key, y0: se.y0, list: list, failed: res.every(function (d) { return !d; }) };
+    state.ct = { key: se.key, title: title, sub: sub, rows: CT_ROWS, list: list, failed: res.every(function (d) { return !d; }) };
     return state.ct;
+  }
+  // ピックアップ1件の日程。時刻は各月の時間割（期間ごとの限の時刻）から引く。
+  function pickOf(id) { return (state.picks || []).filter(function (x) { return +x.id === +id; })[0] || null; }
+  function jpDate(ds) { var p = String(ds).split('-'); return (+p[0]) + '年' + (+p[1]) + '月' + (+p[2]) + '日'; }
+  async function loadPick(id) {
+    var P = pickOf(id);
+    if (!P) return null;
+    if (state.pcache[id]) return state.pcache[id];
+    var rows = null;
+    try {
+      var r = await fetch(SB_URL + '/rest/v1/rpc/fit_public_timetable_pick_sessions', {
+        method: 'POST',
+        headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_pick: +id })
+      });
+      if (r.ok) rows = await r.json();
+    } catch (e) {}
+    var months = {};
+    (rows || []).forEach(function (x) { months[x.d.slice(0, 7)] = true; });
+    var mlist = Object.keys(months).sort().slice(0, 8);
+    var per = {};
+    var res = await Promise.all(mlist.map(function (m) { return fetchData(m).catch(function () { return null; }); }));
+    mlist.forEach(function (m, i) { per[m] = (res[i] && res[i].periods) || []; });
+    var list = (rows || []).map(function (s) {
+      var p = s.period, t = (p != null) ? ptime(s.d, p, per[s.d.slice(0, 7)]) : null;
+      var st = s.start_time || '', en = s.end_time || '';
+      return { date: s.d, period: p, name: s.name, makeup: s.makeup, subject: s.subject || '', start: st || (t ? t[0] : ''),
+        time: (st && t && st !== t[0]) ? st + (en ? '〜' + en : '') : (t ? t[0] + '〜' + t[1] : (st ? st + (en ? '〜' + en : '') : '')) };
+    });
+    var cnt = {};
+    list.forEach(function (x) { if (x.makeup) return; cnt[x.name] = (cnt[x.name] || 0) + 1; x.no = cnt[x.name]; });
+    var isCt = P.category === 'common_test', y1 = +String(P.sess_until).slice(0, 4);
+    var a = list.length ? list[0].date : P.sess_from, b = list.length ? list[list.length - 1].date : P.sess_until;
+    var sub = jpDate(a) + '〜' + jpDate(b) + (isCt && CT_EXAM[y1] ? '　／　共通テスト本番：<b>' + CT_EXAM[y1] + '</b>' : '');
+    var C = { title: String(P.label).replace(/\s*日程$/, '') + ' 日程', sub: sub, rows: isCt ? CT_ROWS : [], list: list, failed: rows === null };
+    if (rows !== null) state.pcache[id] = C;
+    return C;
   }
   function ctDate(ds) {
     var p = ds.split('-'), d = new Date(+p[0], +p[1] - 1, +p[2]), w = d.getDay();
@@ -408,9 +464,10 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     var by = {}, groups = [], gmap = {};
     C.list.forEach(function (x) { var k = ctShort(x.name); (by[k] = by[k] || []).push(x); });
     function addRow(g, k) { if (!gmap[g]) { gmap[g] = []; groups.push(g); } if (gmap[g].indexOf(k) === -1) gmap[g].push(k); }
-    CT_ROWS.forEach(function (G) { G.items.forEach(function (k) { addRow(G.g, k); }); });
+    var R = C.rows || [];
+    R.forEach(function (G) { G.items.forEach(function (k) { addRow(G.g, k); }); });
     Object.keys(by).forEach(function (k) {
-      var known = CT_ROWS.some(function (G) { return G.items.indexOf(k) !== -1; });
+      var known = R.some(function (G) { return G.items.indexOf(k) !== -1; });
       if (!known) addRow(by[k][0].subject || 'その他', k);
     });
     groups.sort(function (a, b) {
@@ -430,11 +487,10 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     }).join('') + '</div>';
   }
   function renderCT(C) {
-    var t = todayJST(), y0 = C.y0;
-    var head = '<div class="ct-h">共通テスト対策 日程</div>' +
-      '<div class="ct-sub">' + y0 + '年10月〜' + (y0 + 1) + '年1月' + (CT_EXAM[y0 + 1] ? '　／　共通テスト本番：<b>' + CT_EXAM[y0 + 1] + '</b>' : '') + '</div>';
+    var t = todayJST();
+    var head = '<div class="ct-h">' + esc(C.title) + '</div>' + '<div class="ct-sub">' + C.sub + '</div>';
     if (C.failed) return head + '<div class="err">時間割を読み込めませんでした。時間をおいて開き直してください。</div>';
-    if (!C.list.length && state.ctMode !== 'course') return head + '<div class="empty">共通テスト対策の授業はまだ登録されていません。</div>';
+    if (!C.list.length && (state.ctMode !== 'course' || !(C.rows || []).length)) return head + '<div class="empty">日程はまだ登録されていません。決まり次第、このページでお知らせします。</div>';
     var mode = '<div class="ct-mode"><button data-m="course"' + (state.ctMode === 'course' ? ' class="on"' : '') + '>一覧表</button><button data-m="date"' + (state.ctMode === 'date' ? ' class="on"' : '') + '>日付順</button></div>';
     var body = '';
     if (state.ctMode === 'course') {
@@ -455,9 +511,12 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
   }
   async function showCT() {
     var el = document.getElementById('content');
-    if (!(state.ct && state.ct.key === ctSeason().key)) el.innerHTML = '<div class="empty">読み込み中…</div>';
-    var C = await loadCT();
-    if (state.view !== 'ct') return;
+    var isPick = state.view === 'pick', pid = state.pickId;
+    if (isPick ? !state.pcache[pid] : !(state.ct && state.ct.key === ctSeason().key)) el.innerHTML = '<div class="empty">読み込み中…</div>';
+    var C = isPick ? await loadPick(pid) : await loadCT();
+    if (state.view !== (isPick ? 'pick' : 'ct') || (isPick && state.pickId !== pid)) return;
+    if (!C) { state.view = 'week'; render(true); return; }
+    state.cur = C;
     el.innerHTML = renderCT(C);
     showCTBind();
     var nx = el.querySelector('.ct-row.next');
@@ -466,7 +525,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
   function showCTBind() {
     var el = document.getElementById('content');
     el.querySelectorAll('.ct-mode button').forEach(function (bt) {
-      bt.onclick = function () { state.ctMode = bt.getAttribute('data-m'); store('fit_tt_ctmode', state.ctMode); el.innerHTML = renderCT(state.ct); showCTBind(); };
+      bt.onclick = function () { state.ctMode = bt.getAttribute('data-m'); store('fit_tt_ctmode', state.ctMode); el.innerHTML = renderCT(state.cur); showCTBind(); };
     });
   }
 
@@ -475,12 +534,12 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     document.getElementById('mlabel').textContent = mp[0] + '年' + (+mp[1]) + '月';
     document.querySelectorAll('#seg button').forEach(function (bt) { bt.classList.toggle('on', bt.getAttribute('data-d') === state.div); });
     document.querySelectorAll('#viewtabs button').forEach(function (bt) { bt.classList.toggle('on', bt.getAttribute('data-v') === state.view); });
-    document.querySelectorAll('#gsel button').forEach(function (bt) { var g = bt.getAttribute('data-g'); bt.classList.toggle('on', state.view === 'ct' ? g === 'ct' : g === state.g); });
+    renderPickButtons();
+    document.querySelectorAll('#gsel button').forEach(function (bt) { var g = bt.getAttribute('data-g'); bt.classList.toggle('on', state.view === 'ct' ? g === 'ct' : state.view === 'pick' ? g === 'pk' + state.pickId : g === state.g); });
     document.title = 'fit 時間割（' + (state.div === 'chu' ? '中学' : '高校') + '）' + (+mp[1]) + '月';
     var el = document.getElementById('content');
-    document.getElementById('gct').style.display = state.div === 'ko' ? '' : 'none';
-    if (state.view === 'ct' && state.div !== 'ko') state.view = 'week';
-    var isCtView = state.view === 'ct';
+    if (state.view === 'ct' && (state.div !== 'ko' || state.picks)) state.view = 'week';
+    var isCtView = state.view === 'ct' || state.view === 'pick';
     document.getElementById('viewtabs').style.display = isCtView ? 'none' : '';
     document.getElementById('q').style.display = isCtView ? 'none' : '';
     document.getElementById('qclear').style.display = isCtView ? 'none' : '';
@@ -502,6 +561,18 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     if (scrollToday) goToday(true);
   }
 
+  // 学年の並びの右に、ピックアップのボタンを出す（公開関数が無いときは従来の「共テ対策日程」）
+  function renderPickButtons() {
+    var g = document.getElementById('gsel');
+    g.querySelectorAll('.gpk').forEach(function (b) { b.remove(); });
+    document.getElementById('gct').style.display = (!state.picks && state.div === 'ko') ? '' : 'none';
+    (state.picks || []).forEach(function (P) {
+      var b = document.createElement('button');
+      b.className = 'gpk'; b.setAttribute('data-g', 'pk' + P.id); b.textContent = P.label;
+      b.onclick = function () { state.view = 'pick'; state.pickId = +P.id; render(true); };
+      g.appendChild(b);
+    });
+  }
   function goToday(soft) {
     var t = todayJST();
     if (state.month !== t.slice(0, 7)) { if (soft) return; state.month = t.slice(0, 7); reload(true); return; }
@@ -522,11 +593,21 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     document.getElementById('content').innerHTML = '<div class="empty">読み込み中…</div>';
     var key = state.month + '|' + state.div;
     try {
-      var both = await Promise.all([fetchData(), fetchCycles()]);
+      var needPicks = !state.picksDiv || state.picksDiv !== state.div;
+      var both = await Promise.all([fetchData(), fetchCycles(), needPicks ? fetchPicks() : Promise.resolve(state.picks)]);
       var d = both[0];
       if (key !== state.month + '|' + state.div) return;
       state.data = d;
       state.cycles = both[1];
+      if (needPicks) {
+        state.picks = both[2]; state.picksDiv = state.div; state.pcache = {};
+        // 旧URL（?v=ct）は「共テ」の区分のピックアップへ。開いていたピックアップが期間外・別の部なら通常の表へ。
+        if (state.picks && state.view === 'ct') {
+          var ctp = state.picks.filter(function (x) { return x.category === 'common_test'; })[0];
+          if (ctp) { state.view = 'pick'; state.pickId = +ctp.id; } else state.view = 'week';
+        }
+        if (state.view === 'pick' && !pickOf(state.pickId)) state.view = 'week';
+      }
       render(scrollToday);
     } catch (e) {
       document.getElementById('content').innerHTML = '<div class="err">時間割を読み込めませんでした。時間をおいて開き直してください。</div>';
@@ -538,6 +619,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     u.searchParams.set('d', state.div);
     if (state.month === todayJST().slice(0, 7)) u.searchParams.delete('m'); else u.searchParams.set('m', state.month);
     if (state.view === 'ct') u.searchParams.set('v', 'ct'); else u.searchParams.delete('v');
+    if (state.view === 'pick') u.searchParams.set('p', state.pickId); else u.searchParams.delete('p');
     try { history.replaceState(null, '', u.toString()); } catch (e) {}
   }
 
@@ -555,7 +637,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
   document.querySelectorAll('#gsel button').forEach(function (bt) { bt.onclick = function () {
     var g = bt.getAttribute('data-g');
     if (g === 'ct') { state.view = 'ct'; render(true); return; }   // 共テ対策日程（学年の選択はそのまま残す）
-    var wasCt = state.view === 'ct';
+    var wasCt = state.view === 'ct' || state.view === 'pick';
     if (wasCt) state.view = (load('fit_tt_view2') === 'day') ? 'day' : 'week';
     state.g = g; store('fit_tt_g', state.g || null); render(wasCt);
   }; });
