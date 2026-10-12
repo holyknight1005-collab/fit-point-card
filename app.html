@@ -3918,6 +3918,11 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
           <button type="button" id="rec-target-teacher" onclick="setRecTargetType('teacher')" style="padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📚 授業担当の講師へ</button>
           <button type="button" id="rec-target-subject" onclick="setRecTargetType('subject')" style="padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🏛 教科部門へ</button>
           <button type="button" id="rec-target-supervision" onclick="setRecTargetType('supervision')" style="padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🪑 自習監督の対象者へ</button>
+          <button type="button" id="rec-target-sv_decide" onclick="setRecTargetType('sv_decide')" style="padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">🗓 監督の決定者へ</button>
+        </div>
+        <div id="rec-sv_decide-block" style="display:none">
+          <div style="font-size:11px;color:var(--muted);line-height:1.6;margin:6px 0">自習監督を決定できるスタッフ（管理者と fit002・fit003・fit010。代表は除く）に配ります。ToDoから自習監督の画面に直接飛べます。「これで確定」を押すと、その週の分は自動で完了になります。</div>
+          <div id="rec-sv_decide-preview" style="font-size:11px;color:var(--text)"></div>
         </div>
         <div id="rec-person-block">
           <div id="rec-staff-checks" style="display:flex;flex-wrap:wrap;gap:6px;max-height:180px;overflow-y:auto;padding:2px"></div>
@@ -6817,7 +6822,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261012pk1';
+const APP_VERSION = '20261012sv1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -18573,13 +18578,28 @@ function recMondayOf(iso) {
 function recMd(iso) { return parseInt(iso.slice(5, 7), 10) + '/' + parseInt(iso.slice(8, 10), 10); }
 // 今週ぶんの日付。{ week:'今週の月曜', show, due, ready(依頼日を過ぎた), late(締切を過ぎた) }
 function recWeekInfo(t, todayIso) {
-  const mon = recMondayOf(todayIso);
   const sw = Math.min(Math.max(parseInt(t.show_weekday, 10) || 1, 1), 7);
   const dw = Math.min(Math.max(parseInt(t.due_weekday, 10) || 5, 1), 7);
-  const show = recAddDays(mon, sw - 1);
-  const due = recAddDays(mon, (dw - 1) + (dw < sw ? 7 : 0));
-  return { week: mon, show: show, due: due, ready: todayIso >= show, late: todayIso > due };
+  const calc = function (mon) {
+    const show = recAddDays(mon, sw - 1);
+    const due = recAddDays(mon, (dw - 1) + (dw < sw ? 7 : 0));
+    return { week: mon, show: show, due: due, ready: todayIso >= show, late: todayIso > due };
+  };
+  const cur = calc(recMondayOf(todayIso));
+  // 20261012sv1: 締切が翌週にまたがる設定（例：日曜依頼→水曜締切）は、先週の依頼の期間中なら先週ぶんとして扱う
+  //   （日曜に誰もアプリを開かなくても、月〜水に開いた時点で配られるように）
+  if (dw < sw) {
+    const prev = calc(recAddDays(cur.week, -7));
+    if (prev.ready && !prev.late) return prev;
+  }
+  return cur;
 }
+// 20261012sv1: 自習監督の依頼で対象にする週（締切の週の翌週の月〜日）
+function recSvTargetWeek(wk) {
+  const mon = recAddDays(recMondayOf(wk.due), 7);
+  return { from: mon, to: recAddDays(mon, 6) };
+}
+function recIsSvTarget(type) { return type === 'supervision' || type === 'sv_decide'; }
 
 // 起動時に1回だけ実行する
 async function runRecurringTodoGeneration() {
@@ -18628,6 +18648,8 @@ async function runRecurringTodoGeneration() {
           Array.isArray(tpl.target_subjects) ? tpl.target_subjects : []);
       } else if (tpl.target_type === 'supervision') {
         recipients = await resolveSupervisionStaffIds();   // 20261010wk1
+      } else if (tpl.target_type === 'sv_decide') {
+        recipients = await resolveSvDeciderStaffIds();     // 20261012sv1
       } else {
         recipients = (Array.isArray(tpl.target_staff_ids) ? tpl.target_staff_ids : []).slice();
       }
@@ -18645,9 +18667,9 @@ async function runRecurringTodoGeneration() {
       // 表示開始日。未設定なら生成時点から見える（従来の挙動）。毎週は依頼日から。
       const showFrom = wk ? wk.show : (tpl.show_from_day ? templateDueDate(ym, tpl.show_from_day) : null);
       // 自習監督の毎週依頼は、タイトルに対象の週（翌週の月〜日）を付ける
-      const genTitle = (wk && tpl.target_type === 'supervision')
-        ? tpl.title + '（' + recMd(recAddDays(wk.week, 7)) + '〜' + recMd(recAddDays(wk.week, 13)) + '）'
-        : tpl.title;
+      //   20261012sv1: 対象の週＝締切の週の翌週（日曜依頼・水曜締切なら、その次の週の月〜日）。決定側（sv_decide）も同じ週。
+      const svw = (wk && recIsSvTarget(tpl.target_type)) ? recSvTargetWeek(wk) : null;
+      const genTitle = svw ? tpl.title + '（' + recMd(svw.from) + '〜' + recMd(svw.to) + '）' : tpl.title;
       // 承認者。その月だけの上書き（override_ym が当月と一致）を優先する。
       // 翌月には自動で通常の承認者に戻るので、戻し忘れが起きない。
       const approver = (tpl.override_ym === ym && tpl.override_approver_staff_id)
@@ -18754,6 +18776,16 @@ async function previewRecSupervisionTargets() {
   } catch (e) { el.textContent = ''; }
 }
 
+async function previewRecSvDeciders() {
+  const el = document.getElementById('rec-sv_decide-preview');
+  if (!el) return;
+  el.textContent = '対象者を確認中…';
+  try {
+    const ids = await resolveSvDeciderStaffIds();
+    el.textContent = ids.length ? '配布先（' + ids.length + '名）：' + ids.map(id => staffNameById(id)).join('、') : '対象者がいません';
+  } catch (e) { el.textContent = ''; }
+}
+
 function recChipStyle(active) {
   const on = 'background:var(--orange);border:1.5px solid var(--orange-d);color:white;font-weight:700;';
   const off = 'background:var(--surface);border:1.5px solid var(--border);color:var(--muted);font-weight:500;';
@@ -18761,7 +18793,12 @@ function recChipStyle(active) {
 }
 
 function setRecTargetType(type) {
-  recTargetType = (type === 'school' || type === 'teacher' || type === 'subject' || type === 'supervision') ? type : 'person';
+  recTargetType = (type === 'school' || type === 'teacher' || type === 'subject' || type === 'supervision' || type === 'sv_decide') ? type : 'person';
+  const db = document.getElementById('rec-target-sv_decide');   // 20261012sv1
+  if (db) db.style.cssText = recChipStyle(recTargetType === 'sv_decide');
+  const dblk = document.getElementById('rec-sv_decide-block');
+  if (dblk) dblk.style.display = (recTargetType === 'sv_decide') ? '' : 'none';
+  if (recTargetType === 'sv_decide') previewRecSvDeciders();
   const pb = document.getElementById('rec-target-person');
   const sb = document.getElementById('rec-target-school');
   const tb = document.getElementById('rec-target-teacher');
@@ -19042,12 +19079,12 @@ async function saveRecurringTodo() {
   };
   // 20261010wk1: 毎週・自習監督の宛先は新しい列を使う（todo_weekly.sql が必要）。
   //   毎月で自習監督以外のときは新しい列を送らない（SQL未実行でも従来どおり保存できるように）。
-  const editingWeeklyOrSv = recFrequency === 'weekly' || recTargetType === 'supervision';
+  const editingWeeklyOrSv = recFrequency === 'weekly' || recIsSvTarget(recTargetType);
   if (editingWeeklyOrSv || recEditFrequencyWas === 'weekly') {
     payload.frequency = recFrequency;
     payload.show_weekday = recFrequency === 'weekly' ? (parseInt(document.getElementById('rec-show-weekday').value, 10) || 1) : null;
     payload.due_weekday = recFrequency === 'weekly' ? (parseInt(document.getElementById('rec-due-weekday').value, 10) || 5) : null;
-    payload.link_target = recTargetType === 'supervision' ? 'supervision' : null;
+    payload.link_target = recIsSvTarget(recTargetType) ? 'supervision' : null;
     if (recFrequency === 'weekly') { payload.override_ym = null; payload.override_approver_staff_id = null; }
   }
   showLoading('保存中...');
@@ -19065,7 +19102,8 @@ async function saveRecurringTodo() {
     loadRecurringTodos();
   } catch (e) {
     hideLoading();
-    if ((recFrequency === 'weekly' || recTargetType === 'supervision') && /column|PGRST|400/i.test(String(e && e.message || e))) {
+    if (/target_type_chk/.test(String(e && e.message || e))) { showToast('この宛先には todo_supervision_schedule.sql の実行が必要です', 'error'); return; }
+    if ((recFrequency === 'weekly' || recIsSvTarget(recTargetType)) && /column|PGRST|400/i.test(String(e && e.message || e))) {
       showToast('毎週・自習監督の設定には todo_weekly.sql の実行が必要です', 'error'); return;
     }
     showToast('エラー: ' + e.message, 'error');
@@ -19126,7 +19164,7 @@ async function loadRecurringTodos() {
               ? '🏛 ' + (Array.isArray(t.target_subjects) ? t.target_subjects.map(subjectDeptLabel).join('・') : '')
               : (t.target_type === 'supervision'
                   ? '🪑 自習監督の対象者（自動）'
-                  : '👤 ' + (Array.isArray(t.target_staff_ids) ? t.target_staff_ids.length : 0) + '名')));
+                  : t.target_type === 'sv_decide' ? '🗓 監督の決定者（自動）' : '👤 ' + (Array.isArray(t.target_staff_ids) ? t.target_staff_ids.length : 0) + '名')));
     // 20261010wk1: 毎週は今週ぶん、毎月は今月ぶん
     const wk = recIsWeekly(t) ? recWeekInfo(t, getTodayJST()) : null;
     const gen = wk ? String(t.last_generated_week || '') === wk.week : String(t.last_generated_ym || '') === ym;
@@ -19251,6 +19289,18 @@ async function resolveSupervisionStaffIds() {
   const codes = new Set(perms.map(p => String(p.staff_id || '')).filter(c => c && c.toLowerCase() !== 'fit001'));
   const staffRows = await sbGet('staff', 'is_active=eq.true&select=id,staff_id') || [];
   return staffRows.filter(s => codes.has(String(s.staff_id || ''))).map(s => s.id);
+}
+
+// 20261012sv1: 自習監督の決定者（canDecideSupervision と同じ：admin と fit002・fit003・fit010。代表 fit001 は除く）
+async function resolveSvDeciderStaffIds() {
+  let rows = [];
+  try { rows = await sbGet('staff', 'is_active=eq.true&select=id,staff_id,role') || []; }
+  catch (e) { rows = await sbGet('staff', 'is_active=eq.true&select=id,staff_id') || []; }
+  return rows.filter(s => {
+    const sid = String(s.staff_id || '').toLowerCase();
+    if (sid === 'fit001') return false;
+    return s.role === 'admin' || sid === 'fit002' || sid === 'fit003' || sid === 'fit010';
+  }).map(s => s.id);
 }
 
 async function resolveTeacherStaffIds() {
@@ -40493,7 +40543,7 @@ async function svConfirmWeek(fromIso, toIso) {
         try { const [y,m,d] = s.sv_date.split('-').map(n=>parseInt(n,10)); dl = m+'/'+d+'('+['日','月','火','水','木','金','土'][new Date(y,m-1,d).getDay()]+')'; } catch(e){}
         return '・' + dl + ' ' + s.period + '限';
       }).join('\n');
-      const title = '今週の自習監督が確定しました（' + weekLabel + '）';
+      const title = '自習監督が確定しました（' + weekLabel + '）';
       const detail = weekLabel + ' の自習監督が確定しました。担当は以下です。カレンダーにも表示されています。\n' + lines + '\n当日夜、ホームの「今日の予定」から監督報告をお願いします。';
       try {
         await sbPost('staff_todos', { from_staff_id: fromId, to_staff_id: toId, title: title, detail: detail, link_target: 'supervision' });
@@ -40505,6 +40555,17 @@ async function svConfirmWeek(fromIso, toIso) {
         }
       }
     }
+    // 20261012sv1: 決定者あての定期ToDo（その週の「決定・共有」）を完了にする
+    try {
+      const tpls = await sbGet('todo_templates', 'target_type=eq.sv_decide&select=id') || [];
+      if (tpls.length) {
+        const wkTag = '（' + recMd(fromIso) + '〜' + recMd(toIso) + '）';
+        const open = await sbGet('staff_todos', 'template_id=in.(' + tpls.map(t => t.id).join(',') + ')&is_done=eq.false&select=id,title') || [];
+        for (const t of open.filter(x => String(x.title || '').indexOf(wkTag) !== -1)) {
+          await sbPatch('staff_todos', 'id=eq.' + t.id, { is_done: true, done_at: new Date().toISOString(), done_by_staff_id: (currentStaff && currentStaff.id) || null });
+        }
+      }
+    } catch (e) { console.warn('決定ToDoの完了に失敗', e); }
     hideLoading();
     showToast('✅ 確定しました（' + notified + '名に通知）', 'success');
     svLoadDecide();
