@@ -6808,7 +6808,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261012tt4';
+const APP_VERSION = '20261013du1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -68235,10 +68235,23 @@ async function loadMissingList() {
   const range = (document.getElementById('ms-range') || {}).value || '30';
   const from = msFromDate(range), to = msYesterday();
   try {
+    const d = await msCompute(from, to);
+    if (seq !== _msSeq) return;
+    _msData = d;
+    renderMissingList();
+  } catch (e) {
+    if (seq !== _msSeq) return;
+    body.innerHTML = '<div style="font-size:12px;color:#C0392B;text-align:center;padding:20px">読み込みに失敗しました。もう一度お試しください。</div>';
+  }
+}
+
+// 20261013du1: 未入力（報告書・出席）の集計。未入力一覧とログイン状況の両方で使う。
+async function msCompute(from, to) {
+  {
     const map = await loadTeacherClassMap();   // 高卒生の授業・fit001 は含まれない
     const classById = map.classById || {};
     const classIds = Object.keys(classById);
-    if (!classIds.length || from > to) { _msData = { sessions: [], byTeacher: map.byTeacher || {}, staffById: map.staffById || {}, supportOnly: map.supportOnly || new Set() }; renderMissingList(); return; }
+    if (!classIds.length || from > to) return { sessions: [], byTeacher: map.byTeacher || {}, staffById: map.staffById || {}, supportOnly: map.supportOnly || new Set(), from: from, to: to };
     // URLが長くなりすぎないよう、授業IDを分けて取得
     const chunks = [];
     for (let i = 0; i < classIds.length; i += 60) chunks.push(classIds.slice(i, i + 60));
@@ -68249,7 +68262,6 @@ async function loadMissingList() {
       sbGetAll('session_attendance', 'class_master_id=in.(' + ids.join(',') + ')' + range2 + '&select=class_master_id,session_date'),
       sbGetActiveEnrollments('class_master_id=in.(' + ids.join(',') + ')&select=class_master_id,student_id')
     ])));
-    if (seq !== _msSeq) return;
     const repSet = new Set(), attSet = new Set(), hasStu = new Set();
     let sessions = [];
     res.forEach(([sess, reps, atts, enr]) => {
@@ -68275,12 +68287,21 @@ async function loadMissingList() {
       const c = classById[s.class_master_id] || {};
       out.push({ cid: s.class_master_id, date: s.session_date, period: s.period, name: c.name || '授業', noReport: noReport, noAtt: noAtt });
     });
-    _msData = { sessions: out, byTeacher: map.byTeacher || {}, staffById: map.staffById || {}, supportOnly: map.supportOnly || new Set(), from: from, to: to };
-    renderMissingList();
-  } catch (e) {
-    if (seq !== _msSeq) return;
-    body.innerHTML = '<div style="font-size:12px;color:#C0392B;text-align:center;padding:20px">読み込みに失敗しました。もう一度お試しください。</div>';
+    return { sessions: out, byTeacher: map.byTeacher || {}, staffById: map.staffById || {}, supportOnly: map.supportOnly || new Set(), from: from, to: to };
   }
+}
+// 講師（staff.id）ごとの未入力の数 { id: { rep, att } }。未入力一覧の講師ごとの数と同じ数え方（サポートだけの授業は報告書を数えない）。
+function msCountByStaff(d) {
+  const out = {};
+  const byClass = {};
+  Object.keys(d.byTeacher || {}).forEach(sid => (d.byTeacher[sid] || []).forEach(c => { (byClass[c.id] || (byClass[c.id] = [])).push(sid); }));
+  const sup = d.supportOnly || new Set();
+  (d.sessions || []).forEach(r => (byClass[r.cid] || []).forEach(t => {
+    const o = out[t] || (out[t] = { rep: 0, att: 0 });
+    if (r.noReport && !sup.has(t + '|' + r.cid)) o.rep++;
+    if (r.noAtt) o.att++;
+  }));
+  return out;
 }
 
 function renderMissingList() {
@@ -68419,6 +68440,7 @@ async function loadHomeStaffPresence(force) {
     if (force || !spCache.staff.length) {
       spCache.staff = await sbGet('staff', 'select=id,name,staff_id,is_active&order=staff_id') || [];
     }
+    if (force) frtLoadDue(true);   // 20261013du1
     if (!spUnavailable) {
       const sum = await fitRpc('fit_staff_activity_summary', {}) || [];
       spCache.sum = {};
@@ -68685,14 +68707,56 @@ function frtMembersHtml() {
     h += '<div class="frt-row" onclick="frtToggleDetail(\'' + escapeHtml(sid) + '\')" style="' + (open ? 'background:#F4F7FB' : '') + '">' +
       '<span class="frt-av' + (on ? '' : ' off') + '">' + escapeHtml(frtInitial(sid)) + (on ? '<i></i>' : '') + '</span>' +
       '<span class="t"><span class="n">' + escapeHtml(r.s.name || sid) + (sid === me ? '<span style="font-weight:400;color:var(--muted)">（自分）</span>' : '') + '</span>' +
-      '<span class="p" style="color:' + (on ? '#2E7D32' : 'var(--muted)') + '">' + escapeHtml(spLastText(r.a)) + '　今日 ' + spFmtMin(r.a ? r.a.today_min : 0) + '</span></span>' +
+      '<span class="p" style="color:' + (on ? '#2E7D32' : 'var(--muted)') + '">' + escapeHtml(spLastText(r.a)) + '　今日 ' + spFmtMin(r.a ? r.a.today_min : 0) + '</span>' + frtDueHtml(r.s) + '</span>' +
       (sid !== me && frt.chatOk ? '<button class="frt-ib" title="' + escapeHtml(r.s.name || sid) + 'さんに連絡" onclick="event.stopPropagation();frtOpenRoom(frtDm(frtMe(),\'' + escapeHtml(sid) + '\'))">💬</button>' : '') +
       '</div>' +
       (open ? '<div id="sp-detail-' + escapeHtml(sid) + '" style="margin:0 6px 8px 44px;font-size:10px;color:var(--muted)">読み込み中...</div>' : '');
   });
-  h += '<div class="frt-hint">🟢＝今アプリを開いている人。利用時間は、アプリの画面が前に出ていた時間（1分単位・教科アプリは除く）。名前をタップすると直近7日が見られます。</div>';
+  h += '<div class="frt-hint">🟢＝今アプリを開いている人。利用時間は、アプリの画面が前に出ていた時間（1分単位・教科アプリは除く）。名前をタップすると直近7日が見られます。<br>報告書・出席＝直近30日（昨日まで）の未入力。ToDo＝受け取って未完了のもの（赤は期限切れ）。数字をタップすると未入力一覧が開きます。</div>';
+  frtLoadDue(false);   // 20261013du1: 5分ごとに読み直す
   return h;
 }
+// ---------- 20261013du1: 未達（報告書・出席の未入力／ToDo の未完了）----------
+// 報告書・出席：未入力一覧と同じ（直近30日・昨日まで）。ToDo：受け取って未完了のもの（表示開始前は除く）、期限切れは赤。
+let frtDue = { at: 0, loading: false, ok: false, byUuid: {} };
+async function frtLoadDue(force) {
+  if (!currentStaff || frtDue.loading) return;
+  if (!force && frtDue.at && Date.now() - frtDue.at < 5 * 60000) return;
+  frtDue.loading = true;
+  try {
+    const today = getTodayJST();
+    const [ms, todos] = await Promise.all([
+      msCompute(msFromDate('30'), msYesterday()).catch(() => null),
+      sbGetAll('staff_todos', 'is_done=eq.false&select=to_staff_id,due_date,show_from').catch(() => null)
+    ]);
+    const by = {};
+    const g = id => by[id] || (by[id] = { rep: 0, att: 0, todo: 0, late: 0 });
+    if (ms) { const c = msCountByStaff(ms); Object.keys(c).forEach(id => { g(id).rep = c[id].rep; g(id).att = c[id].att; }); }
+    (todos || []).forEach(t => {
+      if (!t.to_staff_id) return;
+      if (t.show_from && String(t.show_from).slice(0, 10) > today) return;
+      const o = g(t.to_staff_id);
+      o.todo++;
+      if (t.due_date && String(t.due_date).slice(0, 10) < today) o.late++;
+    });
+    frtDue.byUuid = by; frtDue.ok = !!(ms || todos); frtDue.at = Date.now();
+  } catch (e) {} finally { frtDue.loading = false; }
+  if (!frt.room && frt.tab === 'members') frtRenderBody();
+}
+function frtDueHtml(staffRow) {
+  if (!frtDue.ok) return '';
+  const o = frtDue.byUuid[staffRow.id];
+  const chip = (txt, bg, fg, oc) => '<span onclick="event.stopPropagation();' + oc + '" style="display:inline-block;font-size:10px;font-weight:700;padding:0 6px;border-radius:8px;background:' + bg + ';color:' + fg + ';margin:2px 3px 0 0;cursor:pointer;white-space:nowrap">' + txt + '</span>';
+  if (!o || !(o.rep || o.att || o.todo)) return '<span class="p" style="color:#2E7D32">✓ 未達なし</span>';
+  const mine = staffRow.staff_id === frtMe();
+  const ms = "openMissingList('" + (mine ? 'me' : 'all') + "')";
+  return '<span style="display:block;line-height:1.3">' +
+    (o.rep ? chip('報告書 ' + o.rep, '#FDECEC', '#C0392B', ms) : '') +
+    (o.att ? chip('出席 ' + o.att, '#FFF4E0', '#9A6A12', ms) : '') +
+    (o.todo ? chip('ToDo ' + o.todo + (o.late ? '（期限切れ ' + o.late + '）' : ''), o.late ? '#FDECEC' : '#EAF1FB', o.late ? '#C0392B' : '#2D5FA6', mine ? "openHomeFeature('todo')" : '') : '') +
+    '</span>';
+}
+
 function frtToggleDetail(sid) { frt.openDetail = (frt.openDetail === sid) ? null : sid; frtRenderBody(); }
 async function loadStaffPresenceDetail(sid) {
   const box = document.getElementById('sp-detail-' + sid);
