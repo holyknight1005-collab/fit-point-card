@@ -979,6 +979,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
       <span id="emx-mode-note" style="font-size:10px;color:var(--muted)"></span>
     </div>
     <div id="emx-koushu-note" style="display:none;font-size:10px;color:var(--muted);background:var(--surface2);border-radius:8px;padding:6px 10px;margin-bottom:8px;line-height:1.5">※ 講習は開始回の概念がないため、開始回なしで登録されます。</div>
+    <div id="emx-plan-box" style="display:none;margin-bottom:8px;background:#F1F8F3;border:1px solid #B6DCC2;border-radius:8px;padding:8px 10px"></div>   <!-- 20261014pl1 -->
     <div id="emx-info" style="font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:700"></div>
     <div id="emx-grid"></div>
     <div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">※ 解除は受講終了（ended_on）として記録されます。履歴は残ります。</div>
@@ -6835,7 +6836,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261014my4';
+const APP_VERSION = '20261014pl2';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -9493,7 +9494,9 @@ async function openStudentClassSchedule() {
     const cms = await sbGet('class_master', 'id=in.(' + cmIds.map(x => '"' + x + '"').join(',') + ')&select=id,name,subject,category') || [];
     const cmById = {}; (cms || []).forEach(c => { cmById[c.id] = c; });
     // セッション取得
-    const sessions = await sbGet('class_sessions', 'class_master_id=in.(' + cmIds.map(x => '"' + x + '"').join(',') + ')&select=class_master_id,session_date,period,start_time,end_time&order=session_date') || [];
+    const _sp = await fitMyStuPlan();   // 20261014pl2: 4回選択で選んでいない回は出さない
+    const sessions = (await sbGet('class_sessions', 'class_master_id=in.(' + cmIds.map(x => '"' + x + '"').join(',') + ')&select=class_master_id,session_date,period,start_time,end_time&order=session_date') || [])
+      .filter(s => fitPlanIn(_sp, s.class_master_id, currentStudent.id, s.session_date));
     // 表示中の月（monthly の offset に合わせる）
     const now = new Date();
     const base = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
@@ -26184,6 +26187,7 @@ async function reloadEnrollMatrix() {
         'class_master_id=in.(' + ids + ')&ended_on=is.null&select=id,student_id,class_master_id,is_provisional').catch(() => []) || [];
       enr.forEach(e => { emxEnrolled[e.student_id + '|' + e.class_master_id] = { id: e.id, prov: !!e.is_provisional }; });
     }
+    await emxLoadPlans();   // 20261014pl1: 理科の4回／8回
     renderEnrollMatrixFilters();
     setEmxStartCyc();
     renderEnrollMatrix();
@@ -26264,9 +26268,26 @@ function emxVisibleStudents() {
     return true;
   }).sort((a, b) => emxSortKey(a).localeCompare(emxSortKey(b), 'ja'));
 }
+// 20261014pl1: 共通テスト対策は申込用紙の順（英語→国語→理科→理科基礎→地歴公民→情報→数学ⅠA→数学ⅡBC）
+const EMX_CT_ORDER = ['英語', '評論文', '小説', '古文', '漢文', '化学', '物理', '生物', '化学基礎', '生物基礎', '地学基礎',
+  '日本史', '世界史', '地理', '政治経済', '情報', '二次関数', '図形と計量', 'データの分析', '場合の数・確率', '図形の性質',
+  '図形と方程式', '三角関数', '指数対数関数', '微分積分法', 'ベクトル', '数列', '統計的な推測', '平面上の曲線と複素数平面'];
+function emxCtRank(c) {
+  const t = String(c.name || '').replace(/^共通テスト対策[\s　]*/, '').replace(/^国語[\(（](.*)[\)）]$/, '$1').replace(/[【\[].*$/, '').trim();
+  let i = EMX_CT_ORDER.indexOf(t);
+  if (i >= 0) return i;
+  let best = -1, len = 0;
+  EMX_CT_ORDER.forEach((k, j) => { if (t.indexOf(k) !== -1 && k.length > len) { best = j; len = k.length; } });
+  if (best >= 0) return best;
+  return 100 + emxSubjRank(c.subject);   // 一覧にない講座は最後（教科順）
+}
 function emxVisibleClasses() {
   return emxClasses.filter(c => (c.division || '高校部') === emxDivision && emxClassMatchesGrade(c, emxGrade))
     .sort((a, b) => {
+      if (emxCategory === 'common_test') {
+        const r = emxCtRank(a) - emxCtRank(b);
+        if (r) return r;
+      }
       const d = emxSubjRank(a.subject) - emxSubjRank(b.subject);
       if (d) return d;
       return (a.name || '').localeCompare(b.name || '', 'ja');
@@ -26323,7 +26344,7 @@ function renderEnrollMatrix() {
         'background:' + (on ? (prov ? '#FFF3DF' : cc + '22') : 'transparent') +
         (prov ? ';box-shadow:inset 0 0 0 2px #E8C193' : '') + '">' +
         '<div style="width:100%;height:30px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:' + (prov ? '#8F5F12' : cc) + '">' +
-        (busy ? '…' : (on ? (prov ? '⏳' : '✓') : '')) + '</div></td>';
+        (busy ? '…' : emxCellMark(key, c, ent)) + '</div></td>';   // 20261014pl1: 理科は 8／4
     });
     h += '</tr>';
   });
@@ -26341,6 +26362,7 @@ function renderEnrollMatrix() {
   });
   h += '</div></div>';
   grid.innerHTML = h;
+  try { renderEmxPlanBox(); } catch (e) {}   // 20261014pl1
   if (typeof emxFillEndStudentSelect === 'function') emxFillEndStudentSelect();
 }
 
@@ -26354,12 +26376,19 @@ async function toggleEmxCell(studentId, classId) {
   const ent0 = emxEnrolled[key];
   const wasOn = !!ent0;
   const wasProv = !!(ent0 && ent0.prov);
+  const clsP = emxClasses.find(c => String(c.id) === String(classId));
+  const planOn = emxPlanOk && fitPlanEligible(clsP);   // 20261014pl1: 理科（共テ）の4回／8回
   try {
     if (wasOn && wasProv !== emxProvMode) {
       // 同じセルでも「確定 ⇔ 見込み」が違うときは、解除ではなく切り替える
       await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(ent0.id),
         { is_provisional: emxProvMode });
       emxEnrolled[key] = { id: ent0.id, prov: emxProvMode };
+    } else if (wasOn && planOn && emxPlanCountOf(key) !== emxPlanMode) {
+      // 理科：登録済みのセルを違う回数のモードで押したら、回数を切り替える（8回にしたら日付は消す）
+      const body = (emxPlanMode === 4) ? { plan_count: 4 } : { plan_count: null, plan_dates: null };
+      await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(ent0.id), body);
+      emxPlan[key] = { count: emxPlanMode === 4 ? 4 : null, dates: emxPlanMode === 4 ? ((emxPlan[key] || {}).dates || []) : [] };
     } else if (wasOn) {
       await endEnrollment(classId, studentId);
       delete emxEnrolled[key];
@@ -26380,6 +26409,11 @@ async function toggleEmxCell(studentId, classId) {
         newId = rows.length ? rows[0].id : null;
       } catch (e) { newId = null; }
       emxEnrolled[key] = { id: newId, prov: emxProvMode };
+      if (planOn && newId) {
+        // 理科：4回モードなら4回選択として登録（日付は後で「4回の日付を登録」から）
+        await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(newId), { plan_count: emxPlanMode === 4 ? 4 : null, plan_dates: null });
+        emxPlan[key] = { count: emxPlanMode === 4 ? 4 : null, dates: [] };
+      }
     }
     // セルだけ更新（全体再描画しない＝スクロール位置を保つ）
     const cls = emxClasses.find(c => String(c.id) === String(classId));
@@ -26391,9 +26425,10 @@ async function toggleEmxCell(studentId, classId) {
       cellEl.style.boxShadow = nowProv ? 'inset 0 0 0 2px #E8C193' : '';
     }
     if (inner) {
-      inner.textContent = nowEnt ? (nowProv ? '⏳' : '✓') : '';
+      inner.innerHTML = emxCellMark(key, cls, nowEnt);   // 20261014pl1
       inner.style.color = nowProv ? '#8F5F12' : cc;
     }
+    if (planOn) { try { renderEmxPlanBox(); } catch (e) {} }
     const info = document.getElementById('emx-info');
     if (info) {
       const stus = emxVisibleStudents(), vc = emxVisibleClasses();
@@ -26402,10 +26437,228 @@ async function toggleEmxCell(studentId, classId) {
       info.textContent = '生徒 ' + stus.length + '名 × 講座 ' + vc.length + '件　受講中 ' + n + '件';
     }
   } catch (e) {
-    if (inner) inner.textContent = wasOn ? '✓' : '';
+    if (inner) inner.innerHTML = emxCellMark(key, clsP, ent0);
     showToast('更新に失敗しました: ' + (e && e.message ? e.message : e), 'error');
   }
   emxBusy[key] = false;
+}
+
+// ===== 20261014pl1: 共通テスト対策（理科）の「4回選択／8回」 =====
+// ・申込では「4回」か「8回」だけを受け付け、どの4回に出るかは初回補習のアンケートのあとで塾が登録する。
+// ・class_enrollments.plan_count（4=4回選択、null/8=全回）と plan_dates（【出ない回（ー）】の授業日の配列）を使う（add_enroll_plan.sql）。
+// ・「ー」の回は、出欠名簿・出欠一覧表・出欠一望・生徒側の時間割/カレンダーに出さない（欠席に数えない）。
+//   「ー」の付いていない回（補習の回・あとから増えた回も）は今までどおり出る。
+function fitPlanEligible(c) {
+  return !!c && c.category === 'common_test' && String(c.subject || '').trim() === '理科' && (parseInt(c.total_sessions, 10) || 0) >= 8;
+}
+// { classId: { studentId: Set(出ない日) } }（4回選択で「ー」が1つ以上あるものだけ）。SQL未実行なら {}。
+async function fitPlanMap(classIds) {
+  const out = {};
+  if (!classIds || !classIds.length) return out;
+  try {
+    for (let i = 0; i < classIds.length; i += 60) {
+      const ids = classIds.slice(i, i + 60);
+      const rows = await sbGetAll('class_enrollments', 'class_master_id=in.(' + ids.join(',') + ')&ended_on=is.null&plan_count=eq.4&select=class_master_id,student_id,plan_dates') || [];
+      rows.forEach(r => {
+        if (Array.isArray(r.plan_dates) && r.plan_dates.length) {
+          (out[r.class_master_id] || (out[r.class_master_id] = {}))[r.student_id] = new Set(r.plan_dates.map(String));
+        }
+      });
+    }
+  } catch (e) { /* 列が無い（SQL未実行）ときは制限なし */ }
+  return out;
+}
+// 生徒側：自分の4回選択（{ classId: { 自分のid: Set(日付) } }）。選んでいない回は時間割・カレンダーに出さない。
+async function fitMyStuPlan() {
+  const out = {};
+  if (!currentStudent) return out;
+  try {
+    const rows = await sbGet('class_enrollments', 'student_id=eq.' + currentStudent.id + '&ended_on=is.null&plan_count=eq.4&select=class_master_id,plan_dates') || [];
+    rows.forEach(r => { if (Array.isArray(r.plan_dates) && r.plan_dates.length) (out[r.class_master_id] = {})[currentStudent.id] = new Set(r.plan_dates.map(String)); });
+  } catch (e) {}
+  return out;
+}
+function fitPlanIn(map, classId, sid, date) {
+  const m = map && map[classId];
+  if (!m || !m[sid]) return true;
+  return !m[sid].has(String(date));   // 「ー」の日だけ外す
+}
+
+// ---------- 受講マトリクス：理科の 4回／8回 ----------
+let emxPlan = {};        // 'studentId|classId' -> { count, dates }
+let emxPlanOk = false;   // plan 列が使えるか（SQL実行済みか）
+let emxPlanMode = 8;     // 理科のセルを新しく登録するときの回数
+async function emxLoadPlans() {
+  emxPlan = {}; emxPlanOk = false;
+  const ids = emxClasses.filter(fitPlanEligible).map(c => c.id);
+  if (!ids.length) return;
+  try {
+    const rows = await sbGetAll('class_enrollments', 'class_master_id=in.(' + ids.join(',') + ')&ended_on=is.null&select=student_id,class_master_id,plan_count,plan_dates') || [];
+    rows.forEach(r => { emxPlan[r.student_id + '|' + r.class_master_id] = { count: r.plan_count, dates: Array.isArray(r.plan_dates) ? r.plan_dates : [] }; });
+    emxPlanOk = true;
+  } catch (e) { emxPlanOk = false; }
+}
+function emxPlanCountOf(key) { const p = emxPlan[key]; return (p && Number(p.count) === 4) ? 4 : 8; }
+function setEmxPlanMode(n) { emxPlanMode = (n === 4) ? 4 : 8; renderEmxPlanBox(); }
+// セルの文字：理科は 8／4（4回で日付が4つそろっていなければ小さく数を出す）
+function emxCellMark(key, cls, ent) {
+  if (!ent) return '';
+  if (ent.prov) return '⏳';
+  if (emxPlanOk && fitPlanEligible(cls)) {
+    if (emxPlanCountOf(key) === 4) {
+      const sk = ((emxPlan[key] || {}).dates || []).length;   // 「ー」の数
+      const n = (parseInt(cls.total_sessions, 10) || 8) - sk;  // 出る回の数
+      return '4' + (sk && n === 4 ? '' : '<span style="font-size:9px;color:#C0392B;font-weight:700;margin-left:1px">' + (sk ? '出' + n : 'ー未') + '</span>');
+    }
+    return '8';
+  }
+  return '✓';
+}
+function renderEmxPlanBox() {
+  const box = document.getElementById('emx-plan-box');
+  if (!box) return;
+  const eli = (emxCategory === 'common_test') ? emxVisibleClasses().filter(fitPlanEligible) : [];
+  if (!eli.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = 'block';
+  if (!emxPlanOk) {
+    box.innerHTML = '<div style="font-size:11px;color:#B84A4A;background:#FDECEC;border:1px solid #E0A0A0;border-radius:8px;padding:6px 10px">理科の4回選択を使うには、先に <b>add_enroll_plan.sql</b> を実行してください（今は通常の ✓ 登録になります）。</div>';
+    return;
+  }
+  const b = (n) => '<button onclick="setEmxPlanMode(' + n + ')" style="padding:5px 14px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:inherit;' +
+    (emxPlanMode === n ? 'border:1.5px solid #1A7340;background:#1A7340;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + n + '回</button>';
+  let h = '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">' +
+    '<span style="font-size:11px;font-weight:700;color:var(--muted)">🧪 理科（共テ）を登録するとき</span>' + b(8) + b(4) +
+    '<span style="font-size:10px;color:var(--muted)">セルの数字＝受講回数。登録済みのセルを違う回数のモードで押すと回数が切り替わり、同じ回数のモードで押すと解除します。</span></div>';
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><span style="font-size:11px;font-weight:700;color:var(--muted)">4回の人の出ない回（ー）を登録：</span>' +
+    eli.map(c => {
+      let n8 = 0, n4 = 0, undec = 0;
+      Object.keys(emxEnrolled).forEach(k => {
+        if (k.split('|')[1] !== String(c.id)) return;
+        if (emxPlanCountOf(k) === 4) { n4++; if ((parseInt(c.total_sessions, 10) || 8) - ((emxPlan[k] || {}).dates || []).length !== 4) undec++; } else n8++;
+      });
+      return '<button onclick="openPlanGrid(\'' + c.id + '\')" style="padding:5px 10px;font-size:11px;font-weight:700;border-radius:10px;cursor:pointer;font-family:inherit;border:1.5px solid ' + wkClassColor(c) + ';background:#fff;color:' + wkClassColor(c) + '">' +
+        escapeHtml(c.name.replace(/^共通テスト対策[\s　]*/, '')) + ' <span style="font-weight:600;color:var(--muted)">8回 ' + n8 + '・4回 ' + n4 + '</span>' +
+        (undec ? ' <span style="color:#C0392B">未決 ' + undec + '</span>' : '') + '</button>';
+    }).join('') + '</div>';
+  box.innerHTML = h;
+}
+
+// ---------- 4回選択の日付（授業ごと・生徒×授業日） ----------
+let plg = { classId: null, cls: null, sessions: [], rows: [], n8: 0, busy: {} };
+function plgEnsureModal() {
+  if (document.getElementById('plg-modal')) return;
+  const d = document.createElement('div');
+  d.id = 'plg-modal';
+  d.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:680;align-items:center;justify-content:center;padding:14px';
+  d.innerHTML = '<div style="background:var(--bg);border-radius:16px;padding:18px;max-width:1000px;width:100%;max-height:94vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,0.25)">' +
+    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px"><div id="plg-title" style="font-size:16px;font-weight:800;color:#1A7340">🧪 4回選択の出ない回</div>' +
+    '<button onclick="closePlanGrid()" style="background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;line-height:1">×</button></div>' +
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">4回選択の生徒の<b>出ない回をタップして「ー」</b>にします（もう一度タップで ○ に戻ります）。<b>押した時点で保存</b>されます。「ー」の回は、その生徒の出欠名簿・生徒側の時間割やカレンダーに出ず、欠席にも数えません。出る回が4回になるように「ー」を4つ付けてください。</div>' +
+    '<div id="plg-body"></div></div>';
+  document.body.appendChild(d);
+}
+async function openPlanGrid(classId) {
+  plgEnsureModal();
+  const m = document.getElementById('plg-modal');
+  m.style.display = 'flex';
+  const body = document.getElementById('plg-body');
+  body.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:12px">読み込み中…</div>';
+  try {
+    const cls = (emxClasses || []).find(c => String(c.id) === String(classId)) ||
+      ((await sbGet('class_master', 'id=eq.' + classId + '&select=id,name,subject,category,total_sessions,color') || [])[0]);
+    const [sess, enr] = await Promise.all([
+      sbGet('class_sessions', 'class_master_id=eq.' + classId + '&select=session_date,period,start_time,cycle_no,is_makeup&order=session_date,period') || [],
+      sbGetAll('class_enrollments', 'class_master_id=eq.' + classId + '&ended_on=is.null&select=id,student_id,plan_count,plan_dates,is_provisional') || []
+    ]);
+    const sessions = (sess || []).filter(s => !s.is_makeup);
+    const ids = (enr || []).map(e => e.student_id);
+    const stuIds = await excludeDemoIds(ids);
+    const stus = stuIds.length ? (await sbGet('students', 'id=in.(' + stuIds.map(x => '"' + x + '"').join(',') + ')&select=id,name,name_kana,school,grade') || []) : [];
+    const sMap = {}; stus.forEach(s => { sMap[s.id] = s; });
+    plg = { classId: classId, cls: cls, sessions: sessions, rows: [], n8: 0, busy: {} };
+    (enr || []).forEach(e => {
+      if (!sMap[e.student_id]) return;
+      if (Number(e.plan_count) === 4) plg.rows.push({ id: e.id, stu: sMap[e.student_id], dates: Array.isArray(e.plan_dates) ? e.plan_dates.map(String) : [] });
+      else plg.n8++;
+    });
+    plg.rows.sort((a, b) => emxSortKey(a.stu).localeCompare(emxSortKey(b.stu), 'ja'));
+    document.getElementById('plg-title').textContent = '🧪 4回選択の出ない回（ー）：' + (cls ? cls.name : '');
+    renderPlanGrid();
+  } catch (e) {
+    body.innerHTML = '<div style="font-size:12px;color:#B84A4A;padding:12px">読み込めませんでした：' + escapeHtml(e.message || String(e)) + '<br>add_enroll_plan.sql を実行済みか確認してください。</div>';
+  }
+}
+function closePlanGrid() {
+  const m = document.getElementById('plg-modal');
+  if (m) m.style.display = 'none';
+  // 受講マトリクスの表示（4／4の数・未決の数）を最新に
+  if (document.getElementById('emx-modal') && document.getElementById('emx-modal').style.display !== 'none') {
+    emxLoadPlans().then(function () { renderEnrollMatrix(); });
+  }
+}
+function renderPlanGrid() {
+  const body = document.getElementById('plg-body');
+  if (!body) return;
+  const ss = plg.sessions;
+  if (!ss.length) { body.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:12px">この講座の授業日（補習以外）がまだ登録されていません。</div>'; return; }
+  const wl = ['日', '月', '火', '水', '木', '金', '土'];
+  const col = plg.cls ? wkClassColor(plg.cls) : '#1A7340';
+  let h = '<div style="font-size:12px;margin-bottom:8px"><b>8回</b>の生徒 ' + plg.n8 + '人（全回）・<b>4回</b>の生徒 ' + plg.rows.length + '人</div>';
+  if (!plg.rows.length) {
+    h += '<div style="font-size:12px;color:var(--muted);padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px">4回選択の生徒がいません。受講マトリクスで「4回」のモードにしてセルを押すと、4回選択として登録できます。</div>';
+    body.innerHTML = h; return;
+  }
+  h += '<div style="overflow:auto;border:1px solid var(--border);border-radius:8px"><table style="border-collapse:separate;border-spacing:0;font-size:11px;min-width:100%">';
+  h += '<tr><th style="position:sticky;left:0;top:0;z-index:2;background:var(--surface2);padding:6px 8px;text-align:left;border-bottom:2px solid var(--border);border-right:2px solid var(--border);min-width:140px">生徒</th>';
+  ss.forEach((s, i) => {
+    const d = new Date(s.session_date + 'T00:00:00+09:00');
+    h += '<th style="position:sticky;top:0;background:var(--surface2);padding:5px 4px;border-bottom:2px solid var(--border);border-left:1px solid var(--border);min-width:52px;text-align:center">' +
+      '<div style="font-weight:800;color:' + col + '">' + '①②③④⑤⑥⑦⑧⑨⑩⑪⑫'.charAt(i) + '</div><div>' + (d.getMonth() + 1) + '/' + d.getDate() + '</div><div style="font-size:9px;color:var(--muted)">' + wl[d.getDay()] + (hasPer(s.period) ? ' ' + s.period + '限' : '') + '</div></th>';
+  });
+  h += '<th style="position:sticky;top:0;background:var(--surface2);padding:5px 6px;border-bottom:2px solid var(--border);border-left:2px solid var(--border)">出る回</th></tr>';
+  const allDates = ss.map(s => s.session_date);
+  plg.rows.forEach((r, ri) => {
+    const att = allDates.filter(d => r.dates.indexOf(d) === -1);   // r.dates＝「ー」の日
+    const n = att.length;
+    h += '<tr><td style="position:sticky;left:0;background:var(--surface);padding:5px 8px;border-bottom:1px solid var(--border);border-right:2px solid var(--border);white-space:nowrap"><b>' + escapeHtml(r.stu.name) + '</b>' +
+      '<div style="font-size:9px;color:var(--muted)">' + escapeHtml((r.stu.school || '') + ' ' + (r.stu.grade || '')) + '</div></td>';
+    ss.forEach(s => {
+      const on = att.indexOf(s.session_date) !== -1;
+      h += '<td onclick="togglePlanDate(' + ri + ',\'' + s.session_date + '\')" style="text-align:center;cursor:pointer;border-bottom:1px solid var(--border);border-left:1px solid var(--border);user-select:none;' +
+        'background:' + (on ? col + '18' : '#F2F2F2') + '"><div style="height:30px;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:' + (on ? col : '#999') + '">' +
+        (plg.busy[ri + '|' + s.session_date] ? '…' : (on ? '○' : 'ー')) + '</div></td>';
+    });
+    h += '<td style="text-align:center;border-bottom:1px solid var(--border);border-left:2px solid var(--border);font-weight:800;color:' + (n === 4 ? 'var(--green-d)' : '#C0392B') + '">' + n + '回' + (n === 4 ? ' ✓' : '') + '</td></tr>';
+  });
+  // 各回の人数（4回選択でその回を選んだ人＋8回の人）
+  h += '<tr><td style="position:sticky;left:0;background:var(--surface2);padding:6px 8px;border-right:2px solid var(--border);font-weight:800">その回の人数</td>';
+  ss.forEach(s => {
+    const c4 = plg.rows.filter(r => r.dates.indexOf(s.session_date) === -1).length;
+    h += '<td style="text-align:center;background:var(--surface2);border-left:1px solid var(--border);padding:4px"><div style="font-size:13px;font-weight:800">' + (c4 + plg.n8) + '</div><div style="font-size:9px;color:var(--muted)">4回 ' + c4 + '</div></td>';
+  });
+  h += '<td style="background:var(--surface2);border-left:2px solid var(--border)"></td></tr>';
+  h += '</table></div>';
+  const undec = plg.rows.filter(r => allDates.filter(d => r.dates.indexOf(d) === -1).length !== 4).length;
+  h += '<div style="font-size:11px;margin-top:8px;color:' + (undec ? '#C0392B' : 'var(--green-d)') + ';font-weight:700">' + (undec ? '出る回が4回になっていない生徒：' + undec + '人' : '全員、出る回が4回になっています ✓') + '</div>';
+  body.innerHTML = h;
+}
+async function togglePlanDate(ri, date) {
+  const r = plg.rows[ri];
+  if (!r) return;
+  const bk = ri + '|' + date;
+  if (plg.busy[bk]) return;
+  const allDates = plg.sessions.map(s => s.session_date);
+  const skipNow = r.dates.indexOf(date) !== -1;
+  const next = (skipNow ? r.dates.filter(x => x !== date) : r.dates.concat([date])).sort();   // 「ー」の日
+  if (allDates.every(d => next.indexOf(d) !== -1)) { showToast('全部の回を「ー」にはできません', 'info'); return; }
+  plg.busy[bk] = true; renderPlanGrid();
+  try {
+    await sbPatch('class_enrollments', 'id=eq.' + encodeURIComponent(r.id), { plan_dates: next.length ? next : null });
+    r.dates = next;
+  } catch (e) {
+    showToast('保存できませんでした：' + (e.message || e), 'error');
+  }
+  plg.busy[bk] = false; renderPlanGrid();
 }
 
 // dlm95: 退塾に伴う受講終了の生徒プルダウンを充填（現在マトリクスに出ている生徒）。
@@ -29007,6 +29260,8 @@ async function loadStuWeekGrid() {
         '&select=class_master_id,session_date,period,start_time,end_time&order=session_date,period').catch(() => []) || [];
       masters = await sbGet('class_master',
         'id=in.(' + myClassIds.join(',') + ')&select=id,name,subject,color').catch(() => []) || [];
+      const _sp = await fitMyStuPlan();   // 20261014pl2
+      sessions = sessions.filter(s => fitPlanIn(_sp, s.class_master_id, currentStudent.id, s.session_date));
     }
     const [checkins, myAppts] = await Promise.all([
       sbGet('checkins', 'student_id=eq.' + currentStudent.id +
@@ -30398,8 +30653,10 @@ async function loadTodayClasses() {
       if (e.preferred_period != null) prefOf[e.class_master_id] = e.preferred_period;
     });
 
+    const _sp = await fitMyStuPlan();   // 20261014pl2
     const mySessions = sessions.filter(s => {
       if (!s.class_master || !myClassIds.includes(s.class_master.id)) return false;
+      if (!fitPlanIn(_sp, s.class_master.id, currentStudent.id, today)) return false;
       const pref = prefOf[s.class_master.id];
       if (pref == null) return true;              // 担当コマ未設定 → 全部見せる
       if (s.period == null) return true;          // 時限なしの授業は対象外
@@ -32087,8 +32344,10 @@ async function loadDetailCalendar() {
         classInfo[e.class_master_id] = { id: e.class_master_id, name: c.name || '授業', subject: c.subject || '' };
       });
       const myClassIds = enrollments.map(e => e.class_master_id);
-      const sessions = await sbGet('class_sessions',
-        'class_master_id=in.(' + myClassIds.join(',') + ')&select=class_master_id,session_date,period&order=session_date') || [];
+      const _sp = await fitPlanMap(myClassIds);   // 20261014pl2: 4回選択で選んでいない回は出さない
+      const sessions = (await sbGet('class_sessions',
+        'class_master_id=in.(' + myClassIds.join(',') + ')&select=class_master_id,session_date,period&order=session_date') || [])
+        .filter(s => fitPlanIn(_sp, s.class_master_id, detailStudent.id, s.session_date));
       const byDate = {};
       sessions.forEach(s => {
         const info = classInfo[s.class_master_id];
@@ -32236,8 +32495,10 @@ async function loadUnifiedCalendar() {
         classInfo[e.class_master_id] = { id: e.class_master_id, name: c.name || '授業', subject: c.subject || '' };
       });
       const myClassIds = enrollments.map(e => e.class_master_id);
-      const sessions = await sbGet('class_sessions',
-        'class_master_id=in.(' + myClassIds.join(',') + ')&select=class_master_id,session_date,period&order=session_date') || [];
+      const _sp = await fitMyStuPlan();   // 20261014pl2
+      const sessions = (await sbGet('class_sessions',
+        'class_master_id=in.(' + myClassIds.join(',') + ')&select=class_master_id,session_date,period&order=session_date') || [])
+        .filter(s => fitPlanIn(_sp, s.class_master_id, currentStudent.id, s.session_date));
       const byDate = {};
       sessions.forEach(s => {
         const info = classInfo[s.class_master_id];
@@ -32393,7 +32654,8 @@ async function loadMyAttendance() {
     let sessQ = 'class_master_id=in.(' + myClassIds.join(',') +
       ')&select=class_master_id,session_date,period,start_time,end_time&order=session_date,period';
     if (since) sessQ += '&session_date=gte.' + since;
-    const sessions = await sbGet('class_sessions', sessQ) || [];
+    const _sp = await fitMyStuPlan();   // 20261014pl2: 4回選択で選んでいない回は出席一覧に出さない（欠席にもしない）
+    const sessions = (await sbGet('class_sessions', sessQ) || []).filter(s => fitPlanIn(_sp, s.class_master_id, currentStudent.id, s.session_date));
 
     // 自分の出欠記録
     let attQ = 'student_id=eq.' + currentStudent.id +
@@ -35034,7 +35296,9 @@ async function loadAttOverview() {
     });
     // その生徒がその授業・その時限の「担当コマ」に該当するか。
     // preferred_period 未設定なら常に対象（従来通り）。設定済みならその period のときだけ対象。
-    const stuInPeriod = (classId, sid, period) => {
+    const _aoPlan = await fitPlanMap(classIds);   // 20261014pl1: 理科の4回選択
+    const stuInPeriod = (classId, sid, period, date) => {
+      if (date && !fitPlanIn(_aoPlan, classId, sid, date)) return false;
       const pref = prefByClassStu[classId + '|' + sid];
       if (pref == null) return true;
       return String(pref) === String(period == null ? '' : period);
@@ -35100,7 +35364,7 @@ async function loadAttOverview() {
         if (past) {
           sids.forEach(sid => {
             // 長文読解などで担当コマ(preferred_period)が違う生徒は、この時限には出ない予定なので数えない
-            if (!stuInPeriod(m.id, sid, s.period)) return;
+            if (!stuInPeriod(m.id, sid, s.period, s.session_date)) return;
             const status = attMapG[m.id + '|' + s.session_date + '|' + perKey(s.period) + '|' + sid];
             if (status === 'present') st.present++;
             else if (status === 'absent') { st.absent++; clsAbsent++; }
@@ -35169,7 +35433,7 @@ async function loadAttOverview() {
             return;
           }
           // 長文読解などで担当コマ(preferred_period)が違う生徒は、この時限は「出ない予定」→薄グレーで表示・母数に含めない
-          if (!stuInPeriod(m.id, sid, s.period)) {
+          if (!stuInPeriod(m.id, sid, s.period, s.session_date)) {
             html += '<td style="text-align:center;padding:3px;background:repeating-linear-gradient(135deg,#f2f2f2,#f2f2f2 3px,#fafafa 3px,#fafafa 6px)"></td>';
             return;
           }
@@ -41757,10 +42021,14 @@ async function loadAttendanceRoster() {
       if (e.is_provisional) attProvisional[e.student_id] = true;
       if (e.lap_done) attLapDone[e.student_id] = true;
     });
-    const studentIds = await excludeDemoIds(enrolls.map(e => e.student_id));
+    // 20261014pl1: 理科の4回選択で、この回を選んでいない生徒は名簿に出さない
+    const _plan = await fitPlanMap([classId]);
+    const _allIds = await excludeDemoIds(enrolls.map(e => e.student_id));
+    const studentIds = _allIds.filter(id => fitPlanIn(_plan, classId, id, sdate));
+    attPlanOutN = _allIds.length - studentIds.length;
     if (!studentIds.length) {
       hideLoading();
-      document.getElementById('att-roster').innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">この授業に受講登録された生徒がいません</div>';
+      document.getElementById('att-roster').innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:16px">' + (attPlanOutN ? 'この回を選んだ生徒がいません（4回選択）' : 'この授業に受講登録された生徒がいません') + '</div>';
       document.getElementById('att-summary').style.display = 'none';
       document.getElementById('att-save-btn').style.display = 'none';
       const rb2 = document.getElementById('att-review-bar'); if (rb2) rb2.style.display = 'none';
@@ -41859,6 +42127,7 @@ async function loadAttendanceRoster() {
 
 // 20261001onl33: 学校別回の状態
 let attCurrentSessSchool = '';
+let attPlanOutN = 0;   // 20261014pl1: 4回選択でこの回を選んでいないため名簿から外した人数
 let attOutGroupOpen = false;
 // 他校の回で対象外、かつ保存済みの出欠も無い行（表示は折りたたみ・保存しない・集計に入れない）
 function attRowIsOut(row) { return !!row && row.scope === 'out' && !row.hadSaved; }
@@ -41875,6 +42144,9 @@ function renderAttendanceRoster() {
     banner = '<div style="background:#EAF2FB;border:1px solid #9CC0E8;border-radius:12px;padding:9px 12px;font-size:12px;color:#1E4276;line-height:1.6">' +
       '<b>' + escapeHtml(calSchoolSuffix(attCurrentSessSchool).trim()) + ' の回</b>です。対象 <b>' + inN + '</b>人' +
       (outRows.length ? '（他校の ' + outRows.length + '人は対象外。出欠は付けず、集計にも入りません）' : '') + '</div>';
+  }
+  if (attPlanOutN) {
+    banner += '<div style="background:#F1F8F3;border:1px solid #B6DCC2;border-radius:12px;padding:8px 12px;font-size:12px;color:#1A7340;line-height:1.6">🧪 4回選択でこの回を選んでいない <b>' + attPlanOutN + '</b>人は名簿に出していません（欠席にも数えません）。</div>';
   }
   let outGroup = '';
   if (outRows.length) {
@@ -42445,7 +42717,10 @@ let attPrefByStu = {};  // student_id -> preferred_period（担当コマ）。�
 
 // 担当コマ判定：preferred_period 未設定なら常に対象（従来通り）。設定済みならその period のときだけ対象。
 // 長文読解のように同一回が5限/6限の2セッションある授業で、担当外コマを母数・自動推定から外すために使う。
-function attStuInPeriod(sid, period) {
+let attPlanByStu = {};  // 20261014pl1: student_id -> Set(出ない日)（理科の4回選択で「ー」がある生徒だけ）
+function attStuInPlan(sid, date) { return !date || !attPlanByStu[sid] || !attPlanByStu[sid].has(String(date)); }
+function attStuInPeriod(sid, period, date) {
+  if (date && !attStuInPlan(sid, date)) return false;   // 20261014pl1: 4回選択で選んでいない回は対象外
   const pref = attPrefByStu[sid];
   if (pref == null) return true;          // 未設定＝全コマ対象
   return String(pref) === perKey(period);
@@ -42561,6 +42836,7 @@ async function loadAttMatrix() {
     // 担当コマ（長文読解などで5限/6限のどちらか担当）。未設定は入れない＝全コマ対象。
     attPrefByStu = {};
     enrolls.forEach(e => { if (e.preferred_period != null) attPrefByStu[e.student_id] = e.preferred_period; });
+    attPlanByStu = (await fitPlanMap([classId]))[classId] || {};   // 20261014pl1
     // 受講期間（開始前・終了後の授業日は集計対象外にする）
     attEnrollRange = {};
     enrolls.forEach(e => {
@@ -42646,7 +42922,7 @@ function buildAttMatrix(sessions, studentIds, atts, checkins, trials) {
       const cellKey = sid + '|' + k;
       if (cells[cellKey]) return; // 保存済みは尊重
       if (!attInEnrollRange(sid, date, info)) return; // 受講期間外は推定しない（サイクル情報を渡す）
-      if (!attStuInPeriod(sid, info.period)) return;  // 長文読解などで担当コマ(preferred_period)が違うコマは推定しない
+      if (!attStuInPeriod(sid, info.period, date)) return;  // 長文読解などで担当コマ(preferred_period)が違うコマは推定しない
       let present = false, estimable = false;
       if (classDur != null) {
         const segs = ciDetail[sid + '|' + date] || [];
@@ -42693,6 +42969,10 @@ function attCellHtml(sid, k) {
   if (!attInEnrollRange(sid, k.split('|')[0])) {
     return '<td style="text-align:center;padding:5px;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(0,0,0,0.035) 3px,rgba(0,0,0,0.035) 6px);color:var(--border)" title="受講期間外">·</td>';
   }
+  // 20261014pl1: 理科の4回選択で、この回を選んでいない
+  if (!attStuInPlan(sid, k.split('|')[0])) {
+    return '<td style="text-align:center;padding:5px;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(26,115,64,0.08) 3px,rgba(26,115,64,0.08) 6px);color:#9CC7AA;font-size:10px" title="4回選択で選んでいない回です">4回</td>';
+  }
   // 長文読解などで担当コマ(preferred_period)が違うコマ＝この生徒はここには出ない予定。薄グレーあみかけ・タップ不可・母数外。
   if (!attStuInPeriod(sid, k.split('|')[1])) {
     return '<td style="text-align:center;padding:5px;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(0,0,0,0.05) 3px,rgba(0,0,0,0.05) 6px);color:var(--border)" title="担当コマ外">–</td>';
@@ -42727,7 +43007,7 @@ function attRowRateHtml(sid) {
   let p = 0, n = 0;
   attMatrix.sessKeys.forEach(k => {
     if (!attInEnrollRange(sid, k.split('|')[0])) return;   // 受講期間外は母数に入れない
-    if (!attStuInPeriod(sid, k.split('|')[1])) return;     // 担当コマ外は母数に入れない
+    if (!attStuInPeriod(sid, k.split('|')[1], k.split('|')[0])) return;     // 担当コマ外は母数に入れない
     if (attSchoolShaded(sid, k)) return;                   // 学校別回の対象外は母数に入れない
     const c = attMatrix.cells[sid + '|' + k];
     if (!c) return;
@@ -43167,7 +43447,7 @@ function attMatrixFooterHtml() {
     attMatrix.students.forEach(s => {
       if (attLapDone[s.id]) return;                           // 2周目・無料の子は全体率に入れない
       if (!attInEnrollRange(s.id, k.split('|')[0])) return;   // 受講期間外は母数に入れない
-      if (!attStuInPeriod(s.id, k.split('|')[1])) return;     // 担当コマ外は母数に入れない
+      if (!attStuInPeriod(s.id, k.split('|')[1], k.split('|')[0])) return;     // 担当コマ外は母数に入れない
       if (attSchoolShaded(s.id, k)) return; // 学校別回の対象外は母数に入れない
       const c = attMatrix.cells[s.id + '|' + k];
       if (!c || !c.status) return;
@@ -43198,7 +43478,7 @@ function toggleAttCell(sid, k) {
   if (!attMatrix) return;
   // 受講期間外は記録対象にしない（誤タップで母数が戻るのを防ぐ）
   if (!attInEnrollRange(sid, k.split('|')[0])) return;
-  if (!attStuInPeriod(sid, k.split('|')[1])) return;   // 担当コマ外はタップ不可
+  if (!attStuInPeriod(sid, k.split('|')[1], k.split('|')[0])) return;   // 担当コマ外はタップ不可
   if (attSchoolShaded(sid, k)) return;                 // 学校別回の対象外はタップ不可（undecidedは可）
   const cellKey = sid + '|' + k;
   let cell = attMatrix.cells[cellKey];
