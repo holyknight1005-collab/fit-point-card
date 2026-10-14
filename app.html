@@ -6835,7 +6835,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261014my3';
+const APP_VERSION = '20261014my4';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -68389,7 +68389,62 @@ function updateSideNav() {
 //   画面の部品（#att-single-view）を一時的にこちらへ移して使い、他のタブを開くときに元へ戻す。
 //   出欠の初期値（来塾から）・学校別の回・受講コマ・補習の回などの扱いは、授業出欠とまったく同じ。
 // ・「保存して次の未入力へ」：報告書（何か書いてあれば）と出欠をまとめて保存し、次の未入力の回を開く。
-var mcState = { mode: 'todo', monthOff: 0, cls: '', rows: [], cur: -1, masters: {}, sup: new Set(), loading: 0 };
+// ・20261014my4：「‹ 前の回」「次の回 ›」「次の未入力へ」は、同じ授業の中で日付順に回る（授業をまたがない）。
+//   一覧に出ていない回（入力済み・期間外）も、今年度の授業日ならたどれる。前後の回のテーマも上に出す。
+var mcState = { mode: 'todo', monthOff: 0, cls: '', rows: [], curKey: null, masters: {}, sup: new Set(), loading: 0, clsCache: {} };
+function mcRowKey(r) { return r.cid + '|' + r.date + '|' + perKey(r.period) + '|' + (r.school || ''); }
+function mcCurRow() {
+  if (!mcState.curKey) return null;
+  var r = mcState.rows.find(function (x) { return mcRowKey(x) === mcState.curKey; });
+  if (r) return r;
+  var cid = mcState.curKey.split('|')[0], c = mcState.clsCache[cid];
+  return c ? (c.rows.find(function (x) { return mcRowKey(x) === mcState.curKey; }) || null) : null;
+}
+// 授業日1件 → 一覧の行。ctx = { repSet, attSet, attDay, hasStu, perCount, sup, today }
+function mcMakeRow(s, ctx) {
+  var m = mcState.masters[s.class_master_id] || {};
+  var dk = s.class_master_id + '|' + s.session_date;
+  return {
+    cid: s.class_master_id, date: s.session_date, period: s.period, start: s.start_time, school: String(s.school || '').trim(),
+    makeup: !!s.is_makeup, cyc: s, name: m.name || '授業',
+    needRep: !isReportExemptClass(m) && !ctx.sup.has(s.class_master_id),
+    repDone: ctx.repSet.has(dk),
+    needAtt: ctx.hasStu.has(s.class_master_id) && !s.is_makeup,
+    attDone: ctx.perCount[dk] > 1 ? ctx.attSet.has(dk + '|' + perKey(s.period)) : ctx.attDay.has(dk),
+    today: s.session_date === ctx.today, future: s.session_date > ctx.today, past: s.session_date < ctx.today
+  };
+}
+// その授業の今年度の授業日（〜60日先）と、報告書のテーマ・出欠の有無
+async function mcLoadClass(cid) {
+  if (mcState.clsCache[cid]) return mcState.clsCache[cid];
+  var t = getTodayJST().split('-').map(Number);
+  var fyFrom = (t[1] >= 4 ? t[0] : t[0] - 1) + '-04-01';
+  var to = toJSTDateStr(new Date(t[0], t[1] - 1, t[2] + 60));
+  var inq = 'class_master_id=eq.' + cid + '&session_date=gte.' + fyFrom + '&session_date=lte.' + to;
+  var res = await Promise.all([
+    sbGetTolerant('class_sessions', inq + '&select=class_master_id,session_date,period,start_time,cycle_year,cycle_month,cycle_no,is_makeup,school&order=session_date,period',
+                                    inq + '&select=class_master_id,session_date,period,start_time,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date,period'),
+    sbGetAll('class_reports', inq + '&select=class_master_id,session_date,theme,content,student_notes'),
+    sbGetAll('session_attendance', inq + '&select=class_master_id,session_date,period'),
+    sbGetActiveEnrollments('class_master_id=eq.' + cid + '&select=class_master_id,student_id')
+  ]);
+  var ctx = { repSet: new Set(), attSet: new Set(), attDay: new Set(), hasStu: new Set(), perCount: {}, sup: mcState.sup, today: getTodayJST() };
+  var themes = {};
+  (res[1] || []).forEach(function (x) {
+    if (msReportFilled(x)) ctx.repSet.add(x.class_master_id + '|' + x.session_date);
+    themes[x.session_date] = String(x.theme || x.content || '').trim();
+  });
+  (res[2] || []).forEach(function (x) { ctx.attSet.add(x.class_master_id + '|' + x.session_date + '|' + perKey(x.period)); ctx.attDay.add(x.class_master_id + '|' + x.session_date); });
+  (res[3] || []).forEach(function (x) { ctx.hasStu.add(x.class_master_id); });
+  (res[0] || []).forEach(function (s) { var k = s.class_master_id + '|' + s.session_date; ctx.perCount[k] = (ctx.perCount[k] || 0) + 1; });
+  var rows = (res[0] || []).map(function (s) { return mcMakeRow(s, ctx); });
+  rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : ((Number(a.period) || 0) - (Number(b.period) || 0)); });
+  // 一覧に出ている同じ回は、一覧の行そのものを使う（状態をそろえるため）
+  rows = rows.map(function (r) { var k = mcRowKey(r); return mcState.rows.find(function (x) { return mcRowKey(x) === k; }) || r; });
+  var c = { rows: rows, themes: themes };
+  mcState.clsCache[cid] = c;
+  return c;
+}
 var _mcHome = null;   // #att-single-view の元の場所 { parent, next }
 
 function mcYm() {
@@ -68418,8 +68473,8 @@ function initMyClasses() {
   mcRenderToolbar();
   mcLoad();
 }
-function mcSetMode(m) { mcState.mode = m; mcState.cur = -1; mcCloseDetail(true); mcRenderToolbar(); mcLoad(); }
-function mcShiftMonth(d) { mcState.monthOff += d; mcState.cur = -1; mcCloseDetail(true); mcRenderToolbar(); mcLoad(); }
+function mcSetMode(m) { mcState.mode = m; mcCloseDetail(true); mcRenderToolbar(); mcLoad(); }
+function mcShiftMonth(d) { mcState.monthOff += d; mcCloseDetail(true); mcRenderToolbar(); mcLoad(); }
 function mcSetClass(cid) { mcState.cls = (mcState.cls === cid) ? '' : cid; mcRenderChips(); mcRenderList(); }
 
 function mcRenderToolbar() {
@@ -68500,20 +68555,9 @@ async function mcLoad() {
     var perCount = {};
     sessions.forEach(function (s) { var k = s.class_master_id + '|' + s.session_date; perCount[k] = (perCount[k] || 0) + 1; });
     var today = getTodayJST();
-    var rows = sessions.map(function (s) {
-      var m = mcState.masters[s.class_master_id] || {};
-      var dk = s.class_master_id + '|' + s.session_date;
-      var needRep = !isReportExemptClass(m) && !sup.has(s.class_master_id);
-      var needAtt = hasStu.has(s.class_master_id) && !s.is_makeup;
-      var attDone = perCount[dk] > 1 ? attSet.has(dk + '|' + perKey(s.period)) : attDay.has(dk);
-      var past = s.session_date < today;
-      return {
-        cid: s.class_master_id, date: s.session_date, period: s.period, start: s.start_time, school: String(s.school || '').trim(),
-        makeup: !!s.is_makeup, cyc: s, name: m.name || '授業',
-        needRep: needRep, repDone: repSet.has(dk), needAtt: needAtt, attDone: attDone,
-        today: s.session_date === today, future: s.session_date > today, past: past
-      };
-    });
+    var ctx0 = { repSet: repSet, attSet: attSet, attDay: attDay, hasStu: hasStu, perCount: perCount, sup: sup, today: today };
+    var rows = sessions.map(function (s) { return mcMakeRow(s, ctx0); });
+    mcState.clsCache = {};   // 授業ごとの前後は開いたときに読み直す
     if (mcState.mode === 'todo') {
       rows = rows.filter(function (r) { return r.today || (r.past && ((r.needRep && !r.repDone) || (r.needAtt && !r.attDone))); });
     }
@@ -68566,7 +68610,7 @@ function mcRenderList() {
   var list = document.getElementById('mc-list');
   if (!list) return;
   var rows = mcVisibleRows();
-  if (mcNarrow() && mcState.cur >= 0) { list.style.display = 'none'; } else list.style.display = '';
+  if (mcNarrow() && mcState.curKey) { list.style.display = 'none'; } else list.style.display = '';
   if (!rows.length) {
     list.innerHTML = '<div style="font-size:13px;color:' + (mcState.mode === 'todo' ? 'var(--green-d)' : 'var(--muted)') + ';text-align:center;padding:24px;font-weight:700">' +
       (mcState.mode === 'todo' ? '今日の授業も未入力もありません 🎉' : 'この期間の授業日はありません。') + '</div>';
@@ -68576,7 +68620,7 @@ function mcRenderList() {
   var wl = ['日', '月', '火', '水', '木', '金', '土'];
   var h = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px;color:var(--muted)">' +
     '<span>' + rows.length + '件</span>' + (miss ? '<span style="color:#C0392B;font-weight:700">未入力 ' + miss + '件</span>' : '') +
-    (miss ? '<button onclick="mcOpenNextMissing(-1)" style="margin-left:auto;padding:4px 10px;font-size:11px;font-weight:700;border:1px solid #C0392B;border-radius:8px;background:#FDECEC;color:#C0392B;cursor:pointer;font-family:inherit">未入力を順に入力 ›</button>' : '') + '</div>';
+    (miss ? '<button onclick="mcOpenNextMissing()" style="margin-left:auto;padding:4px 10px;font-size:11px;font-weight:700;border:1px solid #C0392B;border-radius:8px;background:#FDECEC;color:#C0392B;cursor:pointer;font-family:inherit">未入力を順に入力 ›</button>' : '') + '</div>';
   var lastHead = '';
   rows.forEach(function (r) {
     var idx = mcState.rows.indexOf(r);
@@ -68590,7 +68634,7 @@ function mcRenderList() {
       h += '<div style="margin:10px 0 4px;font-size:12px;font-weight:800;color:' + (r.today ? 'var(--orange-d)' : 'var(--muted)') + '">' + escapeHtml(head) + '</div>';
     }
     var d = new Date(r.date + 'T00:00:00+09:00');
-    var on = idx === mcState.cur;
+    var on = mcRowKey(r) === mcState.curKey;
     var m = mcState.masters[r.cid] || {};
     var cyc = r.makeup ? '補習' : (r.cyc.cycle_no != null ? (r.cyc.cycle_month != null ? r.cyc.cycle_month + '-' : '') + ('①②③④⑤⑥⑦⑧⑨⑩'.charAt(r.cyc.cycle_no - 1) || r.cyc.cycle_no) : '');
     h += '<div onclick="mcOpen(' + idx + ')" style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:4px;border-radius:10px;cursor:pointer;' +
@@ -68631,10 +68675,11 @@ function mcRestoreAttView() {
   } catch (e) {}
 }
 
-async function mcOpen(idx) {
-  var r = mcState.rows[idx];
+function mcOpen(idx) { var r = mcState.rows[idx]; if (r) mcOpenRow(r); }
+async function mcOpenRow(r) {
   if (!r) return;
-  mcState.cur = idx;
+  mcState.curKey = mcRowKey(r);
+  try { await mcLoadClass(r.cid); } catch (e) { console.error('mcLoadClass', e); }
   var det = document.getElementById('mc-detail');
   det.style.display = 'block';
   mcRenderList();
@@ -68674,17 +68719,30 @@ async function mcOpen(idx) {
 function mcRenderDetailHead(r) {
   var head = document.getElementById('mc-detail-head');
   if (!head) return;
-  var d = new Date(r.date + 'T00:00:00+09:00');
   var wl = ['日', '月', '火', '水', '木', '金', '土'];
-  var vis = mcVisibleRows(), pos = vis.indexOf(r);
-  head.innerHTML = '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:10px">' +
-    (mcNarrow() ? '<button onclick="mcCloseDetail()" style="padding:6px 10px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;font-family:inherit">‹ 一覧</button>' : '') +
+  var md = function (ds) { var d0 = new Date(ds + 'T00:00:00+09:00'); return (d0.getMonth() + 1) + '/' + d0.getDate() + '（' + wl[d0.getDay()] + '）'; };
+  var c = mcState.clsCache[r.cid];
+  var crow = c ? c.rows : [r];
+  var key = mcRowKey(r), pos = crow.findIndex(function (x) { return mcRowKey(x) === key; });
+  var prev = pos > 0 ? crow[pos - 1] : null, next = (pos >= 0 && pos < crow.length - 1) ? crow[pos + 1] : null;
+  var peek = function (x, label) {
+    if (!x) return '<div style="flex:1;min-width:140px;font-size:11px;color:#BBB">' + label + '：なし</div>';
+    var th = c && c.themes[x.date] ? c.themes[x.date] : '';
+    return '<div style="flex:1;min-width:140px;font-size:11px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">' + label + '：' + md(x.date) +
+      ' <span style="color:var(--text)">' + (th ? escapeHtml(th) : (x.future ? 'これから' : '<span style="color:#C0392B">報告書なし</span>')) + '</span></div>';
+  };
+  var btn = 'padding:6px 10px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;font-family:inherit';
+  head.innerHTML = '<div style="margin-bottom:10px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:10px">' +
+    '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+    (mcNarrow() ? '<button onclick="mcCloseDetail()" style="' + btn + '">‹ 一覧</button>' : '') +
     '<div style="flex:1;min-width:150px"><div style="font-size:14px;font-weight:800">' + escapeHtml(r.name) + '</div>' +
-    '<div style="font-size:11px;color:var(--muted)">' + (d.getMonth() + 1) + '/' + d.getDate() + '（' + wl[d.getDay()] + '）' + (hasPer(r.period) ? ' ' + r.period + '限' : '') +
+    '<div style="font-size:11px;color:var(--muted)">' + md(r.date) + (hasPer(r.period) ? ' ' + r.period + '限' : '') +
       (r.makeup ? '・補習' : (r.cyc.cycle_no != null ? '・' + escapeHtml(sessionCycleLabel(r.cyc)) : '')) + escapeHtml(calSchoolSuffix(r.school)) + '</div></div>' +
-    '<button onclick="mcStep(-1)"' + (pos <= 0 ? ' disabled' : '') + ' style="padding:6px 10px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;font-family:inherit">‹ 前</button>' +
-    '<button onclick="mcStep(1)"' + (pos < 0 || pos >= vis.length - 1 ? ' disabled' : '') + ' style="padding:6px 10px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;font-family:inherit">次 ›</button>' +
-    '<button onclick="openClassKarte(\'' + r.cid + '\')" title="授業カルテを開く" style="padding:6px 10px;font-size:12px;font-weight:700;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;font-family:inherit">📚 カルテ</button>' +
+    '<button onclick="mcStep(-1)"' + (prev ? '' : ' disabled') + ' style="' + btn + '">‹ 前の回</button>' +
+    '<button onclick="mcStep(1)"' + (next ? '' : ' disabled') + ' style="' + btn + '">次の回 ›</button>' +
+    '<button onclick="openClassKarte(\'' + r.cid + '\')" title="授業カルテを開く" style="' + btn + '">📚 カルテ</button>' +
+    '</div>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">' + peek(prev, '前の回') + peek(next, '次の回') + '</div>' +
     '</div>';
 }
 function mcRenderDetailFoot() {
@@ -68698,33 +68756,44 @@ function mcRenderDetailFoot() {
 }
 
 function mcCloseDetail(silent) {
-  mcState.cur = -1;
+  mcState.curKey = null;
   var det = document.getElementById('mc-detail');
   if (det) det.style.display = 'none';
   mcRestoreAttView();
   if (!silent) mcRenderList();
 }
+// 同じ授業の中で、前後の回へ
 function mcStep(dir) {
-  var vis = mcVisibleRows();
-  var r = mcState.rows[mcState.cur];
-  var pos = vis.indexOf(r);
-  var nx = vis[pos + dir];
-  if (nx) mcOpen(mcState.rows.indexOf(nx));
+  var r = mcCurRow(); if (!r) return;
+  var c = mcState.clsCache[r.cid]; if (!c) return;
+  var key = mcRowKey(r), pos = c.rows.findIndex(function (x) { return mcRowKey(x) === key; });
+  var nx = c.rows[pos + dir];
+  if (nx) mcOpenRow(nx);
 }
-// 今の行より後ろで、未入力の行を開く（from=-1 なら先頭から）
-function mcOpenNextMissing(from) {
-  var vis = mcVisibleRows();
-  var start = (from == null || from < 0) ? 0 : vis.indexOf(mcState.rows[from]) + 1;
-  for (var i = 0; i < vis.length; i++) {
-    var r = vis[(start + i) % vis.length];
-    if (r.past && mcMissing(r) && mcState.rows.indexOf(r) !== from) { mcOpen(mcState.rows.indexOf(r)); return true; }
-  }
+// 一覧の上の「未入力を順に入力」：一覧の先頭の未入力から
+function mcOpenNextMissing() {
+  var r = mcVisibleRows().find(function (x) { return x.past && mcMissing(x); });
+  if (r) { mcOpenRow(r); return true; }
   return false;
 }
-
+// 同じ授業の次の未入力（後ろの回→なければ前の回）。無ければ一覧の別の授業の未入力。
+function mcOpenNextMissingInClass(r) {
+  var c = mcState.clsCache[r.cid];
+  var key = mcRowKey(r);
+  if (c) {
+    var pos = c.rows.findIndex(function (x) { return mcRowKey(x) === key; });
+    var after = c.rows.slice(pos + 1).find(function (x) { return x.past && mcMissing(x); });
+    var before = c.rows.slice(0, Math.max(pos, 0)).reverse().find(function (x) { return x.past && mcMissing(x); });
+    var nx = after || before;
+    if (nx) { mcOpenRow(nx); return true; }
+  }
+  var other = mcVisibleRows().find(function (x) { return x.cid !== r.cid && x.past && mcMissing(x); });
+  if (other) { showToast('「' + r.name + '」の未入力はもうありません。「' + other.name + '」の未入力を開きます', 'info'); mcOpenRow(other); return true; }
+  return false;
+}
 // 報告書（何か書いてあるか、前に保存済みなら）と出欠をまとめて保存
 async function mcSaveBoth(goNext) {
-  var r = mcState.rows[mcState.cur];
+  var r = mcCurRow();
   if (!r) return;
   var val = function (id) { var e = document.getElementById(id); return e ? String(e.value || '').trim() : ''; };
   var hasRep = !!(val('att-report-theme') || val('att-report-content') || val('att-report-notes') || val('att-report-homework'));
@@ -68741,7 +68810,7 @@ async function mcSaveBoth(goNext) {
   if (!goNext) { mcRenderDetailHead(r); return; }
   if (r.needRep && !r.repDone && !hasRep) { showToast('報告書がまだ空です（必要なければそのまま「次 ›」で進めます）', 'info'); return; }
   if (r.needAtt && !r.attDone) { showToast('出欠を保存できませんでした。もう一度お試しください。', 'error'); return; }
-  if (!mcOpenNextMissing(mcState.cur)) {
+  if (!mcOpenNextMissingInClass(r)) {
     showToast('未入力はもうありません 🎉', 'success');
     mcRenderDetailHead(r);
   }
@@ -68752,10 +68821,17 @@ async function mcRefreshRow(r) {
     var reps = await sbGet('class_reports', q + '&select=theme,content,student_notes') || [];
     r.repDone = reps.some(msReportFilled);
     var atts = await sbGet('session_attendance', q + '&select=period&limit=200') || [];
-    var multi = mcState.rows.filter(function (x) { return x.cid === r.cid && x.date === r.date; }).length > 1;
+    var c = mcState.clsCache[r.cid];
+    var pool = c ? c.rows : mcState.rows;
+    var multi = pool.filter(function (x) { return x.cid === r.cid && x.date === r.date; }).length > 1;
     r.attDone = multi ? atts.some(function (a) { return perKey(a.period) === perKey(r.period); }) : atts.length > 0;
     // 同じ日の同じ授業の別の行（5限・6限など）の報告書の状態もそろえる
-    mcState.rows.forEach(function (x) { if (x !== r && x.cid === r.cid && x.date === r.date) x.repDone = r.repDone; });
+    var all = mcState.rows.concat(c ? c.rows : []);
+    all.forEach(function (x) { if (x !== r && x.cid === r.cid && x.date === r.date) x.repDone = r.repDone; });
+    var k = mcRowKey(r);
+    all.forEach(function (x) { if (x !== r && mcRowKey(x) === k) { x.repDone = r.repDone; x.attDone = r.attDone; } });
+    // 前後の回のテーマ表示用
+    if (c) { var th = String((document.getElementById('att-report-theme') || {}).value || (document.getElementById('att-report-content') || {}).value || '').trim(); if (th) c.themes[r.date] = th; }
   } catch (e) {}
 }
 
