@@ -1,4 +1,4 @@
-/* fit-sw.js（20261015pu1）fitアプリのプッシュ通知の受け口
+/* fit-sw.js（20261015pu1・td1 で ToDo に対応）fitアプリのプッシュ通知の受け口
  * - 届いた通知を表示し、タップでアプリ（app.html）の該当の連絡を開く
  * - ページの読み込み（fetch）には一切触らない（キャッシュしない＝更新の仕組みはこれまでどおり）
  */
@@ -20,8 +20,8 @@ self.addEventListener('push', function (e) {
       try { c.postMessage({ type: 'fit-push', data: d }); } catch (x) {}
       if (c.visibilityState === 'visible' && c.focused && /\/app\.html/.test(c.url)) front = true;
     });
-    // アプリを前面で開いているとき（Safari以外）は、画面の未読表示に任せて通知は出さない
-    if (front && !isSafari() && d.tag !== 'fit-test') return;
+    // アプリを前面で開いているとき（Safari以外）は、連絡だけ画面の未読表示に任せて通知は出さない（ToDo・テストは出す）
+    if (front && !isSafari() && /^fitchat-/.test(d.tag || '')) return;
     return self.registration.showNotification(d.title || 'fitアプリ', {
       body: d.body || '',
       icon: 'fit-icon-192.png',
@@ -40,7 +40,7 @@ self.addEventListener('notificationclick', function (e) {
     for (var i = 0; i < cs.length; i++) {
       var c = cs[i];
       if (/\/app\.html/.test(c.url) && 'focus' in c) {
-        try { c.postMessage({ type: 'fit-open', room: data.room || null }); } catch (x) {}
+        try { c.postMessage({ type: 'fit-open', room: data.room || null, url: data.url || '' }); } catch (x) {}
         return c.focus();
       }
     }
