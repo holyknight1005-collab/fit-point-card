@@ -6837,7 +6837,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261015td1';
+const APP_VERSION = '20261016ss1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -42891,9 +42891,7 @@ async function loadAttMatrix() {
 }
 
 function buildAttMatrix(sessions, studentIds, atts, checkins, trials) {
-  const sessKeys = sessions.map(s => s.session_date + '|' + perKey(s.period));
-  const sessInfo = {};
-  sessions.forEach(s => { sessInfo[s.session_date + '|' + perKey(s.period)] = s; });
+  const { sessKeys, sessInfo } = attMergeSessKeys(sessions);   // 20261016ss1
 
   // 保存済みセル
   const cells = {};
@@ -42923,7 +42921,10 @@ function buildAttMatrix(sessions, studentIds, atts, checkins, trials) {
     studentIds.forEach(sid => {
       const cellKey = sid + '|' + k;
       if (cells[cellKey]) return; // 保存済みは尊重
-      if (!attInEnrollRange(sid, date, info)) return; // 受講期間外は推定しない（サイクル情報を渡す）
+      // 20261016ss1: 学校別回をまとめた列は、その生徒の学校の回で判定する（他校の回は推定しない）
+      const part = (info.parts && info.parts.length > 1) ? attPartFor(staffStudents.find(x => x.id === sid), info) : info;
+      if (part !== info && part.school && schoolScopeOfStudent(staffStudents.find(x => x.id === sid), part.school) === 'out') return;
+      if (!attInEnrollRange(sid, date, part)) return; // 受講期間外は推定しない（サイクル情報を渡す）
       if (!attStuInPeriod(sid, info.period, date)) return;  // 長文読解などで担当コマ(preferred_period)が違うコマは推定しない
       let present = false, estimable = false;
       if (classDur != null) {
@@ -42968,7 +42969,10 @@ function buildAttMatrix(sessions, studentIds, atts, checkins, trials) {
 
 function attCellHtml(sid, k) {
   // 受講開始前・終了後は集計対象外。タップもできないようにする
-  if (!attInEnrollRange(sid, k.split('|')[0])) {
+  // 20261016ss1: 学校別回をまとめた列は、その生徒の学校の回（回番号）で受講期間を判定する
+  const _inf = attMatrix && attMatrix.sessInfo ? attMatrix.sessInfo[k] : null;
+  const _part = (_inf && _inf.parts && _inf.parts.length > 1) ? attPartFor(attMatrix.students.find(x => x.id === sid), _inf) : null;
+  if (!attInEnrollRange(sid, k.split('|')[0], _part)) {
     return '<td style="text-align:center;padding:5px;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(0,0,0,0.035) 3px,rgba(0,0,0,0.035) 6px);color:var(--border)" title="受講期間外">·</td>';
   }
   // 20261014pl1: 理科の4回選択で、この回を選んでいない
@@ -43075,8 +43079,34 @@ function circledNum(n) {
   if (n == null) return '';
   return (n >= 1 && n <= 20) ? CIRCLED_NUMS[n - 1] : ('(' + n + ')');
 }
+// 20261016ss1: 同じ日・同じ限に学校別回が複数あるとき（例：愛大附属と松山中央）、列を1つにまとめる。
+//   出席の記録は「授業×日×限×生徒」なので、学校別に列を分けても同じ記録を指す。
+//   まとめた列は parts に各校の回を持ち、生徒ごとに自分の学校の回（回番号・時刻）で判定する。
+function attMergeSessKeys(sessions) {
+  const sessKeys = [], sessInfo = {};
+  sessions.forEach(s => {
+    const k = s.session_date + '|' + perKey(s.period);
+    const cur = sessInfo[k];
+    if (!cur) { sessInfo[k] = Object.assign({}, s, { parts: [s] }); sessKeys.push(k); return; }
+    cur.parts.push(s);
+    // どれかが通常回（学校指定なし）なら全員対象。すべて学校別なら学校名を並べる。
+    const schools = cur.parts.map(x => (x.school || '').trim());
+    cur.school = schools.some(x => !x) ? null : [...new Set(schools)].join('・');
+  });
+  return { sessKeys, sessInfo };
+}
+// まとめた列のうち、その生徒の学校の回を返す（無ければ列の代表）
+function attPartFor(stu, info) {
+  if (!info || !info.parts || info.parts.length < 2) return info;
+  return info.parts.find(p => schoolScopeOfStudent(stu, p.school) === 'in')
+      || info.parts.find(p => schoolScopeOfStudent(stu, p.school) === 'undecided') || info;
+}
 function attMatrixCycleLabel(info) {
   if (!info) return '';
+  if (info.parts && info.parts.length > 1) {   // 20261016ss1: 学校別回をまとめた列は、各校の回を並べる
+    const ls = [...new Set(info.parts.map(p => attMatrixCycleLabel(Object.assign({}, p, { parts: null }))).filter(Boolean))];
+    return ls.join('／');
+  }
   if (info.is_makeup) return '🔁';
   if (info.cycle_no == null) return '';
   if (info.cycle_month == null) return circledNum(info.cycle_no);       // 講習＝通し番号
@@ -43275,6 +43305,8 @@ function attInEnrollRange(sid, sessionDate, sessCyc) {
     if (!info && attMatrix && attMatrix.sessInfo && attMatrix.sessKeys) {
       const hitKey = attMatrix.sessKeys.find(k => k.split('|')[0] === sessionDate);
       info = hitKey ? attMatrix.sessInfo[hitKey] : null;
+      // 20261016ss1: 学校別回をまとめた列なら、その生徒の学校の回で見る
+      if (info && info.parts && info.parts.length > 1) info = attPartFor((attMatrix.students || []).find(x => x.id === sid), info);
     }
     const sessKey = info ? attCycleKey({ year: info.cycle_year, month: info.cycle_month, no: info.cycle_no }) : null;
     if (sessKey != null) {
@@ -43311,6 +43343,10 @@ function attSchoolScope(sid, sessKey) {
   if (!attMatrix || !attMatrix.sessInfo) return 'in';
   const info = attMatrix.sessInfo[sessKey];
   const stu = attMatrix.students.find(s => s.id === sid);
+  if (info && info.parts && info.parts.length > 1) {   // 20261016ss1: まとめた列は、どれかの学校に当てはまれば対象
+    const sc = info.parts.map(p => schoolScopeOfStudent(stu, p.school));
+    return sc.includes('in') ? 'in' : (sc.includes('undecided') ? 'undecided' : 'out');
+  }
   return schoolScopeOfStudent(stu, info && info.school);
 }
 // 20261001onl33: 学校別回の対象判定を1か所に（出欠一望・出席入力で共用）。
@@ -66496,10 +66532,8 @@ function renderClassAnalysis(sessions, studentIds, atts, checkins) {
   }
 
   // セッションキー（日付|時限）一覧（時系列）
-  const sessKeys = sessions.map(s => s.session_date + '|' + perKey(s.period));
-  // セッション情報マップ: key -> {start_time,end_time,session_date}
-  const sessInfo = {};
-  sessions.forEach(s => { sessInfo[s.session_date + '|' + perKey(s.period)] = s; });
+  // 20261016ss1: 同じ日・同じ限の学校別回は1列にまとめる（列が重複しないように）
+  const { sessKeys, sessInfo } = attMergeSessKeys(sessions);
 
   // 出欠マップ: key -> {student_id -> {status,note,auto}}
   // auto=true は来塾から自動判定した推定値（手動保存はauto=false）
