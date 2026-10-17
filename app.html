@@ -6837,7 +6837,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261016ss1';
+const APP_VERSION = '20261017en1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -10576,7 +10576,7 @@ async function loadTodayTasks() {
     // 自分の担当授業ID（class_master.teacher_staff_id=自分）
     let myClasses = await sbGet('class_master', 'teacher_staff_id=eq.' + currentStaff.id + '&select=id,name,category') || [];
     // dlm94: 浪人生授業（category='kosotsu'）は報告書の催促対象外（授業登録のみ）
-    const myAttClassIds = myClasses.filter(c => c.category !== 'kosotsu').map(c => c.id);   // 出席チェック用（高卒生のみ除外）
+    const myAttClassIds = myClasses.filter(c => c.category !== 'kosotsu' && !isAttMirrorClass(c)).map(c => c.id);   // 20261017en1: 超感覚演習も除く   // 出席チェック用（高卒生のみ除外）
     myClasses = myClasses.filter(c => !isReportExemptClass(c));   // ui3: 報告書を書かない授業は催促しない
     const myClassIds = myClasses.map(c => c.id);
     const myClassNameMap = {};
@@ -19401,6 +19401,9 @@ const TEACHER_CHECK_EXCLUDE_CODES = ['fit001'];
 //   コマ数集計は従来どおり報告書の記入数で数える（書いた分は反映）。未記入には数えないだけ。
 //   ※出席の未入力チェックの対象には残す（高卒生は従来どおり出席も対象外）。
 const REPORT_EXEMPT_NAME_RE = /ぐんぐんゼミ|超感覚英語|超感覚演習|長文読解/;
+// 20261017en1: 超感覚演習の出席は、超感覚英語(2、3年)の出席を映して使う（演習そのものには出席を付けない）。
+//   演習に授業日が登録されていても、出席の未入力には数えない。
+function isAttMirrorClass(cm) { return !!cm && String(cm.name || '').indexOf('超感覚演習') === 0; }
 function isReportExemptClass(cm) {
   if (!cm) return false;
   if ((cm.category || 'normal') === 'kosotsu') return true;
@@ -68725,7 +68728,7 @@ function mcMakeRow(s, ctx) {
     makeup: !!s.is_makeup, cyc: s, name: m.name || '授業',
     needRep: !isReportExemptClass(m) && !ctx.sup.has(s.class_master_id),
     repDone: ctx.repSet.has(dk),
-    needAtt: ctx.hasStu.has(s.class_master_id) && !s.is_makeup,
+    needAtt: ctx.hasStu.has(s.class_master_id) && !s.is_makeup && !isAttMirrorClass(m),   // 20261017en1
     attDone: ctx.perCount[dk] > 1 ? ctx.attSet.has(dk + '|' + perKey(s.period)) : ctx.attDay.has(dk),
     today: s.session_date === ctx.today, future: s.session_date > ctx.today, past: s.session_date < ctx.today
   };
@@ -69262,7 +69265,7 @@ async function msCompute(from, to) {
       if (seen.has(k)) return;
       seen.add(k);
       const noReport = !isReportExemptClass(classById[s.class_master_id]) && !repSet.has(k);
-      const noAtt = hasStu.has(s.class_master_id) && regularDay.has(k) && !attSet.has(k);
+      const noAtt = hasStu.has(s.class_master_id) && regularDay.has(k) && !attSet.has(k) && !isAttMirrorClass(classById[s.class_master_id]);   // 20261017en1
       if (!noReport && !noAtt) return;
       const c = classById[s.class_master_id] || {};
       out.push({ cid: s.class_master_id, date: s.session_date, period: s.period, name: c.name || '授業', noReport: noReport, noAtt: noAtt });
