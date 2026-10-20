@@ -6914,7 +6914,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261020ev1';
+const APP_VERSION = '20261020mb1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -70261,6 +70261,7 @@ let evDaySub = 'timeline';   // 当日タブの中：timeline / supplies / roles
 let evReviewKind = 'this';   // 報告・反省タブの中：this / last
 let evData = { meetings: [], timeline: [], supplies: [], roles: [], cash: [], reviews: [] };
 let evOpeningId = null;     // 開いている最中の企画id（initPlans と evOpenPlan の競合よけ）
+let evWho = '';             // 20261020mb1: タスク・ガントの担当の絞り込み（''=全員 / 'none'=担当なし / スタッフid）
 
 function evEl() { return document.getElementById('ev-root'); }
 function evToday() { return getTodayJST(); }
@@ -70281,9 +70282,36 @@ function evStaffName(id) {
   const s = evStaff.find(x => x.id === id);
   return s ? s.name : staffNameById(id);
 }
-function evStaffOptions(sel, blank) {
-  return '<option value="">' + (blank || '―') + '</option>' + evStaff.map(s => '<option value="' + s.id + '"' + (s.id === sel ? ' selected' : '') + '>' + escapeHtml(s.name) + '</option>').join('');
+// 20261020mb1: 企画に関わるスタッフ（member_ids）。未設定なら全員
+function evMemberIds(plan) { const p = plan || evPlan; return (p && Array.isArray(p.member_ids)) ? p.member_ids : []; }
+function evMembers(plan) {
+  const ids = evMemberIds(plan);
+  if (!ids.length) return evStaff.slice();
+  return ids.map(id => evStaff.find(s => s.id === id)).filter(Boolean);
 }
+function evMemberNames(plan) { const p = plan || evPlan; const names = evMembers(p).map(s => s.name); return (evMemberIds(p).length ? names.join('・') : '') + (p && p.members ? (names.length && evMemberIds(p).length ? '・' : '') + p.members : ''); }
+// 担当の選択肢：企画のメンバーを先に、それ以外は「その他のスタッフ」にまとめる
+function evStaffOptions(sel, blank) {
+  const ids = evMemberIds();
+  const opt = s => '<option value="' + s.id + '"' + (s.id === sel ? ' selected' : '') + '>' + escapeHtml(s.name) + '</option>';
+  if (!ids.length) return '<option value="">' + (blank || '―') + '</option>' + evStaff.map(opt).join('');
+  const mem = evStaff.filter(s => ids.indexOf(s.id) !== -1), rest = evStaff.filter(s => ids.indexOf(s.id) === -1);
+  return '<option value="">' + (blank || '―') + '</option>' + '<optgroup label="この企画のメンバー">' + mem.map(opt).join('') + '</optgroup>' + '<optgroup label="その他のスタッフ">' + rest.map(opt).join('') + '</optgroup>';
+}
+// メンバー選択のチェック一覧
+function evMemberChecksHtml(ids, cls) {
+  return '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:4px 10px;max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;background:#fff">' +
+    evStaff.map(s => '<label style="font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="' + cls + '" value="' + s.id + '"' + (ids.indexOf(s.id) !== -1 ? ' checked' : '') + '>' + escapeHtml(s.name) + '</label>').join('') + '</div>';
+}
+function evCheckedIds(cls) { return Array.prototype.map.call(document.querySelectorAll('.' + cls + ':checked'), c => c.value); }
+// 担当の絞り込みチップ（タスク・ガント）
+function evWhoChipsHtml() {
+  const mem = evMembers();
+  const chip = (v, label) => '<button class="ev-chip' + (evWho === v ? ' on' : '') + '" style="padding:4px 10px;font-size:11px" onclick="evWho=\'' + v + '\';evRender()">' + escapeHtml(label) + '</button>';
+  const extra = evTasks.map(t => t.assignee_id).filter(id => id && !mem.some(m => m.id === id)).filter((v, i, a) => a.indexOf(v) === i);
+  return '<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><span style="font-size:11px;color:var(--muted)">担当：</span>' + chip('', '全員') + mem.map(m => chip(m.id, m.name)).join('') + extra.map(id => chip(id, evStaffName(id))).join('') + chip('none', '担当なし') + '</div>';
+}
+function evWhoMatch(t) { return !evWho || (evWho === 'none' ? !t.assignee_id : t.assignee_id === evWho); }
 function evTaskDone(t) {
   if (t.done_at) return true;
   const td = t.todo_id && evTodos[t.todo_id];
@@ -70369,7 +70397,7 @@ function evRenderList() {
         '<span style="font-size:11px;color:var(--muted)">' + p._done + '／' + p._total + ' 件' + (p._overdue ? '　<span style="color:var(--red);font-weight:700">期限切れ ' + p._overdue + '</span>' : '') +
           (p._mine ? '　自分の担当 ' + (p._mine - p._mineOpen) + '／' + p._mine : '') + '</span>' +
       '</div>' +
-      '<div style="font-size:11px;color:var(--muted);margin-top:6px">責任者：' + escapeHtml(evStaffName(p.owner_staff_id) || '―') + (p.place ? '　場所：' + escapeHtml(p.place) : '') + (p.members ? '　メンバー：' + escapeHtml(p.members) : '') + '</div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:6px">責任者：' + escapeHtml(evStaffName(p.owner_staff_id) || '―') + (p.place ? '　場所：' + escapeHtml(p.place) : '') + (evMemberNames(p) ? '　メンバー：' + escapeHtml(evMemberNames(p)) : '') + '</div>' +
     '</div>';
   });
   el.innerHTML = h;
@@ -70390,7 +70418,8 @@ function evOpenNewForm() {
     '<div style="display:flex;gap:10px"><div class="ev-field" style="flex:1"><label>実施日</label><input id="evn-date" type="date"></div>' +
     '<div class="ev-field" style="flex:1"><label>場所</label><input id="evn-place" type="text"></div></div>' +
     '<div style="display:flex;gap:10px"><div class="ev-field" style="flex:1"><label>企画責任者</label><select id="evn-owner">' + evStaffOptions(currentStaff ? currentStaff.id : '') + '</select></div>' +
-    '<div class="ev-field" style="flex:1"><label>企画メンバー</label><input id="evn-members" type="text" placeholder="名前を「・」区切りで"></div></div>' +
+    '<div class="ev-field" style="flex:1"><label>名簿にいないメンバー（任意）</label><input id="evn-members" type="text" placeholder="例：卒業生2名"></div></div>' +
+    '<div class="ev-field"><label>この企画に関わるスタッフ（担当の候補になります。あとから企画書タブで変えられます）</label>' + evMemberChecksHtml(currentStaff ? [currentStaff.id] : [], 'evn-mem') + '</div>' +
     '<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:14px;cursor:pointer"><input id="evn-tpl" type="checkbox" checked>Excelと同じ雛形を入れる（タスク21項目＋細目、打ち合わせ10回）</label>' +
     '<div style="display:flex;gap:8px"><button class="ev-btn pri" style="flex:1;padding:11px" onclick="evCreatePlan()">作成</button><button class="ev-btn" style="flex:1;padding:11px" onclick="evCloseModal()">キャンセル</button></div>'
   );
@@ -70405,13 +70434,16 @@ async function evCreatePlan() {
     place: document.getElementById('evn-place').value.trim() || null,
     owner_staff_id: document.getElementById('evn-owner').value || null,
     members: document.getElementById('evn-members').value.trim() || null,
+    member_ids: evCheckedIds('evn-mem'),
     status: 'planning',
     created_by: currentStaff ? currentStaff.id : null
   };
   const useTpl = document.getElementById('evn-tpl').checked;
   showLoading('作成中...');
   try {
-    const rows = await sbPostReturn('event_plans', body);
+    let rows;
+    try { rows = await sbPostReturn('event_plans', body); }
+    catch (e) { if (/member_ids/.test(e.message)) { delete body.member_ids; rows = await sbPostReturn('event_plans', body); } else throw e; }   // 列の追加SQLが未実行でも作れる
     const plan = rows && rows[0];
     if (!plan) throw new Error('作成に失敗しました');
     if (useTpl) {
@@ -70437,6 +70469,7 @@ async function evCreatePlan() {
 async function evOpenPlan(id, keepSub) {
   const el = evEl(); if (!el) return;
   if (!keepSub) { evSub = 'progress'; }
+  evWho = '';
   evOpeningId = id;
   el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:12px">読み込み中...</div>';
   try {
@@ -70494,7 +70527,7 @@ function evRender() {
       ['planning', 'done', 'archived'].map(s => '<option value="' + s + '"' + (p.status === s ? ' selected' : '') + '>' + evStatusLabel(s) + '</option>').join('') + '</select>' +
     '<span style="flex:1"></span>' +
     '<span style="font-size:12px">' + (p.event_date ? '📅 ' + evMD(p.event_date) + '　' : '') + dayTxt + '</span>' +
-    '<button class="ev-btn sm" onclick="evPrint()">🖨 印刷</button>' +
+    '<button class="ev-btn sm" onclick="evPrintPick()">🖨 印刷</button>' +
   '</div>' +
   '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><div class="ev-bar' + (stats.overdue ? ' warn' : '') + '" style="flex:1"><div style="width:' + stats.pct + '%"></div></div><span style="font-size:12px;font-weight:700">' + stats.pct + '%</span><span style="font-size:11px;color:var(--muted)">' + stats.done + '／' + stats.total + '</span></div>' +
   '<div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:10px">' +
@@ -70529,6 +70562,7 @@ function evStats() {
     st.open++; st.total++; if (t.due_date && t.due_date < today) st.overdue++;
   });
   evTasks.forEach(t => { if (evTaskDone(t) && t.assignee_id) { const st = s.byStaff[t.assignee_id] || (s.byStaff[t.assignee_id] = { open: 0, overdue: 0, total: 0 }); st.total++; } });
+  if (evMemberIds().length) evMembers().forEach(m => { if (!s.byStaff[m.id]) s.byStaff[m.id] = { open: 0, overdue: 0, total: 0 }; });   // 20261020mb1: メンバーは0件でも並べる
   s.pct = s.total ? Math.round(s.done * 100 / s.total) : 0;
   s.overdueList.sort((a, b) => a.due_date.localeCompare(b.due_date));
   s.soonList.sort((a, b) => a.due_date.localeCompare(b.due_date));
@@ -70570,10 +70604,10 @@ function evProgressHtml() {
   // 担当ごと
   const staffKeys = Object.keys(s.byStaff).sort((a, b) => (s.byStaff[b].overdue - s.byStaff[a].overdue) || (s.byStaff[b].open - s.byStaff[a].open));
   if (staffKeys.length) {
-    h += '<div class="ev-card"><div style="font-size:13px;font-weight:800;margin-bottom:8px">担当ごとの残り</div><div style="display:flex;flex-wrap:wrap;gap:6px">';
+    h += '<div class="ev-card"><div style="font-size:13px;font-weight:800;margin-bottom:8px">担当ごとの残り' + (evMemberIds().length ? '<span style="font-size:11px;color:var(--muted);font-weight:400">　メンバー ' + evMembers().length + '人（企画書タブで変更）</span>' : '<span style="font-size:11px;color:var(--muted);font-weight:400">　企画書タブで「関わるスタッフ」を選ぶと、その人たちだけになります</span>') + '</div><div style="display:flex;flex-wrap:wrap;gap:6px">';
     staffKeys.forEach(k => {
       const x = s.byStaff[k];
-      h += '<span style="font-size:12px;padding:4px 10px;border-radius:14px;background:' + (x.overdue ? 'var(--red-l)' : x.open ? 'var(--orange-l)' : 'var(--green-l)') + ';border:1px solid var(--border)">' + escapeHtml(k ? evStaffName(k) : '担当なし') + '　残り <b>' + x.open + '</b>／' + x.total + (x.overdue ? '　<span style="color:var(--red);font-weight:700">期限切れ ' + x.overdue + '</span>' : '') + '</span>';
+      h += '<span onclick="evWho=\'' + (k || 'none') + '\';evSub=\'tasks\';evRender()" title="この人のタスクだけ見る" style="cursor:pointer;font-size:12px;padding:4px 10px;border-radius:14px;background:' + (x.overdue ? 'var(--red-l)' : x.open ? 'var(--orange-l)' : 'var(--green-l)') + ';border:1px solid var(--border)">' + escapeHtml(k ? evStaffName(k) : '担当なし') + '　残り <b>' + x.open + '</b>／' + x.total + (x.overdue ? '　<span style="color:var(--red);font-weight:700">期限切れ ' + x.overdue + '</span>' : '') + '</span>';
     });
     h += '</div></div>';
   }
@@ -70587,22 +70621,25 @@ function evProgressHtml() {
 // ---------- タスク ----------
 function evTasksHtml() {
   const today = evToday();
-  let h = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><span style="font-size:11px;color:var(--muted);line-height:1.6">✓で完了。担当を付けるとその人のToDoに出ます（ToDo側で完了にしてもここに反映）。項目の「＋細目」で募集・内容の細かいタスクを足せます。</span><span style="flex:1"></span><button class="ev-btn pri sm" onclick="evEditTask(null,null,\'その他\')">＋ 項目を追加</button></div>';
+  let h = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><span style="font-size:11px;color:var(--muted);line-height:1.6">✓で完了。担当を付けるとその人のToDoに出ます（ToDo側で完了にしてもここに反映）。項目の「＋細目」で募集・内容の細かいタスクを足せます。</span><span style="flex:1"></span>' + evPagePrintBtn(['tasks'], 'タスク表を印刷') + '<button class="ev-btn pri sm" onclick="evEditTask(null,null,\'その他\')">＋ 項目を追加</button></div>';
+  h += evWhoChipsHtml();
   h += '<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#fff">';
   const cats = EV_CATS.slice(); evTasks.forEach(t => { if (!cats.includes(t.category)) cats.push(t.category); });
   let any = false;
+  // 絞り込み中は、本人か細目に本人がいる項目だけ
+  const show = t => evWhoMatch(t) || evTasks.some(x => x.parent_id === t.id && evWhoMatch(x));
   cats.forEach(cat => {
-    const parents = evTasks.filter(t => t.category === cat && !t.parent_id);
+    const parents = evTasks.filter(t => t.category === cat && !t.parent_id && (!evWho || show(t)));
     if (!parents.length) return;
     any = true;
-    const all = evTasks.filter(t => t.category === cat), dn = all.filter(evTaskDone).length;
+    const all = evTasks.filter(t => t.category === cat && (!evWho || evWhoMatch(t))), dn = all.filter(evTaskDone).length;
     h += '<div class="ev-cat">' + escapeHtml(cat) + '<small>' + dn + '／' + all.length + '</small><span style="flex:1"></span><button class="ev-btn sm" onclick="evEditTask(null,null,\'' + escapeAttr(cat) + '\')">＋</button></div>';
     parents.forEach(t => {
       h += evTaskRowHtml(t, false, today);
-      evTasks.filter(x => x.parent_id === t.id).forEach(x => { h += evTaskRowHtml(x, true, today); });
+      evTasks.filter(x => x.parent_id === t.id && (!evWho || evWhoMatch(x))).forEach(x => { h += evTaskRowHtml(x, true, today); });
     });
   });
-  if (!any) h += '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">タスクがありません。「＋ 項目を追加」から。</div>';
+  if (!any) h += '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">' + (evWho ? 'この担当のタスクはありません。' : 'タスクがありません。「＋ 項目を追加」から。') + '</div>';
   return h + '</div>';
 }
 function evTaskRowHtml(t, isSub, today) {
@@ -70769,7 +70806,7 @@ function evGanttHtml() {
   min = addDays(min, -3); max = addDays(max, 3);
   const days = []; for (let d = min; d <= max && days.length < 200; d = addDays(d, 1)) days.push(d);
   const dow = ds => { const p = ds.split('-').map(Number); return new Date(p[0], p[1] - 1, p[2]).getDay(); };
-  let h = '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-bottom:6px">' +
+  let h = evWhoChipsHtml() + '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-bottom:6px">' +
     '<span><span style="display:inline-block;width:14px;height:12px;background:#FFE34D;vertical-align:-2px;border:1px solid #E3DCD0"></span> 締め切り日</span>' +
     '<span><span style="display:inline-block;width:14px;height:12px;background:#E8584A;vertical-align:-2px;border:1px solid #E3DCD0"></span> 完了日</span>' +
     '<span><span style="display:inline-block;width:14px;height:12px;background:#FBD3CF;vertical-align:-2px;border:1px solid #E3DCD0"></span> 期限切れ（締切〜今日）</span>' +
@@ -70798,11 +70835,12 @@ function evGanttHtml() {
         return '<td class="' + c + '" title="' + escapeAttr(t.title + ' ' + evMD(d)) + '">' + txt + '</td>';
       }).join('') + '</tr>';
   };
+  const gshow = t => !evWho || evWhoMatch(t) || evTasks.some(x => x.parent_id === t.id && evWhoMatch(x));
   cats.forEach(cat => {
-    const parents = evTasks.filter(t => t.category === cat && !t.parent_id);
+    const parents = evTasks.filter(t => t.category === cat && !t.parent_id && gshow(t));
     if (!parents.length) return;
     h += '<tr class="g"><td class="name">' + escapeHtml(cat) + '</td><td class="who"></td>' + days.map(d => '<td class="' + (d === today ? 'today' : '') + (d.slice(8) === '01' ? ' wk' : '') + '"></td>').join('') + '</tr>';
-    parents.forEach(t => { h += rowOf(t, false); evTasks.filter(x => x.parent_id === t.id).forEach(x => { h += rowOf(x, true); }); });
+    parents.forEach(t => { if (!evWho || evWhoMatch(t)) h += rowOf(t, false); else h += rowOf(t, false); evTasks.filter(x => x.parent_id === t.id && (!evWho || evWhoMatch(x))).forEach(x => { h += rowOf(x, true); }); });
   });
   h += '</tbody></table></div>';
   setTimeout(() => { const w = document.querySelector('#ev-body .ev-wrap'); const th = w && w.querySelector('th.today'); if (w && th) w.scrollLeft = Math.max(0, th.offsetLeft - 260); }, 30);
@@ -70813,12 +70851,13 @@ function evGanttHtml() {
 function evDocHtml() {
   const p = evPlan;
   const f = (k, label, type) => '<div class="ev-field"><label>' + label + '</label>' + (type === 'date' ? '<input type="date" id="evd-' + k + '" value="' + (p[k] || '') + '">' : type === 'text' ? '<input type="text" id="evd-' + k + '" value="' + escapeHtml(p[k] || '') + '">' : '<textarea id="evd-' + k + '">' + escapeHtml(p[k] || '') + '</textarea>') + '</div>';
-  return '<div class="ev-card"><div style="font-size:13px;font-weight:800;margin-bottom:10px">企画提案書</div>' +
+  return '<div class="ev-card"><div style="display:flex;align-items:center;margin-bottom:10px"><span style="font-size:13px;font-weight:800">企画提案書</span>' + evPagePrintBtn(['doc'], '企画書を印刷') + '</div>' +
     f('title', '企画名', 'text') +
     '<div style="display:flex;gap:10px"><div style="flex:1">' + f('event_date', '日時（実施日）', 'date') + '</div><div style="flex:1">' + f('end_date', '企画終了日', 'date') + '</div></div>' +
     f('place', '場所', 'text') +
     '<div class="ev-field"><label>企画責任者</label><select id="evd-owner_staff_id">' + evStaffOptions(p.owner_staff_id) + '</select></div>' +
-    f('members', '企画メンバー', 'text') +
+    '<div class="ev-field"><label>この企画に関わるスタッフ（担当の候補・担当ごとの残り・絞り込みに使います）</label>' + evMemberChecksHtml(evMemberIds(), 'evd-mem') + '</div>' +
+    f('members', '名簿にいないメンバー（任意）', 'text') +
     f('purpose', '目的') + f('measure', '目的達成 測定方法') + f('outline', '行程概要') + f('budget_outline', '予算概要') +
     '<button class="ev-btn pri" style="width:100%;padding:11px" onclick="evSaveDoc([\'title\',\'event_date\',\'end_date\',\'place\',\'owner_staff_id\',\'members\',\'purpose\',\'measure\',\'outline\',\'budget_outline\'])">企画書を保存</button></div>';
 }
@@ -70826,8 +70865,10 @@ async function evSaveDoc(keys) {
   const body = { updated_at: new Date().toISOString() };
   keys.forEach(k => { const el = document.getElementById('evd-' + k); if (el) body[k] = el.value.trim() === '' ? null : el.value.trim(); });
   if (keys.includes('title') && !body.title) { showToast('企画名は必須です', 'error'); return; }
+  if (document.querySelector('.evd-mem')) body.member_ids = evCheckedIds('evd-mem');
   try {
-    await sbPatch('event_plans', 'id=eq.' + evPlan.id, body);
+    try { await sbPatch('event_plans', 'id=eq.' + evPlan.id, body); }
+    catch (e) { if (/member_ids/.test(e.message)) { delete body.member_ids; await sbPatch('event_plans', 'id=eq.' + evPlan.id, body); showToast('メンバーの保存には event_plans_members.sql の実行が必要です', 'error'); } else throw e; }
     Object.assign(evPlan, body);
     showToast('保存しました', 'success');
     if (keys.includes('title')) evRender();
@@ -70939,7 +70980,7 @@ async function evMoveRow(table, id, dir) {
 function evMeetingsHtml() {
   const rows = evData.meetings.slice().sort((a, b) => (a.no || 0) - (b.no || 0));
   const next = rows.filter(m => !m.is_done && m.meet_at).sort((a, b) => a.meet_at.localeCompare(b.meet_at))[0];
-  return '<div class="ev-card"><div style="font-size:13px;font-weight:800;margin-bottom:4px">実施までの打ち合わせ予定</div><div style="font-size:11px;color:var(--muted);margin-bottom:8px">日時を入れると「進捗」とホームに次回が出ます。終わった回は「済」に。決まったことはメモへ。</div>' +
+  return '<div class="ev-card"><div style="display:flex;align-items:center;margin-bottom:4px"><span style="font-size:13px;font-weight:800">実施までの打ち合わせ予定</span>' + evPagePrintBtn(['meetings']) + '</div><div style="font-size:11px;color:var(--muted);margin-bottom:8px">日時を入れると「進捗」とホームに次回が出ます。終わった回は「済」に。決まったことはメモへ。</div>' +
     evGrid('event_plan_meetings', rows, [
       { k: 'is_done', label: '済', type: 'check', w: '34px' },
       { k: 'no', label: '回', type: 'num', w: '52px' },
@@ -70953,7 +70994,7 @@ function evMeetingsHtml() {
 // ---------- 当日（タイムテーブル／準備物／スタッフ役割） ----------
 function evDayHtml() {
   const tabs = [['timeline', '⏱ タイムテーブル'], ['supplies', '📦 準備物'], ['roles', '🧑‍🤝‍🧑 スタッフ役割']];
-  let h = '<div style="display:flex;gap:6px;margin-bottom:10px">' + tabs.map(t => '<button class="ev-chip' + (evDaySub === t[0] ? ' on' : '') + '" onclick="evDaySub=\'' + t[0] + '\';evRenderBodyOnly()">' + t[1] + '</button>').join('') + '</div>';
+  let h = '<div style="display:flex;gap:6px;margin-bottom:10px;align-items:center">' + tabs.map(t => '<button class="ev-chip' + (evDaySub === t[0] ? ' on' : '') + '" onclick="evDaySub=\'' + t[0] + '\';evRenderBodyOnly()">' + t[1] + '</button>').join('') + evPagePrintBtn([evDaySub]) + '</div>';
   if (evDaySub === 'timeline') {
     const rows = evData.timeline.slice().sort((a, b) => (a.sort_no || 0) - (b.sort_no || 0));
     // 開始時刻：最初の行は入力。以降は「前の行の開始＋所要」。入力があればそれを優先。
@@ -71010,7 +71051,7 @@ function evCashHtml() {
   const rows = evCashRows();
   const inc = rows.reduce((a, r) => a + (r.income || 0), 0), exp = rows.reduce((a, r) => a + (r._expense || 0), 0);
   const foot = '<tr><td colspan="' + 6 + '" style="text-align:right;font-weight:700;background:var(--surface2)">合計</td><td class="calc">' + evYen(inc) + '</td><td class="calc">' + evYen(exp) + '</td><td class="calc">' + evYen(inc - exp) + '</td><td></td></tr>';
-  return '<div class="ev-card"><div style="font-size:13px;font-weight:800;margin-bottom:4px">収支表</div><div style="font-size:11px;color:var(--muted);margin-bottom:8px">支出が空のときは 単価×個数 で計算します。残高は上から順に積み上げ。</div>' +
+  return '<div class="ev-card"><div style="display:flex;align-items:center;margin-bottom:4px"><span style="font-size:13px;font-weight:800">収支表</span>' + evPagePrintBtn(['cash'], '出納簿を印刷') + '</div><div style="font-size:11px;color:var(--muted);margin-bottom:8px">支出が空のときは 単価×個数 で計算します。残高は上から順に積み上げ。</div>' +
     evGrid('event_plan_cash', rows, [
       { k: 'entry_date', label: '日付', type: 'date', w: '120px' },
       { k: 'item', label: '品目名', type: 'text' },
@@ -71029,7 +71070,7 @@ function evReportHtml() {
   const p = evPlan;
   const rows = evCashRows(); const exp = rows.reduce((a, r) => a + (r._expense || 0), 0), inc = rows.reduce((a, r) => a + (r.income || 0), 0);
   const ta = (k, label) => '<div class="ev-field"><label>' + label + '</label><textarea id="evd-' + k + '">' + escapeHtml(p[k] || '') + '</textarea></div>';
-  let h = '<div class="ev-card"><div style="font-size:13px;font-weight:800;margin-bottom:10px">報告書</div>' +
+  let h = '<div class="ev-card"><div style="display:flex;align-items:center;margin-bottom:10px"><span style="font-size:13px;font-weight:800">報告書</span>' + evPagePrintBtn(['report'], '報告書を印刷') + '</div>' +
     '<div class="ev-field"><label>報告日</label><input type="date" id="evd-report_date" value="' + (p.report_date || '') + '"></div>' +
     '<div class="ev-field"><label>目的（企画書から）</label><div style="font-size:12px;white-space:pre-wrap;background:var(--surface2);border-radius:8px;padding:8px 10px;min-height:20px">' + escapeHtml(p.purpose || '（企画書の「目的」に入力）') + '</div></div>' +
     '<div class="ev-field"><label>効果測定方法（企画書から）</label><div style="font-size:12px;white-space:pre-wrap;background:var(--surface2);border-radius:8px;padding:8px 10px;min-height:20px">' + escapeHtml(p.measure || '（企画書の「目的達成 測定方法」に入力）') + '</div></div>' +
@@ -71039,7 +71080,7 @@ function evReportHtml() {
     '<div class="ev-field"><label>備品片付け完了（責任者）</label><input type="text" id="evd-report_cleanup" value="' + escapeHtml(p.report_cleanup || '') + '"></div>' +
     '<button class="ev-btn pri" style="width:100%;padding:11px" onclick="evSaveDoc([\'report_date\',\'report_result\',\'report_expense\',\'report_reflect\',\'report_cleanup\'])">報告書を保存</button></div>';
   // 反省（今回／昨年）
-  h += '<div style="display:flex;gap:6px;margin:14px 0 8px"><button class="ev-chip' + (evReviewKind === 'this' ? ' on' : '') + '" onclick="evReviewKind=\'this\';evRenderBodyOnly()">反省（今回）</button><button class="ev-chip' + (evReviewKind === 'last' ? ' on' : '') + '" onclick="evReviewKind=\'last\';evRenderBodyOnly()">昨年反省</button></div>';
+  h += '<div style="display:flex;gap:6px;margin:14px 0 8px;align-items:center"><button class="ev-chip' + (evReviewKind === 'this' ? ' on' : '') + '" onclick="evReviewKind=\'this\';evRenderBodyOnly()">反省（今回）</button><button class="ev-chip' + (evReviewKind === 'last' ? ' on' : '') + '" onclick="evReviewKind=\'last\';evRenderBodyOnly()">昨年反省</button>' + evPagePrintBtn([evReviewKind === 'this' ? 'review' : 'last'], (evReviewKind === 'this' ? '反省' : '昨年反省') + 'を印刷') + '</div>';
   const pre = evReviewKind === 'this' ? 'review' : 'last_review';
   const rrows = evData.reviews.filter(r => r.kind === evReviewKind).sort((a, b) => (a.sort_no || 0) - (b.sort_no || 0));
   h += '<div class="ev-card"><div style="font-size:13px;font-weight:800;margin-bottom:8px">スケジュール振り返り' + (evReviewKind === 'last' ? '（昨年）' : '') + '</div>' +
@@ -71054,8 +71095,12 @@ function evReportHtml() {
 }
 
 // ---------- 印刷（Excelと同じ並びで1冊に） ----------
-function evPrint() {
+// 20261020pp1: keys＝出すページ（省略＝全部・表紙つき）。各ページの印刷ボタン・選んで印刷から呼ぶ
+const EV_PRINT_PAGES = [['last', '昨年反省'], ['doc', '企画書'], ['meetings', '実施までの流れ'], ['tasks', 'タスク管理'], ['timeline', 'タイムテーブル'], ['supplies', '準備物'], ['roles', 'スタッフ役割'], ['cash', '出納簿'], ['report', '報告書'], ['review', '反省']];
+function evPrint(keys) {
   const p = evPlan, s = evStats();
+  const all = !keys || !keys.length;
+  const on = k => all || keys.indexOf(k) !== -1;
   const esc = escapeHtml, nl = v => esc(v || '').replace(/\n/g, '<br>');
   const sec = (title, body) => '<section><h2>' + esc(title) + '</h2>' + body + '</section>';
   const kv = pairs => '<table class="kv">' + pairs.map(x => '<tr><th>' + x[0] + '</th><td>' + x[1] + '</td></tr>').join('') + '</table>';
@@ -71063,9 +71108,10 @@ function evPrint() {
   // タスク
   const cats = EV_CATS.slice(); evTasks.forEach(t => { if (!cats.includes(t.category)) cats.push(t.category); });
   const taskRows = [];
-  cats.forEach(c => { evTasks.filter(t => t.category === c && !t.parent_id).forEach(t => {
+  const pshow = t => !evWho || evWhoMatch(t) || evTasks.some(x => x.parent_id === t.id && evWhoMatch(x));
+  cats.forEach(c => { evTasks.filter(t => t.category === c && !t.parent_id && pshow(t)).forEach(t => {
     const push = (x, sub) => taskRows.push([sub ? '' : esc(c), (sub ? '　└ ' : '') + esc(x.title), esc(evStaffName(x.assignee_id)), esc(evYMD(x.due_date)), evTaskDone(x) ? esc(evYMD(evTaskDoneDate(x))) : '', evTaskDone(x) ? '✓' : '']);
-    push(t, false); evTasks.filter(x => x.parent_id === t.id).forEach(x => push(x, true));
+    push(t, false); evTasks.filter(x => x.parent_id === t.id && (!evWho || evWhoMatch(x))).forEach(x => push(x, true));
   }); });
   const meet = evData.meetings.slice().sort((a, b) => (a.no || 0) - (b.no || 0)).map(m => [m.no, esc(evDT(m.meet_at)), nl(m.title), nl(m.prep), nl(m.memo), m.is_done ? '済' : '']);
   // タイムテーブル
@@ -71080,34 +71126,60 @@ function evPrint() {
   const cashRows = cash.map((r, i) => [i + 1, esc(evYMD(r.entry_date)), esc(r.item), esc(r.counterpart), evYen(r.unit_price), r.qty ?? '', evYen(r.income), evYen(r._expense), evYen(r._bal)]);
   const rv = kind => evData.reviews.filter(r => r.kind === kind).sort((a, b) => (a.sort_no || 0) - (b.sort_no || 0)).map(r => [esc(evYMD(r.row_date)), esc(r.item), nl(r.content)]);
   const reviewBlock = (kind, pre) => tbl(['月／日', '項目', '内容'], rv(kind)) + kv([['反省と改善①（担当者）', nl(p[pre + '1'])], ['反省と改善②（全体より）', nl(p[pre + '2'])], ['反省と改善③（準備段階）', nl(p[pre + '3'])], ['反省と改善④（本番）', nl(p[pre + '4'])]]);
-  const toc = ['昨年反省', '企画書', '実施までの流れ', 'タスク管理', 'タイムテーブル', '準備物', 'スタッフ役割', '出納簿', '報告書', '反省'];
+  const toc = EV_PRINT_PAGES.filter(x => on(x[0])).map(x => x[1]);
+  const withCover = all || toc.length >= 3;   // 1〜2ページだけのときは表紙を付けない
   const html = '<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>' + esc(p.title) + ' 企画・実施書</title><style>' +
     'body{font-family:"Noto Sans JP","Hiragino Sans",Meiryo,sans-serif;font-size:11px;color:#222;margin:0;padding:14mm}' +
-    'section{page-break-before:always;page-break-inside:avoid}section.cover{page-break-before:auto;text-align:center;padding-top:40mm}' +
+    'section{page-break-before:always;page-break-inside:avoid}section.cover{page-break-before:auto;text-align:center;padding-top:40mm}section:first-of-type{page-break-before:auto}' +
+    '.hd{font-size:12px;color:#555;margin:0 0 12px}.hd b{font-size:15px;color:#222}' +
     'h1{font-size:28px;margin:10px 0}h2{font-size:16px;border-left:6px solid #F5A623;padding-left:8px;margin:0 0 10px}' +
     '.cover .date{font-size:16px}.cover .sub{font-size:20px;margin:30px 0 40px}.cover ol{display:inline-block;text-align:left;font-size:13px;line-height:2}' +
     'table{border-collapse:collapse;width:100%;margin-bottom:10px}th,td{border:1px solid #777;padding:4px 6px;vertical-align:top;text-align:left}th{background:#F4F1EA;white-space:nowrap}' +
     '.kv th{width:160px}.t td.empty{text-align:center;color:#999}.sum{font-size:12px;margin:0 0 8px}' +
     '@media print{.noprint{display:none}}.noprint{position:fixed;top:8px;right:8px}</style></head><body>' +
     '<button class="noprint" onclick="window.print()">🖨 印刷</button>' +
-    '<section class="cover"><div class="date">' + esc(p.event_date ? evYMD(p.event_date).replace(/^(\d+)\/(\d+)\/(\d+)$/, '$1年　$2月　$3日') : '') + '</div><h1>' + esc(p.title) + '</h1><div class="sub">企画・実施書</div>' +
+    (withCover ? '' : '<p class="hd"><b>' + esc(p.title) + '</b>　' + esc(p.event_date ? evYMD(p.event_date) : '') + '　／　印刷：' + esc(evYMD(evToday())) + '</p>') +
+    (!withCover ? '' : '<section class="cover"><div class="date">' + esc(p.event_date ? evYMD(p.event_date).replace(/^(\d+)\/(\d+)\/(\d+)$/, '$1年　$2月　$3日') : '') + '</div><h1>' + esc(p.title) + '</h1><div class="sub">企画・実施書</div>' +
       '<ol>' + toc.map((t, i) => '<li>' + t + '</li>').join('') + '</ol>' +
-      '<div style="margin-top:30px;font-size:12px">企画責任者：' + esc(evStaffName(p.owner_staff_id) || '') + (p.members ? '　／　企画メンバー：' + esc(p.members) : '') + '</div>' +
-      '<div style="font-size:11px;color:#666;margin-top:6px">印刷：' + esc(evYMD(evToday())) + '　進み具合 ' + s.pct + '%（' + s.done + '／' + s.total + '）</div></section>' +
-    sec('昨年反省', reviewBlock('last', 'last_review')) +
-    sec('企画提案書', kv([['企画責任者／企画メンバー', esc(evStaffName(p.owner_staff_id) || '') + (p.members ? '　／　' + esc(p.members) : '')], ['日時', esc(evYMD(p.event_date))], ['場所', esc(p.place)], ['目的', nl(p.purpose)], ['目的達成 測定方法', nl(p.measure)], ['行程概要', nl(p.outline)], ['予算概要', nl(p.budget_outline)], ['企画終了日', esc(evYMD(p.end_date))]])) +
-    sec('実施までの流れ（打ち合わせ予定）', tbl(['回', '日時', '内容', '準備', 'メモ', '済'], meet)) +
-    sec('タスク管理', '<p class="sum">進み具合 ' + s.pct + '%（完了 ' + s.done + '／' + s.total + '）　期限切れ ' + s.overdue + '</p>' + tbl(['種類', '項目', '担当', '締め切り日', '完了日', '✓'], taskRows)) +
-    sec('タイムテーブル', tbl(['開始時刻', '所要', '項目', '備考', 'スタッフ', '準備物'], tlRows)) +
-    sec('準備物', tbl(['☑', '番号', '行程内容', '品目名', '使用予定数', '在庫', '買出', '使用数', '残', '保管場所'], sp)) +
-    sec('スタッフ役割', tbl(['名前', '行程', '役割', '注意点'], rl)) +
-    sec('出納簿（収支表）', tbl(['番号', '日付', '品目名', '支払先／収入元', '単価（税込）', '個数', '収入', '支出', '残高'], cashRows) + '<p class="sum">合計：収入 ' + evYen(inc) + '　支出 ' + evYen(exp) + '　差引 ' + evYen(inc - exp) + '</p>') +
-    sec('報告書', kv([['報告日', esc(evYMD(p.report_date))], ['目的', nl(p.purpose)], ['効果測定方法', nl(p.measure)], ['効果測定結果', nl(p.report_result)], ['経費', nl(p.report_expense) + '<div style="color:#666;margin-top:4px">出納簿：収入 ' + evYen(inc) + '　支出 ' + evYen(exp) + '</div>'], ['反省点・改善点', nl(p.report_reflect)], ['備品片付け完了（責任者）', esc(p.report_cleanup)]])) +
-    sec('反省', reviewBlock('this', 'review')) +
+      '<div style="margin-top:30px;font-size:12px">企画責任者：' + esc(evStaffName(p.owner_staff_id) || '') + (evMemberNames(p) ? '　／　企画メンバー：' + esc(evMemberNames(p)) : '') + '</div>' +
+      '<div style="font-size:11px;color:#666;margin-top:6px">印刷：' + esc(evYMD(evToday())) + '　進み具合 ' + s.pct + '%（' + s.done + '／' + s.total + '）</div></section>') +
+    (on('last') ? sec('昨年反省', reviewBlock('last', 'last_review')) : '') +
+    (!on('doc') ? '' : sec('企画提案書', kv([['企画責任者／企画メンバー', esc(evStaffName(p.owner_staff_id) || '') + (evMemberNames(p) ? '　／　' + esc(evMemberNames(p)) : '')], ['日時', esc(evYMD(p.event_date))], ['場所', esc(p.place)], ['目的', nl(p.purpose)], ['目的達成 測定方法', nl(p.measure)], ['行程概要', nl(p.outline)], ['予算概要', nl(p.budget_outline)], ['企画終了日', esc(evYMD(p.end_date))]]))) +
+    (on('meetings') ? sec('実施までの流れ（打ち合わせ予定）', tbl(['回', '日時', '内容', '準備', 'メモ', '済'], meet)) : '') +
+    (!on('tasks') ? '' : sec('タスク管理' + (evWho ? '（' + (evWho === 'none' ? '担当なし' : evStaffName(evWho)) + '）' : ''), '<p class="sum">進み具合 ' + s.pct + '%（完了 ' + s.done + '／' + s.total + '）　期限切れ ' + s.overdue + '</p>' + tbl(['種類', '項目', '担当', '締め切り日', '完了日', '✓'], taskRows))) +
+    (on('timeline') ? sec('タイムテーブル', tbl(['開始時刻', '所要', '項目', '備考', 'スタッフ', '準備物'], tlRows)) : '') +
+    (on('supplies') ? sec('準備物', tbl(['☑', '番号', '行程内容', '品目名', '使用予定数', '在庫', '買出', '使用数', '残', '保管場所'], sp)) : '') +
+    (on('roles') ? sec('スタッフ役割', tbl(['名前', '行程', '役割', '注意点'], rl)) : '') +
+    (!on('cash') ? '' : sec('出納簿（収支表）', tbl(['番号', '日付', '品目名', '支払先／収入元', '単価（税込）', '個数', '収入', '支出', '残高'], cashRows) + '<p class="sum">合計：収入 ' + evYen(inc) + '　支出 ' + evYen(exp) + '　差引 ' + evYen(inc - exp) + '</p>')) +
+    (!on('report') ? '' : sec('報告書', kv([['報告日', esc(evYMD(p.report_date))], ['目的', nl(p.purpose)], ['効果測定方法', nl(p.measure)], ['効果測定結果', nl(p.report_result)], ['経費', nl(p.report_expense) + '<div style="color:#666;margin-top:4px">出納簿：収入 ' + evYen(inc) + '　支出 ' + evYen(exp) + '</div>'], ['反省点・改善点', nl(p.report_reflect)], ['備品片付け完了（責任者）', esc(p.report_cleanup)]]))) +
+    (on('review') ? sec('反省', reviewBlock('this', 'review')) : '') +
     '</body></html>';
   const w = window.open('', '_blank');
   if (!w) { showToast('ポップアップがブロックされました。許可してもう一度押してください。', 'error'); return; }
   w.document.open(); w.document.write(html); w.document.close();
+}
+
+// 20261020pp1: ページを選んで印刷（表紙は3ページ以上のときだけ）
+function evPrintPick() {
+  const cur = { doc: ['doc'], meetings: ['meetings'], tasks: ['tasks'], gantt: ['tasks'], day: [evDaySub], cash: ['cash'], report: ['report', 'review'], progress: [] }[evSub] || [];
+  evModal(
+    '<div style="font-size:15px;font-weight:800;margin-bottom:4px">🖨 印刷するページ</div>' +
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">チェックしたページだけを出します。全部にチェックすると表紙と目次が付いた1冊になります。</div>' +
+    '<div style="display:flex;gap:6px;margin-bottom:10px"><button class="ev-btn sm" onclick="document.querySelectorAll(\'.evpp\').forEach(c=>c.checked=true)">全部</button><button class="ev-btn sm" onclick="document.querySelectorAll(\'.evpp\').forEach(c=>c.checked=false)">なし</button></div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-bottom:14px">' +
+      EV_PRINT_PAGES.map(x => '<label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" class="evpp" value="' + x[0] + '"' + (cur.length ? (cur.indexOf(x[0]) !== -1 ? ' checked' : '') : ' checked') + '>' + x[1] + '</label>').join('') +
+    '</div>' +
+    '<div style="display:flex;gap:8px"><button class="ev-btn pri" style="flex:1;padding:11px" onclick="evPrintSelected()">印刷画面を開く</button><button class="ev-btn" style="flex:1;padding:11px" onclick="evCloseModal()">キャンセル</button></div>'
+  );
+}
+function evPrintSelected() {
+  const keys = Array.prototype.map.call(document.querySelectorAll('.evpp:checked'), c => c.value);
+  if (!keys.length) { showToast('ページを1つ以上選んでください', 'error'); return; }
+  evCloseModal();
+  evPrint(keys.length === EV_PRINT_PAGES.length ? null : keys);
+}
+function evPagePrintBtn(keys, label) {
+  return '<button class="ev-btn sm" style="margin-left:auto" onclick="evPrint([' + keys.map(k => '\'' + k + '\'').join(',') + '])">🖨 ' + (label || 'このページを印刷') + '</button>';
 }
 
 // ---------- ホームのカード（進行中の企画） ----------
