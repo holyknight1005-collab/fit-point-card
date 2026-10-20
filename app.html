@@ -3997,6 +3997,14 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
           <button type="button" id="rec-kind-call" onclick="setRecKind('call')" style="padding:7px 14px;border-radius:20px;font-size:12px;cursor:pointer;font-family:'Noto Sans JP',sans-serif">☎️ 電話折り返し</button>
         </div>
       </div>
+      <div id="rec-link-row">
+        <div class="form-label">ToDoから開く画面</div>
+        <select class="form-select" id="rec-link-target">
+          <option value="">なし</option>
+          <option value="school-comment">📝 コメント入力（自分の担当校の学校別ページ）</option>
+        </select>
+        <div style="font-size:10px;color:var(--muted);margin-top:4px">選ぶと、配られたToDoに「▶ コメントを入力する」ボタンが出て、ワンタップでその画面に行けます。</div>
+      </div>
       <div id="rec-cmode-row">
         <div class="form-label">完了方式</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -6914,7 +6922,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261020ks4';
+const APP_VERSION = '20261020ks5';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -10581,7 +10589,8 @@ const TODO_LINK_LABEL = {
   reportedit: '✏️ 報告書入力を開く',
   'check-item': '📌 ノルマを開く',
   interview: '🗣 面談を開く',
-  prospects: '🚪 入来塾管理を開く'
+  prospects: '🚪 入来塾管理を開く',
+  'school-comment': '📝 コメントを入力する'   // 20261020ks5: 担当校の学校別ページ（出席表コメント入力）
 };
 // ToDoにショートカット先があれば「▶ 開く」ボタンHTMLを返す（無ければ空文字）
 function todoLinkBtnHtml(t) {
@@ -10590,6 +10599,9 @@ function todoLinkBtnHtml(t) {
     return '<button onclick="evOpenFromTodo(\'' + escapeAttr(tgt.slice(5)) + '\')" style="margin-top:6px;padding:6px 14px;background:linear-gradient(135deg,#2D6CB6,#1E4D8C);border:none;border-radius:8px;font-size:11px;font-weight:700;color:#fff;cursor:pointer;font-family:inherit">📋 企画書を開く</button>';
   }
   if (!tgt || !TODO_LINK_LABEL[tgt]) return '';
+  if (tgt === 'school-comment') {   // 20261020ks5
+    return '<button onclick="openSchoolCommentFromTodo()" style="margin-top:6px;padding:6px 14px;background:linear-gradient(135deg,#2D6CB6,#1E4D8C);border:none;border-radius:8px;font-size:12px;font-weight:700;color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">▶ ' + TODO_LINK_LABEL[tgt] + '</button>';
+  }
   return '<button onclick="openHomeFeature(\'' + escapeAttr(tgt) + '\')" style="margin-top:6px;padding:6px 14px;background:linear-gradient(135deg,#2D6CB6,#1E4D8C);border:none;border-radius:8px;font-size:12px;font-weight:700;color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">▶ ' + TODO_LINK_LABEL[tgt] + '</button>';
 }
 
@@ -19089,6 +19101,7 @@ function recChipStyle(active) {
 
 function setRecTargetType(type) {
   recTargetType = (type === 'school' || type === 'teacher' || type === 'subject' || type === 'supervision' || type === 'sv_decide') ? type : 'person';
+  { const lr = document.getElementById('rec-link-row'); if (lr) lr.style.display = recIsSvTarget(recTargetType) ? 'none' : ''; }   // 20261020ks5
   const db = document.getElementById('rec-target-sv_decide');   // 20261012sv1
   if (db) db.style.cssText = recChipStyle(recTargetType === 'sv_decide');
   const dblk = document.getElementById('rec-sv_decide-block');
@@ -19226,6 +19239,7 @@ function syncRecOverrideRow() {
 }
 
 let recEditFrequencyWas = 'monthly';
+let recEditLinkWas = '';   // 20261020ks5
 async function openRecurringEdit(id) {
   const box = document.getElementById('recurring-edit-box');
   if (!box) return;
@@ -19238,6 +19252,10 @@ async function openRecurringEdit(id) {
     } catch (e) {}
   }
   recEditFrequencyWas = recIsWeekly(tpl) ? 'weekly' : 'monthly';
+  // 20261020ks5: ToDoから開く画面（自習監督は自動で付くので、ここでは選ばない）
+  recEditLinkWas = (tpl && tpl.link_target && tpl.link_target !== 'supervision') ? tpl.link_target : '';
+  const ltSel = document.getElementById('rec-link-target');
+  if (ltSel) ltSel.value = recEditLinkWas;
   document.getElementById('rec-edit-title').textContent = tpl ? '🔁 定期ToDoを編集' : '🔁 定期ToDoを追加';
   document.getElementById('rec-title').value = tpl ? (tpl.title || '') : '';
   document.getElementById('rec-detail').value = tpl ? (tpl.detail || '') : '';
@@ -19381,6 +19399,11 @@ async function saveRecurringTodo() {
     payload.due_weekday = recFrequency === 'weekly' ? (parseInt(document.getElementById('rec-due-weekday').value, 10) || 5) : null;
     payload.link_target = recIsSvTarget(recTargetType) ? 'supervision' : null;
     if (recFrequency === 'weekly') { payload.override_ym = null; payload.override_approver_staff_id = null; }
+  }
+  // 20261020ks5: ToDoから開く画面。選んだとき・外したときだけ送る（自習監督の宛先は上で 'supervision' に決まる）
+  if (!recIsSvTarget(recTargetType)) {
+    const lt = (document.getElementById('rec-link-target') || {}).value || '';
+    if (lt || recEditLinkWas) payload.link_target = lt || null;
   }
   showLoading('保存中...');
   try {
@@ -57960,6 +57983,32 @@ async function openSchoolView(backTo) {
     if (sec) sec.innerHTML = '<div class="sv-card-h">📊 請求ベース在籍人数</div><div class="sv-placeholder" style="border-color:#E8B4B4;background:#FDF2F2;color:#A04040">在籍データの取得に失敗しました（' + escapeHtml(e.message || '') + '）</div>';
     if (status) status.textContent = '';
   }
+}
+
+// ===== 20261020ks5: ToDo「コメントの入力」から、自分の担当校のコメント入力へ =====
+// 担当校＝staff_permissions.charge_schools（学校担当）。複数あるときは最初の学校を開き、上の学校タブで切り替える。
+// 担当校が無い人は、今までどおり最初の学校（または前に見ていた学校）を開く。
+async function openSchoolCommentFromTodo() {
+  let charge = [];
+  try {
+    if (typeof saMyPerms === 'object' && saMyPerms && Array.isArray(saMyPerms.charge_schools)) {
+      charge = saMyPerms.charge_schools;
+    } else if (currentStaff) {
+      const rows = await sbGet('staff_permissions', 'staff_id=eq.' + encodeURIComponent(currentStaff.staff_id) + '&select=charge_schools&limit=1') || [];
+      charge = (rows.length && Array.isArray(rows[0].charge_schools)) ? rows[0].charge_schools : [];
+    }
+  } catch (e) {}
+  const mine = (typeof SA_SCHOOLS !== 'undefined' ? SA_SCHOOLS : []).filter(sc => isStaffInChargeOf(charge, sc));
+  if (mine.length) svSchool = mine[0];
+  svCommentYM = null;   // 今月を開く
+  await openSchoolView('home');
+  const sec = document.getElementById('sv-comment-section');
+  if (sec) {
+    sec.classList.remove('sv-collapsed');
+    setTimeout(() => { try { sec.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) {} }, 300);
+  }
+  if (mine.length > 1) showToast('担当校：' + mine.map(sc => todoSchoolLabel(sc)).join('・') + '（上の学校タブで切り替えられます）');
+  else if (!mine.length) showToast('担当校が設定されていないので、学校を選んでください', 'error');
 }
 
 // 対象年月バー（表示のみ。年度は在籍表側のセレクタで切替）
