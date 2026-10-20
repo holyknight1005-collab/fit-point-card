@@ -136,7 +136,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
 <div class="top"><div class="top-in">
   <span class="brand">総合学習塾fit</span>
   <div class="mnav"><button id="prev" aria-label="前の月">‹</button><span class="lbl" id="mlabel">―</span><button id="next" aria-label="次の月">›</button></div>
-  <div class="seg" id="seg"><button data-d="ko">高校</button><button data-d="chu">中学</button></div>
+  <div class="seg" id="seg"><button data-d="ko">高校</button><button data-d="sotsu">高卒</button><button data-d="chu">中学</button></div>
   <span class="spacer"></span>
   <button class="today-btn" id="todayBtn">今日</button>
 </div></div>
@@ -162,7 +162,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
 
   var qs = new URLSearchParams(location.search);
   var state = {
-    div: qs.get('d') === 'chu' ? 'chu' : 'ko',
+    div: (qs.get('d') === 'chu' || qs.get('d') === 'sotsu') ? qs.get('d') : 'ko',   // 20261020ks1: sotsu＝高卒（高卒生の授業＋共テ対策）
     month: /^\d{4}-\d{2}$/.test(qs.get('m') || '') ? qs.get('m') : null,
     kosotsu: qs.get('k') === '1',
     view: null, q: '', g: '', data: null
@@ -173,7 +173,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
   state.g = /^[123]$/.test(qs.get('g') || '') ? qs.get('g') : (load('fit_tt_g') || '');
   state.view = load('fit_tt_view2') || 'week';
   if (state.view === 'ct') state.view = 'week';   // 共テ対策の表示は覚えない（URLの v=ct で開いたときだけ）
-  if (qs.get('v') === 'ct' && state.div === 'ko') state.view = 'ct';
+  if (qs.get('v') === 'ct' && state.div !== 'chu') state.view = 'ct';
   // 20261012pk1: ピックアップ（スタッフが期間を決めて出すボタン。?p=番号 で直接開く）
   state.picks = null;    // null＝未取得・公開関数なし（そのときは従来の「共テ対策日程」ボタン）
   state.pickId = null;
@@ -182,6 +182,9 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
   state.ctMode = load('fit_tt_ctmode') === 'date' ? 'date' : 'course';
 
   function pad(n) { return String(n).padStart(2, '0'); }
+  // 20261020ks1: 高卒は高校部のデータ（高卒生の授業を含めて取得）から、高卒生の授業と共テ対策だけを出す。時刻も高校と同じ。
+  function apiDiv() { return state.div === 'chu' ? '中学部' : '高校部'; }
+  function divName() { return state.div === 'chu' ? '中学' : state.div === 'sotsu' ? '高卒' : '高校'; }
   function todayJST() {
     var d = new Date(Date.now() + (new Date().getTimezoneOffset() + 540) * 60000);
     return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
@@ -210,7 +213,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     var res = await fetch(SB_URL + '/rest/v1/rpc/fit_public_timetable', {
       method: 'POST',
       headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ p_month: month || state.month, p_division: state.div === 'chu' ? '中学部' : '高校部', p_kosotsu: state.kosotsu })
+      body: JSON.stringify({ p_month: month || state.month, p_division: apiDiv(), p_kosotsu: state.div === 'sotsu' ? true : state.kosotsu })
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return res.json();
@@ -221,7 +224,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
       var res = await fetch(SB_URL + '/rest/v1/rpc/fit_public_timetable_cycles', {
         method: 'POST',
         headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ p_month: state.month, p_division: state.div === 'chu' ? '中学部' : '高校部' })
+        body: JSON.stringify({ p_month: state.month, p_division: apiDiv() })
       });
       if (!res.ok) return {};
       var rows = await res.json(), map = {};
@@ -238,10 +241,12 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
       var res = await fetch(SB_URL + '/rest/v1/rpc/fit_public_timetable_picks', {
         method: 'POST',
         headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ p_division: state.div === 'chu' ? '中学部' : '高校部' })
+        body: JSON.stringify({ p_division: apiDiv() })
       });
       if (!res.ok) return null;
-      return (await res.json()) || [];
+      var list = (await res.json()) || [];
+      if (state.div === 'sotsu') list = list.filter(function (x) { return x.category === 'common_test'; });   // 高卒は共テのピックアップだけ
+      return list;
     } catch (e) { return null; }
   }
   // その日の月と同じ月の回は「①」、違う月の回は「11-①」「9-④」
@@ -258,8 +263,9 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     var cells = {}, used = {};
     (D.sessions || []).forEach(function (s) {
       var school = String(s.school || '').replace(/^SSS[：:]\s*/, '');
-      // 学年でしぼる：その学年の授業と、学年の決まっていない授業（全学年向け）を残す
-      if (state.g && s.grades && String(s.grades).split(/[^0-9]+/).indexOf(state.g) === -1) return;
+      if (state.div === 'sotsu' && !(s.kosotsu || isCT(s.name))) return;   // 高卒：高卒生の授業＋共テ対策
+      // 学年でしぼる：その学年の授業と、学年の決まっていない授業（全学年向け）を残す（高卒は学年なし）
+      if (state.div !== 'sotsu' && state.g && s.grades && String(s.grades).split(/[^0-9]+/).indexOf(state.g) === -1) return;
       var hay = (s.name + ' ' + school + ' ' + (s.subject || '')).toLowerCase();
       if (q.length && !q.every(function (w) { return hay.indexOf(w) !== -1; })) return;
       var p = s.period;
@@ -316,7 +322,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
       return b.periods.map(function (p) { var t = ds ? ptime(ds, p) : null; return t ? '<span>' + (CIRC[p] || p) + t[0] + '〜' + t[1] + '</span>' : ''; }).join('');
     };
     var mp = state.month.split('-');
-    document.getElementById('ttl').innerHTML = mp[0] + '年 ' + (+mp[1]) + '月<small>' + (state.div === 'chu' ? '中学部' : '高校部') + ' 時間割</small>';
+    document.getElementById('ttl').innerHTML = mp[0] + '年 ' + (+mp[1]) + '月<small>' + (state.div === 'chu' ? '中学部' : state.div === 'sotsu' ? '高卒' : '高校部') + ' 時間割</small>';
     document.getElementById('timebox').innerHTML =
       '<div class="tr"><span class="tl">月〜金：</span><span class="ts">' + line(wkd) + '</span></div>' +
       '<div class="tr"><span class="tl we">土日：</span><span class="ts">' + line(wke) + '</span></div>';
@@ -541,10 +547,16 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     document.querySelectorAll('#seg button').forEach(function (bt) { bt.classList.toggle('on', bt.getAttribute('data-d') === state.div); });
     document.querySelectorAll('#viewtabs button').forEach(function (bt) { bt.classList.toggle('on', bt.getAttribute('data-v') === state.view); });
     renderPickButtons();
-    document.querySelectorAll('#gsel button').forEach(function (bt) { var g = bt.getAttribute('data-g'); bt.classList.toggle('on', state.view === 'ct' ? g === 'ct' : state.view === 'pick' ? g === 'pk' + state.pickId : g === state.g); });
-    document.title = 'fit 時間割（' + (state.div === 'chu' ? '中学' : '高校') + '）' + (+mp[1]) + '月';
+    var sotsu = state.div === 'sotsu';
+    document.querySelectorAll('#gsel button').forEach(function (bt) {
+      var g = bt.getAttribute('data-g');
+      if (/^[123]$/.test(g)) bt.style.display = sotsu ? 'none' : '';   // 高卒は学年ボタンなし
+      if (g === '') bt.textContent = sotsu ? '時間割' : '全学年';
+      bt.classList.toggle('on', state.view === 'ct' ? g === 'ct' : state.view === 'pick' ? g === 'pk' + state.pickId : g === (sotsu ? '' : state.g));
+    });
+    document.title = 'fit 時間割（' + divName() + '）' + (+mp[1]) + '月';
     var el = document.getElementById('content');
-    if (state.view === 'ct' && (state.div !== 'ko' || state.picks)) state.view = 'week';
+    if (state.view === 'ct' && (state.div === 'chu' || state.picks)) state.view = 'week';
     var isCtView = state.view === 'ct' || state.view === 'pick';
     document.getElementById('viewtabs').style.display = isCtView ? 'none' : '';
     document.getElementById('q').style.display = isCtView ? 'none' : '';
@@ -561,7 +573,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     var total = Object.keys(b.cells).length;
     if (!total) body = '<div class="empty">' + (state.q ? '「' + esc(state.q) + '」に合う授業はこの月にありません。' : 'この月の授業はまだ登録されていません。') + '</div>' + (state.view === 'week' ? body : '');
     var notes = [];
-    if (state.g) notes.push(state.g + '年');
+    if (state.g && state.div !== 'sotsu') notes.push(state.g + '年');
     if (state.q) notes.push('「' + esc(state.q) + '」');
     var hasCt = Object.keys(b.cells).some(function (k) { return b.cells[k].some(function (c) { return c.ct; }); });
     el.innerHTML = (notes.length ? '<div class="note">' + notes.join('・') + 'でしぼりこみ中（学年の決まっていない授業も表示）</div>' : '') +
@@ -573,7 +585,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
   function renderPickButtons() {
     var g = document.getElementById('gsel');
     g.querySelectorAll('.gpk').forEach(function (b) { b.remove(); });
-    document.getElementById('gct').style.display = (!state.picks && state.div === 'ko') ? '' : 'none';
+    document.getElementById('gct').style.display = (!state.picks && state.div !== 'chu') ? '' : 'none';
     (state.picks || []).forEach(function (P) {
       var b = document.createElement('button');
       b.className = 'gpk'; b.setAttribute('data-g', 'pk' + P.id); b.textContent = P.label;
@@ -647,6 +659,7 @@ main{max-width:1300px;margin:0 auto;padding:14px 16px 40px}
     if (g === 'ct') { state.view = 'ct'; render(true); return; }   // 共テ対策日程（学年の選択はそのまま残す）
     var wasCt = state.view === 'ct' || state.view === 'pick';
     if (wasCt) state.view = (load('fit_tt_view2') === 'day') ? 'day' : 'week';
+    if (state.div === 'sotsu') { render(wasCt); return; }   // 高卒は学年を変えない（「時間割」で表に戻るだけ）
     state.g = g; store('fit_tt_g', state.g || null); render(wasCt);
   }; });
   var qi = document.getElementById('q'), timer = null;

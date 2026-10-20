@@ -6914,7 +6914,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261020mb1';
+const APP_VERSION = '20261020ks1';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -8295,9 +8295,9 @@ function openPublicTimetableForStudent() {
   const isChu = String(st.division || '').indexOf('中学') !== -1 || /^中/.test(String(st.grade || ''));
   const gm = String(st.grade || '').match(/[1-3]/);
   const kosotsu = /高卒/.test(String(st.grade || '') + String(st.division || ''));
-  let url = 'https://holyknight1005-collab.github.io/fit-point-card/timetable.html?d=' + (isChu ? 'chu' : 'ko');
-  if (kosotsu) url += '&k=1';
-  else if (gm) url += '&g=' + gm[0];
+  // 20261020ks1: 高卒生は高卒の時間割（高卒生の授業＋共テ対策）を開く
+  let url = 'https://holyknight1005-collab.github.io/fit-point-card/timetable.html?d=' + (kosotsu ? 'sotsu' : isChu ? 'chu' : 'ko');
+  if (!kosotsu && gm) url += '&g=' + gm[0];
   const w = window.open(url, '_blank');
   if (!w) location.href = url;
 }
@@ -68167,7 +68167,7 @@ async function termsDelete() {
 // 中学部／高校部を切り替えて表示。高校部は高卒生の授業を含めるかを切り替えられる（初期は含める）。
 // 編集はできない（授業の追加・変更はこれまでどおり授業管理から）。印刷ボタンでA4横の印刷用ページを開く。
 var mttMonth = null;          // 'YYYY-MM'
-var mttDiv = null;            // '中学部' | '高校部'
+var mttDiv = null;            // '高校部' | '高卒' | '中学部'（20261020ks1: 高卒＝高卒生の授業＋共テ対策）
 var mttKosotsu = true;        // 高校部で高卒生の授業を含めるか
 var mttData = null;           // 直近に読み込んだデータ { month, sessions, masters, events }
 var MTT_EXCLUDE_CATS = ['dmm_lesson', 'eitango'];
@@ -68225,6 +68225,10 @@ function openMonthTimetable() {
 }
 function closeMonthTimetable() { var el = document.getElementById('mtt-screen'); if (el) el.style.display = 'none'; }
 function mttSetDiv(d) { mttDiv = d; mttRender(); }
+// 20261020ks1: 見出しの名前（高卒は時刻も高校と同じ）
+function mttDivName() { return mttDiv === '中学部' ? '中学部' : mttDiv === '高卒' ? '高卒' : '高校部'; }
+// 高卒の時間割に載せる授業：高卒生の授業（kosotsu）と共通テスト対策（高卒生も受講するため）
+function mttIsSotsuClass(m) { return m && (m.division || '高校部') !== '中学部' && (m.category === 'kosotsu' || m.category === 'common_test'); }
 function mttToggleKosotsu() { mttKosotsu = !mttKosotsu; mttRender(); }
 
 function mttRenderBar() {
@@ -68241,6 +68245,7 @@ function mttRenderBar() {
     '<button onclick="mttShiftMonth(1)" style="padding:6px 12px;font-size:14px;font-weight:800;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer">›</button>' +
     '<span style="width:8px"></span>' +
     btn(mttDiv === '高校部', '🎓 高校', "mttSetDiv('高校部')") +
+    btn(mttDiv === '高卒', '🏫 高卒', "mttSetDiv('高卒')") +
     btn(mttDiv === '中学部', '📗 中学', "mttSetDiv('中学部')") +
     (mttDiv === '高校部' ? '<label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text);margin-left:6px;cursor:pointer"><input type="checkbox" ' + (mttKosotsu ? 'checked' : '') + ' onchange="mttToggleKosotsu()">高卒の授業も表示</label>' : '') +
     '<span style="flex:1"></span>' +
@@ -68307,7 +68312,8 @@ function mttBuild() {
     var m = mById[s.class_master_id];
     if (!m) return;
     var mdiv = m.division || '高校部';
-    if (div === '中学部' ? mdiv !== '中学部' : mdiv === '中学部') return;
+    if (div === '高卒') { if (!mttIsSotsuClass(m)) return; }
+    else if (div === '中学部' ? mdiv !== '中学部' : mdiv === '中学部') return;
     if (MTT_EXCLUDE_CATS.indexOf(m.category) !== -1) return;
     if (div === '高校部' && !mttKosotsu && m.category === 'kosotsu') return;
     var per = (s.period == null) ? nearestPeriodFromTime(s.start_time, s.session_date) : parseInt(s.period, 10);
@@ -68364,7 +68370,7 @@ function mttBuild() {
   var legend = function (iso, label) {
     if (!iso) return '';
     var parts = periods.map(function (pp) {
-      var t = periodTimeFor(iso, pp, div);
+      var t = periodTimeFor(iso, pp, div === '中学部' ? '中学部' : '高校部');
       return t ? (MTT_CIRCLED[pp] || pp) + t[0] + '〜' + t[1] : '';
     }).filter(Boolean);
     return '<div><b>' + label + '：</b>' + parts.join('　') + '</div>';
@@ -68428,7 +68434,7 @@ function mttRender() {
   var total = Object.keys(b.cells).reduce(function (a, k) { return a + b.cells[k].length; }, 0);
   var html = '<style>' + MTT_CSS + '</style>';
   html += '<div class="mtt-legend">' + b.legend + '</div>';
-  if (!total) html += '<div style="font-size:13px;color:var(--muted);padding:16px;text-align:center">この月の' + (mttDiv === '中学部' ? '中学' : '高校') + 'の授業はまだ登録されていません。</div>';
+  if (!total) html += '<div style="font-size:13px;color:var(--muted);padding:16px;text-align:center">この月の' + (mttDiv === '中学部' ? '中学' : mttDiv === '高卒' ? '高卒' : '高校') + 'の授業はまだ登録されていません。</div>';
   var narrow = (document.getElementById('mtt-screen') || document.body).clientWidth < 720;
   if (!narrow) {
     html += '<div style="max-width:1300px;margin:0 auto">' + mttWeekTables(b) + '</div>';
@@ -68461,7 +68467,7 @@ function mttPrint() {
   if (!mttData) return;
   var b = mttBuild();
   var p = mttData.month.split('-');
-  var title = p[0] + '年 ' + parseInt(p[1], 10) + '月　' + (mttDiv === '中学部' ? '中学部' : '高校部') + ' 時間割';
+  var title = p[0] + '年 ' + parseInt(p[1], 10) + '月　' + mttDivName() + ' 時間割';
   var w = window.open('', '_blank');
   if (!w) { showToast('ポップアップがブロックされました。許可してからもう一度押してください', 'error'); return; }
   w.document.write('<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>' + escapeHtml(title) + '</title>' +
@@ -68474,13 +68480,13 @@ function mttPrint() {
 
 // 保護者向け公開ページ（timetable.html・ログイン不要）のURLをコピーして開く  20261010tt2
 function mttPublicUrl() {
-  return 'https://holyknight1005-collab.github.io/fit-point-card/timetable.html?d=' + (mttDiv === '中学部' ? 'chu' : 'ko');
+  return 'https://holyknight1005-collab.github.io/fit-point-card/timetable.html?d=' + (mttDiv === '中学部' ? 'chu' : mttDiv === '高卒' ? 'sotsu' : 'ko');
 }
 async function mttCopyPublicUrl() {
   var url = mttPublicUrl();
   var ok = false;
   try { await navigator.clipboard.writeText(url); ok = true; } catch (e) {}
-  showToast(ok ? '🔗 ' + (mttDiv === '中学部' ? '中学' : '高校') + 'の保護者用URLをコピーしました（LINEに貼れます）' : url, ok ? 'success' : 'info');
+  showToast(ok ? '🔗 ' + (mttDiv === '中学部' ? '中学' : mttDiv === '高卒' ? '高卒' : '高校') + 'の保護者用URLをコピーしました（LINEに貼れます）' : url, ok ? 'success' : 'info');
   try { window.open(url, '_blank'); } catch (e) {}
 }
 
@@ -68553,7 +68559,7 @@ function mpkEdit(id) {
   var r = id === 'new' ? null : mpkList.find(function (x) { return x.id === id; });
   if (id !== 'new' && !r) return;
   var t = getTodayJST();
-  r = r || { label: '', category: 'winter', division: mttDiv || '高校部', show_from: t, show_until: '', sess_from: '', sess_until: '', sort_order: (mpkList.length ? Math.max.apply(null, mpkList.map(function (x) { return x.sort_order || 0; })) + 1 : 0) };
+  r = r || { label: '', category: 'winter', division: (mttDiv === '中学部' ? '中学部' : '高校部'), show_from: t, show_until: '', sess_from: '', sess_until: '', sort_order: (mpkList.length ? Math.max.apply(null, mpkList.map(function (x) { return x.sort_order || 0; })) + 1 : 0) };
   var inp = 'padding:7px 8px;border:1px solid var(--border);border-radius:7px;font-size:14px;font-family:inherit;background:#fff';
   var lab = function (t) { return '<div style="font-size:12px;font-weight:700;color:var(--muted);margin:10px 0 4px">' + t + '</div>'; };
   document.getElementById('mpk-body').innerHTML =
