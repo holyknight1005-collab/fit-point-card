@@ -6914,7 +6914,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261020ks2';
+const APP_VERSION = '20261020ks3';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -68213,6 +68213,7 @@ function openMonthTimetable() {
     el.innerHTML =
       '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border)">' +
         '<div style="font-size:17px;font-weight:800;color:var(--text);flex:1">📅 月間時間割</div>' +
+        '<button onclick="openDayTimetable(getTodayJST())" style="background:#fff;border:1px solid #2D5FA6;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;color:#2D5FA6;cursor:pointer;font-family:inherit">🏫 その日の時間割</button>' +
         '<button onclick="mpkOpen()" style="background:#fff;border:1px solid #7B4FBF;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;color:#7B4FBF;cursor:pointer;font-family:inherit">📌 ピックアップ</button>' +
         '<button onclick="mttCopyPublicUrl()" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;font-family:inherit">🔗 保護者用URL</button>' +
         '<button onclick="mttPrint()" style="background:#fff;border:1px solid var(--orange);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--orange-d);cursor:pointer;font-family:inherit">🖨 印刷</button>' +
@@ -68417,7 +68418,7 @@ var MTT_CSS =
 function mttWeekTables(b) {
   return b.weeks.map(function (wk) {
     var head = '<tr><th class="per">日</th>' + wk.map(function (x) {
-      return '<th class="' + (x.wd === '土' ? 'sat' : x.wd === '日' ? 'sun' : '') + '">' + (x.inMonth ? x.d : '') + '<br>' + x.wd +
+      return '<th class="' + (x.wd === '土' ? 'sat' : x.wd === '日' ? 'sun' : '') + '"' + (x.inMonth ? ' onclick="if(window.openDayTimetable)openDayTimetable(\'' + x.iso + '\')" style="cursor:pointer" title="この日の時間割（教室別）を開く"' : '') + '>' + (x.inMonth ? x.d : '') + '<br>' + x.wd +
         (x.inMonth && b.off[x.iso] ? '<div class="mtt-off">' + escapeHtml(b.off[x.iso].join('・')) + '</div>' : '') + '</th>';
     }).join('') + '</tr>';
     var rows = b.periods.map(function (pp) {
@@ -68493,6 +68494,345 @@ async function mttCopyPublicUrl() {
   try { await navigator.clipboard.writeText(url); ok = true; } catch (e) {}
   showToast(ok ? '🔗 ' + (mttDiv === '中学部' ? '中学' : mttDiv === '高卒' ? '高卒' : '高校') + 'の保護者用URLをコピーしました（LINEに貼れます）' : url, ok ? 'success' : 'info');
   try { window.open(url, '_blank'); } catch (e) {}
+}
+
+
+// ===== 20261020ks3: その日の時間割（教室別）・当日の変更・A3の張り出し =====
+// ・授業日（class_sessions）を「限 × 教室」で1日分並べる。各授業に担当と人数（その日に受講している生徒の数）を出す。
+// ・授業をタップすると、その日だけ教室・限を変えられる（class_sessions.room / period）。
+//   「この授業のいつもの教室にする」で class_master.default_room も変える。
+//   教室は「その日の教室（room）」→「いつもの教室（default_room）」の順で決まる。どちらも無ければ「教室未定」。
+// ・A3横の張り出し用を印刷（今までの「貼り付け用データ」と同じ並び）。監督は自習監督の決定（supervision_assignments）から入れる。
+// ・石井教室の授業（授業名に「石井」を含む）は、張り出しもしないので出さない。
+// ・必要なSQL：class_sessions.room / class_master.default_room（未実行なら教室はすべて「教室未定」で表示・変更不可）。
+var DTT_ROOMS = [
+  { key: '大教室',     label: '大教室',       floor: '4F' },
+  { key: '中教室A',    label: '中教室A',      floor: '4F' },
+  { key: '中教室B',    label: '中教室B',      floor: '4F' },
+  { key: '中教室C',    label: '中教室C',      floor: '4F' },
+  { key: '中教室D',    label: '中教室D',      floor: '4F' },
+  { key: '中教室E',    label: '中教室E',      floor: '4F' },
+  { key: '青空',       label: '5F青空教室',   floor: '5F' },
+  { key: '新教室',     label: '5F新教室',     floor: '5F' },
+  { key: '1F',         label: '1F教室',       floor: '1F' },
+  { key: 'モンキーズA', label: 'モンキーズA',  floor: 'モンキーズ' },
+  { key: 'モンキーズB', label: 'モンキーズB',  floor: 'モンキーズ' },
+  { key: '予備',       label: '予備',         floor: '予備' }
+];
+// 張り出し（A3）の並び：今までの「印刷用データ」と同じ。左右2つずつ。
+var DTT_PRINT_ROWS = [
+  { head: '4Fフロア' },
+  { pair: ['大教室', '中教室A'] },
+  { pair: ['中教室B', '中教室C'] },
+  { pair: ['中教室D', '中教室E'] },
+  { pair: ['青空', '新教室'] },
+  { pair: ['1F', null] },
+  { pair: ['モンキーズA', 'モンキーズB'] },
+  { pair: ['予備', null] }
+];
+var dttDate = null;       // 'YYYY-MM-DD'
+var dttData = null;       // { date, sessions:[...], periods:{p:[s,e]}, sv:{p:'名前'}, roomOk }
+var dttEditId = null;
+
+function dttRoomLabel(k) { var r = DTT_ROOMS.find(function (x) { return x.key === k; }); return r ? r.label : (k || '教室未定'); }
+function dttIsIshii(m) { return /石井/.test(String((m && m.name) || '')); }
+function dttWd(ds) { var p = ds.split('-'); return ['日', '月', '火', '水', '木', '金', '土'][new Date(+p[0], +p[1] - 1, +p[2]).getDay()]; }
+function dttShift(n) { var p = dttDate.split('-'), d = new Date(+p[0], +p[1] - 1, +p[2] + n); dttDate = mttIso(d); dttLoad(); }
+function dttFamily(name) { var s = String(name || '').trim(); return s.split(/[\s　]+/)[0] || s; }
+
+function openDayTimetable(ds) {
+  var el = document.getElementById('dtt-screen');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'dtt-screen';
+    el.style.cssText = 'position:fixed;inset:0;z-index:700;background:var(--bg);display:flex;flex-direction:column;overflow:hidden';
+    el.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border)">' +
+        '<div style="font-size:17px;font-weight:800;color:var(--text);flex:1">🏫 その日の時間割</div>' +
+        '<button onclick="dttPrint()" style="background:#fff;border:1px solid var(--orange);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--orange-d);cursor:pointer;font-family:inherit">🖨 張り出し（A3）</button>' +
+        '<button onclick="closeDayTimetable()" style="background:none;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;color:var(--muted);cursor:pointer;font-family:inherit">閉じる</button>' +
+      '</div>' +
+      '<div id="dtt-bar" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface)"></div>' +
+      '<div id="dtt-body" style="flex:1;overflow:auto;padding:12px 16px 40px;box-sizing:border-box"></div>';
+    document.body.appendChild(el);
+  }
+  el.style.display = 'flex';
+  dttDate = ds || dttDate || getTodayJST();
+  dttLoad();
+}
+function closeDayTimetable() { var el = document.getElementById('dtt-screen'); if (el) el.style.display = 'none'; dttCloseEdit(); }
+
+function dttRenderBar() {
+  var bar = document.getElementById('dtt-bar');
+  if (!bar) return;
+  var p = dttDate.split('-');
+  bar.innerHTML =
+    '<button onclick="dttShift(-1)" style="padding:6px 12px;font-size:14px;font-weight:800;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer">‹</button>' +
+    '<input type="date" value="' + dttDate + '" onchange="if(this.value){dttDate=this.value;dttLoad();}" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px">' +
+    '<span style="font-size:15px;font-weight:800">' + parseInt(p[1], 10) + '/' + parseInt(p[2], 10) + '（' + dttWd(dttDate) + '）</span>' +
+    '<button onclick="dttShift(1)" style="padding:6px 12px;font-size:14px;font-weight:800;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer">›</button>' +
+    '<button onclick="dttDate=getTodayJST();dttLoad()" style="padding:6px 10px;font-size:12px;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;font-family:inherit">今日</button>' +
+    '<span style="flex:1"></span>' +
+    '<span style="font-size:11px;color:var(--muted)">授業をタップすると、その日の教室・限を変えられます（石井の授業は出しません）</span>';
+}
+
+// その日に受講している人数（授業出欠の名簿と同じ考え方：受講期間内・デモ除外・4回選択の「ー」の回は除く・
+// 2コマ並行（受講コマ）の授業は自分のコマだけ・学校別の回は対象校の生徒だけ）
+async function dttCountMap(sessions, ds) {
+  var ids = []; sessions.forEach(function (s) { if (ids.indexOf(s.class_master_id) === -1) ids.push(s.class_master_id); });
+  var out = {};
+  if (!ids.length) return out;
+  var rows = [];
+  for (var i = 0; i < ids.length; i += 60) {
+    var part = ids.slice(i, i + 60);
+    var q = 'class_master_id=in.(' + part.join(',') + ')&or=(ended_on.is.null,ended_on.gte.' + ds + ')&select=class_master_id,student_id,started_on,ended_on,preferred_period';
+    rows = rows.concat(await sbGetAll('class_enrollments', q) || []);
+  }
+  var demo = await getDemoStudentIds();
+  rows = rows.filter(function (r) { return !demo.has(r.student_id) && (!r.started_on || String(r.started_on).slice(0, 10) <= ds); });
+  var plan = await fitPlanMap(ids);
+  var needSchool = sessions.some(function (s) { return s.school; });
+  var stuById = {};
+  if (needSchool) {
+    var sids = [];
+    rows.forEach(function (r) { if (sids.indexOf(r.student_id) === -1) sids.push(r.student_id); });
+    for (var j = 0; j < sids.length; j += 100) {
+      (await sbGetAll('students', 'id=in.(' + sids.slice(j, j + 100).join(',') + ')&select=id,school,school_detail') || []).forEach(function (s) { stuById[s.id] = s; });
+    }
+  }
+  sessions.forEach(function (s) {
+    var seen = {};
+    rows.forEach(function (r) {
+      if (r.class_master_id !== s.class_master_id || seen[r.student_id]) return;
+      if (r.preferred_period != null && s.period != null && parseInt(r.preferred_period, 10) !== parseInt(s.period, 10)) return;
+      if (!fitPlanIn(plan, s.class_master_id, r.student_id, ds)) return;
+      if (s.school && schoolScopeOfStudent(stuById[r.student_id], s.school) === 'out') return;
+      seen[r.student_id] = true;
+    });
+    out[s.id] = Object.keys(seen).length;
+  });
+  return out;
+}
+
+async function dttLoad() {
+  dttRenderBar();
+  var body = document.getElementById('dtt-body');
+  body.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:20px;text-align:center">読み込み中...</div>';
+  var ds = dttDate;
+  try {
+    try { await wkLoadOverrides(); } catch (e) {}
+    var roomOk = true, sess;
+    try {
+      sess = await sbGetAll('class_sessions', 'session_date=eq.' + ds + '&select=id,class_master_id,session_date,period,start_time,end_time,is_makeup,school,cycle_month,cycle_no,room&order=period');
+    } catch (e1) {
+      roomOk = false;   // SQL未実行（room 列なし）
+      sess = await sbGetAll('class_sessions', 'session_date=eq.' + ds + '&select=id,class_master_id,session_date,period,start_time,end_time,is_makeup,school,cycle_month,cycle_no&order=period');
+    }
+    var masters;
+    try { masters = await sbGetAll('class_master', 'select=id,name,subject,division,category,teacher_staff_id,default_room'); }
+    catch (e2) { roomOk = false; masters = await sbGetAll('class_master', 'select=id,name,subject,division,category,teacher_staff_id'); }
+    var staff = await sbGet('staff', 'select=id,name') || [];
+    var svRows = await sbGet('supervision_assignments', 'sv_date=eq.' + ds + '&cancelled=eq.false&select=period,staff_name&order=period').catch(function () { return []; }) || [];
+    if (ds !== dttDate) return;
+    var mById = {}; masters.forEach(function (m) { mById[m.id] = m; });
+    var sName = {}; staff.forEach(function (s) { sName[s.id] = s.name; });
+    var list = [];
+    (sess || []).forEach(function (s) {
+      var m = mById[s.class_master_id];
+      if (!m || dttIsIshii(m) || MTT_EXCLUDE_CATS.indexOf(m.category) !== -1) return;
+      var per = (s.period == null) ? nearestPeriodFromTime(s.start_time ? String(s.start_time).slice(0, 5) : '', ds) : parseInt(s.period, 10);
+      if (per == null || isNaN(per)) return;
+      list.push({
+        id: s.id, class_master_id: s.class_master_id, period: s.period, per: per, school: s.school || '',
+        start: s.start_time ? String(s.start_time).slice(0, 5) : '', end: s.end_time ? String(s.end_time).slice(0, 5) : '',
+        makeup: s.is_makeup === true, room: s.room || '', defRoom: m.default_room || '',
+        name: m.name, teacher: dttFamily(sName[m.teacher_staff_id] || ''), division: m.division || '高校部',
+        cyc: s.is_makeup === true ? '' : mttCycleLabel(s)
+      });
+    });
+    var cnt = await dttCountMap(list, ds);
+    list.forEach(function (x) { x.count = cnt[x.id] || 0; x.at = x.room || x.defRoom || ''; });
+    var sv = {};
+    svRows.forEach(function (r) { var k = String(r.period); var n = dttFamily(r.staff_name); if (!n) return; sv[k] = sv[k] ? (sv[k].indexOf(n) === -1 ? sv[k] + '・' + n : sv[k]) : n; });
+    dttData = { date: ds, list: list, periods: periodsForDate(ds), sv: sv, roomOk: roomOk };
+    dttRender();
+  } catch (e) {
+    body.innerHTML = '<div style="font-size:13px;color:var(--red);padding:20px;text-align:center">読み込みに失敗しました：' + escapeHtml(e.message || e) + '</div>';
+  }
+}
+
+// 表示用：限 → 教室 → 授業の配列。教室・先生の重なりも数える。
+function dttBuild() {
+  var D = dttData, per = {}, used = {};
+  D.list.forEach(function (x) { used[x.per] = true; var k = x.at || '__none'; ((per[x.per] = per[x.per] || {})[k] = per[x.per][k] || []).push(x); });
+  var ps = Object.keys(D.periods).map(Number).filter(function (p) { return p >= 1 || used[p]; });
+  Object.keys(used).forEach(function (p) { p = +p; if (ps.indexOf(p) === -1) ps.push(p); });
+  ps.sort(function (a, b) { return a - b; });
+  var clash = {};   // 同じ限に同じ先生が2つ以上
+  ps.forEach(function (p) {
+    var t = {};
+    (D.list.filter(function (x) { return x.per === p; })).forEach(function (x) { if (x.teacher && x.teacher !== '英語部') (t[x.teacher] = t[x.teacher] || []).push(x.id); });
+    Object.keys(t).forEach(function (k) { if (t[k].length > 1) t[k].forEach(function (id) { clash[id] = true; }); });
+  });
+  return { per: per, ps: ps, clash: clash };
+}
+function dttTime(p) { var t = dttData.periods[p]; return t ? t[0] + '～' + t[1] : ''; }
+function dttItemHtml(x, b, small) {
+  var odd = (x.start && dttData.periods[x.per] && x.start !== dttData.periods[x.per][0]) ? x.start + (x.end ? '〜' + x.end : '') : '';
+  return '<div class="dtt-it' + (b.clash[x.id] ? ' clash' : '') + '"' + (small ? '' : ' onclick="dttOpenEdit(\'' + x.id + '\')"') + '>' +
+    '<b>' + escapeHtml(x.name) + '</b>' + (x.cyc ? '<span class="dtt-cy">' + escapeHtml(x.cyc) + '</span>' : '') +
+    (x.school ? '<span class="dtt-sm">（' + escapeHtml(x.school.replace(/^SSS[：:]\s*/, '')) + '）</span>' : '') +
+    (x.makeup ? '<span class="dtt-tag">補</span>' : '') +
+    '<div class="dtt-sub">' + escapeHtml(x.teacher || '') + ' ' + x.count + '人' + (odd ? '　' + escapeHtml(odd) : '') +
+    (!small && x.room && x.room !== x.defRoom ? '　<span style="color:#2D5FA6">今日だけ</span>' : '') + '</div></div>';
+}
+var DTT_CSS =
+  '.dtt-blk{background:#fff;border:1px solid var(--border,#ddd);border-radius:10px;padding:10px 12px;margin:0 0 12px}' +
+  '.dtt-blk h4{margin:0 0 8px;font-size:15px}.dtt-blk h4 small{font-weight:400;color:#666;font-size:12px;margin-left:6px}' +
+  '.dtt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px}' +
+  '.dtt-room{border:1px solid #E6DFD3;border-radius:8px;padding:6px 8px;min-height:44px;background:#FCFAF6}' +
+  '.dtt-room .rn{font-size:11px;color:#9A5A00;font-weight:700;margin-bottom:2px}' +
+  '.dtt-room.none{background:#FFF4E5;border-color:#F0C27A}' +
+  '.dtt-it{cursor:pointer;padding:3px 0;border-top:1px dotted #DDD;line-height:1.35;font-size:13px}.dtt-it:first-of-type{border-top:none}' +
+  '.dtt-it:hover{background:#FFF7EC}.dtt-it.clash b{color:#C0392B}' +
+  '.dtt-sub{font-size:11px;color:#555}.dtt-cy{margin-left:3px;font-weight:700;color:#9A5A00}.dtt-sm{font-size:11px;color:#666}' +
+  '.dtt-tag{display:inline-block;margin-left:3px;padding:0 4px;border-radius:6px;background:#FDE8C8;color:#9A5A00;font-size:10px}';
+
+function dttRender() {
+  dttRenderBar();
+  var body = document.getElementById('dtt-body');
+  if (!body || !dttData) return;
+  var b = dttBuild(), html = '<style>' + DTT_CSS + '</style>';
+  if (!dttData.roomOk) html += '<div style="font-size:12px;color:#9A5A00;background:#FFF4E5;border:1px solid #F0C27A;border-radius:8px;padding:8px 10px;margin-bottom:10px">教室の項目がまだデータベースにありません（SQL未実行）。教室はすべて「教室未定」で表示し、変更はできません。</div>';
+  if (!dttData.list.length) html += '<div style="font-size:13px;color:var(--muted);padding:16px;text-align:center">この日の授業は登録されていません。</div>';
+  var hasClash = Object.keys(b.clash).length;
+  if (hasClash) html += '<div style="font-size:12px;color:#C0392B;margin-bottom:8px">赤い授業名：同じ限に同じ先生の授業が2つ以上あります。</div>';
+  b.ps.forEach(function (p) {
+    var rooms = b.per[p] || {};
+    var n = Object.keys(rooms).reduce(function (a, k) { return a + rooms[k].length; }, 0);
+    var head = '<h4>' + (MTT_CIRCLED[p] || p) + ' ' + p + '限<small>' + escapeHtml(dttTime(p)) + '　監督：' + escapeHtml(dttData.sv[String(p)] || '―') + '　授業 ' + n + '</small></h4>';
+    if (!n) { html += '<div class="dtt-blk" style="padding:6px 12px">' + head.replace('<h4>', '<h4 style="margin:0;color:#999">') + '</div>'; return; }
+    var free = DTT_ROOMS.filter(function (r) { return r.key !== '予備' && !(rooms[r.key] || []).length; }).map(function (r) { return r.label; });
+    html += '<div class="dtt-blk">' + head + '<div class="dtt-grid">';
+    if (rooms.__none) html += '<div class="dtt-room none"><div class="rn">教室未定</div>' + rooms.__none.map(function (x) { return dttItemHtml(x, b); }).join('') + '</div>';
+    DTT_ROOMS.forEach(function (r) {
+      var arr = rooms[r.key] || [];
+      if (!arr.length) return;   // 空き教室は下にまとめて書く
+      html += '<div class="dtt-room"' + (arr.length > 1 ? ' style="border-color:#C0392B"' : '') + '><div class="rn">' + escapeHtml(r.label) + (arr.length > 1 ? ' <span style="color:#C0392B">（重なり）</span>' : '') + '</div>' + arr.map(function (x) { return dttItemHtml(x, b); }).join('') + '</div>';
+    });
+    Object.keys(rooms).forEach(function (k) {   // 一覧に無い教室名（古いデータなど）
+      if (k === '__none' || DTT_ROOMS.some(function (r) { return r.key === k; })) return;
+      html += '<div class="dtt-room"><div class="rn">' + escapeHtml(k) + '</div>' + rooms[k].map(function (x) { return dttItemHtml(x, b); }).join('') + '</div>';
+    });
+    html += '</div><div style="font-size:11px;color:#888;margin-top:6px">空き：' + escapeHtml(free.join('・') || 'なし') + '</div></div>';
+  });
+  body.innerHTML = html;
+}
+
+// ---- 当日の変更（教室・限） ----
+function dttCloseEdit() { var m = document.getElementById('dtt-edit'); if (m) m.remove(); dttEditId = null; }
+function dttOpenEdit(id) {
+  var x = dttData && dttData.list.find(function (y) { return y.id === id; });
+  if (!x) return;
+  dttCloseEdit(); dttEditId = id;
+  var ps = Object.keys(dttData.periods).map(Number);
+  if (ps.indexOf(x.per) === -1) ps.push(x.per);   // その日の時間割に無い限（土日の7限など）にある回も、今の限を選んだ状態にする
+  ps.sort(function (a, b) { return a - b; });
+  var roomOpts = '<option value="">（教室未定）</option>' + DTT_ROOMS.map(function (r) { return '<option value="' + escapeHtml(r.key) + '"' + (x.at === r.key ? ' selected' : '') + '>' + escapeHtml(r.label) + '</option>'; }).join('');
+  var perOpts = ps.map(function (p) { return '<option value="' + p + '"' + (p === x.per ? ' selected' : '') + '>' + p + '限（' + escapeHtml(dttTime(p)) + '）</option>'; }).join('');
+  var m = document.createElement('div');
+  m.id = 'dtt-edit';
+  m.style.cssText = 'position:fixed;inset:0;z-index:720;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;padding:16px';
+  m.innerHTML =
+    '<div style="background:#fff;border-radius:12px;max-width:420px;width:100%;padding:16px;box-sizing:border-box">' +
+      '<div style="font-size:15px;font-weight:800;margin-bottom:4px">' + escapeHtml(x.name) + '</div>' +
+      '<div style="font-size:12px;color:#666;margin-bottom:12px">' + parseInt(dttDate.slice(5, 7), 10) + '/' + parseInt(dttDate.slice(8), 10) + '（' + dttWd(dttDate) + '）　' + escapeHtml(x.teacher) + '　' + x.count + '人' + (x.defRoom ? '　いつもの教室：' + escapeHtml(dttRoomLabel(x.defRoom)) : '') + '</div>' +
+      '<div style="font-size:12px;font-weight:700;margin-bottom:4px">教室（この日）</div>' +
+      '<select id="dtt-e-room" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;font-family:inherit;margin-bottom:6px"' + (dttData.roomOk ? '' : ' disabled') + '>' + roomOpts + '</select>' +
+      '<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:12px"><input type="checkbox" id="dtt-e-def"' + (dttData.roomOk ? '' : ' disabled') + '>この授業の「いつもの教室」にする（ほかの日も、教室を変えていない回はこの教室になります）</label>' +
+      '<div style="font-size:12px;font-weight:700;margin-bottom:4px">限（この日）</div>' +
+      '<select id="dtt-e-per" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;font-family:inherit;margin-bottom:6px">' + perOpts + '</select>' +
+      '<div style="font-size:11px;color:#666;margin-bottom:14px;line-height:1.5">限を変えると、開始・終了の時刻もその限の時刻になります。出欠がすでに入っている回は、限を変えられません。</div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end">' +
+        '<button onclick="dttCloseEdit()" style="padding:8px 14px;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;font-family:inherit">やめる</button>' +
+        '<button onclick="dttSaveEdit()" style="padding:8px 14px;border:none;border-radius:8px;background:var(--orange);color:#fff;font-weight:700;cursor:pointer;font-family:inherit">保存</button>' +
+      '</div></div>';
+  m.addEventListener('click', function (e) { if (e.target === m) dttCloseEdit(); });
+  document.body.appendChild(m);
+}
+async function dttSaveEdit() {
+  var x = dttData && dttData.list.find(function (y) { return y.id === dttEditId; });
+  if (!x) return dttCloseEdit();
+  var room = document.getElementById('dtt-e-room').value;
+  var setDef = document.getElementById('dtt-e-def').checked;
+  var per = parseInt(document.getElementById('dtt-e-per').value, 10);
+  var body = {};
+  try {
+    if (dttData.roomOk) {
+      if (setDef) {
+        await sbPatch('class_master', 'id=eq.' + x.class_master_id, { default_room: room || null });
+        if ((x.room || '') !== '') body.room = null;   // いつもの教室にしたので、この日の個別指定は外す
+      } else if (room !== (x.at || '')) {
+        if (!room && x.defRoom) { showToast('いつもの教室がある授業は、この日だけ「教室未定」にはできません。いつもの教室を外すときはチェックを入れてください', 'error'); return; }
+        body.room = (room && room === x.defRoom) ? null : (room || null);
+      }
+    }
+    if (per !== x.per) {
+      var att = await sbGet('session_attendance', 'class_master_id=eq.' + x.class_master_id + '&session_date=eq.' + dttDate + '&select=student_id&limit=1') || [];
+      if (att.length) { showToast('この回は出欠が入っているので、限は変えられません', 'error'); return; }
+      var dup = dttData.list.some(function (y) { return y.id !== x.id && y.class_master_id === x.class_master_id && y.per === per && (y.school || '') === (x.school || ''); });
+      if (dup) { showToast('同じ授業がその限にすでにあります', 'error'); return; }
+      var t = dttData.periods[per];
+      body.period = per;
+      if (t) { body.start_time = t[0]; body.end_time = t[1]; }
+    }
+    if (Object.keys(body).length) await sbPatch('class_sessions', 'id=eq.' + x.id, body);
+    dttCloseEdit();
+    showToast('保存しました', 'success');
+    dttLoad();
+  } catch (e) {
+    showToast('保存できませんでした：' + (e.message || e), 'error');
+  }
+}
+
+// ---- 張り出し（A3横） ----
+function dttPrint() {
+  if (!dttData) return;
+  var b = dttBuild();
+  var p = dttDate.split('-');
+  var title = p[0] + '年' + parseInt(p[1], 10) + '月' + parseInt(p[2], 10) + '日（' + dttWd(dttDate) + '）';
+  var cell = function (k, p2) {
+    var arr = ((b.per[p2] || {})[k]) || [];
+    return arr.map(function (x) {
+      return '<div class="it"><div class="nm">' + escapeHtml(x.name) + (x.cyc ? ' ' + escapeHtml(x.cyc) : '') + (x.school ? '（' + escapeHtml(x.school.replace(/^SSS[：:]\s*/, '')) + '）' : '') + (x.makeup ? '（補習）' : '') + '</div>' +
+        '<div class="tc">' + escapeHtml(x.teacher || '') + ' ' + x.count + '人' + ((x.start && dttData.periods[x.per] && x.start !== dttData.periods[x.per][0]) ? '　' + escapeHtml(x.start + (x.end ? '〜' + x.end : '')) : '') + '</div></div>';
+    }).join('');
+  };
+  var block = function (p2) {
+    var rows = DTT_PRINT_ROWS.map(function (r) {
+      if (r.head) return '<tr><th colspan="4" class="fl">' + r.head + '</th></tr>';
+      var a = r.pair[0], c = r.pair[1];
+      if (a === '予備' && !((b.per[p2] || {})['予備'] || []).length) return '';
+      return '<tr><th>' + escapeHtml(dttRoomLabel(a)) + '</th><td>' + cell(a, p2) + '</td>' +
+        (c ? '<th>' + escapeHtml(dttRoomLabel(c)) + '</th><td>' + cell(c, p2) + '</td>' : '<th></th><td></td>') + '</tr>';
+    }).join('');
+    var none = ((b.per[p2] || {}).__none) || [];
+    if (none.length) rows += '<tr><th>教室未定</th><td colspan="3">' + cell('__none', p2) + '</td></tr>';
+    return '<div class="blk"><div class="bh">' + p2 + '限（' + escapeHtml(dttTime(p2)) + '）　監督：' + escapeHtml(dttData.sv[String(p2)] || '') + '</div><table>' + rows + '</table></div>';
+  };
+  var ps = b.ps.filter(function (x) { return x >= 1 || ((b.per[x] && Object.keys(b.per[x]).length)); });
+  var w = window.open('', '_blank');
+  if (!w) { showToast('ポップアップがブロックされました。許可してからもう一度押してください', 'error'); return; }
+  w.document.write('<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>' + escapeHtml(title) + ' 時間割</title>' +
+    '<style>@page{size:A3 landscape;margin:8mm}body{font-family:"Noto Sans JP","Hiragino Sans",sans-serif;margin:0;padding:6px;color:#111}' +
+    'h1{font-size:26px;margin:0 0 8px}.wrap{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}' +
+    '.blk{border:2px solid #333;break-inside:avoid}.bh{background:#F4E3C8;font-weight:800;font-size:15px;padding:4px 8px;border-bottom:2px solid #333}' +
+    'table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:1px solid #888;padding:3px 4px;vertical-align:top;font-size:12px}' +
+    'th{width:17%;background:#FAF6EF;font-weight:700;text-align:left}th.fl{width:auto;background:#EEE;font-size:11px}' +
+    '.it+.it{border-top:1px dotted #aaa;margin-top:2px;padding-top:2px}.nm{font-weight:700;font-size:13px}.tc{font-size:11px;color:#333}</style></head><body>' +
+    '<h1>' + escapeHtml(title) + '　時間割</h1><div class="wrap">' + ps.map(block).join('') + '</div>' +
+    '<script>setTimeout(function(){window.print();},300)<\/script></body></html>');
+  w.document.close();
 }
 
 // ===== 20261012pk1: 保護者向け時間割の「ピックアップ」設定 =====
