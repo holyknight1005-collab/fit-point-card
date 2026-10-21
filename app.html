@@ -6922,7 +6922,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261021ks8';
+const APP_VERSION = '20261021ks9';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -15468,6 +15468,7 @@ var FEATURE_CATALOG = [
   { key:'interview',     icon:'🗣', label:'面談',         action:function(){ openHomeFeature('interview'); } },
   { key:'examreq',       icon:'📈', label:'成績依頼',     action:function(){ openHomeFeature('examreq'); } },
   { key:'shakei',        icon:'🎯', label:'傾斜換算',     action:function(){ openHomeFeature('shakei'); } },
+  { key:'alumni',        icon:'🎓', label:'進学先さがし', action:function(){ openAlumni(); } },   // 20261021ks9: 卒業生の合格・進学先
   { key:'demo',          icon:'🧪', label:'デモ確認',     action:function(){ openHomeFeature('demo'); } },
   { key:'revenue',       icon:'💰', label:'売上',         action:function(){ openHomeFeature('revenue'); },
     visible:function(){ return (currentStaff && currentStaff.role === 'admin') || (typeof saMyPerms !== 'undefined' && saMyPerms && saMyPerms.perms && saMyPerms.perms.revenue === true); } },
@@ -69031,6 +69032,126 @@ function dttSaveImageFile() {
   setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
 }
 
+
+// ===== 20261021ks9: 🎓 進学先さがし（卒業生の合格・進学先） =====
+// ・表 alumni_results（alumni_results.sql）。スタッフだけ見られる。1行＝1人×1大学（kind：'進学'＝進んだ大学／'合格'＝合格した大学）。
+// ・元は Google の合格者リスト（2022〜2026）。大学名・高校名はそろえて取り込む（取り込み用のファイルは Claude が作る）。
+// ・検索：大学名・学部・高校・名前のどれでも。大学ごとにまとめて、年の新しい順に並べる。
+// ・卒業生の名前は公開のリポジトリに置けないので、データは必ずデータベースに入れる（このファイルには書かない）。
+var alRows = null;
+var alState = { q: '', year: '', track: '', kind: '' };
+function alNorm(s) { return String(s || '').normalize('NFKC').replace(/[\s　]+/g, '').toLowerCase(); }
+async function openAlumni() {
+  var ov = document.getElementById('al-ov');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'al-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:700;background:var(--bg);display:flex;flex-direction:column;overflow:hidden';
+    ov.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border)">' +
+        '<div style="font-size:17px;font-weight:800;color:var(--text);flex:1">🎓 進学先さがし（卒業生）</div>' +
+        (currentStaff && currentStaff.role === 'admin' ? '<label style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer">📥 データを読み込む<input type="file" accept=".json,application/json" onchange="alImport(this)" style="display:none"></label>' : '') +
+        '<button onclick="document.getElementById(\'al-ov\').style.display=\'none\'" style="background:none;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;color:var(--muted);cursor:pointer;font-family:inherit">閉じる</button>' +
+      '</div>' +
+      '<div style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface)">' +
+        '<input id="al-q" type="search" placeholder="大学名・学部・高校・名前（例：岡山大学、医学部、松山東）" oninput="alState.q=this.value;alRender()" style="width:100%;box-sizing:border-box;padding:10px 12px;border:1.5px solid var(--border);border-radius:10px;font-size:15px;font-family:inherit">' +
+        '<div id="al-filters" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>' +
+      '</div>' +
+      '<div id="al-body" style="flex:1;overflow:auto;padding:12px 16px 40px;box-sizing:border-box"></div>';
+    document.body.appendChild(ov);
+  }
+  ov.style.display = 'flex';
+  setTimeout(function () { var q = document.getElementById('al-q'); if (q) q.focus(); }, 50);
+  await alLoad();
+}
+async function alLoad() {
+  var body = document.getElementById('al-body');
+  body.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:20px;text-align:center">読み込み中…</div>';
+  try {
+    alRows = await sbGetAll('alumni_results', 'select=id,exam_year,track,high_school,student_name,university,faculty,department,method,kind,note&order=exam_year.desc,id') || [];
+  } catch (e) {
+    body.innerHTML = '<div style="background:#FDECEA;border:1px solid #E6B0AA;color:#943126;border-radius:10px;padding:12px;font-size:13px;line-height:1.6">卒業生のデータを読み込めませんでした。<b>alumni_results.sql</b> が未実行の可能性があります。<br>' + escapeHtml(e.message || e) + '</div>';
+    return;
+  }
+  alRender();
+}
+function alChip(on, label, click) {
+  return '<button onclick="' + click + '" style="padding:4px 11px;font-size:12px;border-radius:14px;cursor:pointer;font-family:inherit;border:1.5px solid ' + (on ? 'var(--orange)' : 'var(--border)') + ';background:' + (on ? 'var(--orange)' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--muted)') + ';font-weight:700">' + label + '</button>';
+}
+function alSet(k, v) { alState[k] = v; alRender(); }
+function alRender() {
+  var f = document.getElementById('al-filters'), body = document.getElementById('al-body');
+  if (!f || !body || !alRows) return;
+  var years = []; alRows.forEach(function (r) { if (years.indexOf(r.exam_year) === -1) years.push(r.exam_year); });
+  years.sort(function (a, b) { return b - a; });
+  f.innerHTML =
+    alChip(!alState.year, 'すべての年', "alSet('year','')") + years.map(function (y) { return alChip(String(alState.year) === String(y), y + '年', "alSet('year','" + y + "')"); }).join('') +
+    '<span style="width:8px"></span>' +
+    alChip(!alState.track, '現役・高卒', "alSet('track','')") + alChip(alState.track === '現役', '現役', "alSet('track','現役')") + alChip(alState.track === '高卒', '高卒', "alSet('track','高卒')") +
+    '<span style="width:8px"></span>' +
+    alChip(!alState.kind, '進学＋合格', "alSet('kind','')") + alChip(alState.kind === '進学', '進学先だけ', "alSet('kind','進学')");
+  var words = String(alState.q || '').trim().split(/[\s　]+/).filter(Boolean).map(alNorm);
+  if (!words.length) {
+    body.innerHTML = '<div style="font-size:13px;color:var(--muted);line-height:1.8;padding:12px 2px">大学名などを入れると、受かった卒業生が並びます。<br>全部で ' + alRows.length + ' 件（' + (years.length ? years[years.length - 1] + '〜' + years[0] + '年' : '') + '）。<br>「★進学」はその大学に進んだ人、「合格」は合格したけれど別の大学に進んだ人です。</div>';
+    return;
+  }
+  var list = alRows.filter(function (r) {
+    if (alState.year && String(r.exam_year) !== String(alState.year)) return false;
+    if (alState.track && r.track !== alState.track) return false;
+    if (alState.kind && r.kind !== alState.kind) return false;
+    var hay = alNorm([r.university, r.faculty, r.department, r.high_school, r.student_name, r.method].join(' '));
+    return words.every(function (w) { return hay.indexOf(w) !== -1; });
+  });
+  if (!list.length) { body.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:20px;text-align:center">見つかりませんでした。大学名を短くして（例：「岡山」）さがしてみてください。</div>'; return; }
+  var byU = {};
+  list.forEach(function (r) { (byU[r.university] = byU[r.university] || []).push(r); });
+  // 大学名に入れた言葉が入っている大学を先に（「岡山」で岡山大学・岡山理科大学…を先に、名前や高校で当たった大学はあと）
+  var uHit = function (u) { var n = alNorm(u); return words.every(function (w) { return n.indexOf(w) !== -1; }) ? 0 : 1; };
+  var us = Object.keys(byU).sort(function (a, b) { return uHit(a) - uHit(b) || byU[b].length - byU[a].length || a.localeCompare(b, 'ja'); });
+  var head = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + list.length + ' 件・' + us.length + ' 校</div>';
+  body.innerHTML = head + us.map(function (u) {
+    var rs = byU[u].slice().sort(function (a, b) { return b.exam_year - a.exam_year || (a.kind === '進学' ? -1 : 1) - (b.kind === '進学' ? -1 : 1) || String(a.faculty || '').localeCompare(String(b.faculty || ''), 'ja'); });
+    var nE = rs.filter(function (r) { return r.kind === '進学'; }).length;
+    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:12px;overflow:hidden">' +
+      '<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#FFF8EC;border-bottom:1px solid var(--border)"><b style="font-size:15px">' + escapeHtml(u) + '</b>' +
+        '<span style="font-size:12px;color:var(--muted)">★進学 ' + nE + '人・合格のみ ' + (rs.length - nE) + '人</span></div>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:13px">' + rs.map(function (r) {
+        return '<tr style="border-bottom:1px solid var(--border)">' +
+          '<td style="padding:6px 8px;white-space:nowrap;color:var(--muted);font-size:12px">' + r.exam_year + '年<br>' + escapeHtml(r.track) + '</td>' +
+          '<td style="padding:6px 8px;white-space:nowrap">' + (r.kind === '進学' ? '<span style="color:#fff;background:var(--orange);border-radius:9px;padding:1px 7px;font-size:11px;font-weight:800">★進学</span>' : '<span style="color:#2D5FA6;background:#EAF1FB;border-radius:9px;padding:1px 7px;font-size:11px;font-weight:800">合格</span>') + '</td>' +
+          '<td style="padding:6px 8px"><b>' + escapeHtml(r.student_name) + '</b><div style="font-size:11px;color:var(--muted)">' + escapeHtml(r.high_school || (r.track === '高卒' ? '高卒生' : '')) + '</div></td>' +
+          '<td style="padding:6px 8px">' + escapeHtml([r.faculty, r.department].filter(Boolean).join('　')) + (r.method ? '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(r.method) + '</div>' : '') + '</td>' +
+        '</tr>';
+      }).join('') + '</table></div>';
+  }).join('');
+}
+// 取り込み（管理者だけ）：Claude が作った JSON（[{exam_year, track, high_school, student_name, university, faculty, department, method, kind, note, raw_university}]）。
+// ファイルに入っている年の分は、いったん消してから入れ直す（同じファイルを2回読んでも二重にならない）。
+async function alImport(inp) {
+  var file = inp.files && inp.files[0]; inp.value = '';
+  if (!file) return;
+  var rows;
+  try { rows = JSON.parse(await file.text()); } catch (e) { showToast('ファイルを読めませんでした（JSONではありません）', 'error'); return; }
+  if (!Array.isArray(rows) || !rows.length || !rows[0].university || !rows[0].exam_year) { showToast('卒業生のデータの形ではありません', 'error'); return; }
+  var years = []; rows.forEach(function (r) { if (years.indexOf(r.exam_year) === -1) years.push(r.exam_year); });
+  years.sort();
+  if (!confirm(years.join('・') + '年の ' + rows.length + ' 件を読み込みます。\nこの年の分がすでにあれば、消してから入れ直します。よろしいですか？')) return;
+  showLoading('読み込み中…');
+  try {
+    await sbDelete('alumni_results', 'exam_year=in.(' + years.join(',') + ')');
+    var keys = ['exam_year', 'track', 'high_school', 'student_name', 'university', 'faculty', 'department', 'method', 'kind', 'note', 'raw_university'];
+    for (var i = 0; i < rows.length; i += 300) {
+      await sbPost('alumni_results', rows.slice(i, i + 300).map(function (r) { var o = {}; keys.forEach(function (k) { o[k] = (r[k] === undefined || r[k] === '') ? null : r[k]; }); return o; }));
+    }
+    hideLoading();
+    showToast('✅ ' + rows.length + ' 件を読み込みました', 'success');
+    await alLoad();
+  } catch (e) {
+    hideLoading();
+    showToast('読み込めませんでした：' + (e.message || e), 'error');
+  }
+}
+
 // ===== 20261012pk1: 保護者向け時間割の「ピックアップ」設定 =====
 // ・時期別講習（夏期・冬期・春期）や共テ対策などを、決めた期間だけ timetable.html の「1年・2年・3年」の右にボタンで出す。
 // ・1件ごとに：ボタン名／授業の区分（class_master.category）／高校部・中学部／ボタンを出す期間／載せる授業日の範囲／並び順。
@@ -69203,7 +69324,7 @@ async function mpkDelete(id) {
 // ・別タブで開いたときは、スタッフのログイン完了後にその機能を自動で開く。
 var SIDENAV_CATS = [
   ['今日の運営', ['home', 'myclasses', 'reportedit', 'attendance', 'attsheet', 'proxycheckin', 'checkinqr', 'supervision', 'makeup', 'seats']],   // 20261014my1
-  ['生徒', ['interview', 'examreq', 'alert', 'studentanalysis', 'schoolview', 'tsushin', 'shakei']],
+  ['生徒', ['interview', 'examreq', 'alert', 'studentanalysis', 'schoolview', 'tsushin', 'shakei', 'alumni']],
   ['授業・教材', ['monthtt', 'class-master', 'check-item', 'quizstatus', 'appusage', 'testprep', 'app-math', 'app-chem', 'app-quiz', 'app-kobun', 'app-eitango']],
   ['連絡・予定', ['todo', 'calreg', 'line']],
   ['入塾', ['prospects', 'demo']],
