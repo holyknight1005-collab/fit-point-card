@@ -1726,6 +1726,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
       <select class="form-select" id="svedit-division" onchange="svEditDivisionChange()" style="width:100%;font-size:13px">
         <option value="高校部">🎓 高校部</option>
         <option value="中学部">📗 中学部</option>
+        <option value="高卒部">🎓 高卒部（浪人生）</option>
       </select>
       <div id="svedit-division-note" style="display:none;font-size:10px;color:#A04040;background:#FDF2F2;border:1px solid #E8B4B4;border-radius:6px;padding:6px 8px;margin-top:6px;line-height:1.5"></div>
     </div>
@@ -2941,6 +2942,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
           <select class="form-select" id="detail-division" onchange="detailDivisionChange()" style="width:100%;font-size:13px">
             <option value="高校部">🎓 高校部</option>
             <option value="中学部">📗 中学部</option>
+            <option value="高卒部">🎓 高卒部（浪人生）</option>
           </select>
           <div id="detail-division-note" style="display:none;font-size:10px;color:#A04040;background:#FDF2F2;border:1px solid #E8B4B4;border-radius:6px;padding:6px 8px;margin-top:6px;line-height:1.5"></div>
         </div>
@@ -6922,7 +6924,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261021ks9';
+const APP_VERSION = '20261021ks10';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -7598,17 +7600,18 @@ function renderStudentFilterChips() {
   if (!schoolBar || !gradeBar || !Array.isArray(staffStudents)) return;
   // 現在の部門・在籍中（除外を除く）の生徒だけ対象
   const pool = staffStudents.filter(s =>
-    (s.division || '高校部') === currentDivision &&
+    ((s.division || '高校部') === currentDivision || (currentDivision === '高校部' && s.division === '高卒部')) &&
     s.inactive_reason !== '除外' &&
     (showGraduated ? (s.is_active === false) : (s.is_active !== false)) &&
     (showGraduated || !isStudentHiddenAsWithdrawn(s))   // dlm99: 在籍一覧では退塾非表示対象を母集団からも外す
   );
   // 学校：出現順を保ちつつ重複除去
   const schools = [];
-  pool.forEach(s => { const v = (s.school || '').trim(); if (v && schools.indexOf(v) === -1) schools.push(v); });
+  pool.forEach(s => { if (s.division === '高卒部') return; const v = (s.school || '').trim(); if (v && schools.indexOf(v) === -1) schools.push(v); });
+  if (pool.some(s => s.division === '高卒部')) schools.push('高卒');   // 20261021ks10: 浪人生は高卒部（高校部の一覧では「高卒」を押したときだけ出す）
   // 学年：数字順に
   const grades = [];
-  pool.forEach(s => { const v = (s.grade || '').trim(); if (v && grades.indexOf(v) === -1) grades.push(v); });
+  pool.forEach(s => { if (s.division === '高卒部') return; const v = (s.grade || '').trim(); if (v && grades.indexOf(v) === -1) grades.push(v); });
   grades.sort((a, b) => (parseInt(a, 10) || 99) - (parseInt(b, 10) || 99));
   // 選択中の値が消えていたら「全員/全学年」に戻す
   if (filterSchool !== '全員' && schools.indexOf(filterSchool) === -1) filterSchool = '全員';
@@ -7750,7 +7753,7 @@ function renderStudentList() {
     const todayIds = new Set((todayCheckins || []).map(c => c.student_id));
     const filtered = staffStudents.filter(s => {
       if (s.inactive_reason === '除外') return false; // 除外生徒は在籍・退塾者どちらの一覧でも完全に隠す
-      const divOK = ((s.division || '高校部') === currentDivision); // 主部門で絞る（表示スッキリ）
+      const divOK = ((s.division || '高校部') === currentDivision) || (currentDivision === '高校部' && s.division === '高卒部' && filterSchool === '高卒'); // 主部門で絞る（表示スッキリ）。高卒部（浪人生）は「高卒」を押したときだけ   // 20261021ks10: 浪人生は高卒部
       const activeOK = showGraduated ? (s.is_active === false) : (s.is_active !== false);
       // dlm99: 在籍一覧では、退塾登録して発効日翌月8日を過ぎた子を非表示（退塾者名簿へ）
       if (!showGraduated && isStudentHiddenAsWithdrawn(s)) return false;
@@ -9926,7 +9929,7 @@ async function initStaff() {
     const todayIds = new Set((todayCheckins || []).map(c => c.student_id));
     // 卒業生（is_active=false）は除外。カラム未追加時は全員 active 扱い
     staffStudents = (students || []);
-    const activeCount = staffStudents.filter(s => s.is_active !== false).length;
+    const activeCount = staffStudents.filter(s => s.is_active !== false && s.division !== '高卒部').length;   // 20261021ks10: 浪人生は高卒部（高校部の一覧・人数に入れない）
     document.getElementById('today-count').textContent = todayIds.size;
     document.getElementById('total-students').textContent = activeCount;
     // 初期化時は名前検索をクリア（入力欄と状態を揃える）。dlm22
@@ -12386,7 +12389,7 @@ async function saveStudentAttributes() {
   if (examFinished && !examOn) { hideLoading(); showToast('受験終了日を入力してください', 'error'); return; }
   try {
     const base = { name: name, name_kana: nameKana, gender: gender || null, club: club || null, birthday: birthday, school: school || null, grade: grade || null, school_detail: schoolDetail || null };
-    if (division === '高校部' || division === '中学部') base.division = division;
+    if (division === '高校部' || division === '中学部' || division === '高卒部') base.division = division;
     const examFields = { exam_finished: examFinished, exam_finished_on: examOn, exam_finish_kind: examKind };
     // name_kana 列が無い旧環境向けに、base から name_kana を外した版も用意
     const baseNoKana = Object.assign({}, base); delete baseNoKana.name_kana;
@@ -12415,11 +12418,11 @@ async function saveStudentAttributes() {
     detailStudent.school = school;
     detailStudent.grade = grade;
     detailStudent.school_detail = schoolDetail;
-    if (division === '高校部' || division === '中学部') detailStudent.division = division;
+    if (division === '高校部' || division === '中学部' || division === '高卒部') detailStudent.division = division;
     const hdr = document.getElementById('detail-name-header');
     if (hdr) hdr.textContent = name;
     hideLoading();
-    if ((division === '高校部' || division === '中学部') && division !== detailOrigDivision) {
+    if ((division === '高校部' || division === '中学部' || division === '高卒部') && division !== detailOrigDivision) {
       showToast('✅ 保存しました（' + detailOrigDivision + '→' + division + 'に移動しました）', 'success');
       detailOrigDivision = division;
     } else {
@@ -12731,7 +12734,7 @@ async function openStudentDetail(idx, from) {
     document.getElementById('detail-newpin').value = '';
     await renderDetailSchoolOptions(s.school || '', s.division);
     // 部門セレクト（誤登録の付け替え用）＋学年候補を部門に合わせる
-    detailOrigDivision = (s.division === '中学部') ? '中学部' : '高校部';
+    detailOrigDivision = (s.division === '中学部' || s.division === '高卒部') ? s.division : '高校部';   // 20261021ks10: 浪人生は高卒部
     const dDivSel = document.getElementById('detail-division');
     if (dDivSel) dDivSel.value = detailOrigDivision;
     const dDivNote = document.getElementById('detail-division-note');
@@ -16528,7 +16531,7 @@ async function loadAlertBoard() {
   el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">集計中...</div>';
   const todayISO = getTodayJST();
   try {
-    const activeStudents = staffStudents.filter(s => s.is_active !== false && s.exclude_from_alert !== true);
+    const activeStudents = staffStudents.filter(s => s.is_active !== false && s.exclude_from_alert !== true && s.division !== '高卒部');   // 20261021ks10: 浪人生は高卒部（高校部の一覧・人数に入れない）
     const ids = activeStudents.map(s => s.id);
     if (!ids.length) { el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">生徒がいません</div>'; return; }
 
@@ -36853,7 +36856,7 @@ function beRowDivChange(id) {
   const scEl = document.getElementById('be-school-' + id);
   if (gEl) {
     const digit = (typeof emxGradeDigit === 'function') ? emxGradeDigit(gEl.value) : (String(gEl.value).match(/[1-3]/) || [''])[0];
-    const mapped = digit ? (newDiv === '中学部' ? ('中' + digit) : (digit + '年')) : '';
+    const mapped = (newDiv === '高卒部') ? '高卒' : digit ? (newDiv === '中学部' ? ('中' + digit) : (digit + '年')) : '';
     gEl.innerHTML = beGradeOptions(newDiv, mapped);
     gEl.value = mapped || '';
   }
@@ -48477,7 +48480,7 @@ function detailFillGradeSelect(division, current) {
   const sel = document.getElementById('detail-grade');
   if (!sel) return;
   const isChu = (division === '中学部');
-  const vals = isChu ? ['中1', '中2', '中3'] : ['1年', '2年', '3年'];
+  const vals = (division === '高卒部') ? ['高卒'] : isChu ? ['中1', '中2', '中3'] : ['1年', '2年', '3年'];
   const cur = String(current || '').trim();
   let html = '<option value="">未設定</option>';
   const list = (cur && vals.indexOf(cur) === -1) ? [cur].concat(vals) : vals;
@@ -48491,7 +48494,7 @@ async function detailDivisionChange() {
   const gradeEl = document.getElementById('detail-grade');
   const curGrade = gradeEl ? gradeEl.value : '';
   const digit = (typeof emxGradeDigit === 'function') ? emxGradeDigit(curGrade) : (String(curGrade).match(/[1-3]/) || [''])[0];
-  const mapped = digit ? (newDiv === '中学部' ? ('中' + digit) : (digit + '年')) : '';
+  const mapped = (newDiv === '高卒部') ? '高卒' : digit ? (newDiv === '中学部' ? ('中' + digit) : (digit + '年')) : '';
   detailFillGradeSelect(newDiv, mapped || '');
   if (gradeEl) gradeEl.value = mapped || '';
   // 学校候補も新部門に合わせて作り直す（選択は維持）
@@ -59242,7 +59245,7 @@ function svToggleReconcile(key) {
 // 現在値が候補に無い場合は必ず先頭に足して、選択が外れないようにする。
 function svGradeOptionValues(division, current) {
   const isChugaku = (division === '中学部') || /中\s*[1-3１-３一二三]/.test(String(current || ''));
-  let vals = isChugaku ? ['中1', '中2', '中3'] : ['1年', '2年', '3年'];
+  let vals = (division === '高卒部') ? ['高卒'] : isChugaku ? ['中1', '中2', '中3'] : ['1年', '2年', '3年'];
   const cur = String(current || '').trim();
   if (cur && vals.indexOf(cur) === -1) vals = [cur].concat(vals);
   return vals;
@@ -59267,7 +59270,7 @@ function svEditDivisionChange() {
   const curGrade = gradeEl ? gradeEl.value : '';
   // 学年候補を新部門に合わせて作り直し、数字が同じなら対応学年を選び直す
   const digit = (typeof emxGradeDigit === 'function') ? emxGradeDigit(curGrade) : (String(curGrade).match(/[1-3]/) || [''])[0];
-  const mapped = digit ? (newDiv === '中学部' ? ('中' + digit) : (digit + '年')) : '';
+  const mapped = (newDiv === '高卒部') ? '高卒' : digit ? (newDiv === '中学部' ? ('中' + digit) : (digit + '年')) : '';
   svFillGradeSelect('svedit-grade', newDiv, mapped || '');
   if (gradeEl) gradeEl.value = mapped || '';
   // 退塾時学年の候補も揃える
@@ -59300,7 +59303,7 @@ function svOpenEditStudent(id) {
   // 学年の選択肢を部門（中学部/高校部）に応じて組み立ててから値をセット
   const svDiv = s.division || currentDivision || '高校部';
   // 部門セレクト（誤登録の付け替え用）
-  svEditOrigDivision = (svDiv === '中学部') ? '中学部' : '高校部';
+  svEditOrigDivision = (svDiv === '中学部' || svDiv === '高卒部') ? svDiv : '高校部';   // 20261021ks10: 浪人生は高卒部
   const divSel = document.getElementById('svedit-division');
   if (divSel) divSel.value = svEditOrigDivision;
   const divNote = document.getElementById('svedit-division-note');
@@ -59574,7 +59577,7 @@ async function saveSvEdit() {
       membership_status: membership,
       enroll_date: enroll
     };
-    if (division === '高校部' || division === '中学部') rbody.division = division;
+    if (division === '高校部' || division === '中学部' || division === '高卒部') rbody.division = division;
     if (status === '退塾') {
       rbody.status = '退塾';
       // dlm115: 退塾日は登録月の月末に統一（app登録生徒の退塾フローと揃える）。
@@ -59626,7 +59629,7 @@ async function saveSvEdit() {
     membership_status: membership,
     enroll_date: enroll
   };
-  if (division === '高校部' || division === '中学部') body.division = division;
+  if (division === '高校部' || division === '中学部' || division === '高卒部') body.division = division;
   // 在籍状態
   if (status === 'active') {
     body.is_active = true; body.inactive_reason = null; body.inactive_at = null;
