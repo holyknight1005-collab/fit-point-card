@@ -6924,7 +6924,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261021ks10';
+const APP_VERSION = '20261021ks12';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -8309,6 +8309,7 @@ function openPublicTimetableForStudent() {
   // 20261020ks1: 高卒生は高卒の時間割（高卒生の授業＋共テ対策）を開く
   let url = 'https://holyknight1005-collab.github.io/fit-point-card/timetable.html?d=' + (kosotsu ? 'sotsu' : isChu ? 'chu' : 'ko');
   if (!kosotsu && gm) url += '&g=' + gm[0];
+  url += '&from=app';   // 20261021ks12: 時間割に「← アプリに戻る」を出す
   const w = window.open(url, '_blank');
   if (!w) location.href = url;
 }
@@ -68557,6 +68558,8 @@ async function mttCopyPublicUrl() {
 // ・授業をタップすると、その日だけ教室・限を変えられる（class_sessions.room / period）。
 //   「この授業のいつもの教室にする」で class_master.default_room も変える。
 //   教室は「その日の教室（room）」→「いつもの教室（default_room）」の順で決まる。どちらも無ければ「教室未定」。
+// 20261021ks11: 曜日・限ごとのいつもの教室（class_master.slot_rooms＝{"土3":"新教室"}）。固定案の教室を入れる。
+//   教室は「その日の教室」→「曜日・限の教室」→「いつもの教室」の順。曜日・限の教室を持つ授業で「いつもの教室にする」を押すと、その曜日・限の教室を変える。
 // ・A3横の張り出し用を印刷（今までの「貼り付け用データ」と同じ並び）。監督は自習監督の決定（supervision_assignments）から入れる。
 // ・石井教室の授業（授業名に「石井」を含む）は、張り出しもしないので出さない。
 // ・必要なSQL：class_sessions.room / class_master.default_room（未実行なら教室はすべて「教室未定」で表示・変更不可）。
@@ -68703,9 +68706,13 @@ async function dttLoad() {
       roomOk = false;   // SQL未実行（room 列なし）
       sess = await sbGetAll('class_sessions', 'session_date=eq.' + ds + '&select=id,class_master_id,session_date,period,start_time,end_time,is_makeup,school,cycle_month,cycle_no&order=period');
     }
-    var masters;
-    try { masters = await sbGetAll('class_master', 'select=id,name,subject,division,category,teacher_staff_id,default_room'); }
-    catch (e2) { roomOk = false; masters = await sbGetAll('class_master', 'select=id,name,subject,division,category,teacher_staff_id'); }
+    var masters, slotOk = true;
+    try { masters = await sbGetAll('class_master', 'select=id,name,subject,division,category,teacher_staff_id,default_room,slot_rooms'); }
+    catch (e3) {
+      slotOk = false;   // 20261021ks11: slot_rooms 列が無い（SQL未実行）ときは、曜日・限の教室なしで動く
+      try { masters = await sbGetAll('class_master', 'select=id,name,subject,division,category,teacher_staff_id,default_room'); }
+      catch (e2) { roomOk = false; masters = await sbGetAll('class_master', 'select=id,name,subject,division,category,teacher_staff_id'); }
+    }
     var staff = await sbGet('staff', 'select=id,name') || [];
     var svRows = await sbGet('supervision_assignments', 'sv_date=eq.' + ds + '&cancelled=eq.false&select=period,staff_name&order=period').catch(function () { return []; }) || [];
     if (ds !== dttDate) return;
@@ -68717,10 +68724,13 @@ async function dttLoad() {
       if (!m || dttIsIshii(m) || MTT_EXCLUDE_CATS.indexOf(m.category) !== -1) return;
       var per = (s.period == null) ? nearestPeriodFromTime(s.start_time ? String(s.start_time).slice(0, 5) : '', ds) : parseInt(s.period, 10);
       if (per == null || isNaN(per)) return;
+      var slotMap = (m.slot_rooms && typeof m.slot_rooms === 'object') ? m.slot_rooms : null;   // 20261021ks11
+      var slotKey = dttWd(ds) + per;
       list.push({
+        slotKey: slotKey, slotMap: slotMap, hasSlots: !!(slotOk && slotMap && Object.keys(slotMap).length), plainDef: m.default_room || '',
         id: s.id, class_master_id: s.class_master_id, period: s.period, per: per, school: s.school || '',
         start: s.start_time ? String(s.start_time).slice(0, 5) : '', end: s.end_time ? String(s.end_time).slice(0, 5) : '',
-        makeup: s.is_makeup === true, room: s.room || '', defRoom: m.default_room || '',
+        makeup: s.is_makeup === true, room: s.room || '', defRoom: (slotMap && slotMap[slotKey]) || m.default_room || '',
         name: m.name, teacher: dttFamily(sName[m.teacher_staff_id] || ''), division: m.division || '高校部',
         cyc: s.is_makeup === true ? '' : mttCycleLabel(s)
       });
@@ -68829,7 +68839,7 @@ function dttOpenEdit(id) {
       '<div style="font-size:12px;color:#666;margin-bottom:12px">' + parseInt(dttDate.slice(5, 7), 10) + '/' + parseInt(dttDate.slice(8), 10) + '（' + dttWd(dttDate) + '）　' + escapeHtml(x.teacher) + '　' + x.count + '人' + (x.defRoom ? '　いつもの教室：' + escapeHtml(dttRoomLabel(x.defRoom)) : '') + '</div>' +
       '<div style="font-size:12px;font-weight:700;margin-bottom:4px">教室（この日）</div>' +
       '<select id="dtt-e-room" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;font-family:inherit;margin-bottom:6px"' + (dttData.roomOk ? '' : ' disabled') + '>' + roomOpts + '</select>' +
-      '<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:12px"><input type="checkbox" id="dtt-e-def"' + (dttData.roomOk ? '' : ' disabled') + '>この授業の「いつもの教室」にする（ほかの日も、教室を変えていない回はこの教室になります）</label>' +
+      '<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:12px"><input type="checkbox" id="dtt-e-def"' + (dttData.roomOk ? '' : ' disabled') + '>' + (x.hasSlots ? 'この授業の「' + escapeHtml(dttWd(dttDate)) + '曜' + x.per + '限のいつもの教室」にする（ほかの週の' + escapeHtml(dttWd(dttDate)) + '曜' + x.per + '限も、教室を変えていない回はこの教室になります）' : 'この授業の「いつもの教室」にする（ほかの日も、教室を変えていない回はこの教室になります）') + '</label>' +
       '<div style="font-size:12px;font-weight:700;margin-bottom:4px">限（この日）</div>' +
       '<select id="dtt-e-per" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;font-family:inherit;margin-bottom:6px">' + perOpts + '</select>' +
       '<div style="font-size:11px;color:#666;margin-bottom:14px;line-height:1.5">限を変えると、開始・終了の時刻もその限の時刻になります。出欠がすでに入っている回は、限を変えられません。</div>' +
@@ -68849,7 +68859,13 @@ async function dttSaveEdit() {
   var body = {};
   try {
     if (dttData.roomOk) {
-      if (setDef) {
+      if (setDef && x.hasSlots) {
+        // 20261021ks11: 曜日・限の教室を持つ授業は、その曜日・限（限を変えたら変えた先の限）の教室を変える
+        var sm = Object.assign({}, x.slotMap || {}), sk = dttWd(dttDate) + per;
+        if (room) sm[sk] = room; else delete sm[sk];
+        await sbPatch('class_master', 'id=eq.' + x.class_master_id, { slot_rooms: Object.keys(sm).length ? sm : null });
+        if ((x.room || '') !== '') body.room = null;
+      } else if (setDef) {
         await sbPatch('class_master', 'id=eq.' + x.class_master_id, { default_room: room || null });
         if ((x.room || '') !== '') body.room = null;   // いつもの教室にしたので、この日の個別指定は外す
       } else if (room !== (x.at || '')) {
