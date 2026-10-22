@@ -942,7 +942,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
     <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.5">名簿を学年・学校でしぼり、セルをタップして受講登録／解除します。<b>タップした時点で保存されます。</b></div>
     <div style="display:flex;gap:8px;margin-bottom:8px;align-items:flex-end;flex-wrap:wrap">
       <div style="flex:0 0 190px"><div class="form-label">対象区分</div>
-        <select class="form-select" id="emx-category" onchange="reloadEnrollMatrix()">
+        <select class="form-select" id="emx-category" onchange="emxOnCategoryChange()">
           <option value="summer">☀️ 夏期講習</option>
           <option value="winter">⛄ 冬期講習</option>
           <option value="spring">🌸 春期講習</option>
@@ -6924,7 +6924,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261021ks12';
+const APP_VERSION = '20261022ks13';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -26239,7 +26239,7 @@ let emxClasses = [];      // 対象カテゴリの講座
 let emxStudents = [];     // 全生徒
 let emxEnrolled = {};     // 'studentId|classId' -> enrollment id（継続中のみ）
 let emxCategory = 'summer';
-let emxDivision = '高校部'; // '高校部' | '中学部'
+let emxDivision = '高校部'; // '高校部' | '高卒部' | '中学部'（20261022ks13: 高卒部を追加）
 let emxGrade = '';        // '' | '1' | '2' | '3'（部門により中1/中2/中3の意味）
 let emxSchool = '';       // '' | 学校名
 let emxSearch = '';
@@ -26305,6 +26305,14 @@ async function openEnrollMatrix() {
   const ce = document.getElementById('emx-category'); if (ce) ce.value = emxCategory;
   await reloadEnrollMatrix();
 }
+// 20261022ks13: 区分で「🎓 高卒生」を選んだら、部門を高卒部に切り替える（手で高校部に戻すこともできる）
+async function emxOnCategoryChange() {
+  const v = (document.getElementById('emx-category') || {}).value;
+  if (v === 'kosotsu') { emxDivision = '高卒部'; emxGrade = ''; emxSchool = ''; }
+  await reloadEnrollMatrix();
+}
+// 20261022ks13: 高卒部の生徒が受ける講座は、部門＝高校部で登録されている（◯◯(卒)・共通テスト対策など）
+function emxClassDivision() { return emxDivision === '高卒部' ? '高校部' : emxDivision; }
 function closeEnrollMatrix() {
   const m = document.getElementById('emx-modal');
   if (m) m.style.display = 'none';
@@ -26361,12 +26369,14 @@ function renderEnrollMatrixFilters() {
   if (dbox) {
     const mkd = (v) => '<button onclick="setEmxDivision(\'' + v + '\')" style="padding:4px 12px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
       (emxDivision === v ? 'border:1.5px solid #1A7340;background:#1A7340;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + v + '</button>';
-    dbox.innerHTML = mkd('高校部') + mkd('中学部');
+    dbox.innerHTML = mkd('高校部') + mkd('高卒部') + mkd('中学部');
   }
   const gbox = document.getElementById('emx-grade-filter');
   if (gbox) {
     const isMid = emxDivision === '中学部';
     const gl = (v) => isMid ? ('中' + v) : (v + '年');
+    // 20261022ks13: 高卒部は全員「高卒」なので学年ボタンを出さない
+    if (gbox.parentNode) gbox.parentNode.style.display = (emxDivision === '高卒部') ? 'none' : '';
     const mk = (v, l) => '<button onclick="setEmxGrade(\'' + v + '\')" style="padding:4px 12px;font-size:11px;font-weight:700;border-radius:12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;' +
       (emxGrade === v ? 'border:1.5px solid #E9A93C;background:#E9A93C;color:#fff' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + l + '</button>';
     gbox.innerHTML = mk('', 'すべて') + mk('1', gl('1')) + mk('2', gl('2')) + mk('3', gl('3'));
@@ -26425,7 +26435,7 @@ function emxCtRank(c) {
   return 100 + emxSubjRank(c.subject);   // 一覧にない講座は最後（教科順）
 }
 function emxVisibleClasses() {
-  return emxClasses.filter(c => (c.division || '高校部') === emxDivision && emxClassMatchesGrade(c, emxGrade))
+  return emxClasses.filter(c => (c.division || '高校部') === emxClassDivision() && emxClassMatchesGrade(c, emxGrade))
     .sort((a, b) => {
       if (emxCategory === 'common_test') {
         const r = emxCtRank(a) - emxCtRank(b);
@@ -26953,7 +26963,7 @@ function exportEmxPdf() {
   if (!stus.length || !cls.length) { showToast('出力する内容がありません', 'error'); return; }
 
   const label = (EMX_CATEGORY_LABEL[emxCategory] || emxCategory);
-  const subLabel = (emxGrade ? emxGrade + '年' : '全学年') + '／' + (emxSchool || '全学校');
+  const subLabel = (emxDivision === '高卒部') ? '高卒部（浪人生）' : ((emxGrade ? emxGrade + '年' : '全学年') + '／' + (emxSchool || '全学校'));
 
   let t = '<table style="border-collapse:collapse;width:100%;table-layout:auto;font-size:8.5pt">';
   t += '<tr>' +
