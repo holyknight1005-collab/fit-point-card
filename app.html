@@ -6924,7 +6924,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261024ks16';
+const APP_VERSION = '20261024ks17';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -25181,6 +25181,71 @@ async function revSecondLapKeys(enrolls, nameOf) {
 // 時期別の区分（講師別の🗓時期別に出すもの。高卒生・体験・無料開放は出さない）
 const REV_SEASON_CATS = ['common_test', 'winter', 'spring', 'summer', 'regular_test', 'other'];
 
+// 20261024ks17: 講師別（時期別）の表示区分。'all' または CLASS_CATEGORIES の key
+let revSeasonCat = 'all';
+let revSeasonData = null;
+function setRevSeasonCat(cat) {
+  revSeasonCat = cat;
+  const w = document.getElementById('rev-season-wrap');
+  if (w) w.innerHTML = revSeasonHtml();
+}
+function revSeasonHtml() {
+  const d = revSeasonData;
+  if (!d) return '';
+  const fy = d.fy, cat = revSeasonCat;
+  const th = (cols) => '<thead><tr style="background:var(--orange-l)">' + cols.map((t, i) =>
+    '<th style="padding:8px 10px;text-align:' + (i === 0 ? 'left' : 'right') + ';font-weight:700;border-bottom:1px solid var(--border);white-space:nowrap">' + t + '</th>').join('') + '</tr></thead>';
+  const td = 'padding:8px 10px;border-bottom:1px solid var(--border);';
+  const nameOfT = (t) => t === REV_EIGO_BU ? '英語部（英語の講座すべて）' : (d.staffName[t] || '(不明)');
+  let html = saSectionTitle('🗓 講師別（時期別・' + fy + '年度／延べ担当生徒数）');
+  const cats = REV_SEASON_CATS.filter(c => d.catTot[c]);
+  if (!cats.length) {
+    return html + '<div style="font-size:12px;color:var(--muted);padding:10px 2px 16px">' + fy + '年度の時期別の授業はありません。</div>';
+  }
+  // 区分の切り替えボタン
+  const chip = (key, label) => '<button type="button" onclick="setRevSeasonCat(\'' + key + '\')" style="padding:6px 10px;font-size:11px;font-weight:700;border-radius:16px;cursor:pointer;font-family:inherit;white-space:nowrap;'
+    + (cat === key ? 'border:1.5px solid #1A4D80;background:#EAF3FB;color:#1A4D80' : 'border:1.5px solid var(--border);background:var(--surface);color:var(--muted)') + '">' + label + '</button>';
+  html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' + chip('all', 'すべて')
+    + cats.map(c => { const m = classCategoryMeta(c); return chip(c, m.icon + ' ' + m.label); }).join('') + '</div>';
+
+  // 選んだ区分の数（すべてなら合計）
+  const pick = (r) => {
+    if (cat === 'all') return { stu: r.stu, prov: r.prov, cls: r.cls };
+    const b = r.byCat[cat]; return b ? { stu: b.stu, prov: b.prov || 0, cls: b.cls } : null;
+  };
+  const rows = Object.keys(d.sTea).map(t => ({ t, v: pick(d.sTea[t]), r: d.sTea[t] })).filter(x => x.v && (x.v.stu || x.v.cls));
+  rows.sort((a, b) => (a.t === REV_EIGO_BU) - (b.t === REV_EIGO_BU) || (b.v.stu - a.v.stu) || (b.v.cls - a.v.cls));
+  const showBreak = (cat === 'all');
+  html += '<div style="overflow-x:auto;margin-bottom:6px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+    + th(showBreak ? ['講師', '延べ人数', '授業数', '内訳（人／授業）'] : ['講師', '延べ人数', '授業数']) + '<tbody>';
+  rows.forEach(x => {
+    const parts = showBreak ? REV_SEASON_CATS.filter(c => x.r.byCat[c]).map(c => {
+      const m = classCategoryMeta(c);
+      return '<span style="white-space:nowrap">' + m.icon + escapeHtml(m.label) + ' ' + x.r.byCat[c].stu + '／' + x.r.byCat[c].cls + '</span>';
+    }).join('　') : '';
+    html += '<tr' + (x.t === REV_EIGO_BU ? ' style="background:var(--surface)"' : '') + '>'
+      + '<td style="' + td + 'font-weight:700;white-space:nowrap">' + escapeHtml(nameOfT(x.t)) + '</td>'
+      + '<td style="' + td + 'text-align:right;font-weight:700;color:#1A4D80">' + x.v.stu + '人' + (x.v.prov ? '<div style="font-size:10px;font-weight:400;color:var(--muted)">うち見込み ' + x.v.prov + '</div>' : '') + '</td>'
+      + '<td style="' + td + 'text-align:right">' + x.v.cls + '</td>'
+      + (showBreak ? '<td style="' + td + 'text-align:right;font-size:11px;color:var(--muted)">' + parts + '</td>' : '')
+      + '</tr>';
+  });
+  const tot = (cat === 'all') ? { stu: d.allStu, prov: d.allProv, cls: d.allCls } : d.catTot[cat];
+  html += '<tr style="background:var(--orange-l)">'
+    + '<td style="padding:8px 10px;font-weight:800">合計（授業ごと）</td>'
+    + '<td style="padding:8px 10px;text-align:right;font-weight:800">' + tot.stu + '人' + (tot.prov ? '<div style="font-size:10px;font-weight:400;color:var(--muted)">うち見込み ' + tot.prov + '</div>' : '') + '</td>'
+    + '<td style="padding:8px 10px;text-align:right;font-weight:800">' + tot.cls + '</td>'
+    + (showBreak ? '<td style="padding:8px 10px"></td>' : '')
+    + '</tr>';
+  html += '</tbody></table></div>';
+  html += '<div style="font-size:10px;color:var(--muted);line-height:1.6;margin-bottom:8px">'
+    + '※ 上のボタンで区分（共通テスト対策・夏期講習など）ごとの延べ人数に切り替えられます。<br>'
+    + '※ 時期別は売上を講師に分けません（講習の料金は生徒ごとの合計回数で決まるため）。売上は「講習」タブをご覧ください。<br>'
+    + '※ 英語の講座は、講師個人に分けず全部「英語部」にまとめています。ほかの教科で複数講師の授業は、それぞれの講師に人数・授業数を入れます（合計は授業ごとの数）。<br>'
+    + '※ 高校部の生徒が対象です（時期別のみの子を含む。高卒部の浪人生は入れていません）。</div>';
+  return html;
+}
+
 async function renderRevTeacher() {
   const wrap = document.getElementById('rev-tea-wrap');
   if (!wrap) return;
@@ -25286,20 +25351,22 @@ async function renderRevTeacher() {
     });
   });
 
-  // ---------- 🗓 時期別（今年度の講習・共通テスト対策など。英語も講師ごと） ----------
+  // ---------- 🗓 時期別（今年度の講習・共通テスト対策など） ----------
+  // 20261024ks17: 時期別の英語は、講師個人のレベルの授業ではないので、全部「英語部」1つにまとめる
+  const seasonTeachers = (id) => (cmSubj(id) === '英語') ? new Set([REV_EIGO_BU]) : (realTeachers[id] || new Set());
   const enrSeason = enrAll.filter(e => seasonIds.has(e.class_master_id) && seasonStu.has(e.student_id));
   const sTea = {};   // staff -> { stu, prov, cls, byCat:{cat:{stu,cls}} }
   const sRow = (t) => sTea[t] || (sTea[t] = { stu: 0, prov: 0, cls: 0, byCat: {} });
   const sCat = (r, cat) => r.byCat[cat] || (r.byCat[cat] = { stu: 0, cls: 0 });
   enrSeason.forEach(e => {
     const cat = cmById[e.class_master_id].category;
-    (realTeachers[e.class_master_id] || new Set()).forEach(t => {
-      const r = sRow(t); r.stu++; if (e.is_provisional) r.prov++; sCat(r, cat).stu++;
+    seasonTeachers(e.class_master_id).forEach(t => {
+      const r = sRow(t); r.stu++; if (e.is_provisional) r.prov++; const rc = sCat(r, cat); rc.stu++; if (e.is_provisional) rc.prov = (rc.prov || 0) + 1;
     });
   });
   seasonIds.forEach(id => {
     const cat = cmById[id].category;
-    (realTeachers[id] || new Set()).forEach(t => { const r = sRow(t); r.cls++; sCat(r, cat).cls++; });
+    seasonTeachers(id).forEach(t => { const r = sRow(t); r.cls++; sCat(r, cat).cls++; });
   });
 
   const yen = (n) => '¥' + Math.round(n || 0).toLocaleString('ja-JP');
@@ -25375,42 +25442,13 @@ async function renderRevTeacher() {
     + '※ 講師個人の売上は<b>参考値</b>です。1授業を複数講師で担当している場合、その金額を担当人数で等分しています。<br>'
     + '※ 英語は、長文読解・超感覚（英語・S・演習）・ハイレベル入試実践・スタンダード入試実践を「英語部」にまとめ、ほかの英語の授業は担当の講師に入れています。</div>';
 
-  // --- 講師別（🗓 時期別） ---
-  html += saSectionTitle('🗓 講師別（時期別・' + fy + '年度／延べ担当生徒数）');
-  const sOrder = Object.keys(sTea).sort((a, b) => (sTea[b].stu - sTea[a].stu) || (sTea[b].cls - sTea[a].cls));
-  if (!sOrder.length) {
-    html += '<div style="font-size:12px;color:var(--muted);padding:10px 2px 16px">' + fy + '年度の時期別の授業はありません。</div>';
-  } else {
-    let tStu = 0, tCls = 0;
-    seasonIds.forEach(() => { tCls++; });
-    tStu = enrSeason.length;
-    html += '<div style="overflow-x:auto;margin-bottom:6px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
-      + th(['講師', '延べ人数', '授業数', '内訳（人／授業）']) + '<tbody>';
-    sOrder.forEach(t => {
-      const r = sTea[t];
-      const parts = REV_SEASON_CATS.filter(c => r.byCat[c]).map(c => {
-        const m = classCategoryMeta(c);
-        return '<span style="white-space:nowrap">' + m.icon + escapeHtml(m.label) + ' ' + r.byCat[c].stu + '／' + r.byCat[c].cls + '</span>';
-      }).join('　');
-      html += '<tr>'
-        + '<td style="' + td + 'font-weight:700;white-space:nowrap">' + escapeHtml(staffName[t] || '(不明)') + '</td>'
-        + '<td style="' + td + 'text-align:right;font-weight:700;color:#1A4D80">' + r.stu + '人' + (r.prov ? '<div style="font-size:10px;font-weight:400;color:var(--muted)">うち見込み ' + r.prov + '</div>' : '') + '</td>'
-        + '<td style="' + td + 'text-align:right">' + r.cls + '</td>'
-        + '<td style="' + td + 'text-align:right;font-size:11px;color:var(--muted)">' + parts + '</td>'
-        + '</tr>';
-    });
-    html += '<tr style="background:var(--orange-l)">'
-      + '<td style="padding:8px 10px;font-weight:800">合計（授業ごと）</td>'
-      + '<td style="padding:8px 10px;text-align:right;font-weight:800">' + tStu + '人</td>'
-      + '<td style="padding:8px 10px;text-align:right;font-weight:800">' + tCls + '</td>'
-      + '<td style="padding:8px 10px"></td>'
-      + '</tr>';
-    html += '</tbody></table></div>';
-    html += '<div style="font-size:10px;color:var(--muted);line-height:1.6;margin-bottom:8px">'
-      + '※ 時期別は売上を講師に分けません（講習の料金は生徒ごとの合計回数で決まるため）。売上は「講習」タブをご覧ください。<br>'
-      + '※ 英語も講師ごとに出しています。複数講師の授業は、それぞれの講師に人数・授業数を入れます（合計は授業ごとの数）。<br>'
-      + '※ 高校部の生徒が対象です（時期別のみの子を含む。高卒部の浪人生は入れていません）。</div>';
-  }
+  // --- 講師別（🗓 時期別） --- 20261024ks17: 区分（共通テスト対策・夏期など）ごとに切り替えて出す
+  const catTot = {};
+  enrSeason.forEach(e => { const c = cmById[e.class_master_id].category; const r = catTot[c] || (catTot[c] = { stu: 0, prov: 0, cls: 0 }); r.stu++; if (e.is_provisional) r.prov++; });
+  seasonIds.forEach(id => { const c = cmById[id].category; const r = catTot[c] || (catTot[c] = { stu: 0, prov: 0, cls: 0 }); r.cls++; });
+  revSeasonData = { fy, sTea, catTot, staffName, allStu: enrSeason.length, allProv: enrSeason.filter(e => e.is_provisional).length, allCls: seasonIds.size };
+  if (revSeasonCat !== 'all' && !catTot[revSeasonCat]) revSeasonCat = 'all';
+  html += '<div id="rev-season-wrap">' + revSeasonHtml() + '</div>';
 
   wrap.innerHTML = html;
 }
