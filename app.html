@@ -6924,7 +6924,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261024ks19';
+const APP_VERSION = '20261024ks21';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -68857,8 +68857,8 @@ function dttRenderBar() {
     '<button onclick="dttShift(1)" style="padding:6px 12px;font-size:14px;font-weight:800;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer">›</button>' +
     '<button onclick="dttDate=getTodayJST();dttLoad()" style="padding:6px 10px;font-size:12px;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;font-family:inherit">今日</button>' +
     '<button onclick="dttDate=dttTomorrow();dttLoad()" style="padding:6px 10px;font-size:12px;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;font-family:inherit">明日</button>' +
-    '<input id="dtt-theme" placeholder="今日の話題（あゆみのテーマ・張り出しに大きく出ます）" value="' + escapeHtml(dttGetTheme()) + '" oninput="dttSetTheme(this.value)" style="flex:1;min-width:220px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px">' +
-    '<span style="font-size:11px;color:var(--muted);width:100%">授業をタップすると、その日の教室・限を変えられます（石井の授業は出しません）。授業のない大教室は張り出しで「自習」になります。</span>';
+    '<input id="dtt-theme" placeholder="今日の話題（あゆみのテーマ・張り出しに大きく出ます）" value="' + escapeHtml(dttGetTheme()) + '" oninput="dttThemeInput(this.value)" style="flex:1;min-width:220px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px">' +
+    '<span style="font-size:11px;color:var(--muted);width:100%">授業をタップすると、その日の教室・限を変えられます（石井の授業は出しません）。授業のない大教室は張り出しで「自習」になります。模試・セミナーなど授業でないものは、各限の「✏️ 自由入力」で入れます（みんなで共有）。</span>';
 }
 
 // その日に受講している人数（授業出欠の名簿と同じ考え方：受講期間内・デモ除外・4回選択の「ー」の回は除く・
@@ -68922,7 +68922,12 @@ async function dttLoad() {
     }
     var staff = await sbGet('staff', 'select=id,name') || [];
     var svRows = await sbGet('supervision_assignments', 'sv_date=eq.' + ds + '&cancelled=eq.false&select=period,staff_name&order=period').catch(function () { return []; }) || [];
+    // 20261024ks21: 自由入力（限×教室）と今日の話題（period=0・room='__theme'）。表 timetable_notes（SQL未実行なら使えない）
+    var notesOk = true, noteRows = [];
+    try { noteRows = await sbGet('timetable_notes', 'note_date=eq.' + ds + '&select=period,room,body') || []; } catch (e4) { notesOk = false; }
     if (ds !== dttDate) return;
+    var notes = {}, theme = '';
+    noteRows.forEach(function (r) { if (r.room === '__theme') theme = r.body || ''; else if (r.body) notes[r.period + '|' + r.room] = r.body; });
     var mById = {}; masters.forEach(function (m) { mById[m.id] = m; });
     var sName = {}; staff.forEach(function (s) { sName[s.id] = s.name; });
     var list = [];
@@ -68946,7 +68951,8 @@ async function dttLoad() {
     list.forEach(function (x) { x.count = cnt[x.id] || 0; x.at = x.room || x.defRoom || ''; });
     var sv = {};
     svRows.forEach(function (r) { var k = String(r.period); var n = dttFamily(r.staff_name); if (!n) return; sv[k] = sv[k] ? (sv[k].indexOf(n) === -1 ? sv[k] + '・' + n : sv[k]) : n; });
-    dttData = { date: ds, list: list, periods: periodsForDate(ds), sv: sv, roomOk: roomOk };
+    dttData = { date: ds, list: list, periods: periodsForDate(ds), sv: sv, roomOk: roomOk, notesOk: notesOk, notes: notes, theme: theme };
+    if (notesOk) { dttSetTheme(theme); }
     dttRender();
   } catch (e) {
     body.innerHTML = '<div style="font-size:13px;color:var(--red);padding:20px;text-align:center">読み込みに失敗しました：' + escapeHtml(e.message || e) + '</div>';
@@ -69003,15 +69009,19 @@ function dttRender() {
   b.ps.forEach(function (p) {
     var rooms = b.per[p] || {};
     var n = Object.keys(rooms).reduce(function (a, k) { return a + rooms[k].length; }, 0);
-    var head = '<h4>' + (MTT_CIRCLED[p] || p) + ' ' + p + '限<small>' + escapeHtml(dttTime(p)) + '　監督：' + escapeHtml(dttData.sv[String(p)] || '―') + '　授業 ' + n + '</small></h4>';
-    if (!n) { html += '<div class="dtt-blk" style="padding:6px 12px">' + head.replace('<h4>', '<h4 style="margin:0;color:#999">') + '</div>'; return; }
-    var free = DTT_ROOMS.filter(function (r) { return r.key !== '予備' && !(rooms[r.key] || []).length; }).map(function (r) { return r.label; });
+    var noteBtn = '<button onclick="dttOpenNote(' + p + ',null)" style="float:right;padding:2px 9px;font-size:11px;font-weight:700;border:1px solid #2D5FA6;border-radius:12px;background:#fff;color:#2D5FA6;cursor:pointer;font-family:inherit">✏️ 自由入力</button>';
+    var head = '<h4>' + noteBtn + (MTT_CIRCLED[p] || p) + ' ' + p + '限<small>' + escapeHtml(dttTime(p)) + '　監督：' + escapeHtml(dttData.sv[String(p)] || '―') + '　授業 ' + n + '</small></h4>';
+    var pNotes = DTT_ROOMS.filter(function (r) { return dttNote(p, r.key); });
+    if (!n && !pNotes.length) { html += '<div class="dtt-blk" style="padding:6px 12px">' + head.replace('<h4>', '<h4 style="margin:0;color:#999">') + '</div>'; return; }
+    var free = DTT_ROOMS.filter(function (r) { return r.key !== '予備' && !(rooms[r.key] || []).length && !dttNote(p, r.key); }).map(function (r) { return r.label; });
     html += '<div class="dtt-blk">' + head + '<div class="dtt-grid">';
     if (rooms.__none) html += '<div class="dtt-room none"><div class="rn">教室未定</div>' + rooms.__none.map(function (x) { return dttItemHtml(x, b); }).join('') + '</div>';
     DTT_ROOMS.forEach(function (r) {
       var arr = rooms[r.key] || [];
-      if (!arr.length) return;   // 空き教室は下にまとめて書く
-      html += '<div class="dtt-room"' + (arr.length > 1 ? ' style="border-color:#C0392B"' : '') + '><div class="rn">' + escapeHtml(r.label) + (arr.length > 1 ? ' <span style="color:#C0392B">（重なり）</span>' : '') + '</div>' + arr.map(function (x) { return dttItemHtml(x, b); }).join('') + '</div>';
+      var nt = dttNote(p, r.key);
+      if (!arr.length && !nt) return;   // 空き教室は下にまとめて書く
+      html += '<div class="dtt-room"' + (arr.length > 1 ? ' style="border-color:#C0392B"' : '') + '><div class="rn">' + escapeHtml(r.label) + (arr.length > 1 ? ' <span style="color:#C0392B">（重なり）</span>' : '') + '</div>' + arr.map(function (x) { return dttItemHtml(x, b); }).join('') +
+        (nt ? '<div class="dtt-it" style="color:#2D5FA6" onclick="dttOpenNote(' + p + ',\'' + r.key + '\')">✏️ <b>' + escapeHtml(nt) + '</b></div>' : '') + '</div>';
     });
     Object.keys(rooms).forEach(function (k) {   // 一覧に無い教室名（古いデータなど）
       if (k === '__none' || DTT_ROOMS.some(function (r) { return r.key === k; })) return;
@@ -69103,12 +69113,119 @@ async function dttSaveEdit() {
   }
 }
 
+// ---- 自由入力（限×教室）・今日の話題の共有 ---- 20261024ks21
+// 表 timetable_notes（note_date, period, room, body。今日の話題は period=0・room='__theme'）。スタッフ全員が入れられる。
+// 張り出し（A3・LINE用の画像）では、そのマスに授業と「・」でつないで出す。大教室に入れたら「自習」は出さない。
+function dttNote(p, room) { return (dttData && dttData.notes && dttData.notes[p + '|' + room]) || ''; }
+function dttStaffName() { return (typeof currentStaff !== 'undefined' && currentStaff && currentStaff.name) || ''; }
+var dttThemeTimer = null;
+function dttThemeInput(v) {
+  dttSetTheme(v);
+  if (!dttData || !dttData.notesOk || dttData.date !== dttDate) return;
+  dttData.theme = v;
+  var ds = dttDate;
+  clearTimeout(dttThemeTimer);
+  dttThemeTimer = setTimeout(async function () {
+    try {
+      var q = 'note_date=eq.' + ds + '&period=eq.0&room=eq.__theme';
+      if (String(v || '').trim()) await svUpsert('timetable_notes', 'note_date,period,room', { note_date: ds, period: 0, room: '__theme', body: String(v).trim(), updated_by: dttStaffName(), updated_at: new Date().toISOString() });
+      else await sbDelete('timetable_notes', q);
+    } catch (e) { showToast('今日の話題を保存できませんでした：' + (e.message || e), 'error'); }
+  }, 800);
+}
+var dttNoteOrig = null;
+function dttCloseNote() { var m = document.getElementById('dtt-note'); if (m) m.remove(); dttNoteOrig = null; }
+function dttOpenNote(per, room) {
+  if (!dttData) return;
+  if (!dttData.notesOk) { showToast('自由入力の表がまだありません（timetable_notes.sql を実行してください）', 'error'); return; }
+  dttCloseNote();
+  dttNoteOrig = room ? { per: per, room: room } : null;
+  var ps = Object.keys(dttData.periods).map(Number).filter(function (x) { return x >= 1; });
+  if (ps.indexOf(per) === -1) ps.push(per);
+  ps.sort(function (a, b) { return a - b; });
+  var r0 = room || '';
+  var roomOpts = '<option value="">（教室を選ぶ）</option>' + DTT_ROOMS.map(function (r) { return '<option value="' + escapeHtml(r.key) + '"' + (r.key === r0 ? ' selected' : '') + '>' + escapeHtml(r.label) + '</option>'; }).join('');
+  var perBoxes = ps.map(function (x) {
+    return '<label style="display:inline-flex;align-items:center;gap:3px;margin:0 10px 6px 0;font-size:13px"><input type="checkbox" class="dtt-n-per" value="' + x + '"' + (x === per ? ' checked' : '') + '>' + x + '限</label>';
+  }).join('');
+  var m = document.createElement('div');
+  m.id = 'dtt-note';
+  m.style.cssText = 'position:fixed;inset:0;z-index:720;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;padding:16px';
+  m.innerHTML =
+    '<div style="background:#fff;border-radius:12px;max-width:420px;width:100%;padding:16px;box-sizing:border-box">' +
+      '<div style="font-size:15px;font-weight:800;margin-bottom:4px">✏️ 自由入力</div>' +
+      '<div style="font-size:12px;color:#666;margin-bottom:12px">' + parseInt(dttDate.slice(5, 7), 10) + '/' + parseInt(dttDate.slice(8), 10) + '（' + dttWd(dttDate) + '）　張り出し・LINE用の画像のそのマスに出ます（スタッフみんなで共有）</div>' +
+      '<div style="font-size:12px;font-weight:700;margin-bottom:4px">教室</div>' +
+      '<select id="dtt-n-room" onchange="dttNoteFill()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;font-family:inherit;margin-bottom:10px">' + roomOpts + '</select>' +
+      '<div style="font-size:12px;font-weight:700;margin-bottom:4px">限（いくつでも）</div>' +
+      '<div style="margin-bottom:6px">' + perBoxes + '</div>' +
+      '<div style="font-size:12px;font-weight:700;margin-bottom:4px">書くこと（短く・1行）</div>' +
+      '<input id="dtt-n-body" maxlength="20" placeholder="例：模試／セミナー／平成・愛光中英語（20字まで）" value="' + escapeHtml(room ? dttNote(per, room) : '') + '" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:14px;margin-bottom:6px">' +
+      '<div style="font-size:11px;color:#666;margin-bottom:14px;line-height:1.5">空にして保存すると、選んだ限のそのマスの自由入力を消します。授業がある教室なら、授業名と「・」でつないで出ます。</div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end">' +
+        '<button onclick="dttCloseNote()" style="padding:8px 14px;border:1px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;font-family:inherit">やめる</button>' +
+        '<button onclick="dttSaveNote()" style="padding:8px 14px;border:none;border-radius:8px;background:var(--orange);color:#fff;font-weight:700;cursor:pointer;font-family:inherit">保存</button>' +
+      '</div></div>';
+  m.addEventListener('click', function (e) { if (e.target === m) dttCloseNote(); });
+  document.body.appendChild(m);
+  setTimeout(function () { var i = document.getElementById(room ? 'dtt-n-body' : 'dtt-n-room'); if (i) i.focus(); }, 30);
+}
+// 教室を選び直したら、その教室・最初に選んだ限の今の中身を入れる（新しく開いたときだけ）
+function dttNoteFill() {
+  if (dttNoteOrig) return;
+  var room = document.getElementById('dtt-n-room').value;
+  var c = document.querySelector('.dtt-n-per:checked');
+  var b = document.getElementById('dtt-n-body');
+  if (room && c && b && !b.value) b.value = dttNote(parseInt(c.value, 10), room);
+}
+async function dttSaveNote() {
+  var room = document.getElementById('dtt-n-room').value;
+  var text = String(document.getElementById('dtt-n-body').value || '').replace(/[\r\n]+/g, ' ').trim();
+  var pers = Array.prototype.map.call(document.querySelectorAll('.dtt-n-per:checked'), function (c) { return parseInt(c.value, 10); });
+  if (!room) { showToast('教室を選んでください', 'error'); return; }
+  if (!pers.length) { showToast('限を選んでください', 'error'); return; }
+  var ds = dttDate, who = dttStaffName(), now = new Date().toISOString();
+  try {
+    for (var i = 0; i < pers.length; i++) {
+      var q = 'note_date=eq.' + ds + '&period=eq.' + pers[i] + '&room=eq.' + encodeURIComponent(room);
+      if (text) await svUpsert('timetable_notes', 'note_date,period,room', { note_date: ds, period: pers[i], room: room, body: text, updated_by: who, updated_at: now });
+      else await sbDelete('timetable_notes', q);
+    }
+    // 開いたマス（教室・限）から外したら、元のマスの分は消す
+    var o = dttNoteOrig;
+    if (o && !(o.room === room && pers.indexOf(o.per) !== -1)) {
+      await sbDelete('timetable_notes', 'note_date=eq.' + ds + '&period=eq.' + o.per + '&room=eq.' + encodeURIComponent(o.room));
+    }
+    dttCloseNote();
+    showToast(text ? '自由入力を保存しました' : '自由入力を消しました', 'success');
+    dttLoad();
+  } catch (e) {
+    showToast('保存できませんでした：' + (e.message || e), 'error');
+  }
+}
+
 // ---- 張り出し（A3横・白黒） ---- 20261020bw1
 // 今までの張り出しと同じ形：黒い見出し（限・時刻・監督）、4Fフロア、教室は左右2つずつ・白と灰色の縞、相手のない欄は黒。
 // 授業のない大教室は「自習」。7限の右の広いところに「今日の話題」（あゆみのテーマ）を大きく出す。
 function dttThemeKey() { return 'fit_dtt_theme_' + dttDate; }
-function dttGetTheme() { try { return localStorage.getItem(dttThemeKey()) || ''; } catch (e) { return ''; } }
+function dttGetTheme() {
+  if (dttData && dttData.date === dttDate && dttData.notesOk) return dttData.theme || '';   // 20261024ks21: 共有（データベース）
+  try { return localStorage.getItem(dttThemeKey()) || ''; } catch (e) { return ''; }
+}
 function dttSetTheme(v) { try { if (v) localStorage.setItem(dttThemeKey(), v); else localStorage.removeItem(dttThemeKey()); } catch (e) {} }
+// 20261024ks20: 張り出しは1つの欄を必ず1行にする（行が変わると枠が崩れるため）。
+//   ・同じ教室の授業が2つ以上なら「・」でつなぐ（今までは改行）
+//   ・「共通テスト対策」「共通テスト」は「共テ」に縮める（生徒にも伝わる略し方）
+//   ・それでも入らない欄だけ、入るまで文字を小さくする（dttFitCells。印刷・LINE用の画像の両方）
+function dttShortName(n) { return String(n || '').replace(/共通テスト(対策)?/g, '共テ'); }
+// 入らない欄の文字を小さくする（root の中の td・th）。印刷用の窓でも同じ式を文字列で使う。
+function dttFitCells(root) {
+  (root || document).querySelectorAll('td,th').forEach(function (td) {
+    if (td.classList.contains('bk')) return;
+    var fs = parseFloat(window.getComputedStyle(td).fontSize) || 14, n = 0;
+    while (td.scrollWidth > td.clientWidth + 1 && fs > 7 && n++ < 30) { fs -= 0.5; td.style.fontSize = fs + 'px'; }
+  });
+}
 // 張り出しの中身（見出し＋表）。印刷（A3）と LINE用の画像（20261020ks4）で同じものを使う。
 function dttSheetBody() {
   var b = dttBuild();
@@ -69118,18 +69235,19 @@ function dttSheetBody() {
   dttSetTheme(theme);
   var names = function (k, p2) {
     var arr = ((b.per[p2] || {})[k]) || [];
-    if (!arr.length && k === '大教室') return '自習';
+    var nt = (k !== '__none') ? dttNote(p2, k) : '';   // 20261024ks21: 自由入力
+    if (!arr.length && k === '大教室' && !nt) return '自習';
     return arr.map(function (x) {
-      return escapeHtml(fitPublicClassName(x.name)) + (x.cyc ? escapeHtml(x.cyc) : '') + (x.school ? '（' + escapeHtml(x.school.replace(/^SSS[：:]\s*/, '')) + '）' : '') + (x.makeup ? '（補習）' : '') +
-        ((x.start && dttData.periods[x.per] && x.start !== dttData.periods[x.per][0]) ? ' ' + escapeHtml(x.start + '〜' + (x.end || '')) : '');
-    }).join('<br>');
+      return escapeHtml(dttShortName(fitPublicClassName(x.name))) + (x.cyc ? escapeHtml(x.cyc) : '') + (x.school ? '（' + escapeHtml(x.school.replace(/^SSS[：:]\s*/, '')) + '）' : '') + (x.makeup ? '（補習）' : '') +
+        ((x.start && dttData.periods[x.per] && x.start !== dttData.periods[x.per][0]) ? ' ' + escapeHtml(x.start + '〜') : '');
+    }).concat(nt ? [escapeHtml(nt)] : []).join('・');
   };
   var block = function (p2) {
     var i = 0;
     var rows = DTT_PRINT_ROWS.map(function (r) {
       if (r.head) return '<tr><td colspan="4" class="fl">' + r.head + '</td></tr>';
       var a1 = r.pair[0], c1 = r.pair[1];
-      if (a1 === '予備' && !((b.per[p2] || {})['予備'] || []).length) return '';
+      if (a1 === '予備' && !((b.per[p2] || {})['予備'] || []).length && !dttNote(p2, '予備')) return '';
       var cls = (i++ % 2) ? ' class="g"' : '';
       return '<tr' + cls + '><th>' + escapeHtml(dttRoomLabel(a1)) + '</th><td>' + names(a1, p2) + '</td>' +
         (c1 ? '<th>' + escapeHtml(dttRoomLabel(c1)) + '</th><td>' + names(c1, p2) + '</td>' : '<td colspan="2" class="bk"></td>') + '</tr>';
@@ -69156,7 +69274,7 @@ function dttSheetCss(sc) {
     sc + 'h1{font-size:40px;font-weight:500;margin:0 0 10px;padding-left:140px;letter-spacing:4px;color:#000}' +
     sc + '.wrap{display:grid;grid-template-columns:repeat(3,1fr);gap:14px 14px}' +
     sc + '.blk{break-inside:avoid}' + sc + '.bh{background:#000;color:#fff;font-size:17px;text-align:center;padding:7px 4px}' +
-    sc + 'table{width:100%;border-collapse:collapse;table-layout:fixed}' + sc + 'th,' + sc + 'td{border:1px solid #555;padding:6px 4px;font-size:14px;text-align:center;vertical-align:middle;height:34px;color:#000;background:#fff}' +
+    sc + 'table{width:100%;border-collapse:collapse;table-layout:fixed}' + sc + 'th,' + sc + 'td{border:1px solid #555;padding:6px 3px;font-size:14px;text-align:center;vertical-align:middle;height:34px;color:#000;background:#fff;white-space:nowrap;overflow:hidden;line-height:1.2}' +
     sc + 'th{width:15%;font-weight:400;font-size:12px}' + sc + 'td.fl{font-size:13px;letter-spacing:2px}' + sc + 'tr.g th,' + sc + 'tr.g td{background:#D9D9D9}' + sc + 'td.bk{background:#000!important}' +
     sc + '.theme{height:100%;min-height:200px;display:flex;align-items:center;justify-content:center;font-size:36px;font-weight:500;padding:10px;text-align:center}';
 }
@@ -69168,7 +69286,7 @@ function dttPrint() {
   if (!w) { showToast('ポップアップがブロックされました。許可してからもう一度押してください', 'error'); return; }
   w.document.write('<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>' + p[0] + '年' + parseInt(p[1], 10) + '月' + parseInt(p[2], 10) + '日 時間割</title>' +
     '<style>' + dttSheetCss('') + '</style></head><body>' + body +
-    '<script>setTimeout(function(){window.print();},300)<\/script></body></html>');
+    '<script>(' + dttFitCells.toString() + ')(document);setTimeout(function(){window.print();},300)<\/script></body></html>');
   w.document.close();
 }
 
@@ -69202,6 +69320,7 @@ async function dttShareImage() {
     holder.style.cssText = 'position:fixed;left:-99999px;top:0;width:1600px;padding:16px';
     holder.innerHTML = dttSheetBody();
     document.body.appendChild(holder);
+    dttFitCells(holder);   // 20261024ks20: 入らない欄の文字を小さく
     var canvas = await window.html2canvas(holder, { scale: 1.5, backgroundColor: '#ffffff', logging: false });
     dttImgBlob = await new Promise(function (r) { canvas.toBlob(r, 'image/png'); });
     if (!dttImgBlob) throw new Error('画像にできませんでした');
