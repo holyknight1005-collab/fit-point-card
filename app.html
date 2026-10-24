@@ -6924,7 +6924,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261024ks17';
+const APP_VERSION = '20261024ks19';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -25197,7 +25197,7 @@ function revSeasonHtml() {
     '<th style="padding:8px 10px;text-align:' + (i === 0 ? 'left' : 'right') + ';font-weight:700;border-bottom:1px solid var(--border);white-space:nowrap">' + t + '</th>').join('') + '</tr></thead>';
   const td = 'padding:8px 10px;border-bottom:1px solid var(--border);';
   const nameOfT = (t) => t === REV_EIGO_BU ? '英語部（英語の講座すべて）' : (d.staffName[t] || '(不明)');
-  let html = saSectionTitle('🗓 講師別（時期別・' + fy + '年度／延べ担当生徒数）');
+  let html = saSectionTitle('🗓 講師別（時期別・' + fy + '年度／人×コマ・延べ人数）');
   const cats = REV_SEASON_CATS.filter(c => d.catTot[c]);
   if (!cats.length) {
     return html + '<div style="font-size:12px;color:var(--muted);padding:10px 2px 16px">' + fy + '年度の時期別の授業はありません。</div>';
@@ -25209,37 +25209,41 @@ function revSeasonHtml() {
     + cats.map(c => { const m = classCategoryMeta(c); return chip(c, m.icon + ' ' + m.label); }).join('') + '</div>';
 
   // 選んだ区分の数（すべてなら合計）
-  const pick = (r) => {
-    if (cat === 'all') return { stu: r.stu, prov: r.prov, cls: r.cls };
-    const b = r.byCat[cat]; return b ? { stu: b.stu, prov: b.prov || 0, cls: b.cls } : null;
-  };
+  const pick = (r) => (cat === 'all') ? r : (r.byCat[cat] || null);
   const rows = Object.keys(d.sTea).map(t => ({ t, v: pick(d.sTea[t]), r: d.sTea[t] })).filter(x => x.v && (x.v.stu || x.v.cls));
-  rows.sort((a, b) => (a.t === REV_EIGO_BU) - (b.t === REV_EIGO_BU) || (b.v.stu - a.v.stu) || (b.v.cls - a.v.cls));
+  // 人×コマの多い順（英語部は一番下）
+  rows.sort((a, b) => (a.t === REV_EIGO_BU) - (b.t === REV_EIGO_BU) || (b.v.hk - a.v.hk) || (b.v.stu - a.v.stu));
   const showBreak = (cat === 'all');
+  const sub = (txt) => '<div style="font-size:10px;font-weight:400;color:var(--muted)">' + txt + '</div>';
   html += '<div style="overflow-x:auto;margin-bottom:6px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
-    + th(showBreak ? ['講師', '延べ人数', '授業数', '内訳（人／授業）'] : ['講師', '延べ人数', '授業数']) + '<tbody>';
+    + th(['講師', '人×コマ', '延べ人数', '授業数', 'コマ数'].concat(showBreak ? ['内訳（人×コマ）'] : [])) + '<tbody>';
   rows.forEach(x => {
     const parts = showBreak ? REV_SEASON_CATS.filter(c => x.r.byCat[c]).map(c => {
       const m = classCategoryMeta(c);
-      return '<span style="white-space:nowrap">' + m.icon + escapeHtml(m.label) + ' ' + x.r.byCat[c].stu + '／' + x.r.byCat[c].cls + '</span>';
-    }).join('　') : '';
+      return '<span style="white-space:nowrap">' + m.icon + escapeHtml(m.label) + ' ' + x.r.byCat[c].hk.toLocaleString('ja-JP') + '</span>';
+    }).join('<br>') : '';
     html += '<tr' + (x.t === REV_EIGO_BU ? ' style="background:var(--surface)"' : '') + '>'
       + '<td style="' + td + 'font-weight:700;white-space:nowrap">' + escapeHtml(nameOfT(x.t)) + '</td>'
-      + '<td style="' + td + 'text-align:right;font-weight:700;color:#1A4D80">' + x.v.stu + '人' + (x.v.prov ? '<div style="font-size:10px;font-weight:400;color:var(--muted)">うち見込み ' + x.v.prov + '</div>' : '') + '</td>'
+      + '<td style="' + td + 'text-align:right;font-weight:800;color:#1A4D80">' + x.v.hk.toLocaleString('ja-JP') + '</td>'
+      + '<td style="' + td + 'text-align:right">' + x.v.stu + '人' + (x.v.prov ? sub('うち見込み ' + x.v.prov) : '') + '</td>'
       + '<td style="' + td + 'text-align:right">' + x.v.cls + '</td>'
+      + '<td style="' + td + 'text-align:right">' + x.v.koma + '</td>'
       + (showBreak ? '<td style="' + td + 'text-align:right;font-size:11px;color:var(--muted)">' + parts + '</td>' : '')
       + '</tr>';
   });
-  const tot = (cat === 'all') ? { stu: d.allStu, prov: d.allProv, cls: d.allCls } : d.catTot[cat];
+  const tot = (cat === 'all') ? d.allTot : d.catTot[cat];
   html += '<tr style="background:var(--orange-l)">'
     + '<td style="padding:8px 10px;font-weight:800">合計（授業ごと）</td>'
-    + '<td style="padding:8px 10px;text-align:right;font-weight:800">' + tot.stu + '人' + (tot.prov ? '<div style="font-size:10px;font-weight:400;color:var(--muted)">うち見込み ' + tot.prov + '</div>' : '') + '</td>'
+    + '<td style="padding:8px 10px;text-align:right;font-weight:800">' + tot.hk.toLocaleString('ja-JP') + '</td>'
+    + '<td style="padding:8px 10px;text-align:right;font-weight:800">' + tot.stu + '人' + (tot.prov ? sub('うち見込み ' + tot.prov) : '') + '</td>'
     + '<td style="padding:8px 10px;text-align:right;font-weight:800">' + tot.cls + '</td>'
+    + '<td style="padding:8px 10px;text-align:right;font-weight:800">' + tot.koma + '</td>'
     + (showBreak ? '<td style="padding:8px 10px"></td>' : '')
     + '</tr>';
   html += '</tbody></table></div>';
   html += '<div style="font-size:10px;color:var(--muted);line-height:1.6;margin-bottom:8px">'
-    + '※ 上のボタンで区分（共通テスト対策・夏期講習など）ごとの延べ人数に切り替えられます。<br>'
+    + '※ 上のボタンで区分（共通テスト対策・夏期講習など）ごとに切り替えられます。<br>'
+    + '※ <b>人×コマ</b>＝受講生ごとに、その子が出るコマ数を足したもの（理科の4回選択の子は選んだ回だけ）。コマ数＝授業日登録の授業日の数（補習は除く・これからの予定も含む）。<br>'
     + '※ 時期別は売上を講師に分けません（講習の料金は生徒ごとの合計回数で決まるため）。売上は「講習」タブをご覧ください。<br>'
     + '※ 英語の講座は、講師個人に分けず全部「英語部」にまとめています。ほかの教科で複数講師の授業は、それぞれの講師に人数・授業数を入れます（合計は授業ごとの数）。<br>'
     + '※ 高校部の生徒が対象です（時期別のみの子を含む。高卒部の浪人生は入れていません）。</div>';
@@ -25252,7 +25256,7 @@ async function renderRevTeacher() {
 
   // 授業（終わった授業も読む：受講が残っていれば月謝の計算に入っているため。授業数は今ある授業だけ数える）
   let cms = [];
-  try { cms = await sbGetAll('class_master', 'select=id,name,subject,teacher_staff_id,category,school_year,is_active') || []; }
+  try { cms = await sbGetAll('class_master', 'select=id,name,subject,teacher_staff_id,category,school_year,is_active,division') || []; }
   catch (e) { wrap.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:20px;text-align:center">授業データを読めませんでした。</div>'; return; }
 
   const fy = getFiscalYearJST();
@@ -25260,6 +25264,7 @@ async function renderRevTeacher() {
   const normalIds = new Set(), seasonIds = new Set();
   cms.forEach(c => {
     cmById[c.id] = c; nameOf[c.id] = c.name || '';
+    if ((c.division || '高校部') !== '高校部') return;                    // 20261024ks19: 中学部の授業は数えない（授業数に中学の授業が入っていた）
     if (c.category === 'normal') normalIds.add(c.id);                    // 月謝の計算（loadRevenue）と同じ基準
     else if (REV_SEASON_CATS.indexOf(c.category) !== -1 && Number(c.school_year) === Number(fy)) seasonIds.add(c.id);
   });
@@ -25355,18 +25360,38 @@ async function renderRevTeacher() {
   // 20261024ks17: 時期別の英語は、講師個人のレベルの授業ではないので、全部「英語部」1つにまとめる
   const seasonTeachers = (id) => (cmSubj(id) === '英語') ? new Set([REV_EIGO_BU]) : (realTeachers[id] || new Set());
   const enrSeason = enrAll.filter(e => seasonIds.has(e.class_master_id) && seasonStu.has(e.student_id));
-  const sTea = {};   // staff -> { stu, prov, cls, byCat:{cat:{stu,cls}} }
-  const sRow = (t) => sTea[t] || (sTea[t] = { stu: 0, prov: 0, cls: 0, byCat: {} });
-  const sCat = (r, cat) => r.byCat[cat] || (r.byCat[cat] = { stu: 0, cls: 0 });
+  // 20261024ks18: コマ数＝授業日登録の授業日（補習は除く。今日より先の予定も含む）。
+  //   人×コマ＝受講生ごとに、その子が出るコマを数えて足す（理科の4回選択の子は選んだ回だけ）。
+  const seasonIdList = [...seasonIds];
+  const sessDates = {};   // classId -> [session_date,...]（1コマ1行。同じ日の5限・6限は2コマ）
+  for (let i = 0; i < seasonIdList.length; i += 60) {
+    try {
+      const rows = await sbGetAll('class_sessions', 'class_master_id=in.(' + seasonIdList.slice(i, i + 60).join(',') + ')&is_makeup=not.eq.true&select=class_master_id,session_date&order=session_date') || [];
+      rows.forEach(x => { (sessDates[x.class_master_id] || (sessDates[x.class_master_id] = [])).push(x.session_date); });
+    } catch (e) { /* 取れなければコマ数0 */ }
+  }
+  const seasonPlan = await fitPlanMap(seasonIdList);
+  const komaOf = (id) => (sessDates[id] || []).length;
+  const stuKoma = (e) => (sessDates[e.class_master_id] || []).filter(dt => fitPlanIn(seasonPlan, e.class_master_id, e.student_id, dt)).length;
+  const sTea = {};   // staff -> { stu, prov, cls, koma, hk, byCat:{cat:{stu,prov,cls,koma,hk}} }
+  const sRow = (t) => sTea[t] || (sTea[t] = { stu: 0, prov: 0, cls: 0, koma: 0, hk: 0, byCat: {} });
+  const sCat = (r, cat) => r.byCat[cat] || (r.byCat[cat] = { stu: 0, prov: 0, cls: 0, koma: 0, hk: 0 });
+  const catTot = {};
+  const cTot = (c) => catTot[c] || (catTot[c] = { stu: 0, prov: 0, cls: 0, koma: 0, hk: 0 });
   enrSeason.forEach(e => {
     const cat = cmById[e.class_master_id].category;
+    const k = stuKoma(e);
+    const ct = cTot(cat); ct.stu++; ct.hk += k; if (e.is_provisional) ct.prov++;
     seasonTeachers(e.class_master_id).forEach(t => {
-      const r = sRow(t); r.stu++; if (e.is_provisional) r.prov++; const rc = sCat(r, cat); rc.stu++; if (e.is_provisional) rc.prov = (rc.prov || 0) + 1;
+      const r = sRow(t), rc = sCat(r, cat);
+      r.stu++; rc.stu++; r.hk += k; rc.hk += k;
+      if (e.is_provisional) { r.prov++; rc.prov++; }
     });
   });
   seasonIds.forEach(id => {
     const cat = cmById[id].category;
-    seasonTeachers(id).forEach(t => { const r = sRow(t); r.cls++; sCat(r, cat).cls++; });
+    const ct = cTot(cat); ct.cls++; ct.koma += komaOf(id);
+    seasonTeachers(id).forEach(t => { const r = sRow(t), rc = sCat(r, cat); r.cls++; rc.cls++; r.koma += komaOf(id); rc.koma += komaOf(id); });
   });
 
   const yen = (n) => '¥' + Math.round(n || 0).toLocaleString('ja-JP');
@@ -25443,10 +25468,9 @@ async function renderRevTeacher() {
     + '※ 英語は、長文読解・超感覚（英語・S・演習）・ハイレベル入試実践・スタンダード入試実践を「英語部」にまとめ、ほかの英語の授業は担当の講師に入れています。</div>';
 
   // --- 講師別（🗓 時期別） --- 20261024ks17: 区分（共通テスト対策・夏期など）ごとに切り替えて出す
-  const catTot = {};
-  enrSeason.forEach(e => { const c = cmById[e.class_master_id].category; const r = catTot[c] || (catTot[c] = { stu: 0, prov: 0, cls: 0 }); r.stu++; if (e.is_provisional) r.prov++; });
-  seasonIds.forEach(id => { const c = cmById[id].category; const r = catTot[c] || (catTot[c] = { stu: 0, prov: 0, cls: 0 }); r.cls++; });
-  revSeasonData = { fy, sTea, catTot, staffName, allStu: enrSeason.length, allProv: enrSeason.filter(e => e.is_provisional).length, allCls: seasonIds.size };
+  const allTot = { stu: 0, prov: 0, cls: 0, koma: 0, hk: 0 };
+  Object.keys(catTot).forEach(c => { ['stu', 'prov', 'cls', 'koma', 'hk'].forEach(k => { allTot[k] += catTot[c][k]; }); });
+  revSeasonData = { fy, sTea, catTot, staffName, allTot };
   if (revSeasonCat !== 'all' && !catTot[revSeasonCat]) revSeasonCat = 'all';
   html += '<div id="rev-season-wrap">' + revSeasonHtml() + '</div>';
 
