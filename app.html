@@ -6808,7 +6808,8 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
       </div>
       <div id="cs-filter-bar" style="display:none;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;background:var(--orange-l);border:1px solid var(--orange);border-radius:8px;padding:6px 10px;margin-top:6px">
         <span style="font-size:12px;font-weight:700;color:var(--orange-d)">📅 <span id="cs-filter-name"></span> の日程</span>
-        <button onclick="clearSessionFilter()" style="padding:3px 10px;background:var(--surface);border:1px solid var(--orange);border-radius:12px;color:var(--orange-d);font-size:11px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">絞り込み解除</button>
+        <span style="display:flex;gap:6px"><button onclick="openSessionBulk(sessionFilterClassId)" style="padding:3px 10px;background:#2D5FA6;border:1px solid #2D5FA6;border-radius:12px;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">📅 まとめて変更・削除</button>
+        <button onclick="clearSessionFilter()" style="padding:3px 10px;background:var(--surface);border:1px solid var(--orange);border-radius:12px;color:var(--orange-d);font-size:11px;font-weight:700;cursor:pointer;font-family:'Noto Sans JP',sans-serif">絞り込み解除</button></span>
       </div>
       <div id="cs-list" style="display:flex;flex-direction:column;gap:8px;margin-top:8px"></div>
     </div>
@@ -6924,7 +6925,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261024ks21';
+const APP_VERSION = '20261025ks22';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -28781,6 +28782,7 @@ async function previewSessions() {
   }
 
   // プレビュー表示（授業ごとにグループ化＋一括時刻変更ボタン付き）
+  await csLoadSlotMap();   // 20261025ks22: 固定案（いつもの曜日・限）と比べる
   renderCsPreview();
 
   document.getElementById('cs-preview').style.display = 'block';
@@ -28879,6 +28881,7 @@ async function previewSpotSessions() {
 
   // プレビュー表示（定期登録と同じ見た目・同じ確定フローを使用。時間の一括変更も可能）
   csCycleSource = 'spot';   // 20261010pc1: 単発登録では「同じ回にする」切り替えは出さない（番号は上で決定済み）
+  await csLoadSlotMap();   // 20261025ks22
   renderCsPreview();
   document.getElementById('cs-preview').style.display = 'block';
   document.getElementById('cs-preview').scrollIntoView({behavior:'smooth'});
@@ -28898,9 +28901,19 @@ function renderCsPreview() {
     if (!byClass[k]) { byClass[k] = { name: s.class_name, list: [] }; order.push(k); }
     byClass[k].list.push(s);
   });
+  csMismatchTotal = 0;
   const html = order.map(k => {
     const g = byClass[k];
     const list = g.list.slice().sort((a,b) => (a.session_date < b.session_date ? -1 : (a.session_date > b.session_date ? 1 : (a.period||0)-(b.period||0))));
+    // 20261025ks22: 固定案（いつもの曜日・限）と違う日
+    const mis = csSlotMismatch(k, list);
+    csMismatchTotal += mis.length;
+    const misSet = new Set(mis);
+    const misBox = mis.length
+      ? '<div style="font-size:12px;color:#9A5A00;background:#FFF4E5;border:1px solid #F0C27A;border-radius:8px;padding:6px 10px;margin:2px 0 6px;line-height:1.5">⚠ ' +
+          (csSlotInfo[k].src === 'fixed' ? '固定案では ' : 'これまでは ') + escapeHtml(Object.keys(csSlotInfo[k].keys).map(csSlotLabel).join('・')) + ' です。' +
+          '違う曜日・限の日が <b>' + mis.length + '日</b> あります。まちがいでないか確かめてください。</div>'
+      : '';
     // この授業の時刻が全日同じなら1つ、違えば「複数」表示
     const timeSet = [...new Set(list.map(s => (s.start_time||'') + '〜' + (s.end_time||'')))];
     const timeLabel = (timeSet.length === 1) ? timeSet[0] : '（日により異なる）';
@@ -28917,7 +28930,7 @@ function renderCsPreview() {
       const [py, pm, pd] = s.session_date.split('-').map(Number);
       const pDate = new Date(py, pm-1, pd);
       const per = (s.period == null) ? '時間指定' : (s.period + '限');
-      return '<div style="font-size:11px;color:var(--muted);padding:1px 0">　' + pm + '/' + pd + '（' + weekNames[pDate.getDay()] + '）　' + per + ' ' + (s.start_time||'') + '〜' + (s.end_time||'') +
+      return '<div style="font-size:11px;color:' + (misSet.has(s) ? '#9A5A00;font-weight:700' : 'var(--muted)') + ';padding:1px 0">' + (misSet.has(s) ? '⚠' : '　') + pm + '/' + pd + '（' + weekNames[pDate.getDay()] + '）　' + per + ' ' + (s.start_time||'') + '〜' + (s.end_time||'') +
         (s.is_makeup ? '<span style="font-size:10px;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:10px;padding:0 6px;margin-left:6px">🔁補習</span>' : '') +
         (s.cycle_no ? '<span style="color:var(--orange-d);font-weight:700;margin-left:6px">' + sessionCycleLabel(s) + '</span>' : '') + '</div>';
     }).join('');
@@ -28926,7 +28939,7 @@ function renderCsPreview() {
         '<div style="font-size:13px;font-weight:800;color:var(--text)">' + escapeHtml(g.name || '') +
           '<span style="font-size:11px;font-weight:600;color:var(--muted);margin-left:8px">' + list.length + '日 / ' + escapeHtml(perLabel) + ' ' + escapeHtml(timeLabel) + '</span></div>' +
         '<button onclick="csBulkTime(\'' + escapeAttr(k) + '\')" style="font-size:11px;font-weight:700;color:#2D6DB5;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:7px;padding:5px 12px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">⏱ 時間を一括変更</button>' +
-      '</div>' + sameDayBox + rows +
+      '</div>' + misBox + sameDayBox + rows +
     '</div>';
   }).join('');
   document.getElementById('cs-preview-list').innerHTML = html;
@@ -28992,6 +29005,8 @@ function csBulkTime(classId) {
 
 async function confirmSessions() {
   if (!pendingSessions.length) return;
+  // 20261025ks22: 固定案（いつもの曜日・限）と違う日があれば、登録の前に確かめる
+  if (csMismatchTotal > 0 && !confirm('いつもの曜日・限と違う日が ' + csMismatchTotal + '日 あります（プレビューの ⚠ の行）。\n\nこのまま登録しますか？')) return;
   showLoading('登録中...');
   const csDupSkipped = [];   // 20261011sc1
   try {
@@ -29190,6 +29205,335 @@ async function deleteSession(id) {
   } catch (e) {
     showToast('削除に失敗しました：' + (e && e.message ? e.message : e), 'error');
   }
+}
+
+
+// ===== 20261025ks22: 授業日の「📅 まとめて変更・削除」 =====
+// スタッフの声：まとめて登録をまちがえたとき（日曜で登録したが本当は土曜など）、1回ずつ直すのが大変。
+// ・授業日一覧で授業を絞り込み（授業カードの「📅 日程を見る」）→「📅 まとめて変更・削除」
+// ・期間の回にチェック → 曜日（近い日／前へ／後へ）・限・時刻・教室をまとめて変える。まず「変更を確かめる」で
+//   変える前→後の一覧と注意（出席・報告書を移す／同じ授業がもうある／先生・生徒の重なり）を見てから保存。
+// ・出席（session_attendance）・授業報告（class_reports）・動画（video_lessons）も新しい日・限へ移す。回番号はそのまま。
+// ・「選んだ回を削除」：出席が入っている回は消さない。消したあと、以降の回番号を詰める（1回ずつの削除と同じ考え方）。
+var sbkState = null;   // { classId, name, category, sessions:[], att:{}, rep:{}, plan:null }
+var SBK_WD = ['日', '月', '火', '水', '木', '金', '土'];
+function sbkWd(ds) { var p = ds.split('-').map(Number); return new Date(p[0], p[1] - 1, p[2]).getDay(); }
+function sbkAddDays(ds, n) { var p = ds.split('-').map(Number); var d = new Date(p[0], p[1] - 1, p[2] + n); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function sbkMd(ds) { var p = ds.split('-').map(Number); return p[1] + '/' + p[2] + '（' + SBK_WD[sbkWd(ds)] + '）'; }
+function sbkPerLabel(per, st, en) { return (per != null && per !== '' ? per + '限 ' : '') + (st ? String(st).slice(0, 5) + '〜' + String(en || '').slice(0, 5) : ''); }
+function sbkClose() { var m = document.getElementById('sbk-modal'); if (m) m.remove(); sbkState = null; }
+
+async function openSessionBulk(classId) {
+  if (!classId) { showToast('先に授業カードの「📅 日程を見る」で授業を選んでください', 'error'); return; }
+  sbkClose();
+  try { await wkLoadOverrides(); } catch (e) {}
+  var cm = ((await sbGet('class_master', 'id=eq.' + classId + '&select=id,name,category') || [])[0]) || { name: '' };
+  var sessions = await sbGetAll('class_sessions', 'class_master_id=eq.' + classId + '&select=id,session_date,period,start_time,end_time,is_makeup,cycle_year,cycle_month,cycle_no,school,room&order=session_date,period') || [];
+  var att = {}, rep = {};
+  try { (await sbGetAll('session_attendance', 'class_master_id=eq.' + classId + '&select=session_date,period') || []).forEach(function (a) { var k = a.session_date + '|' + (a.period == null ? '' : a.period); att[k] = (att[k] || 0) + 1; }); } catch (e) {}
+  try { (await sbGetAll('class_reports', 'class_master_id=eq.' + classId + '&select=session_date') || []).forEach(function (r) { rep[r.session_date] = true; }); } catch (e) {}
+  var today = getTodayJST();
+  var last = sessions.length ? sessions[sessions.length - 1].session_date : today;
+  sbkState = { classId: classId, name: cm.name || '', category: cm.category || 'normal', sessions: sessions, att: att, rep: rep, from: today, to: last, checked: {}, plan: null };
+  sessions.forEach(function (s) { if (s.session_date >= today) sbkState.checked[s.id] = true; });
+  var perOpts = '<option value="">変えない</option>' + Object.keys(PERIODS).map(function (p) { return '<option value="' + p + '">' + p + '限</option>'; }).join('');
+  var wdOpts = '<option value="">変えない</option>' + SBK_WD.map(function (w, i) { return '<option value="' + i + '">' + w + '曜</option>'; }).join('');
+  var roomOpts = '<option value="">変えない</option><option value="__clear">その日の教室を外す（いつもの教室に戻す）</option>' +
+    (typeof DTT_ROOMS !== 'undefined' ? DTT_ROOMS.map(function (r) { return '<option value="' + escapeHtml(r.key) + '">' + escapeHtml(r.label) + '</option>'; }).join('') : '');
+  var inp = 'padding:7px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:13px';
+  var m = document.createElement('div');
+  m.id = 'sbk-modal';
+  m.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;padding:12px';
+  m.innerHTML =
+    '<div style="background:#fff;border-radius:14px;max-width:640px;width:100%;max-height:100%;display:flex;flex-direction:column;overflow:hidden">' +
+      '<div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">' +
+        '<div style="flex:1;font-size:15px;font-weight:800">📅 まとめて変更・削除<div style="font-size:12px;font-weight:600;color:var(--muted)">' + escapeHtml(sbkState.name) + '</div></div>' +
+        '<button onclick="sbkClose()" style="border:1px solid var(--border);background:#fff;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:inherit">閉じる</button></div>' +
+      '<div style="flex:1;overflow:auto;padding:12px 16px">' +
+        '<div style="font-size:12px;font-weight:700;margin-bottom:4px">① 変える回（期間を選んで、チェックで外せます）</div>' +
+        '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">' +
+          '<input type="date" id="sbk-from" value="' + sbkState.from + '" onchange="sbkSetRange()" style="' + inp + '">〜' +
+          '<input type="date" id="sbk-to" value="' + sbkState.to + '" onchange="sbkSetRange()" style="' + inp + '">' +
+          '<button onclick="sbkCheckAll(true)" style="' + inp + ';background:#fff;cursor:pointer;font-size:11px">全部チェック</button>' +
+          '<button onclick="sbkCheckAll(false)" style="' + inp + ';background:#fff;cursor:pointer;font-size:11px">全部外す</button></div>' +
+        '<div id="sbk-list" style="border:1px solid var(--border);border-radius:8px;max-height:220px;overflow:auto;margin-bottom:12px"></div>' +
+        '<div style="font-size:12px;font-weight:700;margin-bottom:4px">② どう変えるか（変えないところはそのまま）</div>' +
+        '<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 8px;align-items:center;font-size:12px;margin-bottom:6px">' +
+          '<span>曜日</span><div style="display:flex;gap:6px;flex-wrap:wrap"><select id="sbk-wd" onchange="sbkClearPlan()" style="' + inp + '">' + wdOpts + '</select>' +
+            '<select id="sbk-dir" onchange="sbkClearPlan()" style="' + inp + '"><option value="near">近い日へ（例：日→前日の土）</option><option value="back">前へ（その週の前）</option><option value="fwd">後へ（その週の後）</option></select></div>' +
+          '<span>限</span><select id="sbk-per" onchange="sbkClearPlan()" style="' + inp + '">' + perOpts + '</select>' +
+          '<span>時刻</span><div style="display:flex;gap:6px;align-items:center"><input type="time" id="sbk-st" onchange="sbkClearPlan()" style="' + inp + '">〜<input type="time" id="sbk-en" onchange="sbkClearPlan()" style="' + inp + '"><span style="font-size:11px;color:var(--muted)">空なら限の時刻（限も変えないなら今の時刻）</span></div>' +
+          '<span>教室</span><select id="sbk-room" onchange="sbkClearPlan()" style="' + inp + '">' + roomOpts + '</select>' +
+        '</div>' +
+        '<div id="sbk-preview" style="margin-top:8px"></div>' +
+      '</div>' +
+      '<div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap">' +
+        '<button onclick="sbkDelete()" style="padding:9px 12px;border:1px solid #F5BABA;background:var(--red-l);color:var(--red);border-radius:8px;font-weight:700;cursor:pointer;font-family:inherit">🗑 選んだ回を削除</button>' +
+        '<span style="flex:1"></span>' +
+        '<button onclick="sbkMakePlan()" style="padding:9px 14px;border:1px solid #2D5FA6;background:#EAF3FB;color:#1A4D80;border-radius:8px;font-weight:700;cursor:pointer;font-family:inherit">👀 変更を確かめる</button>' +
+        '<button id="sbk-save" onclick="sbkSave()" disabled style="padding:9px 14px;border:none;background:var(--orange);color:#fff;border-radius:8px;font-weight:700;cursor:pointer;font-family:inherit;opacity:.4">保存</button>' +
+      '</div></div>';
+  m.addEventListener('click', function (e) { if (e.target === m) sbkClose(); });
+  document.body.appendChild(m);
+  sbkRenderList();
+}
+function sbkInRange(s) { return s.session_date >= sbkState.from && s.session_date <= sbkState.to; }
+function sbkSetRange() {
+  sbkState.from = document.getElementById('sbk-from').value || '0000-00-00';
+  sbkState.to = document.getElementById('sbk-to').value || '9999-12-31';
+  sbkState.checked = {};
+  sbkState.sessions.forEach(function (s) { if (sbkInRange(s)) sbkState.checked[s.id] = true; });
+  sbkClearPlan(); sbkRenderList();
+}
+function sbkCheckAll(on) { sbkState.sessions.forEach(function (s) { if (sbkInRange(s)) { if (on) sbkState.checked[s.id] = true; else delete sbkState.checked[s.id]; } }); sbkClearPlan(); sbkRenderList(); }
+function sbkToggle(id, on) { if (on) sbkState.checked[id] = true; else delete sbkState.checked[id]; sbkClearPlan(); var c = document.getElementById('sbk-cnt'); if (c) c.textContent = sbkSelected().length; }
+function sbkSelected() { return sbkState.sessions.filter(function (s) { return sbkInRange(s) && sbkState.checked[s.id]; }); }
+function sbkClearPlan() { if (!sbkState) return; sbkState.plan = null; var p = document.getElementById('sbk-preview'); if (p) p.innerHTML = ''; var b = document.getElementById('sbk-save'); if (b) { b.disabled = true; b.style.opacity = '.4'; } }
+function sbkRenderList() {
+  var el = document.getElementById('sbk-list');
+  if (!el) return;
+  var list = sbkState.sessions.filter(sbkInRange);
+  if (!list.length) { el.innerHTML = '<div style="padding:10px;font-size:12px;color:var(--muted)">この期間の授業日はありません。</div>'; return; }
+  el.innerHTML = '<div style="padding:4px 8px;font-size:11px;color:var(--muted);background:var(--surface2)">選んでいる回：<b id="sbk-cnt">' + sbkSelected().length + '</b> / ' + list.length + '</div>' + list.map(function (s) {
+    var a = sbkState.att[s.session_date + '|' + (s.period == null ? '' : s.period)] || 0;
+    return '<label style="display:flex;align-items:center;gap:6px;padding:4px 8px;border-top:1px solid var(--border);font-size:12px;cursor:pointer">' +
+      '<input type="checkbox"' + (sbkState.checked[s.id] ? ' checked' : '') + ' onchange="sbkToggle(\'' + s.id + '\',this.checked)">' +
+      '<span style="min-width:72px">' + sbkMd(s.session_date) + '</span><span style="min-width:110px">' + escapeHtml(sbkPerLabel(s.period, s.start_time, s.end_time)) + '</span>' +
+      (s.is_makeup ? '<span style="color:#8A5A2B">補習</span>' : (s.cycle_no ? '<span style="color:var(--orange-d);font-weight:700">' + escapeHtml(sessionCycleLabel(s)) + '</span>' : '')) +
+      (s.school ? '<span style="color:var(--muted)">（' + escapeHtml(s.school) + '）</span>' : '') +
+      (a ? '<span style="font-size:10px;color:#1A7340;background:#E8F6EE;border-radius:8px;padding:0 6px">出席' + a + '</span>' : '') +
+      (sbkState.rep[s.session_date] ? '<span style="font-size:10px;color:#1A4D80;background:#EAF3FB;border-radius:8px;padding:0 6px">報告</span>' : '') +
+    '</label>';
+  }).join('');
+}
+// 曜日の移し先：近い日（−3〜+3日）／前へ（−1〜−6日）／後へ（+1〜+6日）
+function sbkShiftDays(fromWd, toWd, dir) {
+  var d = (toWd - fromWd + 7) % 7;   // 0..6（後へ）
+  if (d === 0) return 0;
+  if (dir === 'fwd') return d;
+  if (dir === 'back') return d - 7;
+  return d <= 3 ? d : d - 7;
+}
+async function sbkMakePlan() {
+  var sel = sbkSelected();
+  if (!sel.length) { showToast('変える回にチェックを入れてください', 'error'); return; }
+  var wd = document.getElementById('sbk-wd').value, dir = document.getElementById('sbk-dir').value;
+  var per = document.getElementById('sbk-per').value, st = document.getElementById('sbk-st').value, en = document.getElementById('sbk-en').value;
+  var room = document.getElementById('sbk-room').value;
+  if (wd === '' && per === '' && !st && !en && room === '') { showToast('曜日・限・時刻・教室のどれかを選んでください', 'error'); return; }
+  if ((st && !en) || (!st && en)) { showToast('時刻は開始と終了の両方を入れてください', 'error'); return; }
+  var prev = document.getElementById('sbk-preview');
+  prev.innerHTML = '<div style="font-size:12px;color:var(--muted)">確かめています…</div>';
+  var rows = sel.map(function (s) {
+    var nd = s.session_date;
+    if (wd !== '') nd = sbkAddDays(s.session_date, sbkShiftDays(sbkWd(s.session_date), parseInt(wd, 10), dir));
+    var np = (per !== '') ? parseInt(per, 10) : (s.period == null ? null : parseInt(s.period, 10));
+    var ns = s.start_time ? String(s.start_time).slice(0, 5) : '', ne = s.end_time ? String(s.end_time).slice(0, 5) : '';
+    if (st) { ns = st; ne = en; }
+    else if (per !== '' || (wd !== '' && np != null)) { var t = periodsForDate(nd)[np]; if (t) { ns = t[0]; ne = t[1]; } }
+    var nr = room === '' ? (s.room || null) : (room === '__clear' ? null : room);
+    return { s: s, od: s.session_date, nd: nd, np: np, ns: ns, ne: ne, nr: nr, warn: [], block: '' };
+  });
+  // 同じ授業が移し先にもうある（今回動かさない回）
+  var moving = {}; rows.forEach(function (r) { moving[r.s.id] = true; });
+  var stay = sbkState.sessions.filter(function (s) { return !moving[s.id]; });
+  var keyOf = function (d, p, stt, sch) { return d + '|' + (p == null ? '@' + stt : p) + '|' + (sch || ''); };
+  var stayKeys = {}; stay.forEach(function (s) { stayKeys[keyOf(s.session_date, s.period == null ? null : parseInt(s.period, 10), String(s.start_time || '').slice(0, 5), s.school)] = true; });
+  var newKeys = {};
+  rows.forEach(function (r) {
+    var k = keyOf(r.nd, r.np, r.ns, r.s.school);
+    if (stayKeys[k]) r.block = '同じ授業がこの日・限にもうあります';
+    else if (newKeys[k]) r.block = '選んだ回どうしが同じ日・限になります';
+    newKeys[k] = true;
+  });
+  // 先生・生徒の重なり（移し先の日に、ほかの授業が同じ限・重なる時刻にある）
+  try {
+    var dates = [...new Set(rows.map(function (r) { return r.nd; }))];
+    var others = [];
+    for (var i = 0; i < dates.length; i += 40) {
+      others = others.concat(await sbGetAll('class_sessions', 'session_date=in.(' + dates.slice(i, i + 40).join(',') + ')&class_master_id=neq.' + sbkState.classId + '&select=class_master_id,session_date,period,start_time,end_time,class_master(name,teacher_staff_id,is_active)') || []);
+    }
+    others = others.filter(function (o) { return o.class_master && o.class_master.is_active !== false; });
+    var myT = {};
+    var cmMe = (await sbGet('class_master', 'id=eq.' + sbkState.classId + '&select=teacher_staff_id') || [])[0];
+    if (cmMe && cmMe.teacher_staff_id) myT[cmMe.teacher_staff_id] = true;
+    var ocids = [...new Set(others.map(function (o) { return o.class_master_id; }))];
+    var otT = {};
+    try {
+      (await sbGetAll('class_teachers', 'class_master_id=in.(' + [sbkState.classId].concat(ocids).join(',') + ')&select=class_master_id,staff_id') || []).forEach(function (ct) {
+        if (ct.class_master_id === sbkState.classId) myT[ct.staff_id] = true; else (otT[ct.class_master_id] = otT[ct.class_master_id] || {})[ct.staff_id] = true;
+      });
+    } catch (e) {}
+    var myStu = (await sbGetAll('class_enrollments', 'class_master_id=eq.' + sbkState.classId + '&ended_on=is.null&select=student_id') || []).map(function (e) { return e.student_id; });
+    var stuIn = {};
+    if (myStu.length && ocids.length) {
+      for (var j = 0; j < myStu.length; j += 80) {
+        (await sbGetAll('class_enrollments', 'student_id=in.(' + myStu.slice(j, j + 80).join(',') + ')&ended_on=is.null&select=class_master_id,student_id') || []).forEach(function (e) { if (e.class_master_id !== sbkState.classId) stuIn[e.class_master_id] = (stuIn[e.class_master_id] || 0) + 1; });
+      }
+    }
+    var overlap = function (r, o) {
+      if (r.np != null && o.period != null) return parseInt(o.period, 10) === r.np;
+      var os = String(o.start_time || '').slice(0, 5), oe = String(o.end_time || '').slice(0, 5);
+      return !!(r.ns && os && os < (r.ne || r.ns) && (oe || os) > r.ns);
+    };
+    rows.forEach(function (r) {
+      others.filter(function (o) { return o.session_date === r.nd && overlap(r, o); }).forEach(function (o) {
+        var ts = {}; if (o.class_master.teacher_staff_id) ts[o.class_master.teacher_staff_id] = true; Object.keys(otT[o.class_master_id] || {}).forEach(function (t) { ts[t] = true; });
+        if (Object.keys(ts).some(function (t) { return myT[t]; })) r.warn.push('先生が「' + o.class_master.name + '」と重なる');
+        if (stuIn[o.class_master_id]) r.warn.push('生徒' + stuIn[o.class_master_id] + '人が「' + o.class_master.name + '」と重なる');
+      });
+    });
+  } catch (e) { /* 重なりが確かめられなくても続ける */ }
+  sbkState.plan = rows;
+  var blocked = rows.filter(function (r) { return r.block; }).length;
+  var attN = 0, repN = 0;
+  rows.forEach(function (r) {
+    if (r.nd === r.s.session_date && r.np === (r.s.period == null ? null : parseInt(r.s.period, 10))) return;
+    attN += sbkState.att[r.s.session_date + '|' + (r.s.period == null ? '' : r.s.period)] || 0;
+    if (r.nd !== r.s.session_date && sbkState.rep[r.s.session_date]) repN++;
+  });
+  var warnN = rows.filter(function (r) { return r.warn.length; }).length;
+  prev.innerHTML =
+    '<div style="font-size:12px;font-weight:700;margin-bottom:4px">③ 変える前 → 後（' + rows.length + '回）</div>' +
+    (blocked ? '<div style="font-size:12px;color:#C0392B;background:#FDECEA;border:1px solid #F5B7B1;border-radius:8px;padding:6px 10px;margin-bottom:6px">❌ 保存できない回が ' + blocked + ' 回あります（下の赤い行）。チェックを外すか、変え方を直してください。</div>' : '') +
+    ((attN || repN) ? '<div style="font-size:12px;color:#1A7340;background:#E8F6EE;border:1px solid #A9DFBF;border-radius:8px;padding:6px 10px;margin-bottom:6px">出席 ' + attN + '人分' + (repN ? '・授業報告 ' + repN + '回分' : '') + 'も、新しい日・限へいっしょに移します。</div>' : '') +
+    (warnN ? '<div style="font-size:12px;color:#9A5A00;background:#FFF4E5;border:1px solid #F0C27A;border-radius:8px;padding:6px 10px;margin-bottom:6px">⚠ 重なりがある回が ' + warnN + ' 回あります（黄色の行）。保存はできます。</div>' : '') +
+    '<div style="border:1px solid var(--border);border-radius:8px;max-height:260px;overflow:auto">' + rows.map(function (r) {
+      var bg = r.block ? '#FDECEA' : (r.warn.length ? '#FFF8E8' : '#fff');
+      var roomTxt = (r.nr || '') !== (r.s.room || '') ? '　教室：' + escapeHtml(r.nr ? (typeof dttRoomLabel === 'function' ? dttRoomLabel(r.nr) : r.nr) : 'いつもの教室') : '';
+      return '<div style="padding:5px 8px;border-top:1px solid var(--border);font-size:12px;background:' + bg + '">' +
+        sbkMd(r.s.session_date) + ' ' + escapeHtml(sbkPerLabel(r.s.period, r.s.start_time, r.s.end_time)) + ' → <b>' + sbkMd(r.nd) + ' ' + escapeHtml(sbkPerLabel(r.np, r.ns, r.ne)) + '</b>' + roomTxt +
+        (r.s.cycle_no && !r.s.is_makeup ? '　<span style="color:var(--orange-d)">' + escapeHtml(sessionCycleLabel(r.s)) + '</span>' : '') +
+        (r.block ? '<div style="color:#C0392B;font-size:11px">❌ ' + escapeHtml(r.block) + '</div>' : '') +
+        (r.warn.length ? '<div style="color:#9A5A00;font-size:11px">⚠ ' + escapeHtml([...new Set(r.warn)].join('／')) + '</div>' : '') + '</div>';
+    }).join('') + '</div>' +
+    '<div style="font-size:11px;color:var(--muted);margin-top:4px">回番号はそのままです。よければ「保存」を押してください。</div>';
+  var b = document.getElementById('sbk-save');
+  if (b) { b.disabled = !!blocked; b.style.opacity = blocked ? '.4' : '1'; }
+}
+async function sbkSave() {
+  if (!sbkState || !sbkState.plan) return;
+  var rows = sbkState.plan.filter(function (r) { return !r.block; });
+  if (rows.length !== sbkState.plan.length) { showToast('保存できない回があります', 'error'); return; }
+  if (!confirm(rows.length + '回の授業日を変更します。よろしいですか？')) return;
+  var cid = sbkState.classId;
+  // 前へ動かすときは古い順、後ろへは新しい順に（途中で同じ日・限がぶつからないように）
+  var dsum = rows.reduce(function (a, r) { return a + (r.nd < r.s.session_date ? -1 : (r.nd > r.s.session_date ? 1 : 0)); }, 0);
+  rows.sort(function (a, b) { return dsum <= 0 ? (a.s.session_date < b.s.session_date ? -1 : 1) : (a.s.session_date > b.s.session_date ? -1 : 1); });
+  var moving = {}; rows.forEach(function (r) { moving[r.s.id] = true; });
+  var stay = sbkState.sessions.filter(function (s) { return !moving[s.id]; });
+  showLoading('変更中...');
+  var done = 0;
+  try {
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i], s = r.s;
+      var oldP = s.period == null ? null : parseInt(s.period, 10);
+      var oldD = s.session_date;   // 保存の前に元の日付を控える
+      var body = { session_date: r.nd, period: r.np, start_time: r.ns || null, end_time: r.ne || null };
+      if ((r.nr || null) !== (s.room || null)) body.room = r.nr;
+      await sbPatch('class_sessions', 'id=eq.' + s.id, body);
+      var moved = (r.nd !== oldD || r.np !== oldP);
+      if (moved) {
+        // 同じ日・同じ限に、動かさない同じ授業（学校別の回など）が残るときは出席は動かさない
+        var sameSlotStays = stay.some(function (x) { return x.session_date === oldD && (x.period == null ? null : parseInt(x.period, 10)) === oldP; });
+        if (!sameSlotStays) {
+          try { await sbPatch('session_attendance', 'class_master_id=eq.' + cid + '&session_date=eq.' + oldD + (oldP == null ? '&period=is.null' : '&period=eq.' + oldP), { session_date: r.nd, period: r.np }); } catch (e) {}
+        }
+        if (r.nd !== oldD && !stay.some(function (x) { return x.session_date === oldD; }) && !rows.some(function (y) { return y !== r && y.od === oldD && y.nd === oldD; })) {
+          try { await sbPatch('class_reports', 'class_master_id=eq.' + cid + '&session_date=eq.' + oldD, { session_date: r.nd }); } catch (e) {}
+          try { await sbPatch('video_lessons', 'class_master_id=eq.' + cid + '&session_date=eq.' + oldD, { session_date: r.nd }); } catch (e) {}
+        }
+        try {
+          await sbPost('session_change_logs', { class_master_id: cid, period: r.np, old_date: oldD, new_date: r.nd,
+            changed_by: currentStaff ? (currentStaff.staff_id || '') : '', changed_by_name: currentStaff ? (currentStaff.name || '') : '' });
+        } catch (e) {}
+      }
+      done++;
+    }
+    hideLoading();
+    showToast('📅 ' + done + '回の授業日を変更しました', 'success');
+    var cid2 = cid; sbkClose();
+    if (typeof loadSessionList === 'function') { try { loadSessionList(); } catch (e) {} }
+    if (typeof loadStaffCalendar === 'function') { try { loadStaffCalendar(); } catch (e) {} }
+    openSessionBulk(cid2);
+  } catch (e) {
+    hideLoading();
+    showToast('途中で止まりました（' + done + '回まで変更済み）：' + (e && e.message ? e.message : e), 'error');
+    var cid3 = cid; sbkClose(); openSessionBulk(cid3);
+  }
+}
+async function sbkDelete() {
+  var sel = sbkSelected();
+  if (!sel.length) { showToast('削除する回にチェックを入れてください', 'error'); return; }
+  var withAtt = sel.filter(function (s) { return sbkState.att[s.session_date + '|' + (s.period == null ? '' : s.period)]; });
+  var del = sel.filter(function (s) { return withAtt.indexOf(s) === -1; });
+  if (!del.length) { showToast('選んだ回はどれも出席が入っているので、削除できません', 'error'); return; }
+  var firstCyc = del.filter(function (s) { return !s.is_makeup && s.cycle_no != null; })[0] || null;
+  var msg = del.length + '回の授業日を削除します（' + sbkMd(del[0].session_date) + '〜' + sbkMd(del[del.length - 1].session_date) + '）。' +
+    (withAtt.length ? '\n\n出席が入っている ' + withAtt.length + '回は削除しません。' : '') +
+    (firstCyc ? '\n\n🔢 消した回より後の回は、' + sessionCycleLabel(firstCyc) + ' から続きの番号に詰め直します。' : '') +
+    '\n\nよろしいですか？';
+  if (!confirm(msg)) return;
+  var cid = sbkState.classId;
+  showLoading('削除中...');
+  try {
+    for (var i = 0; i < del.length; i += 50) {
+      await sbDelete('class_sessions', 'id=in.(' + del.slice(i, i + 50).map(function (s) { return s.id; }).join(',') + ')');
+    }
+    var renum = 0;
+    if (firstCyc) {
+      var isNormal = isNormalCategory(sbkState.category);
+      var par = false; try { par = await isParallelClass(cid); } catch (e) {}
+      var later = await sbGetAll('class_sessions', 'class_master_id=eq.' + cid + '&session_date=gt.' + firstCyc.session_date + '&select=id,session_date,period,is_makeup&order=session_date,period') || [];
+      var plan = cycleRenumberPlan(later, { year: firstCyc.cycle_year, month: isNormal ? firstCyc.cycle_month : null, no: firstCyc.cycle_no }, isNormal, par, true);
+      for (var j = 0; j < plan.length; j++) { await sbPatch('class_sessions', 'id=eq.' + plan[j].id, { cycle_year: plan[j].cyc.year, cycle_month: plan[j].cyc.month, cycle_no: plan[j].cyc.no }); renum++; }
+    }
+    hideLoading();
+    showToast('🗑 ' + del.length + '回を削除しました' + (renum ? '（以降' + renum + '回の回数を詰めました）' : ''), 'success');
+    sbkClose();
+    if (typeof loadSessionList === 'function') { try { loadSessionList(); } catch (e) {} }
+    openSessionBulk(cid);
+  } catch (e) {
+    hideLoading();
+    showToast('削除できませんでした：' + (e && e.message ? e.message : e), 'error');
+  }
+}
+
+// ===== 20261025ks22: まとめて登録のとき「固定案（いつもの曜日・限）と違います」 =====
+// 授業の曜日・限の教室（class_master.slot_rooms＝{"土5":"1F"}）＝固定案。無い授業は、これまで（8週前から）登録してある曜日・限と比べる。
+var csSlotInfo = {};      // classId -> { keys:{'土5':true}, src:'fixed'|'past' }
+var csMismatchTotal = 0;
+function csSlotKey(s) {
+  var p = String(s.session_date).split('-').map(Number);
+  var wd = ['日', '月', '火', '水', '木', '金', '土'][new Date(p[0], p[1] - 1, p[2]).getDay()];
+  return wd + ((s.period != null && s.period !== '') ? String(parseInt(s.period, 10)) : '@' + String(s.start_time || '').slice(0, 5));
+}
+function csSlotLabel(k) { var m = String(k).match(/^(.)(?:(\d+)|@(.*))$/); return m ? m[1] + '曜' + (m[2] ? m[2] + '限' : m[3] + '〜') : k; }
+async function csLoadSlotMap() {
+  csSlotInfo = {};
+  var ids = [...new Set((pendingSessions || []).map(function (s) { return s.class_master_id; }))].filter(Boolean);
+  if (!ids.length) return;
+  try {
+    (await sbGetAll('class_master', 'id=in.(' + ids.join(',') + ')&select=id,slot_rooms') || []).forEach(function (m) {
+      var sm = m.slot_rooms;
+      if (sm && typeof sm === 'object' && Object.keys(sm).length) { var k = {}; Object.keys(sm).forEach(function (x) { k[x] = true; }); csSlotInfo[m.id] = { keys: k, src: 'fixed' }; }
+    });
+  } catch (e) {}
+  var rest = ids.filter(function (id) { return !csSlotInfo[id]; });
+  if (rest.length) {
+    try {
+      var p = getTodayJST().split('-').map(Number), d = new Date(p[0], p[1] - 1, p[2] - 56);
+      var since = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+      (await sbGetAll('class_sessions', 'class_master_id=in.(' + rest.join(',') + ')&session_date=gte.' + since + '&is_makeup=not.eq.true&select=class_master_id,session_date,period,start_time') || []).forEach(function (s) {
+        (csSlotInfo[s.class_master_id] = csSlotInfo[s.class_master_id] || { keys: {}, src: 'past' }).keys[csSlotKey(s)] = true;
+      });
+    } catch (e) {}
+  }
+}
+function csSlotMismatch(classId, list) {
+  var info = csSlotInfo[classId];
+  if (!info || !Object.keys(info.keys).length) return [];
+  return list.filter(function (s) { return !s.is_makeup && !info.keys[csSlotKey(s)]; });
 }
 
 
