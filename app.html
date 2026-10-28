@@ -6925,7 +6925,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261026ks23';
+const APP_VERSION = '20261028ks24';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -10602,6 +10602,9 @@ function todoLinkBtnHtml(t) {
   const tgt = t && t.link_target;
   if (tgt && /^plan:/.test(tgt)) {   // 20261020ev1: 企画書のタスク
     return '<button onclick="evOpenFromTodo(\'' + escapeAttr(tgt.slice(5)) + '\')" style="margin-top:6px;padding:6px 14px;background:linear-gradient(135deg,#2D6CB6,#1E4D8C);border:none;border-radius:8px;font-size:11px;font-weight:700;color:#fff;cursor:pointer;font-family:inherit">📋 企画書を開く</button>';
+  }
+  if (tgt && /^jhsgrant:/.test(tgt)) {   // 20261028ks24: 中学部の編集申請
+    return '<button onclick="jhsOpenFromTodo()" style="margin-top:6px;padding:6px 14px;background:linear-gradient(135deg,#C77F2E,#9A5A00);border:none;border-radius:8px;font-size:12px;font-weight:700;color:#fff;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">✋ 申請を見る</button>';
   }
   if (!tgt || !TODO_LINK_LABEL[tgt]) return '';
   if (tgt === 'school-comment') {   // 20261020ks5
@@ -22351,6 +22354,177 @@ async function isChugakuStaff() {
   return _isChugakuStaffCache;
 }
 
+// ===== 20261028ks24: 授業の「見る」と「直す」の権限 =====
+// Junki：授業はだれでも全部見られるようにする。直すのは決まった人だけ。
+// ・見る：スタッフ全員が全授業（授業管理の「👤 自分の担当だけ／📚 全授業」で切り替え。はじめは自分の担当だけ）
+// ・直す：自分の担当（主担当＋追加担当）の授業／管理者は全部／亀井さん（fit010）は中学部の授業をいつでも
+//         中学部のほかの人の授業は、亀井さんに「✋ 編集を申請」→ 承認されると1時間だけ中学部の授業を直せる
+//         高校部のほかの人の授業は管理者だけ（今のまま）
+// ・出欠と授業報告の入力は制限しない（代講の人も入れられるように）
+// ・申請は temp_access_grants（feature='classedit_jhs'、status：requested→approved/rejected/revoked）。亀井さんに ToDo（link_target='jhsgrant:<id>'）
+var JHS_APPROVER_SID = 'fit010';
+var JHS_EDIT_MINUTES = 60;
+var cmMyClassIds = null;     // 自分が担当の授業id（Set）
+var cmDivOf = {};            // 授業id → 部門
+var _cmPermAt = 0;
+var _jhsEditUntil = null, _jhsEditTimer = null, _jhsPending = false, _jhsReqs = [];
+function isJhsApprover() { return !!currentStaff && (currentStaff.role === 'admin' || String(currentStaff.staff_id || '').toLowerCase() === JHS_APPROVER_SID); }
+function isKameiStaff() { return !!currentStaff && String(currentStaff.staff_id || '').toLowerCase() === JHS_APPROVER_SID; }
+function jhsEditActive() { return !!(_jhsEditUntil && _jhsEditUntil.getTime() > Date.now()); }
+async function cmEnsurePerm(force) {
+  if (!currentStaff) return;
+  if (!force && cmMyClassIds && Date.now() - _cmPermAt < 30000) return;
+  var s = new Set();
+  try { (await sbGetAll('class_master', 'teacher_staff_id=eq.' + currentStaff.id + '&select=id') || []).forEach(function (r) { s.add(r.id); }); } catch (e) {}
+  try { (await sbGetAll('class_teachers', 'staff_id=eq.' + currentStaff.id + '&select=class_master_id') || []).forEach(function (r) { s.add(r.class_master_id); }); } catch (e) {}
+  try { var dm = {}; (await sbGetAll('class_master', 'select=id,division') || []).forEach(function (r) { dm[r.id] = r.division || '高校部'; }); cmDivOf = dm; } catch (e) {}
+  cmMyClassIds = s; _cmPermAt = Date.now();
+  try { await isChugakuStaff(); } catch (e) {}   // 申請ボタンを出すか（中学部担当か）
+  await jhsRefreshGrant();
+}
+function cmCanEditId(classId) {
+  if (!currentStaff || !classId) return false;
+  if (currentStaff.role === 'admin') return true;
+  if (cmMyClassIds && cmMyClassIds.has(classId)) return true;
+  if (cmDivOf[classId] === '中学部' && (isKameiStaff() || jhsEditActive())) return true;
+  return false;
+}
+function cmGuardEdit(classId) {
+  if (cmCanEditId(classId)) return true;
+  if (!cmMyClassIds) { cmEnsurePerm(true); showToast('権限を確かめています。もう一度押してください', 'info'); return false; }
+  showToast(cmDivOf[classId] === '中学部'
+    ? 'ほかの人の授業は見るだけです。直すときは授業管理の「✋ 編集を申請」から（亀井さんが承認すると1時間）'
+    : 'ほかの人の授業は見るだけです（直せるのは担当の先生と管理者です）', 'error');
+  return false;
+}
+async function cmGuardEditAsync(classId) { await cmEnsurePerm(); return cmGuardEdit(classId); }
+async function jhsRefreshGrant() {
+  _jhsEditUntil = null; _jhsPending = false; _jhsReqs = [];
+  if (!currentStaff) return;
+  var nowIso = new Date().toISOString();
+  try {
+    if (isJhsApprover()) {
+      _jhsReqs = await sbGet('temp_access_grants', 'feature=eq.classedit_jhs&status=eq.requested&order=requested_at&select=id,staff_id,requested_at') || [];
+    }
+    if (currentStaff.role !== 'admin' && !isKameiStaff()) {
+      var a = await sbGet('temp_access_grants', 'staff_id=eq.' + currentStaff.id + '&feature=eq.classedit_jhs&status=eq.approved&expires_at=gt.' + encodeURIComponent(nowIso) + '&order=expires_at.desc&limit=1&select=expires_at') || [];
+      if (a.length) { _jhsEditUntil = new Date(a[0].expires_at); jhsScheduleExpiry(); }
+      var p = await sbGet('temp_access_grants', 'staff_id=eq.' + currentStaff.id + '&feature=eq.classedit_jhs&status=eq.requested&limit=1&select=id') || [];
+      _jhsPending = p.length > 0;
+    }
+  } catch (e) { /* 表が読めないときは申請なし扱い */ }
+}
+function jhsScheduleExpiry() {
+  if (_jhsEditTimer) { clearTimeout(_jhsEditTimer); _jhsEditTimer = null; }
+  if (!_jhsEditUntil) return;
+  var ms = _jhsEditUntil.getTime() - Date.now();
+  if (ms <= 0) { _jhsEditUntil = null; return; }
+  _jhsEditTimer = setTimeout(function () {
+    _jhsEditUntil = null;
+    showToast('中学部の授業の編集（' + JHS_EDIT_MINUTES + '分）が終わりました', 'info');
+    try { if (typeof renderCmList === 'function' && document.getElementById('cm-list')) renderCmList(); } catch (e) {}
+  }, Math.min(ms, 2147483000));
+}
+// 申請する（中学部担当で、亀井さん・管理者でない人）
+async function jhsRequestEdit() {
+  if (!currentStaff) return;
+  if (jhsEditActive()) { showToast('いま編集できます（残り' + Math.ceil((_jhsEditUntil.getTime() - Date.now()) / 60000) + '分）', 'info'); return; }
+  if (_jhsPending) { showToast('申請中です。亀井さんの承認を待ってください', 'info'); return; }
+  if (!confirm('中学部の授業（ほかの人の担当分）の編集を、亀井さんに申請します。\n承認されると' + JHS_EDIT_MINUTES + '分間、編集できます。')) return;
+  try {
+    var nowIso = new Date().toISOString();
+    var row = await sbPostReturn('temp_access_grants', { staff_id: currentStaff.id, feature: 'classedit_jhs', status: 'requested', requested_at: nowIso });
+    var gid = (Array.isArray(row) ? row[0] : row || {}).id;
+    try {
+      var k = (await sbGet('staff', 'staff_id=eq.' + JHS_APPROVER_SID + '&select=id&limit=1') || [])[0];
+      if (k) await sbPost('staff_todos', {
+        from_staff_id: currentStaff.id, to_staff_id: k.id,
+        title: '【承認】' + (currentStaff.name || '') + 'さんが中学部の授業の編集を申請しています',
+        detail: '授業管理の「✋ 申請」から承認すると、' + JHS_EDIT_MINUTES + '分間、中学部の授業を編集できるようになります。',
+        due_date: getTodayJST(), link_target: 'jhsgrant:' + (gid || '')
+      });
+    } catch (e) { /* ToDoが作れなくても申請は残る */ }
+    _jhsPending = true;
+    showToast('✋ 亀井さんに申請しました。承認されると編集できるようになります', 'success');
+    try { renderCmScopeBar(); } catch (e) {}
+  } catch (e) { showToast('申請できませんでした：' + (e.message || e), 'error'); }
+}
+// 承認する人（亀井さん・管理者）のパネル
+async function jhsOpenPanel() {
+  if (!isJhsApprover()) { showToast('承認できるのは亀井さんと管理者です', 'error'); return; }
+  await jhsRefreshGrant();
+  var staff = []; try { staff = await sbGet('staff', 'select=id,name,staff_id') || []; } catch (e) {}
+  var nm = function (id) { var s = staff.find(function (x) { return x.id === id; }); return s ? s.name : '(不明)'; };
+  var nowIso = new Date().toISOString();
+  var act = []; try { act = await sbGet('temp_access_grants', 'feature=eq.classedit_jhs&status=eq.approved&expires_at=gt.' + encodeURIComponent(nowIso) + '&order=expires_at.desc&select=id,staff_id,expires_at') || []; } catch (e) {}
+  var t = function (iso) { var d = new Date(iso); return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  var btn = 'padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit';
+  var m = document.getElementById('jhs-panel'); if (m) m.remove();
+  m = document.createElement('div'); m.id = 'jhs-panel';
+  m.style.cssText = 'position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;padding:12px';
+  m.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:460px;width:100%;max-height:100%;overflow:auto;padding:16px;box-sizing:border-box">' +
+    '<div style="display:flex;align-items:center;margin-bottom:8px"><div style="flex:1;font-size:15px;font-weight:800">✋ 中学部の授業の編集申請</div>' +
+    '<button onclick="document.getElementById(\'jhs-panel\').remove()" style="' + btn + ';border:1px solid var(--border);background:#fff">閉じる</button></div>' +
+    '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px">承認すると、その人は ' + JHS_EDIT_MINUTES + '分間、中学部の授業（ほかの人の担当分も）を編集できます。時間がたつと自動で「見るだけ」に戻ります。</div>' +
+    '<div style="font-size:12px;font-weight:700;margin-bottom:4px">申請（' + _jhsReqs.length + '件）</div>' +
+    (_jhsReqs.length ? _jhsReqs.map(function (r) {
+      return '<div style="display:flex;align-items:center;gap:8px;padding:8px 4px;border-top:1px solid var(--border)"><div style="flex:1;font-size:13px"><b>' + escapeHtml(nm(r.staff_id)) + '</b> <span style="font-size:11px;color:var(--muted)">' + t(r.requested_at) + '</span></div>' +
+        '<button onclick="jhsDecide(\'' + r.id + '\',true)" style="' + btn + ';border:none;background:var(--orange);color:#fff">承認（' + JHS_EDIT_MINUTES + '分）</button>' +
+        '<button onclick="jhsDecide(\'' + r.id + '\',false)" style="' + btn + ';border:1px solid #E8B4B4;background:#fff;color:var(--red)">却下</button></div>';
+    }).join('') : '<div style="font-size:12px;color:var(--muted);padding:6px 4px">いま申請はありません。</div>') +
+    '<div style="font-size:12px;font-weight:700;margin:12px 0 4px">編集できる時間中の人</div>' +
+    (act.length ? act.map(function (g) {
+      var rem = Math.max(0, Math.ceil((new Date(g.expires_at).getTime() - Date.now()) / 60000));
+      return '<div style="display:flex;align-items:center;gap:8px;padding:8px 4px;border-top:1px solid var(--border)"><div style="flex:1;font-size:13px"><b>' + escapeHtml(nm(g.staff_id)) + '</b> <span style="font-size:11px;color:var(--green-d)">残り' + rem + '分</span></div>' +
+        '<button onclick="jhsRevoke(\'' + g.id + '\')" style="' + btn + ';border:1px solid #E8B4B4;background:#fff;color:var(--red)">止める</button></div>';
+    }).join('') : '<div style="font-size:12px;color:var(--muted);padding:6px 4px">いません。</div>') +
+  '</div>';
+  m.addEventListener('click', function (e) { if (e.target === m) m.remove(); });
+  document.body.appendChild(m);
+}
+async function jhsDecide(id, ok) {
+  if (!isJhsApprover()) return;
+  try {
+    var nowIso = new Date().toISOString();
+    var body = ok ? { status: 'approved', approved_by: currentStaff.id, approved_at: nowIso, expires_at: new Date(Date.now() + JHS_EDIT_MINUTES * 60000).toISOString() }
+                  : { status: 'rejected', approved_by: currentStaff.id, approved_at: nowIso, expires_at: nowIso };
+    await sbPatch('temp_access_grants', 'id=eq.' + encodeURIComponent(id) + '&status=eq.requested', body);
+    try { await sbPatch('staff_todos', 'link_target=eq.' + encodeURIComponent('jhsgrant:' + id) + '&is_done=eq.false', { is_done: true, done_at: nowIso, done_by_staff_id: currentStaff.id }); } catch (e) {}
+    showToast(ok ? '✅ 承認しました（' + JHS_EDIT_MINUTES + '分）' : '却下しました', ok ? 'success' : 'info');
+    await jhsOpenPanel();
+    try { renderCmScopeBar(); } catch (e) {}
+  } catch (e) { showToast('できませんでした：' + (e.message || e), 'error'); }
+}
+async function jhsRevoke(id) {
+  if (!isJhsApprover()) return;
+  if (!confirm('この人の編集を止めますか？')) return;
+  try {
+    await sbPatch('temp_access_grants', 'id=eq.' + encodeURIComponent(id), { status: 'revoked', expires_at: new Date(Date.now() - 1000).toISOString() });
+    showToast('止めました', 'info');
+    await jhsOpenPanel();
+  } catch (e) { showToast('止められませんでした：' + (e.message || e), 'error'); }
+}
+function jhsOpenFromTodo() {
+  try { openStaffManage('class-master'); } catch (e) {}
+  setTimeout(function () { jhsOpenPanel(); }, 400);
+}
+// 授業管理の上の帯に出す、権限の説明・申請ボタン
+function cmPermBarHtml() {
+  if (!currentStaff) return '';
+  var b = 'padding:6px 12px;font-size:11px;font-weight:700;border-radius:14px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;';
+  var h = '';
+  if (isJhsApprover()) {
+    h += '<button onclick="jhsOpenPanel()" style="' + b + 'border:1.5px solid ' + (_jhsReqs.length ? '#C0392B' : 'var(--border)') + ';background:' + (_jhsReqs.length ? '#FDECEA' : 'var(--surface)') + ';color:' + (_jhsReqs.length ? '#C0392B' : 'var(--text)') + '">✋ 中学部の編集申請' + (_jhsReqs.length ? ' ' + _jhsReqs.length + '件' : '') + '</button>';
+    if (isKameiStaff()) h += '<span style="font-size:10px;color:var(--muted)">中学部の授業はいつでも編集できます</span>';
+  } else if (_isChugakuStaffCache === true) {
+    if (jhsEditActive()) h += '<span style="font-size:11px;font-weight:700;color:var(--green-d);background:var(--green-l);border-radius:12px;padding:4px 10px">✏️ 中学部を編集できます（残り' + Math.ceil((_jhsEditUntil.getTime() - Date.now()) / 60000) + '分）</span>';
+    else if (_jhsPending) h += '<span style="font-size:11px;font-weight:700;color:#9A5A00;background:#FFF4E5;border-radius:12px;padding:4px 10px">✋ 申請中（亀井さんの承認待ち）</span>';
+    else h += '<button onclick="jhsRequestEdit()" style="' + b + 'border:1.5px solid #9A5A00;background:#FFF4E5;color:#9A5A00">✋ 中学部の編集を申請</button>';
+  }
+  if (currentStaff.role !== 'admin') h += '<span style="font-size:10px;color:var(--muted)">👀＝見るだけ（自分の担当でない授業）</span>';
+  return h;
+}
+
 async function loadClassMasterList() {
   // 一括登録の入力行が空なら初期3行を用意
   const bulkBox = document.getElementById('cmbulk-rows');
@@ -22364,7 +22538,9 @@ async function loadClassMasterList() {
   const isAdmin = !!(currentStaff && currentStaff.role === 'admin');
   // dlm102: 非admin は常に自分の担当のみ。admin は既定で自分の担当のみ（cmAdminMineOnly）、切替で全授業。
   // ただし中学部担当が中学部を見ているときは従来どおり全授業（chugakuAll）。
-  const mineOnly = (!isAdmin || cmAdminMineOnly) && !chugakuAll;
+  // 20261028ks24: だれでも「自分の担当だけ／全授業」を切り替えられる（見るのは全員が全部。直せるかは cmCanEditId）
+  await cmEnsurePerm(true);
+  const mineOnly = cmAdminMineOnly && !chugakuAll;
   if (currentStaff && mineOnly) {
     // 追加担当として割り当てられた授業IDを先に取得
     let assignedIds = [];
@@ -22385,7 +22561,7 @@ async function loadClassMasterList() {
   if (!classMasterList.length) {
     renderCmScopeBar(); // dlm102: 0件でも切替は出す（自分の担当が無い場合に全授業へ戻せるように）
     try { renderCmNewTeacherChips(); } catch (e) {} // dlm102: 0件でも登録フォームのチップは出す
-    const emptyMsg = (currentStaff && currentStaff.role === 'admin' && cmAdminMineOnly)
+    const emptyMsg = (currentStaff && cmAdminMineOnly)
       ? 'あなたが担当している授業はありません。「📚 全授業」に切り替えると全て表示できます。'
       : '授業がありません';
     el.innerHTML = '<div style="font-size:12px;color:var(--muted);text-align:center;padding:10px">' + emptyMsg + '</div>';
@@ -22506,8 +22682,7 @@ function toggleCmNewTeacher(staffId) {
 function renderCmScopeBar() {
   const scopeBar = document.getElementById('cm-scope-bar');
   if (!scopeBar) return;
-  const isAdmin = !!(currentStaff && currentStaff.role === 'admin');
-  if (!isAdmin) { scopeBar.style.display = 'none'; scopeBar.innerHTML = ''; return; }
+  if (!currentStaff) { scopeBar.style.display = 'none'; scopeBar.innerHTML = ''; return; }   // 20261028ks24: 全員に出す
   scopeBar.style.display = 'flex';
   scopeBar.style.gap = '6px';
   scopeBar.style.flexWrap = 'wrap';
@@ -22518,7 +22693,7 @@ function renderCmScopeBar() {
       (on ? '#2D6CB6' : 'var(--border)') + ';background:' + (on ? '#2D6CB6' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--text)') + '">' + label + '</button>';
   };
   scopeBar.innerHTML = '<span style="font-size:10px;color:var(--muted);margin-right:2px">表示範囲</span>' +
-    mkScope(true, '👤 自分の担当だけ') + mkScope(false, '📚 全授業');
+    mkScope(true, '👤 自分の担当だけ') + mkScope(false, '📚 全授業') + cmPermBarHtml();
 }
 
 function renderCmList() {
@@ -22602,6 +22777,7 @@ function renderCmList() {
         totalBadge = '<span style="font-size:10px;background:' + bg + ';color:' + fg + ';border:1px solid ' + bd + ';padding:1px 7px;border-radius:10px;margin-left:6px;font-weight:700">' + txt + '</span>';
       }
       // 継続中の受講人数バッジ（名簿確認用）
+      const cmEd = cmCanEditId(c.id);   // 20261028ks24
       const enrollN = cmEnrollCount[c.id];
       const enrollBadge = (enrollN != null)
         ? '<span style="font-size:10px;background:#EAF3FB;color:#1A4D80;border:1px solid #6FA8E0;padding:1px 7px;border-radius:10px;margin-left:6px;font-weight:700">👥 ' + enrollN + '人</span>'
@@ -22610,17 +22786,17 @@ function renderCmList() {
         '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;flex-wrap:wrap">' +
         '<span style="flex:0 0 auto;width:14px;height:14px;border-radius:4px;background:' + classColorOf(c) + ';border:1px solid rgba(0,0,0,0.1)"></span>' +
         '<div style="flex:1;min-width:120px"><div onclick="openClassKarte(\'' + c.id + '\')" style="font-size:13px;font-weight:600;color:var(--orange-d);cursor:pointer;text-decoration:underline;text-decoration-color:rgba(0,0,0,0.15);text-underline-offset:2px">' + c.name + classCategoryBadge(c) + gradeBadge + totalBadge + enrollBadge + '</div>' +
-        '<div style="font-size:10px;color:var(--muted)">' + ((cmTeacherNames[c.id] && cmTeacherNames[c.id].length) ? cmTeacherNames[c.id].join('・') : '担当未設定') + '</div></div>' +
+        '<div style="font-size:10px;color:var(--muted)">' + ((cmTeacherNames[c.id] && cmTeacherNames[c.id].length) ? cmTeacherNames[c.id].join('・') : '担当未設定') + (cmEd ? '' : '　<span style="font-size:10px;font-weight:700;color:#666;background:#EEE;border-radius:8px;padding:0 6px">👀 見るだけ</span>') + '</div></div>' +
         '<button onclick="filterSessionsByClass(\'' + c.id + '\')" style="padding:3px 8px;background:var(--orange-l);border:1px solid var(--orange);border-radius:6px;color:var(--orange-d);font-size:10px;font-weight:700;cursor:pointer">📅 日程を見る</button>' +
         '<button onclick="openClassAttendanceLatest(\'' + c.id + '\')" style="padding:3px 8px;background:#EAF2FB;border:1px solid #9CC0E8;border-radius:6px;color:#2D5FA6;font-size:10px;font-weight:700;cursor:pointer">🗓 出欠</button>' +
-        '<button onclick="openClassNorma(\'' + c.id + '\')" style="padding:3px 8px;background:#FBF1E6;border:1px solid #E0A96F;border-radius:6px;color:#9A5A1A;font-size:10px;font-weight:700;cursor:pointer">📌 ノルマ</button>' +
+        (cmEd ? '<button onclick="openClassNorma(\'' + c.id + '\')" style="padding:3px 8px;background:#FBF1E6;border:1px solid #E0A96F;border-radius:6px;color:#9A5A1A;font-size:10px;font-weight:700;cursor:pointer">📌 ノルマ</button>' : '') +
         '<button onclick="openEnrollStudents(\'' + c.id + '\')" style="padding:3px 8px;background:#EAF3FB;border:1px solid #6FA8E0;border-radius:6px;color:#1A4D80;font-size:10px;font-weight:700;cursor:pointer">👥 受講生</button>' +
-        '<button id="cm-videobtn-' + c.id + '" onclick="toggleClassVideoAcc(\'' + c.id + '\')" style="padding:3px 8px;background:#F3E6F7;border:1px solid #D9AEE3;border-radius:6px;color:#7B2D8B;font-size:10px;font-weight:700;cursor:pointer">📺 動画</button>' +
-        '<button onclick="openClassEdit(\'' + c.id + '\')" style="padding:3px 8px;background:#F3ECFB;border:1px solid #B99CE0;border-radius:6px;color:#6B3FA0;font-size:10px;font-weight:700;cursor:pointer">✏️ 編集</button>' +
-        '<button onclick="openClassColorPicker(\'' + c.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">色</button>' +
-        '<button onclick="setClassGrade(\'' + c.id + '\',\'' + (c.grade_level||'') + '\',\'' + (c.division||'高校部') + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">学年</button>' +
-        '<button onclick="setClassTeacher(\'' + c.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">担当</button>' +
-        '<button onclick="deleteClassMaster(\'' + c.id + '\')" style="padding:3px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">削除</button>' +
+        (cmEd ? '<button id="cm-videobtn-' + c.id + '" onclick="toggleClassVideoAcc(\'' + c.id + '\')" style="padding:3px 8px;background:#F3E6F7;border:1px solid #D9AEE3;border-radius:6px;color:#7B2D8B;font-size:10px;font-weight:700;cursor:pointer">📺 動画</button>' : '') +
+        (cmEd ? '<button onclick="openClassEdit(\'' + c.id + '\')" style="padding:3px 8px;background:#F3ECFB;border:1px solid #B99CE0;border-radius:6px;color:#6B3FA0;font-size:10px;font-weight:700;cursor:pointer">✏️ 編集</button>' : '') +
+        (cmEd ? '<button onclick="openClassColorPicker(\'' + c.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">色</button>' : '') +
+        (cmEd ? '<button onclick="setClassGrade(\'' + c.id + '\',\'' + (c.grade_level||'') + '\',\'' + (c.division||'高校部') + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">学年</button>' : '') +
+        (cmEd ? '<button onclick="setClassTeacher(\'' + c.id + '\')" style="padding:3px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;cursor:pointer">担当</button>' : '') +
+        (cmEd ? '<button onclick="deleteClassMaster(\'' + c.id + '\')" style="padding:3px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">削除</button>' : '') +
         '</div>' +
         '<div id="cm-video-acc-' + c.id + '" style="display:none;padding:8px 10px 4px"></div>' +
       '</div>';
@@ -22736,6 +22912,7 @@ let cnChecked = new Set();    // チェック中の student_id
 let cnWeekdays = new Set();   // 曜日指定（0=日..6=土）
 
 async function openClassNorma(classId) {
+  if (!cmGuardEdit(classId)) return;   // 20261028ks24
   cnClassId = classId;
   cnChecked = new Set();
   cnWeekdays = new Set();
@@ -23474,6 +23651,7 @@ function openVideoLessonModal(classId, presetDate, presetTitle) {
 // タイトル初期値は「M/D」。授業名はモーダル上部の vlm-classlabel に表示されるので引数に取らない
 // （onclick 引数にコマ名を渡すとクォート破損のリスクがあるため意図的に避ける）。
 function openVideoLessonForSession(classId, sessionDate) {
+  if (!cmGuardEdit(classId)) return;   // 20261028ks24
   let title = '';
   if (sessionDate) {
     const p = sessionDate.split('-').map(Number);
@@ -23488,6 +23666,7 @@ function openVideoLessonForSession(classId, sessionDate) {
 let cmVideoAccOpen = {}; // classId -> bool（開閉状態の保持）
 
 function toggleClassVideoAcc(classId) {
+  if (!cmGuardEdit(classId)) return;   // 20261028ks24
   const box = document.getElementById('cm-video-acc-' + classId);
   const btn = document.getElementById('cm-videobtn-' + classId);
   if (!box) return;
@@ -25057,6 +25236,7 @@ function renderEnrollList() {
 }
 
 async function toggleEnroll(studentId) {
+  if (enrollModalClassId && !(await cmGuardEditAsync(enrollModalClassId))) return;   // 20261028ks24（受講生の一覧は見られる）
   if (!enrollModalClassId) return;
   const on = enrollCurrentSet.has(studentId);
   try {
@@ -27457,6 +27637,7 @@ async function createClassMasterBulk() {
 
 // 授業の学年を後から設定／変更
 async function setClassGrade(classId, current, division) {
+  if (!cmGuardEdit(classId)) return;   // 20261028ks24
   const isJhs = (division === '中学部');
   const cur = (current || '').split(',').filter(Boolean);
   const promptMsg = isJhs
@@ -27473,6 +27654,7 @@ async function setClassGrade(classId, current, division) {
 
 // 授業の表示色を選ぶモーダル（カレンダーの授業ラベル色）
 function openClassColorPicker(classId) {
+  if (!cmGuardEdit(classId)) return;   // 20261028ks24
   const cm = classMasterList.find(c => c.id === classId);
   const cur = cm ? (cm.color || '') : '';
   const subjC = cm && cm.subject && SUBJ_COLORS[cm.subject] ? SUBJ_COLORS[cm.subject] : '#E8923A';
@@ -27513,6 +27695,7 @@ async function pickClassColor(classId, color) {
 // ===== 授業マスタの編集（名前・教科・区分・年度・全何回）=====
 // 作り直し不要で属性だけ後から直せる。日程・受講生・出欠・ノルマはそのまま残る。
 function openClassEdit(classId) {
+  if (!cmGuardEdit(classId)) return;   // 20261028ks24
   const cm = (classMasterList || []).find(c => c.id === classId);
   if (!cm) { showToast('授業が見つかりません', 'error'); return; }
 
@@ -27602,6 +27785,7 @@ async function saveClassEdit(classId) {
 }
 
 async function deleteClassMaster(id) {
+  if (!(await cmGuardEditAsync(id))) return;   // 20261028ks24
   if (!confirm('この授業を無効化しますか？\n（継続中の受講登録は本日付で終了扱いにし、出欠も報告も無い授業回は過去分も含めて削除して、時間割・カレンダー・出席表に残らないようにします）')) return;
   showLoading('処理中...');
   try {
@@ -28195,6 +28379,7 @@ let ctModalStaff = [];             // 全スタッフ
 let ctModalDepts = {};             // 部名 -> [staff.id]（staff_permissions.departments 由来）
 
 async function setClassTeacher(classId) {
+  if (!cmGuardEdit(classId)) return;   // 20261028ks24
   ctModalClassId = classId;
   const cm = (classMasterList || []).find(c => c.id === classId);
   // スタッフ一覧
@@ -28411,6 +28596,8 @@ function initSessionDefaults() {
 
 async function loadClassMasterSelect() {
   query = 'is_active=eq.true&order=subject,name&select=id,name,subject,grade_level';
+  await cmEnsurePerm();   // 20261028ks24: 亀井さん・申請中の時間の人は中学部の授業も選べる
+  const jhsAll = (typeof isKameiStaff === 'function') && (isKameiStaff() || jhsEditActive());
   if (currentStaff?.role !== 'admin') {
     // 担当に振られている授業を漏れなく出す：
     //   ① class_master.teacher_staff_id（主担当）が自分
@@ -28424,9 +28611,9 @@ async function loadClassMasterSelect() {
     } catch (e) { assignedIds = []; }
     if (assignedIds.length) {
       const inList = assignedIds.map(v => '"' + String(v).replace(/"/g, '') + '"').join(',');
-      query += '&or=(teacher_staff_id.eq.' + currentStaff.id + ',id.in.(' + inList + '))';
+      query += '&or=(teacher_staff_id.eq.' + currentStaff.id + ',id.in.(' + inList + ')' + (jhsAll ? ',division.eq.中学部' : '') + ')';
     } else {
-      query += '&teacher_staff_id=eq.' + currentStaff.id;
+      query += jhsAll ? '&or=(teacher_staff_id.eq.' + currentStaff.id + ',division.eq.中学部)' : '&teacher_staff_id=eq.' + currentStaff.id;
     }
   }
   csMasters = await sbGet('class_master', query) || [];
@@ -29063,6 +29250,7 @@ function clearSessionFilter() {
 
 // 授業管理タブからノルマ設定画面へ移動（既存のノルマタブボタンをそのまま押す）
 async function loadSessionList() {
+  await cmEnsurePerm();   // 20261028ks24
   const today = getTodayJST();
   const showPast = !!(document.getElementById('cs-show-past') && document.getElementById('cs-show-past').checked);
   const classFilter = sessionFilterClassId ? '&class_master_id=eq.' + sessionFilterClassId : '';
@@ -29112,6 +29300,7 @@ async function loadSessionList() {
       list.map(s => {
         const vk = videoKey[s.class_master_id + '|' + date];
         const cmName = (s.class_master?.name || '');
+        const sEd = cmCanEditId(s.class_master_id);   // 20261028ks24
         // 動画バッジ：公開中の動画があれば「📺 動画あり」、非公開のみなら「📺 非公開」。
         let videoBadge = '';
         if (vk && vk.any) {
@@ -29123,7 +29312,7 @@ async function loadSessionList() {
         const videoBtnLabel = (vk && vk.any) ? '📺 動画' : '＋ 動画';
         return '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 0;border-top:1px solid var(--border)">' +
           '<div style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:5px;flex-wrap:wrap">' +
-            '<span>' + s.period + '限　' + cmName + '</span>' +
+            '<span>' + s.period + '限　' + cmName + (sEd ? '' : ' 👀') + '</span>' +
             (s.is_makeup
               ? '<span style="font-size:9px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:10px;padding:0 6px">🔁 補習</span>'
               : (s.cycle_no
@@ -29132,9 +29321,9 @@ async function loadSessionList() {
             videoBadge +
           '</div>' +
           '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">' +
-            '<button onclick="openVideoLessonForSession(\'' + s.class_master_id + '\',\'' + date + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;color:#7B2D8B;background:#F3E6F7;border:1px solid #D9AEE3;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + videoBtnLabel + '</button>' +
-            '<button onclick="toggleSessionMakeup(\'' + s.class_master_id + '\',\'' + date + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.is_makeup ? '1' : '0') + '\',\'' + escapeAttr(s.school || '') + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (s.is_makeup ? '↩ 通常に戻す' : '🔁 補習にする') + '</button>' +
-            '<button onclick="deleteSession(\'' + s.id + '\')" style="padding:2px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">削除</button>' +
+            (sEd ? '<button onclick="openVideoLessonForSession(\'' + s.class_master_id + '\',\'' + date + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;color:#7B2D8B;background:#F3E6F7;border:1px solid #D9AEE3;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + videoBtnLabel + '</button>' : '') +
+            (sEd ? '<button onclick="toggleSessionMakeup(\'' + s.class_master_id + '\',\'' + date + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.is_makeup ? '1' : '0') + '\',\'' + escapeAttr(s.school || '') + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (s.is_makeup ? '↩ 通常に戻す' : '🔁 補習にする') + '</button>' : '') +
+            (sEd ? '<button onclick="deleteSession(\'' + s.id + '\')" style="padding:2px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">削除</button>' : '') +
           '</div>' +
         '</div>';
       }).join('') +
@@ -29154,6 +29343,7 @@ async function deleteSession(id) {
       '&select=class_master_id,session_date,period,cycle_year,cycle_month,cycle_no,is_makeup') || [];
     target = rows[0] || null;
   } catch (e) { /* 取れなくても従来どおり削除は続行 */ }
+  if (target && !(await cmGuardEditAsync(target.class_master_id))) return;   // 20261028ks24
 
   // 詰め直しの対象になるか：通常授業の回（補習でなく cycle_no がある）だけ。
   //   補習・回番号なしの回は、削除しても連番に影響しないのでそのまま削除する。
@@ -29225,6 +29415,7 @@ function sbkPerLabel(per, st, en) { return (per != null && per !== '' ? per + '�
 function sbkClose() { var m = document.getElementById('sbk-modal'); if (m) m.remove(); sbkState = null; }
 
 async function openSessionBulk(classId) {
+  if (classId && !(await cmGuardEditAsync(classId))) return;   // 20261028ks24
   if (!classId) { showToast('先に授業カードの「📅 日程を見る」で授業を選んでください', 'error'); return; }
   sbkClose();
   try { await wkLoadOverrides(); } catch (e) {}
@@ -32075,6 +32266,7 @@ async function saveSessionCycle(classId, dateISO, periodStr, isNormal, schoolStr
 // 既存の授業回を「通常⇄補習」に切り替える（ui7: 切り替え後に回数を詰めるか確認する）。
 // 対象1回だけを is_makeup トグル。curMakeup は現在値（0/1文字列）。
 async function toggleSessionMakeup(classId, dateISO, periodStr, curMakeup, schoolStr) {
+  if (!(await cmGuardEditAsync(classId))) return;   // 20261028ks24
   // ui7: 補習⇄通常を切り替えたあと、以降の回数を詰める／繰り下げるかを確認する。
   //   補習にする：この回の番号を外し、後ろの通常回がこの番号から順に繰り上がる（削除と同じ詰め方）。
   //   通常に戻す：直前の通常回の続き番号をこの回に付け、後ろの通常回を順に繰り下げる。
@@ -32182,6 +32374,7 @@ function openSessionDateEdit(classId, dateISO, periodStr, schoolStr) {
 }
 
 async function saveSessionDate(classId, oldDate, periodStr, schoolStr) {
+  if (!(await cmGuardEditAsync(classId))) return;   // 20261028ks24
   const newDate = document.getElementById('session-date-new').value;
   if (!newDate) { showToast('新しい日付を選んでください', 'error'); return; }
   if (newDate === oldDate) { document.getElementById('session-date-modal').remove(); return; }
