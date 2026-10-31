@@ -6688,7 +6688,10 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
               <option value="trial">✨ 体験授業</option>
               <option value="free_open">🆓 無料開放</option>
               <option value="other">📚 その他講習</option>
+              <option value="timetable_only">🏫 時間割だけ（担当なし）</option>
             </select></div>
+          <div style="width:110px"><div class="form-label">部門</div>
+            <select class="form-select" id="cm-division-sel"><option value="">今の部門</option><option value="高校部">高校部</option><option value="中学部">中学部</option><option value="小学部">小学部</option></select></div>
           <div style="width:120px"><div class="form-label">年度（任意）</div>
             <input class="form-input-sm" id="cm-school-year" type="number" inputmode="numeric" placeholder="例 2026"></div>
         </div>
@@ -6927,7 +6930,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261029ks26';
+const APP_VERSION = '20261030ks27';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -19545,6 +19548,7 @@ function isAttMirrorClass(cm) { return !!cm && String(cm.name || '').indexOf('�
 function isReportExemptClass(cm) {
   if (!cm) return false;
   if ((cm.category || 'normal') === 'kosotsu') return true;
+  if (cm.category === 'timetable_only') return true;   // 20261030ks27
   return REPORT_EXEMPT_NAME_RE.test(String(cm.name || ''));
 }
 
@@ -19580,7 +19584,7 @@ async function loadTeacherClassMap(opts) {
 
   // 高卒生（浪人生）区分は既定では集計しない。includeKosotsu=true のときのみ含める。
   const classById = {};
-  cm.forEach(c => { if (includeKosotsu || (c.category || 'normal') !== 'kosotsu') classById[c.id] = c; });
+  cm.forEach(c => { if (c.category === 'timetable_only') return; if (includeKosotsu || (c.category || 'normal') !== 'kosotsu') classById[c.id] = c; });   // ks27: 時間割だけの授業は未入力・コマ数・監督の対象外
 
   const byTeacher = {};
   // dlm101: 英語メイン講師のUUIDセット（excludeEnglishExtra 用）
@@ -22286,7 +22290,9 @@ const CLASS_CATEGORIES = [
   { key: 'regular_test', label: '定期テスト対策', icon: '📝' },
   { key: 'trial',       label: '体験授業',     icon: '✨' },
   { key: 'free_open',   label: '無料開放',     icon: '🆓' },
-  { key: 'other',       label: 'その他講習',   icon: '📚' }
+  { key: 'other',       label: 'その他講習',   icon: '📚' },
+  // 20261030ks27: 時間割・教室割りにだけ出す授業（小学生の kubs・日曜学びサポートなど）。担当なし・報告書/出席の催促なし
+  { key: 'timetable_only', label: '時間割だけ', icon: '🏫' }
 ];
 function classCategoryMeta(key) {
   return CLASS_CATEGORIES.find(c => c.key === (key || 'normal')) || CLASS_CATEGORIES[0];
@@ -22809,7 +22815,7 @@ function renderCmList() {
   }
   let mainHtml = '';
   if (cmBothDivisions) {
-    const divOrder = [['高校部','🎓 高校部'],['中学部','📗 中学部']];
+    const divOrder = [['高校部','🎓 高校部'],['中学部','📗 中学部'],['小学部','🏫 小学部']];
     divOrder.forEach(([dv, label]) => {
       const dl = filtered.filter(c => (c.division || '高校部') === dv);
       if (!dl.length) return;
@@ -25269,13 +25275,14 @@ async function createClassMaster() {
   const totalSessions = (!isNormalCategory(category) && totRaw) ? parseInt(totRaw) : null;
   showLoading('登録中...');
   try {
-    const data = { name, subject, grade_level: grades.join(','), category, school_year: schoolYear, total_sessions: totalSessions, division: currentDivision };
+    const divSel = (document.getElementById('cm-division-sel') || {}).value || '';   // 20261030ks27: 部門を選べる（小学部も）
+    const data = { name, subject, grade_level: grades.join(','), category, school_year: schoolYear, total_sessions: totalSessions, division: divSel || currentDivision };
     // dlm102: フォームで担当講師を選んでいれば、先頭を主担当にする。
     const selTeachers = Array.isArray(cmNewTeacherSel) ? cmNewTeacherSel.slice() : [];
     const cmChugakuAll = (currentDivision === '中学部') && await isChugakuStaff();
     if (selTeachers.length) {
       data.teacher_staff_id = selTeachers[0];
-    } else if (currentStaff?.role !== 'admin' && !cmChugakuAll) {
+    } else if (currentStaff?.role !== 'admin' && !cmChugakuAll && category !== 'timetable_only') {
       // 従来どおり：担当未選択かつ非admin（中学部担当以外）は自分を主担当に
       data.teacher_staff_id = currentStaff.id;
     }
@@ -25304,6 +25311,7 @@ async function createClassMaster() {
     document.getElementById('cm-name').value = '';
     document.getElementById('cm-school-year').value = '';
     document.getElementById('cm-category').value = 'normal';
+    { const dvs = document.getElementById('cm-division-sel'); if (dvs) dvs.value = ''; }
     const totEl = document.getElementById('cm-total-sessions');
     if (totEl) totEl.value = '';
     onCmCategoryChange();
@@ -27754,7 +27762,7 @@ function openClassEdit(classId) {
 function onCeditCategoryChange() {
   const cat = document.getElementById('cedit-category').value;
   const row = document.getElementById('cedit-total-row');
-  if (row) row.style.display = isNormalCategory(cat) ? 'none' : 'block';
+  if (row) row.style.display = (isNormalCategory(cat) || cat === 'timetable_only') ? 'none' : 'block';
 }
 
 async function saveClassEdit(classId) {
@@ -28736,7 +28744,7 @@ function isNormalCategory(cat) {
 function onCmCategoryChange() {
   const cat = document.getElementById('cm-category')?.value || 'normal';
   const row = document.getElementById('cm-total-row');
-  if (row) row.style.display = isNormalCategory(cat) ? 'none' : 'block';
+  if (row) row.style.display = (isNormalCategory(cat) || cat === 'timetable_only') ? 'none' : 'block';
 }
 
 // {year, month, no} の次の回を返す
