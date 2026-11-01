@@ -6930,7 +6930,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261030ks27';
+const APP_VERSION = '20261101ks28';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -69067,7 +69067,11 @@ function mttRenderBar() {
     btn(mttDiv === '中学部', '📗 中学', "mttSetDiv('中学部')") +
     (mttDiv === '高校部' ? '<label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text);margin-left:6px;cursor:pointer"><input type="checkbox" ' + (mttKosotsu ? 'checked' : '') + ' onchange="mttToggleKosotsu()">高卒の授業も表示</label>' : '') +
     '<span style="flex:1"></span>' +
-    '<span style="font-size:11px;color:var(--muted)">閲覧のみ（変更は授業管理から）</span>';
+    // 20261101ks28: 半月分を A3 1枚に3部（切って配る用）
+    '<span style="font-size:12px;font-weight:700;color:var(--text)">✂️ A3に3部：</span>' +
+    '<button onclick="mttPrintHalf3(1)" style="padding:6px 10px;font-size:12px;font-weight:700;border-radius:8px;cursor:pointer;font-family:inherit;border:1px solid var(--orange);background:#fff;color:var(--orange-d)">前半</button>' +
+    '<button onclick="mttPrintHalf3(2)" style="padding:6px 10px;font-size:12px;font-weight:700;border-radius:8px;cursor:pointer;font-family:inherit;border:1px solid var(--orange);background:#fff;color:var(--orange-d)">後半</button>' +
+    '<span style="font-size:11px;color:var(--muted);margin-left:6px">閲覧のみ（変更は授業管理から）</span>';
 }
 
 async function mttLoad() {
@@ -69293,6 +69297,57 @@ function mttPrint() {
     'h1{font-size:18px;margin:0 0 4px}' + MTT_CSS + '.mtt-week th,.mtt-week td{font-size:11px}</style></head><body>' +
     '<h1>' + escapeHtml(title) + '</h1><div class="mtt-legend">' + b.legend + '</div>' + mttWeekTables(b) +
     '<script>setTimeout(function(){window.print();},300)<\/script></body></html>');
+  w.document.close();
+}
+
+// 20261101ks28: 半月分（前半＝1〜15日／後半＝16日〜月末）の時間割を、A3 1枚に同じものを3部並べて印刷する（切って配る用）。
+//   表は「行＝日付・列＝限」。3部が1枚に収まるように、印刷用の画面で文字の大きさと並べ方（縦に3段／横に3列）を自動で選ぶ。
+function mttPrintHalf3(half) {
+  if (!mttData) return;
+  var b = mttBuild();
+  var p = mttData.month.split('-'), y = parseInt(p[0], 10), mo = parseInt(p[1], 10);
+  var lastDay = new Date(y, mo, 0).getDate();
+  var d1 = half === 1 ? 1 : 16, d2 = half === 1 ? 15 : lastDay;
+  var days = [];
+  b.weeks.forEach(function (wk) { wk.forEach(function (x) { if (x.inMonth && x.d >= d1 && x.d <= d2) days.push(x); }); });
+  days.sort(function (a, c) { return a.d - c.d; });
+  var title = y + '年' + mo + '月' + (half === 1 ? '前半' : '後半') + '　' + mttDivName() + ' 時間割（' + mo + '/' + d1 + '〜' + mo + '/' + d2 + '）';
+  var head = '<tr><th class="dt">日付</th>' + b.periods.map(function (pp) { return '<th>' + (MTT_CIRCLED[pp] || pp) + '</th>'; }).join('') + '</tr>';
+  var rows = days.map(function (x) {
+    var cls = x.wd === '土' ? 'sat' : x.wd === '日' ? 'sun' : '';
+    var off = b.off[x.iso];
+    return '<tr' + (off ? ' class="off"' : '') + '><th class="dt ' + cls + '">' + mo + '/' + x.d + '（' + x.wd + '）' +
+      (off ? '<div class="offt">' + escapeHtml(off.join('・')) + '</div>' : '') + '</th>' +
+      b.periods.map(function (pp) { return '<td>' + mttCellHtml(b.cells[x.iso + '|' + pp] || []) + '</td>'; }).join('') + '</tr>';
+  }).join('');
+  var panel = '<div class="pnl"><div class="in"><div class="ttl">' + escapeHtml(title) + '</div><div class="lg">' + b.legend + '</div>' +
+    '<table><thead>' + head + '</thead><tbody>' + rows + '</tbody></table></div></div>';
+  var w = window.open('', '_blank');
+  if (!w) { showToast('ポップアップがブロックされました。許可してからもう一度押してください', 'error'); return; }
+  var css = '@page{size:A3 landscape;margin:0}html,body{margin:0;padding:0}' +
+    'body{font-family:"Noto Sans JP","Hiragino Sans",sans-serif;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
+    '.sheet{width:420mm;height:297mm;display:flex;box-sizing:border-box;padding:4mm}' +
+    '.sheet.cols{flex-direction:row}.sheet.rows{flex-direction:column}' +
+    '.pnl{flex:1;box-sizing:border-box;padding:3mm;overflow:hidden;position:relative}' +
+    '.sheet.cols .pnl+.pnl{border-left:0.3mm dashed #888}.sheet.rows .pnl+.pnl{border-top:0.3mm dashed #888}' +
+    '.in{font-size:var(--fs,9px)}' +
+    '.ttl{font-weight:800;font-size:1.35em;margin:0 0 .3em}.lg{font-size:.8em;line-height:1.5;margin:0 0 .4em;color:#333}' +
+    'table{border-collapse:collapse;width:100%;table-layout:fixed}' +
+    'th,td{border:0.2mm solid #777;padding:.15em .25em;vertical-align:top;text-align:center;line-height:1.3}' +
+    'thead th{background:#F4F1EA}th.dt{width:5.2em;background:#F4F1EA;white-space:nowrap;vertical-align:middle}' +
+    'th.sat{color:#2D5FA6}th.sun{color:#C0392B}tr.off td{background:#FBEAEA}.offt{font-size:.8em;color:#C0392B}' +
+    '.mtt-cls{border-bottom:0.1mm dotted #CCC;word-break:break-all}.mtt-cls:last-child{border-bottom:none}.mtt-cls.k{color:#333}' +
+    '.mtt-cyc{margin-left:.2em;color:#555}.mtt-tag{margin-left:.2em;font-size:.8em;border:0.2mm solid #999;border-radius:2px;padding:0 .15em}.mtt-odd{display:block;font-size:.8em;color:#B5741A}' +
+    '@media screen{body{background:#888}.sheet{background:#fff;margin:10px auto;box-shadow:0 2px 8px rgba(0,0,0,.3)}}';
+  var fit = '(function(){' +
+    'var sh=document.querySelector(".sheet");' +
+    'function tryLayout(mode){sh.className="sheet "+mode;var best=0;for(var fs=13;fs>=5;fs-=0.25){document.documentElement.style.setProperty("--fs",fs+"px");' +
+    'var ok=true;[].forEach.call(document.querySelectorAll(".pnl"),function(pn){var inn=pn.querySelector(".in");if(inn.scrollHeight>pn.clientHeight-6||inn.scrollWidth>pn.clientWidth-6)ok=false;});' +
+    'if(ok){best=fs;break;}}return best;}' +
+    'var a=tryLayout("rows"),c=tryLayout("cols");var mode=a>=c?"rows":"cols";var fs=Math.max(a,c)||5;sh.className="sheet "+mode;document.documentElement.style.setProperty("--fs",fs+"px");' +
+    'setTimeout(function(){window.print();},300);})();';
+  w.document.write('<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>' + escapeHtml(title) + '</title><style>' + css + '</style></head><body>' +
+    '<div class="sheet rows">' + panel + panel + panel + '</div><script>window.onload=function(){' + fit + '};<\/script></body></html>');
   w.document.close();
 }
 
