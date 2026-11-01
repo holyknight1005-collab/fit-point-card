@@ -332,7 +332,7 @@ body.pc .toast{bottom:auto;top:92px}
 //   データは Supabase の senpai_ で始まる表・関数（SQL：20261101_senpai.sql）
 //   地図の県タイルの並びは f i t で作ったもの
 // ============================================================
-const APP_VERSION = '20261102sp2d';
+const APP_VERSION = '20261102sp2e';
 const FIT_SB_URL = '';
 const FIT_ANON = '';
 const FIT_SESSION_KEY = 'fit_session_v1';
@@ -642,9 +642,9 @@ async function start() {
   if (dev && dev.token) { S.kiosk = dev; await startKiosk(); return; }
   const s = loadSession();
   // 登録の入り口（?join）は、ログインしていないときだけ登録の画面にする
-  if (!s) { if (join) renderApply(); else renderLogin(); return; }
+  if (!s) { if (otpRestore()) return; if (join) renderApply(); else renderLogin(); return; }
   const rr = await refresh(false);
-  if (rr === 'invalid' || rr === 'none') { if (join) renderApply(); else renderLogin(); return; }
+  if (rr === 'invalid' || rr === 'none') { if (otpRestore()) return; if (join) renderApply(); else renderLogin(); return; }
   try { S.me = await rpc('senpai_me'); } catch (e) { if (String(e.message) === 'login') { renderLogin(); return; } $('main').innerHTML = '<div class="err">' + esc(errText(e)) + '</div>'; return; }
   startApp(qs.get('room'));
 }
@@ -1203,15 +1203,35 @@ async function otpStart(mode, emailIn) {
   er.classList.add('hide');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) { er.textContent = 'メールアドレスを正しく入れてください。'; er.classList.remove('hide'); return false; }
   $('lg-btn').disabled = true;
-  try { const r = await otpSend(em, mode); OTP = { email: em, mode: mode, demo: r && r.code }; }
+  try { const r = await otpSend(em, mode); OTP = { email: em, mode: mode, demo: r && r.code }; otpKeep(true); }
   catch (e) { er.textContent = String(e.message) === 'otp_wait' ? '続けて送ったので、1分ほど待ってからもう一度押してください。' : '送れませんでした。もう一度押してください。'; er.classList.remove('hide'); $('lg-btn').disabled = false; return false; }
+  otpBox();
+  return true;
+}
+// 数字を待っているあいだにメールアプリへ行って戻っても、続きから入れるように覚えておく（15分）
+const OTP_KEY = 'fit_senpai_otp_v1';
+function otpKeep(on) { try { if (on) localStorage.setItem(OTP_KEY, JSON.stringify({ email: OTP.email, mode: OTP.mode, at: Date.now(), draft: S.applyDraft || null })); else localStorage.removeItem(OTP_KEY); } catch (e) {} }
+function otpPending() { try { const o = JSON.parse(localStorage.getItem(OTP_KEY) || 'null'); return o && Date.now() - o.at < 15 * 60000 ? o : null; } catch (e) { return null; } }
+function otpRestore() {
+  const o = otpPending(); if (!o) return false;
+  OTP = { email: o.email, mode: o.mode };
+  if (o.mode === 'apply') {
+    S.applyDraft = o.draft || {}; renderApply();
+    ['ap-name', 'ap-kana', 'ap-hs', 'ap-tel', 'ap-msg', 'lg-em'].forEach((k) => { if ($(k)) $(k).readOnly = true; });
+  } else renderLogin('senpai', true);
+  if ($('lg-em')) $('lg-em').value = o.email;
+  otpBox();
+  return true;
+}
+function otpCancel() { otpKeep(false); OTP = null; renderLogin('senpai'); }
+function otpBox() {
+  const em = OTP.email, mode = OTP.mode;
   $('lg-btn').classList.add('hide');
   $('otp-box').innerHTML = '<div class="note" style="margin-top:10px">📩 <b>' + esc(em) + '</b> に6桁の数字を送りました（届くまで少しかかることがあります。迷惑メールのフォルダも見てください）。' + (OTP.demo ? '<br>（見本）届いた数字：<b>' + OTP.demo + '</b>' : '') + '</div>' +
     '<div class="field"><label for="otp-code">届いた6桁の数字</label><input class="input" id="otp-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="font-size:22px;letter-spacing:.3em;text-align:center"></div>' +
     '<div class="err hide" id="otp-err"></div><button class="btn" id="otp-btn" onclick="otpDone()">' + (mode === 'apply' ? '確かめて登録する' : '入る') + '</button>' +
-    '<p style="text-align:center;margin:8px 0 0"><a href="javascript:void(0)" style="font-size:13px" onclick="otpResend()">届かないとき：もう一度送る</a></p>';
+    '<p style="text-align:center;margin:8px 0 0"><a href="javascript:void(0)" style="font-size:13px" onclick="otpResend()">届かないとき：もう一度送る</a>　<a href="javascript:void(0)" style="font-size:13px" onclick="otpCancel()">メールアドレスを変える</a></p>';
   $('otp-code').focus();
-  return true;
 }
 async function otpResend() { if (!OTP) return; try { const r = await otpSend(OTP.email, OTP.mode); if (r && r.code) OTP.demo = r.code; toast('もう一度送りました'); } catch (e) { toast('1分ほど待ってから押してください'); } }
 async function otpDone() {
@@ -1224,6 +1244,7 @@ async function otpDone() {
   if (OTP.mode === 'apply') {
     try { await rpc('senpai_apply', { p: Object.assign({ email: OTP.email }, S.applyDraft) }); } catch (e) { er.textContent = errText(e); er.classList.remove('hide'); $('otp-btn').disabled = false; return; }
   }
+  otpKeep(false);
   if (DEMO) { demoAfterLogin(OTP.email); return; }
   location.href = location.pathname;
 }
