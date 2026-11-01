@@ -332,7 +332,7 @@ body.pc .toast{bottom:auto;top:92px}
 //   データは Supabase の senpai_ で始まる表・関数（SQL：20261101_senpai.sql）
 //   地図の県タイルの並びは f i t で作ったもの
 // ============================================================
-const APP_VERSION = '20261101sp2';
+const APP_VERSION = '20261102sp2d';
 const FIT_SB_URL = '';
 const FIT_ANON = '';
 const FIT_SESSION_KEY = 'fit_session_v1';
@@ -636,14 +636,15 @@ window.addEventListener('DOMContentLoaded', start);
 async function start() {
   const qs = new URLSearchParams(location.search);
   if (DEMO) { demoInit(); return; }
-  if (qs.has('apply') || qs.has('join')) { renderApply(); return; }
+  const join = qs.has('apply') || qs.has('join');
   // f i t のパソコン（登録ずみの端末）
   let dev = null; try { dev = JSON.parse(localStorage.getItem(DEVICE_KEY) || 'null'); } catch (e) {}
   if (dev && dev.token) { S.kiosk = dev; await startKiosk(); return; }
   const s = loadSession();
-  if (!s) { renderLogin(); return; }
+  // 登録の入り口（?join）は、ログインしていないときだけ登録の画面にする
+  if (!s) { if (join) renderApply(); else renderLogin(); return; }
   const rr = await refresh(false);
-  if (rr === 'invalid' || rr === 'none') { renderLogin(); return; }
+  if (rr === 'invalid' || rr === 'none') { if (join) renderApply(); else renderLogin(); return; }
   try { S.me = await rpc('senpai_me'); } catch (e) { if (String(e.message) === 'login') { renderLogin(); return; } $('main').innerHTML = '<div class="err">' + esc(errText(e)) + '</div>'; return; }
   startApp(qs.get('room'));
 }
@@ -662,8 +663,10 @@ function startApp(roomId) {
     const ap = S.me.app || {};
     $('main').innerHTML = ap.status === 'rejected'
       ? '<div class="card"><b>登録について</b><p class="muted">今回は登録を見送らせてもらいました。くわしくはスタッフに聞いてください。</p></div>'
-      : '<div class="card"><b>⏳ スタッフが確認しています</b><p class="muted" style="margin:6px 0 0">' + esc(ap.name || S.me.name || '') + ' さん、登録ありがとうございます！<br>f i t の卒業生か確かめたら、<b>' + esc(ap.email || '') + '</b> にメールでお知らせします。そのあと、このページを開くと「わたしの紹介」を書けます。</p></div>' +
+      : '<div class="card"><b>⏳ スタッフが確認しています</b><p class="muted" style="margin:6px 0 0">' + esc(ap.name || S.me.name || '') + ' さん、登録ありがとうございます！<br>f i t の卒業生か確かめたら、<b>' + esc(ap.email || '') + '</b> にメールでお知らせします。そのあと、このページを開くと「わたしの紹介」を書けます。</p><button class="btn sub" style="margin-top:10px" onclick="location.href = location.pathname">確認が終わったか見る</button></div>' +
         a2hsCard();
+    // 確認待ちのあいだは1分ごとに見て、承認されたらそのまま入る
+    if (!DEMO && ap.status !== 'rejected') { clearInterval(S.waitTimer); S.waitTimer = setInterval(async () => { try { const m = await rpc('senpai_me'); if (m.role === 'senpai') { clearInterval(S.waitTimer); S.me = m; startApp(); } } catch (e) {} }, 60000); }
     return;
   }
   const tabs = r === 'student' ? [['find', '🔎', 'さがす'], ['rooms', '💬', 'メッセージ']]
@@ -1236,7 +1239,7 @@ function renderApply() {
     fld('ap-name', 'お名前（必須）', 'f i t にいたときの名前。スタッフが確かめるのに使います。', '例：伊予　花子', d.name) + fld('ap-kana', 'ふりがな（必須）', '', '例：いよ　はなこ', d.name_kana) +
     fld('ap-hs', '出身高校（必須）', '', '例：松山東', d.high_school) +
     '<div class="field"><label for="ap-tel">電話番号（必須）</label><input class="input" type="tel" id="ap-tel" autocomplete="tel" placeholder="例：090-1234-5678" value="' + esc(d.phone || '') + '"><div class="hint">スタッフだけが見ます。生徒には見えません。</div></div>' +
-    '<div class="field"><label>ひとこと</label><textarea class="input" id="ap-msg" rows="2" placeholder="例：2018年に卒業した〇〇です">' + esc(d.message || '') + '</textarea></div>' +
+    '<div class="field"><label>ひとこと</label><textarea class="input" id="ap-msg" rows="2" placeholder="例：神戸大学に通っています！なんでも気軽に聞いてね！">' + esc(d.message || '') + '</textarea></div>' +
     '<div class="field"><label for="lg-em">メールアドレス（必須）</label><input class="input" type="email" id="lg-em" autocomplete="email" placeholder="name@example.com" value="' + esc(d.email || '') + '"><div class="hint">このアドレスに6桁の数字を送って、まちがいがないか確かめます。次から、このアドレスで入ります。</div></div>' +
     '<div class="err hide" id="lg-err"></div><button class="btn" id="lg-btn" onclick="sendApply()">数字を送る</button><div id="otp-box"></div></div>' +
     '<p class="muted" style="font-size:12px">大学・学部・仕事などは、スタッフが確認したあとの「わたしの紹介」で入れてもらいます。</p>';
@@ -1262,7 +1265,7 @@ async function doLogin(kind) {
       : j.error === 'network' ? (DEMO ? '見本では、ポイントアプリのログインは使えません（下の見本の切りかえを使ってください）。' : '通信がうまくつながりませんでした。') : 'IDまたはパスワードが違います';
     er.classList.remove('hide'); return;
   }
-  location.reload();
+  location.href = location.pathname; // ?join などを外して入り直す
 }
 
 function fld(id, label, hint, ph, val) {
@@ -2269,12 +2272,21 @@ async function setApp(id, st) {
   try { a = await rpc('senpai_app_set', { p_id: id, p_status: st }); } catch (e) { toast(errText(e)); return; }
   loadApps();
   if (st !== 'ok') { toast('変えました'); return; }
-  // 承認したことを本人に知らせる（スタッフのメールアプリで送る）
+  // 承認したことを本人にメールで知らせる（自動。送れなかったときだけスタッフのメールアプリで）
+  if (!DEMO) {
+    try {
+      const ss = loadSession();
+      const r = await rawFetch(FIT_SB_URL + '/functions/v1/senpai-mail', { method: 'POST', headers: { apikey: FIT_ANON, Authorization: 'Bearer ' + (ss && ss.access_token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_id: id, page_url: location.origin + location.pathname }) });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.ok) { toast('承認して、本人にメールを送りました'); return; }
+    } catch (e) {}
+  } else { toast('承認して、本人にメールを送りました（見本）'); return; }
   const ap = (a && a.email) ? a : (S.appsCache || []).find((x) => x.id === id) || {};
   const url = location.origin + location.pathname;
   const sub = '【f i t 先輩図鑑】登録ありがとうございます';
   const body = (ap.name || '') + ' さん\n\nf i t です。先輩図鑑への登録ありがとうございます！\n確認ができたので、入れるようになりました。\n\n下のページを開いて、「先輩（卒業生）」→ このメールアドレスを入れる → 届いた6桁の数字を入れると入れます。\n' + url + '\n\n最初に「わたしの紹介」を書いてください。スタッフが確認してから、生徒が見る図鑑に出ます。\n写真・イラストの登録もお願いします。\n\nf i t';
-  modal('<h3 style="margin:0 0 6px">✅ 承認しました</h3><p class="muted">本人にメールで知らせてください。下のボタンで、文面の入ったメールが開きます。</p>' +
+  modal('<h3 style="margin:0 0 6px">✅ 承認しました</h3><p class="muted">メールを自動で送れませんでした。下のボタンで文面の入ったメールを開いて、本人に送ってください。</p>' +
     '<div class="note" style="white-space:pre-wrap;font-size:13px">' + esc('宛先：' + (ap.email || '') + '\n件名：' + sub + '\n\n' + body) + '</div>' +
     '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><a class="btn" style="text-decoration:none;text-align:center" href="mailto:' + encodeURIComponent(ap.email || '') + '?subject=' + encodeURIComponent(sub) + '&body=' + encodeURIComponent(body) + '">📩 メールを開く</a>' +
     '<button class="btn sub" onclick="navigator.clipboard && navigator.clipboard.writeText(' + esc(JSON.stringify(body)) + ').then(() => toast(\'文面をコピーしました\'))">文面をコピー</button><button class="btn sub" onclick="closeModal()">閉じる</button></div>');
