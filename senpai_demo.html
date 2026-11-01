@@ -333,7 +333,7 @@ body.pc .toast{bottom:auto;top:92px}
 //   データは Supabase の senpai_ で始まる表・関数（SQL：20261101_senpai.sql）
 //   地図の県タイルの並びは f i t で作ったもの
 // ============================================================
-const APP_VERSION = '20261102sp2j';
+const APP_VERSION = '20261102sp2l';
 const FIT_SB_URL = '';
 const FIT_ANON = '';
 const FIT_SESSION_KEY = 'fit_session_v1';
@@ -1478,7 +1478,13 @@ async function loadHome() {
   let n, sns;
   try { [n, sns] = await Promise.all([rpc('senpai_news_list'), rpc('senpai_sns_list')]); } catch (e) { $('main').innerHTML = '<div class="err">' + esc(errText(e)) + '</div>'; return; }
   const last = n.last_seen || 0, P = n.posts || [];
-  let h = photoAsk() + a2hsCard();
+  let h = photoAsk();
+  if (S.me.role === 'senpai' && !S.viewAs) {
+    let un = 0; try { un = await rpc('senpai_staffmsg_unread') || 0; } catch (e) {}
+    const ru = (S.rooms || []).reduce((a, r) => a + (r.mine ? (r.unread || 0) : 0), 0);
+    if (un + ru) h += '<button class="card" style="display:block;width:100%;text-align:left;border:2px solid var(--orange);background:#fff8ef;cursor:pointer" onclick="go(\'rooms\')"><b>✉️ 読んでいないメッセージが ' + (un + ru) + '件 あります</b><div class="muted" style="font-size:13px">' + (un ? 'f i t スタッフから ' + un + '件' : '') + (un && ru ? '・' : '') + (ru ? '相談・やりとり ' + ru + '件' : '') + '　→ 開く</div></button>';
+  }
+  h += a2hsCard();
   h += '<div class="card"><b style="display:block;margin-bottom:10px">f i t の発信</b><div class="sns">' + (sns || []).map(snsIcon).join('') + '</div></div>';
   h += pushBox();
   h += '<div class="group-h">📣 お知らせ</div>';
@@ -1626,6 +1632,8 @@ async function refreshRooms() {
   ['bd-rooms', 'pc-bd'].forEach((k) => { const bd = $(k); if (bd) { bd.textContent = tot; bd.classList.toggle('hide', !tot); } });
   if (S.unreadTotal >= 0 && tot > S.unreadTotal && document.visibilityState !== 'visible') notify('f i t 先輩図鑑', '新しいメッセージが届きました');
   S.unreadTotal = tot;
+  // ホーム画面のアイコンに未読の数（できる端末だけ。iPhone はホーム画面に追加して通知をオンにしたとき）
+  try { if (S.me && S.me.role !== 'staff' && navigator.setAppBadge) { if (tot) navigator.setAppBadge(tot); else navigator.clearAppBadge(); } } catch (e) {}
   return true;
 }
 async function loadRooms() {
@@ -1642,7 +1650,7 @@ function renderRooms() {
     if (S.me.image && S.me.image.status === 'illust_ready') h += '<div class="warn">🎨 あなたのイラストができました。「わたしの紹介」で見て、よければ「これでOK」を押してください。 <button class="btn small" onclick="go(\'profile\')">見る</button></div>';
     if (!S.me.profile) h += '<div class="warn">まだ紹介が登録されていません。「わたしの紹介」から登録すると、生徒の一覧に出ます。</div>';
     else if (S.me.profile.status === 'paused') h += '<div class="note">今は「休み中」です。新しい相談は来ません（今のやりとりは続けられます）。</div>';
-    if (Notification && Notification.permission === 'default') h += '<div class="note">メッセージが来たときに知らせてほしいときは <button class="btn small sub" onclick="askNotify()">通知をオンにする</button></div>';
+    if (window.Notification && Notification.permission === 'default') h += '<div class="note">メッセージが来たときに知らせてほしいときは <button class="btn small sub" onclick="askNotify()">通知をオンにする</button></div>';
   }
   if (S.me.role === 'senpai' && (S.smThreads || []).length) h += '<div class="group-h">✉️ f i t スタッフから</div>' + S.smThreads.map(smRowSenpai).join('') + '<div class="group-h">相談・やりとり</div>';
   if (!R.length) {
@@ -2307,10 +2315,12 @@ async function loadContact() {
   let T;
   try { T = await rpc('senpai_staffmsg_threads', { p_all: true }) || []; } catch (e) { $('main').innerHTML = '<div class="err">' + esc(errText(e)) + '</div>'; return; }
   const mine = T.filter((t) => t.mine), others = T.filter((t) => !t.mine);
-  let h = '<div class="card"><b>📣 一斉に送る</b><p class="muted" style="margin:4px 0 8px">卒業生の「メッセージ」に、あなたの名前で届きます（メールにも届きます）。返事は、あなたとのやりとりに来ます。</p>' +
+  let h = '<div class="card"><b>📣 一斉に送る</b><p class="muted" style="margin:4px 0 8px">卒業生の「メッセージ」に、あなたの名前で届きます。メールには送りません（アプリの未読の数で知らせます）。返事は、あなたとのやりとりに来ます。</p>' +
     '<div class="field"><label for="sm-t">送る相手</label><select class="input" id="sm-t" onchange="smCount()">' + SM_TARGETS.map((x) => '<option value="' + x[0] + '">' + x[1] + '</option>').join('') + '</select><div class="hint" id="sm-n"></div></div>' +
     '<div class="field"><label for="sm-b">内容</label><textarea class="input" id="sm-b" rows="4" placeholder="例：12月に英語ツアーをします。参加できる人は返事ください！"></textarea></div>' +
     '<button class="btn" id="sm-go" onclick="smBroadcast()">一斉に送る</button></div>';
+  const NR = mine.filter((t) => t.senpai_unread > 0);
+  if (NR.length) h += '<div class="card" style="border:2px solid #f0c27a"><b>📩 まだ読んでいない卒業生：' + NR.length + '人</b><p class="muted" style="margin:4px 0 8px">しばらく読まれていないときは、メールで「メッセージが届いています」と知らせられます（内容はメールに書きません）。</p><button class="btn small" onclick="smNotify(\'\')">読んでいない人全員にメールで知らせる</button></div>';
   h += '<p class="lead">あなたと卒業生のやりとりです。卒業生ひとりに送るときは、「先輩」タブの「✉️ 連絡」から。</p>';
   h += mine.length ? mine.map((t) => smRowStaff(t)).join('') : '<div class="empty">まだやりとりはありません。</div>';
   if (others.length) h += '<div class="group-h">ほかのスタッフのやりとり（代表・橋田・石田・亀井だけが見られます。見るだけ）</div>' + others.map((t) => smRowStaff(t)).join('');
@@ -2322,7 +2332,8 @@ function smWhen(t) { return t ? jst(t) : ''; }
 function smRowStaff(t) {
   return '<button class="room-row" onclick="smOpen(' + esc(JSON.stringify(t.senpai_id)) + ',' + esc(JSON.stringify(t.staff_code)) + ')"><div class="avatar">' + esc(initial(t.nickname || t.real || '?')) + '</div>' +
     '<div style="flex:1;min-width:0"><div class="t"><b>' + esc(t.nickname || t.real || '（紹介まだ）') + '</b><span class="muted">　' + esc(t.real || '') + (t.mine ? '' : '　／　' + esc(t.staff_name || '') + 'のやりとり') + '</span></div>' +
-    '<div class="l">' + (t.last_role === 'staff' ? '' : '卒業生：') + esc(t.last_body || '') + '</div></div>' +
+    '<div class="l">' + (t.last_role === 'staff' ? '' : '卒業生：') + esc(t.last_body || '') + '</div>' +
+    (t.mine && t.senpai_unread ? '<div style="margin-top:3px"><span class="st-pill st-wait">未読のまま' + t.senpai_unread + '件</span>' + (t.notified_at ? '<span class="muted" style="font-size:11px">　メールで知らせた ' + esc(jst(t.notified_at)) + '</span>' : '') + '</div>' : '') + '</div>' +
     '<div style="text-align:right"><div class="muted" style="font-size:11px">' + esc(smWhen(t.last_at)) + '</div>' + (t.unread ? '<span class="badge" style="position:static">' + t.unread + '</span>' : '') + '</div></button>';
 }
 function smRowSenpai(t) {
@@ -2346,10 +2357,16 @@ async function smLoad(first) {
     c.can = d.can_send; c.staff = d.staff_code; c.staffName = d.staff_name;
     const title = st ? esc(d.nickname || d.real || '卒業生') + (d.real && d.nickname ? '<span class="muted" style="font-weight:400">（' + esc(d.real) + '）</span>' : '') : esc(d.staff_name || 'スタッフ') + '<span class="muted" style="font-weight:400">　f i t スタッフ</span>';
     $('sm-box').innerHTML = '<h3 style="margin:0 0 4px">✉️ ' + title + '</h3>' +
-      '<div class="muted" style="font-size:12px;margin-bottom:6px">' + (st ? (c.can ? 'あなた（' + esc(d.staff_name || '') + '）と卒業生のやりとりです。送るとメールにも届きます。' : esc(d.staff_name || '') + 'と卒業生のやりとりです（見るだけ）。') : 'f i t のスタッフからの連絡です。ここで返事ができます。') + '</div>' +
+      '<div class="muted" style="font-size:12px;margin-bottom:6px">' + (st ? (c.can ? 'あなた（' + esc(d.staff_name || '') + '）と卒業生のやりとりです。メールには送りません（返事がないときは「メールで知らせる」）。' : esc(d.staff_name || '') + 'と卒業生のやりとりです（見るだけ）。') : 'f i t のスタッフからの連絡です。ここで返事ができます。') + '</div>' +
       '<div id="sm-list" style="max-height:52vh;overflow-y:auto;padding:4px 2px;background:#f7f4ee;border-radius:12px"></div>' +
+      (st && c.can ? '<div id="sm-read" class="muted" style="font-size:12px;margin-top:6px"></div>' : '') +
       (c.can ? '<div style="display:flex;gap:6px;margin-top:8px;position:sticky;bottom:0;background:#fff;padding-top:6px"><textarea class="input" id="sm-in" rows="2" placeholder="' + (st ? '卒業生へのメッセージ' : 'スタッフへの返事') + '" style="flex:1"></textarea><button class="btn" style="width:auto;padding:0 16px" id="sm-send" onclick="smSend()">送る</button></div>' : '') +
       '<div style="margin-top:8px"><button class="btn sub" onclick="closeModal();clearInterval(S.smTimer);if(S.tab===\'contact\')loadContact();else if(S.tab===\'rooms\')loadRooms()">閉じる</button></div>';
+  }
+  if (st && c.can) {
+    const lastStaff = (d.messages.filter((m) => m.role === 'staff').pop() || {}).id || c.lastStaff || 0; c.lastStaff = lastStaff;
+    const rd = d.other_read || 0, info = $('sm-read');
+    if (info) info.innerHTML = !lastStaff ? '' : rd >= lastStaff ? '✅ 卒業生は読みました' : '📭 まだ読んでいません　<button class="btn small sub" onclick="smNotify(' + esc(JSON.stringify(c.senpai)) + ')">📩 メールで知らせる</button>';
   }
   const L = $('sm-list'); if (!L) return;
   if (first && !d.messages.length) L.innerHTML = '<div class="empty" style="padding:20px">' + (st ? 'まだやりとりはありません。下から送ってみましょう。' : 'まだメッセージはありません。') + '</div>';
@@ -2365,7 +2382,7 @@ async function smSend() {
   const c = S.sm, el = $('sm-in'), body = el.value.trim(); if (!body) return;
   $('sm-send').disabled = true;
   try {
-    if (S.me.role === 'staff') { const r = await rpc('senpai_staffmsg_send', { p_target: 'one', p_body: body, p_one: c.senpai }); smMail(r.batch); }
+    if (S.me.role === 'staff') await rpc('senpai_staffmsg_send', { p_target: 'one', p_body: body, p_one: c.senpai });
     else await rpc('senpai_staffmsg_reply', { p_staff: c.staff, p_body: body });
     el.value = ''; await smLoad(false);
   } catch (e) { toast(errText(e)); }
@@ -2375,10 +2392,24 @@ async function smBroadcast() {
   const t = $('sm-t').value, body = $('sm-b').value.trim();
   if (!body) { toast('内容を書いてください'); return; }
   const lb = (SM_TARGETS.find((x) => x[0] === t) || [])[1];
-  if (!confirm(lb + '（' + (S.smN || 0) + '人）に送ります。メールにも届きます。よいですか？')) return;
+  if (!confirm(lb + '（' + (S.smN || 0) + '人）に送ります。よいですか？')) return;
   $('sm-go').disabled = true;
-  try { const r = await rpc('senpai_staffmsg_send', { p_target: t, p_body: body }); toast(r.count + '人に送りました'); smMail(r.batch); loadContact(); }
+  try { const r = await rpc('senpai_staffmsg_send', { p_target: t, p_body: body }); toast(r.count + '人に送りました'); loadContact(); }
   catch (e) { toast(errText(e)); $('sm-go').disabled = false; }
+}
+// 読んでいない卒業生に「メッセージが届いています」とメールで知らせる（senpai：1人／''：自分のやりとりの全員）
+async function smNotify(senpai) {
+  if (!confirm(senpai ? 'この卒業生に「メッセージが届いています」とメールで知らせますか？' : '読んでいない卒業生全員に「メッセージが届いています」とメールで知らせますか？')) return;
+  if (DEMO) { const r = await rpc('senpai_staffmsg_notify', { p_senpai: senpai || '' }); toast(r.length ? r.length + '人にメールで知らせました（見本）' : '読んでいない人はいません'); if (S.tab === 'contact' && !senpai) loadContact(); return; }
+  try {
+    const ss = loadSession();
+    const r = await rawFetch(FIT_SB_URL + '/functions/v1/senpai-mail', { method: 'POST', headers: { apikey: FIT_ANON, Authorization: 'Bearer ' + (ss && ss.access_token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notify: senpai || '', page_url: location.origin + location.pathname }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) toast(j.sent ? j.sent + '人にメールで知らせました' : '読んでいない人はいません（メールが登録されていない人には送れません）');
+    else toast('メールを送れませんでした' + (j.error ? '（' + j.error + '）' : ''));
+  } catch (e) { toast('メールを送れませんでした'); }
+  if (S.tab === 'contact' && !senpai) loadContact();
 }
 // メールでも送る（送れなくてもアプリの中には届いている）
 async function smMail(batch) {
@@ -2931,7 +2962,7 @@ async function demoRpc(name, a) {
       const st = r === 'staff';
       return out(Object.values(D.smT).filter((t) => st ? (t.staff === 'fit003' || a.p_all) : t.senpai === me).map((t) => {
         const M = D.sm.filter((m) => m.senpai === t.senpai && m.staff === t.staff), l = M[M.length - 1] || {}, p = D.profiles.find((x) => x.id === t.senpai) || {};
-        return { senpai_id: t.senpai, staff_code: t.staff, staff_name: t.name, mine: t.staff === 'fit003', nickname: p.nickname, real: p.real, last_at: l.at, last_body: (l.body || '').slice(0, 60), last_role: l.from,
+        return { senpai_id: t.senpai, staff_code: t.staff, staff_name: t.name, mine: t.staff === 'fit003', nickname: p.nickname, real: p.real, last_at: l.at, last_body: (l.body || '').slice(0, 60), last_role: l.from, notified_at: t.notified, senpai_unread: M.filter((m) => m.from === 'staff' && m.id > t.sr).length,
           unread: M.filter((m) => (st ? m.from === 'senpai' && m.id > t.tr && t.staff === 'fit003' : m.from === 'staff' && m.id > t.sr)).length };
       }).sort((x, y) => String(y.last_at).localeCompare(String(x.last_at))));
     }
@@ -2940,10 +2971,11 @@ async function demoRpc(name, a) {
       if (!st && !t) dErr('not_found');
       const M = D.sm.filter((m) => m.senpai === sid && m.staff === sc), own = st ? sc === 'fit003' : true;
       if (t && own && M.length) { if (st) t.tr = M[M.length - 1].id; else t.sr = M[M.length - 1].id; }
-      return out({ senpai_id: sid, staff_code: sc, staff_name: t ? t.name : '見本 スタッフ', can_send: own, nickname: p.nickname, real: st ? p.real : null,
+      return out({ senpai_id: sid, staff_code: sc, staff_name: t ? t.name : '見本 スタッフ', can_send: own, other_read: t ? (st ? t.sr : t.tr) : 0, nickname: p.nickname, real: st ? p.real : null,
         messages: M.filter((m) => m.id > (a.p_after || 0)).map((m) => ({ id: m.id, role: m.from, staff_name: m.name, body: m.body, at: m.at, mine: (st && m.from === 'staff') || (!st && m.from === 'senpai'), broadcast: D.sm.filter((b) => b.batch && b.batch === m.batch).length > 1 })) });
     }
     case 'senpai_staffmsg_reply': { const t = D.smT[me + '|' + a.p_staff]; if (!t) dErr('not_found'); D.sm.push({ id: ++D.seq, senpai: me, staff: a.p_staff, from: 'senpai', body: a.p_body, at: now }); t.sr = D.seq; return D.seq; }
+    case 'senpai_staffmsg_notify': { const res = []; Object.values(D.smT).filter((t) => t.staff === 'fit003' && (!a.p_senpai || t.senpai === a.p_senpai)).forEach((t) => { const n = D.sm.filter((m) => m.senpai === t.senpai && m.staff === t.staff && m.from === 'staff' && m.id > t.sr).length; if (n) { t.notified = now; res.push({ email: 'x', count: n }); } }); return res; }
     case 'senpai_staffmsg_unread': return Object.values(D.smT).reduce((n, t) => n + D.sm.filter((m) => m.senpai === t.senpai && m.staff === t.staff && (r === 'staff' ? t.staff === 'fit003' && m.from === 'senpai' && m.id > t.tr : t.senpai === me && m.from === 'staff' && m.id > t.sr)).length, 0);
     case 'senpai_apps_list': return out(D.apps.map((x) => { const p = D.profiles.find((y) => y.id === 'n' + x.id || y.email === x.email); return Object.assign({}, x, { profile: !p ? 'none' : p.hidden ? 'hidden' : p.review, kind: p && p.kind, nickname: p && p.nickname, university: p && p.university, job_title: p && p.job_title }); }));
     case 'demo_otp_send': { const c = String(100000 + Math.floor(Math.random() * 900000)); D.otp[a.email] = c; return { ok: true, code: c }; }
