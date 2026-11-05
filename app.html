@@ -6934,7 +6934,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261102ks34';
+const APP_VERSION = '20261105ks35';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -29358,8 +29358,10 @@ async function loadSessionList() {
                   ? '<span style="font-size:9px;font-weight:700;color:var(--orange-d);background:var(--orange-l);border:1px solid var(--orange);border-radius:10px;padding:0 6px">' + sessionCycleLabel(s) + '</span>'
                   : '')) +
             videoBadge +
+            (s.school ? '<span style="font-size:9px;font-weight:700;color:#2D5FA6;background:#EAF1FB;border:1px solid #A9C3E8;border-radius:10px;padding:0 6px">' + escapeHtml(calSchoolSuffix(s.school).trim()) + '</span>' : '') +   // 20261105ks35
           '</div>' +
           '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">' +
+            (sEd ? '<button onclick="openSessionSchoolEdit(\'' + s.id + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;color:#2D5FA6;background:#EAF1FB;border:1px solid #A9C3E8;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">🏫 学校別</button>' : '') +   // 20261105ks35
             (sEd ? '<button onclick="openVideoLessonForSession(\'' + s.class_master_id + '\',\'' + date + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;color:#7B2D8B;background:#F3E6F7;border:1px solid #D9AEE3;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + videoBtnLabel + '</button>' : '') +
             (sEd ? '<button onclick="toggleSessionMakeup(\'' + s.class_master_id + '\',\'' + date + '\',\'' + (s.period != null ? s.period : '') + '\',\'' + (s.is_makeup ? '1' : '0') + '\',\'' + escapeAttr(s.school || '') + '\')" style="padding:2px 8px;font-size:10px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:6px;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif">' + (s.is_makeup ? '↩ 通常に戻す' : '🔁 補習にする') + '</button>' : '') +
             (sEd ? '<button onclick="deleteSession(\'' + s.id + '\')" style="padding:2px 8px;background:var(--red-l);border:1px solid #F5BABA;border-radius:6px;color:var(--red);font-size:10px;cursor:pointer">削除</button>' : '') +
@@ -32385,6 +32387,98 @@ async function toggleSessionMakeup(classId, dateISO, periodStr, curMakeup, schoo
     if (typeof loadTodayClasses === 'function') { try { loadTodayClasses(); } catch (e) {} }
     if (typeof loadSessionList === 'function') { try { loadSessionList(); } catch (e) {} }
   } catch (e) { hideLoading(); showToast('エラー: ' + (e && e.message ? e.message : e), 'error'); }
+}
+
+// ===== 20261105ks35: 登録済みの授業日を、あとから「学校別回」にする／学校別をやめる =====
+// 例：東雲・済美の合同授業で、学校ごとに別の日に同じ回をした（10/3 は東雲だけ、10/9 は済美だけ）。
+// 学校別回にすると、出席表はその子の学校の回だけを詰めて出し、出欠一望では他校の子の欄が「学校別」になる。
+// 回番号も選べる（同じ回を学校別に分けたとき、両方を同じ回にする）。補習会の回に回番号を付けると通常の回に戻る。
+async function openSessionSchoolEdit(sessionId) {
+  const rows = await sbGet('class_sessions', 'id=eq.' + sessionId + '&select=id,class_master_id,session_date,period,school,is_makeup,cycle_year,cycle_month,cycle_no') || [];
+  const se = rows[0];
+  if (!se) { showToast('授業日が見つかりません', 'error'); return; }
+  if (!(await cmGuardEditAsync(se.class_master_id))) return;
+  showLoading('読み込み中...');
+  let schools = [], cycles = [];
+  try {
+    const en = await sbGetAll('class_enrollments', 'class_master_id=eq.' + se.class_master_id + '&select=student_id,ended_on') || [];
+    const ids = [...new Set(en.filter(e => !e.ended_on || e.ended_on >= se.session_date).map(e => e.student_id))];
+    if (ids.length) {
+      const st = await sbGetAll('students', 'id=in.(' + ids.join(',') + ')&select=school,school_detail') || [];
+      st.forEach(x => {
+        const sc = String(x.school || '').trim(); if (!sc) return;
+        const v = sc === 'SSS' ? (String(x.school_detail || '').trim() ? 'SSS：' + String(x.school_detail).trim() : 'SSS') : sc;
+        if (schools.indexOf(v) === -1) schools.push(v);
+      });
+    }
+    const cur = String(se.school || '').trim();
+    if (cur && schools.indexOf(cur) === -1) schools.push(cur);
+    schools.sort((a, b) => a.localeCompare(b, 'ja'));
+    // 前後およそ2か月の通常の回（同じ回を学校別に分けるときに選ぶ）
+    const d = new Date(se.session_date + 'T00:00:00');
+    const iso = x => x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
+    const from = new Date(d); from.setDate(from.getDate() - 60);
+    const to = new Date(d); to.setDate(to.getDate() + 60);
+    const cs = await sbGetAll('class_sessions', 'class_master_id=eq.' + se.class_master_id + '&session_date=gte.' + iso(from) + '&session_date=lte.' + iso(to) +
+      '&is_makeup=not.eq.true&cycle_no=not.is.null&select=cycle_year,cycle_month,cycle_no,session_date,school&order=session_date,period') || [];
+    const seen = {};
+    cs.forEach(c => {
+      const k = (c.cycle_year || '') + '|' + (c.cycle_month || '') + '|' + c.cycle_no;
+      if (!seen[k]) { seen[k] = { k: k, c: c, dates: [] }; cycles.push(seen[k]); }
+      seen[k].dates.push(c.session_date.slice(5).replace('-', '/') + (c.school ? calSchoolSuffix(c.school) : ''));
+    });
+  } catch (e) { /* 候補が取れなくても手で選べる範囲で続ける */ }
+  hideLoading();
+  const p = se.session_date.split('-').map(Number);
+  const wd = ['日','月','火','水','木','金','土'][new Date(p[0], p[1] - 1, p[2]).getDay()];
+  const curCycLabel = se.is_makeup ? '🔁 補習（回番号なし）' : (se.cycle_no != null ? sessionCycleLabel(se) : '回番号なし');
+  let overlay = document.getElementById('session-school-modal');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'session-school-modal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  overlay.onclick = function (e) { if (e.target === overlay) overlay.remove(); };
+  const cur = String(se.school || '').trim();
+  overlay.innerHTML =
+    '<div style="background:var(--surface);border-radius:16px;padding:20px;max-width:380px;width:100%;box-shadow:0 20px 50px -12px rgba(0,0,0,0.3)" onclick="event.stopPropagation()">' +
+    '<div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px">🏫 学校別回の設定</div>' +
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:12px">' + p[1] + '月' + p[2] + '日（' + wd + '）' + (se.period != null ? '／' + se.period + '限' : '') + '　今：' + escapeHtml(cur ? calSchoolSuffix(cur).trim() : '全員') + '・' + escapeHtml(curCycLabel) + '</div>' +
+    '<div class="form-label">この回に出る学校</div>' +
+    '<select class="form-select" id="ssm-school" style="width:100%;margin-bottom:12px"><option value="">全員（学校別にしない）</option>' +
+      schools.map(v => '<option value="' + escapeAttr(v) + '"' + (v === cur ? ' selected' : '') + '>' + escapeHtml(calSchoolSuffix(v).trim()) + '</option>').join('') + '</select>' +
+    '<div class="form-label">回番号</div>' +
+    '<select class="form-select" id="ssm-cycle" style="width:100%;margin-bottom:6px"><option value="">今のまま（' + escapeHtml(curCycLabel) + '）</option>' +
+      cycles.map(x => '<option value="' + escapeAttr(x.k) + '">' + escapeHtml(sessionCycleLabel(x.c)) + '（' + escapeHtml(x.dates.join('・')) + '）</option>').join('') + '</select>' +
+    '<div style="font-size:10.5px;color:var(--muted);line-height:1.6;margin-bottom:14px">同じ回を学校ごとに別の日にしたときは、どちらも同じ回番号を選んでください。補習会の回に回番号を選ぶと、通常の回になります。学校別回にすると、出席表ではその学校の子にだけ出ます。</div>' +
+    '<div style="display:flex;gap:8px"><button onclick="document.getElementById(\'session-school-modal\').remove()" style="flex:1;padding:10px;border:1px solid var(--border);border-radius:8px;background:#fff;color:var(--muted);font-weight:700;cursor:pointer;font-family:inherit">やめる</button>' +
+    '<button onclick="saveSessionSchool(\'' + se.id + '\')" style="flex:1;padding:10px;border:none;border-radius:8px;background:#2D5FA6;color:#fff;font-weight:700;cursor:pointer;font-family:inherit">保存</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+async function saveSessionSchool(sessionId) {
+  const school = (document.getElementById('ssm-school') || {}).value || '';
+  const cyc = (document.getElementById('ssm-cycle') || {}).value || '';
+  const body = { school: school || null };
+  if (cyc) {
+    const a = cyc.split('|');
+    body.is_makeup = false;
+    body.cycle_year = a[0] ? parseInt(a[0], 10) : null;
+    body.cycle_month = a[1] ? parseInt(a[1], 10) : null;
+    body.cycle_no = parseInt(a[2], 10);
+  }
+  showLoading('保存中...');
+  try {
+    await sbPatch('class_sessions', 'id=eq.' + sessionId, body);
+    hideLoading();
+    const m = document.getElementById('session-school-modal'); if (m) m.remove();
+    showToast(school ? '🏫 学校別回にしました（' + calSchoolSuffix(school).trim() + '）' : '学校別をやめて、全員の回にしました', 'success');
+    if (typeof loadSessionList === 'function') { try { loadSessionList(); } catch (e) {} }
+    if (typeof loadStaffCalendar === 'function') { try { loadStaffCalendar(); } catch (e) {} }
+  } catch (e) {
+    hideLoading();
+    const msg = (e && e.message) ? e.message : String(e);
+    showToast(/duplicate|23505|409/.test(msg) ? '同じ日・同じ限に、同じ学校の回がもうあります' : 'エラー: ' + msg, 'error');
+  }
 }
 
 // 授業日の「日付」を変更（生徒欠席などで日程を動かすとき）。session_date を PATCH。
@@ -36165,7 +36259,7 @@ async function loadAttOverview() {
     // 授業日（過去〜未来すべて。未来は空欄表示に使う）※1000行超に備えて全件取得
     const sessions = await sbGetAll('class_sessions',
       'class_master_id=in.(' + classIds.join(',') + ')' +
-      '&select=class_master_id,session_date,period,cycle_year,cycle_month,cycle_no,is_makeup&order=session_date,period') || [];
+      '&select=class_master_id,session_date,period,cycle_year,cycle_month,cycle_no,is_makeup,school&order=session_date,period') || [];   // 20261105ks35: 学校別回の school
 
     // 受講登録（ended_on=null＝継続中）。preferred_period＝長文読解などで担当コマ(5/6限)が決まっている生徒用。
     // ※こちらも1000行上限に備えて全件取得（ended_on=is.null で継続中のみ）
@@ -36190,7 +36284,7 @@ async function loadAttOverview() {
     let stuMap = {};
     if (stuIds.length) {
       const rows = await sbGet('students',
-        'id=in.(' + stuIds.map(x => '"' + x + '"').join(',') + ')&select=id,name,grade,school,photo_url') || [];
+        'id=in.(' + stuIds.map(x => '"' + x + '"').join(',') + ')&select=id,name,grade,school,school_detail,photo_url') || [];   // ks35: school_detail（SSSの実校名）
       rows.forEach(r => { stuMap[r.id] = r; });
     }
 
@@ -36279,6 +36373,8 @@ async function loadAttOverview() {
           sids.forEach(sid => {
             // 長文読解などで担当コマ(preferred_period)が違う生徒は、この時限には出ない予定なので数えない
             if (!stuInPeriod(m.id, sid, s.period, s.session_date)) return;
+            // 20261105ks35: 学校別回で他校の生徒は、この回に出ないので数えない（未記録にしない）
+            if (s.school && schoolScopeOfStudent(stuMap[sid], s.school) === 'out') return;
             const status = attMapG[m.id + '|' + s.session_date + '|' + perKey(s.period) + '|' + sid];
             if (status === 'present') st.present++;
             else if (status === 'absent') { st.absent++; clsAbsent++; }
@@ -36318,7 +36414,8 @@ async function loadAttOverview() {
         const st = dayStat[s.session_date + '|' + perKey(s.period)];
         const headBg = (st && st.past && st.absent > 0) ? '#FDE7E7' : (st && st.past ? '#fff' : '#FAFAFA');
         html += '<th style="padding:4px 2px;border-bottom:1px solid var(--border);font-size:10px;font-weight:700;color:var(--text);width:44px;min-width:44px;background:' + headBg + '">' +
-          md + '<br><span style="font-size:9px;color:var(--muted);font-weight:400">' + wd + (per ? ' ' + per : '') + '</span></th>';
+          md + '<br><span style="font-size:9px;color:var(--muted);font-weight:400">' + wd + (per ? ' ' + per : '') + '</span>' +
+          (s.school ? '<br><span style="font-size:8px;color:#2D5FA6;font-weight:700;white-space:nowrap">🏫' + escapeHtml(String(s.school).replace(/^SSS[：:]/, '')) + '</span>' : '') + '</th>';   // ks35
       });
       html += '<th style="padding:4px 2px;border-bottom:1px solid var(--border);font-size:10px;font-weight:700;color:var(--muted);width:46px;min-width:46px">出席率</th></tr>';
 
@@ -36349,6 +36446,11 @@ async function loadAttOverview() {
           // 長文読解などで担当コマ(preferred_period)が違う生徒は、この時限は「出ない予定」→薄グレーで表示・母数に含めない
           if (!stuInPeriod(m.id, sid, s.period, s.session_date)) {
             html += '<td style="text-align:center;padding:3px;background:repeating-linear-gradient(135deg,#f2f2f2,#f2f2f2 3px,#fafafa 3px,#fafafa 6px)"></td>';
+            return;
+          }
+          // 20261105ks35: 学校別回で他校の生徒は「学校別」と出す（未記録の「·」にしない・出席率の母数に入れない）
+          if (s.school && schoolScopeOfStudent(stu, s.school) === 'out') {
+            html += '<td style="text-align:center;padding:3px"><span style="font-size:9px;color:#9A8F80;white-space:nowrap">学校別</span></td>';
             return;
           }
           const status = attMapG[m.id + '|' + s.session_date + '|' + perKey(s.period) + '|' + sid];
