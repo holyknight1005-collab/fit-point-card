@@ -6934,7 +6934,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261105ks37';
+const APP_VERSION = '20261105ks38';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -15536,6 +15536,7 @@ var FEATURE_CATALOG = [
   { key:'examreq',       icon:'📈', label:'成績依頼',     action:function(){ openHomeFeature('examreq'); } },
   { key:'shakei',        icon:'🎯', label:'傾斜換算',     action:function(){ openHomeFeature('shakei'); } },
   { key:'alumni',        icon:'🎓', label:'進学先さがし', action:function(){ openAlumni(); } },   // 20261021ks9: 卒業生の合格・進学先
+  { key:'passlist',      icon:'🌸', label:'合格者リスト', action:function(){ openPassList(); } },   // 20261105ks38: 今年の合格を随時登録
   { key:'demo',          icon:'🧪', label:'デモ確認',     action:function(){ openHomeFeature('demo'); } },
   { key:'revenue',       icon:'💰', label:'売上',         action:function(){ openHomeFeature('revenue'); },
     visible:function(){ return (currentStaff && currentStaff.role === 'admin') || (typeof saMyPerms !== 'undefined' && saMyPerms && saMyPerms.perms && saMyPerms.perms.revenue === true); } },
@@ -70276,6 +70277,218 @@ async function alImport(inp) {
     hideLoading();
     showToast('読み込めませんでした：' + (e.message || e), 'error');
   }
+}
+
+// ===== 20261105ks38: 🌸 合格者リスト（今年の合格をスタッフが随時登録） =====
+// ・表は進学先さがしと同じ alumni_results（1行＝1人×1大学）。登録した合格は進学先さがしにも出る。
+// ・足した列：student_id（アプリの生徒。20261105_alumni_results_student_id.sql）。入試区分は今までの method に、決まった言い方で入れる。
+// ・年度（exam_year）は入学する年（2026年4月入学＝2026）。4月〜翌3月の受験は翌年の数字。
+// ・大学・学部・学科の候補は senpai_univs.json（文科省「全国大学一覧」）＋今までの進学先。一覧にないものは手で書ける。
+// ・★進学は1人1つ。押すと同じ年のその子のほかの合格は「合格」に戻る。登録・直す・消すはスタッフ全員（Junki 2026-11-05）。
+var GK_METHODS = ['総合型', '学校推薦型（公募）', '学校推薦型（指定校）', '一般（前期）', '一般（中期）', '一般（後期）', '一般（私大）', '共テ利用', 'その他'];
+var gkRows = null, gkYear = null, gkStudents = null, gkUnivs = null, gkEditId = null;
+function gkThisYear() { var t = getTodayJST().split('-'); var y = parseInt(t[0], 10), m = parseInt(t[1], 10); return m >= 4 ? y + 1 : y; }
+function gkUnivType(name) {
+  if (!gkUnivs) return '';
+  var u = gkUnivs.find(function (x) { return x[1] === name; });
+  return u ? u[0] : '';
+}
+async function gkLoadUnivs() {
+  if (gkUnivs) return gkUnivs;
+  try { var r = await fetch('senpai_univs.json'); var j = await r.json(); gkUnivs = j.u || []; } catch (e) { gkUnivs = []; }
+  return gkUnivs;
+}
+async function openPassList() {
+  var ov = document.getElementById('gk-ov');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'gk-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:700;background:var(--bg);display:flex;flex-direction:column;overflow:hidden';
+    ov.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border)">' +
+        '<div style="font-size:17px;font-weight:800;color:var(--text);flex:1">🌸 合格者リスト</div>' +
+        '<button onclick="gkOpenForm(null)" style="background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:800;color:#fff;cursor:pointer;font-family:inherit">＋ 合格を登録</button>' +
+        '<button onclick="document.getElementById(\'gk-ov\').style.display=\'none\'" style="background:none;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;color:var(--muted);cursor:pointer;font-family:inherit">閉じる</button>' +
+      '</div>' +
+      '<div style="padding:8px 16px;border-bottom:1px solid var(--border);background:var(--surface);display:flex;gap:6px;flex-wrap:wrap;align-items:center">' +
+        '<div id="gk-years" style="display:flex;gap:6px;flex-wrap:wrap"></div>' +
+        '<input id="gk-q" type="search" placeholder="名前・大学・高校でしぼる" oninput="gkRender()" style="flex:1;min-width:160px;padding:7px 10px;border:1.5px solid var(--border);border-radius:9px;font-size:14px;font-family:inherit">' +
+      '</div>' +
+      '<div id="gk-sum" style="padding:8px 16px 0;font-size:13px;color:var(--text)"></div>' +
+      '<div id="gk-body" style="flex:1;overflow:auto;padding:8px 16px 40px;box-sizing:border-box"></div>' +
+      '<div id="gk-form" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,.35);align-items:flex-start;justify-content:center;overflow:auto;padding:20px 12px;box-sizing:border-box"></div>';
+    document.body.appendChild(ov);
+  }
+  ov.style.display = 'flex';
+  if (gkYear === null) gkYear = gkThisYear();
+  await gkLoad();
+  gkLoadUnivs().then(function () { gkRender(); });
+}
+async function gkLoad() {
+  var body = document.getElementById('gk-body');
+  body.innerHTML = '<div style="font-size:13px;color:var(--muted);padding:20px;text-align:center">読み込み中…</div>';
+  try {
+    gkRows = await sbGetAll('alumni_results', 'select=id,exam_year,track,high_school,student_name,student_id,university,faculty,department,method,kind,note,created_at&exam_year=gte.' + (gkThisYear() - 1) + '&order=id.desc') || [];
+  } catch (e) {
+    body.innerHTML = '<div style="background:#FDECEA;border:1px solid #E6B0AA;color:#943126;border-radius:10px;padding:12px;font-size:13px;line-height:1.6">読み込めませんでした。<b>20261105_alumni_results_student_id.sql</b> が未実行の可能性があります。<br>' + escapeHtml(e.message || e) + '</div>';
+    return;
+  }
+  gkRender();
+}
+function gkSetYear(y) { gkYear = y; gkRender(); }
+function gkRender() {
+  var yb = document.getElementById('gk-years'), body = document.getElementById('gk-body'), sum = document.getElementById('gk-sum');
+  if (!yb || !body || !gkRows) return;
+  var ty = gkThisYear();
+  yb.innerHTML = [ty, ty - 1].map(function (y) {
+    return alChip(gkYear === y, (y === ty ? '今年の受験（' + y + '年4月入学）' : y + '年4月入学'), 'gkSetYear(' + y + ')');
+  }).join('');
+  var q = alNorm((document.getElementById('gk-q') || {}).value || '');
+  var all = gkRows.filter(function (r) { return r.exam_year === gkYear; });
+  var list = all.filter(function (r) { return !q || alNorm([r.student_name, r.university, r.faculty, r.department, r.high_school, r.method].join(' ')).indexOf(q) !== -1; });
+  var people = {}; all.forEach(function (r) { people[r.student_id || r.student_name] = 1; });
+  var nKo = 0, nShi = 0;
+  all.forEach(function (r) { var t = gkUnivType(r.university); if (t === '国' || t === '公') nKo++; else if (t === '私') nShi++; });
+  sum.innerHTML = '合格 <b>' + all.length + '</b> 件・<b>' + Object.keys(people).length + '</b> 人' +
+    (gkUnivs && gkUnivs.length ? '　<span style="color:var(--muted)">（国公立 ' + nKo + '・私立 ' + nShi + (all.length - nKo - nShi ? '・そのほか ' + (all.length - nKo - nShi) : '') + '）</span>' : '');
+  if (!list.length) {
+    body.innerHTML = '<div style="font-size:13px;color:var(--muted);line-height:1.8;padding:16px 2px">' + (all.length ? '見つかりませんでした。' : 'まだ登録がありません。合格の連絡があったら「＋ 合格を登録」から入れてください。') + '</div>';
+    return;
+  }
+  body.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">' + list.map(function (r) {
+    var t = gkUnivType(r.university);
+    return '<div onclick="gkOpenForm(' + r.id + ')" style="display:flex;gap:10px;align-items:flex-start;padding:9px 12px;border-bottom:1px solid var(--border);cursor:pointer">' +
+      '<div style="min-width:0;flex:1">' +
+        '<div style="font-size:14px"><b>' + escapeHtml(r.university) + '</b>　' + escapeHtml([r.faculty, r.department].filter(Boolean).join('　')) +
+          (t ? '　<span style="font-size:11px;color:var(--muted)">' + (t === '私' ? '私立' : t === '国' ? '国立' : '公立') + '</span>' : '') + '</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:2px">' + escapeHtml(r.student_name) + '（' + escapeHtml(r.high_school || '') + '・' + escapeHtml(r.track) + '）' + (r.method ? '　' + escapeHtml(r.method) : '') + (r.note ? '　📝' + escapeHtml(r.note) : '') + '</div>' +
+      '</div>' +
+      (r.kind === '進学' ? '<span style="flex:none;color:#fff;background:var(--orange);border-radius:9px;padding:1px 8px;font-size:11px;font-weight:800">★進学</span>' : '') +
+    '</div>';
+  }).join('') + '</div>';
+}
+async function gkLoadStudents() {
+  if (gkStudents) return gkStudents;
+  var a = await sbGetAll('students', 'select=id,name,school,school_detail,grade,division&is_active=eq.true&or=(and(division.eq.高校部,grade.eq.3年),division.eq.高卒部)&order=name_kana') || [];
+  gkStudents = a.map(function (s) {
+    var kosotsu = s.division === '高卒部';
+    var hs = kosotsu ? String(s.school_detail || '').split(/[／\/]/)[0].trim() : (s.school || '');
+    return { id: s.id, name: s.name, hs: hs, track: kosotsu ? '高卒' : '現役', label: s.name + '（' + (kosotsu ? '高卒・' : '') + hs + '）' };
+  });
+  return gkStudents;
+}
+function gkInp(id, ph, val, list, extra) {
+  return '<input id="' + id + '" placeholder="' + ph + '" value="' + escapeHtml(val || '') + '"' + (list ? ' list="' + list + '"' : '') + (extra || '') + ' style="width:100%;box-sizing:border-box;padding:9px 10px;border:1.5px solid var(--border);border-radius:9px;font-size:15px;font-family:inherit;margin-top:4px">';
+}
+function gkLab(t, sub) { return '<div style="font-size:12px;font-weight:800;color:var(--text);margin-top:12px">' + t + (sub ? '<span style="font-weight:400;color:var(--muted)">　' + sub + '</span>' : '') + '</div>'; }
+async function gkOpenForm(id) {
+  var box = document.getElementById('gk-form');
+  gkEditId = id;
+  var r = id ? (gkRows || []).find(function (x) { return x.id === id; }) : null;
+  box.style.display = 'flex';
+  box.innerHTML = '<div style="background:var(--surface);border-radius:14px;padding:16px;width:100%;max-width:520px;box-sizing:border-box;font-size:13px">読み込み中…</div>';
+  await Promise.all([gkLoadStudents(), gkLoadUnivs()]);
+  var names = {}; gkUnivs.forEach(function (u) { names[u[1]] = 1; }); (alRows || gkRows || []).forEach(function (x) { if (x.university) names[x.university] = 1; });
+  var stuLabel = '';
+  if (r) { var s = r.student_id && gkStudents.find(function (x) { return x.id === r.student_id; }); stuLabel = s ? s.label : r.student_name + '（' + (r.high_school || '') + '）'; }
+  box.innerHTML =
+    '<div style="background:var(--surface);border-radius:14px;padding:16px 16px 18px;width:100%;max-width:520px;box-sizing:border-box">' +
+      '<div style="display:flex;align-items:center"><b style="font-size:16px;flex:1">' + (r ? '合格を直す' : '🌸 合格を登録') + '</b>' +
+        '<button onclick="gkCloseForm()" style="background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer">×</button></div>' +
+      gkLab('生徒', '名前の一部を入れると候補が出ます（高3・高卒部）') +
+      gkInp('gk-stu', '例：上路', stuLabel, 'gk-stu-list', r && !r.student_id ? ' disabled' : '') +
+      '<datalist id="gk-stu-list">' + gkStudents.map(function (s) { return '<option value="' + escapeHtml(s.label) + '">'; }).join('') + '</datalist>' +
+      gkLab('大学', '一覧にないときはそのまま書いてOK') +
+      gkInp('gk-univ', '例：愛媛大学', r ? r.university : '', 'gk-univ-list', ' oninput="gkFillFac()" onchange="gkFillFac()"') +
+      '<datalist id="gk-univ-list">' + Object.keys(names).sort(function (a, b) { return a.localeCompare(b, 'ja'); }).map(function (n) { return '<option value="' + escapeHtml(n) + '">'; }).join('') + '</datalist>' +
+      '<div style="display:flex;gap:8px"><div style="flex:1">' + gkLab('学部') + gkInp('gk-fac', '例：工学部', r ? r.faculty : '', 'gk-fac-list', ' oninput="gkFillDep()" onchange="gkFillDep()"') + '</div>' +
+      '<div style="flex:1">' + gkLab('学科', '分からなければ空でOK') + gkInp('gk-dep', '例：工学科', r ? r.department : '', 'gk-dep-list') + '</div></div>' +
+      '<datalist id="gk-fac-list"></datalist><datalist id="gk-dep-list"></datalist>' +
+      gkLab('入試区分') +
+      '<div id="gk-methods" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + GK_METHODS.map(function (m) {
+        var on = r && r.method === m;
+        return '<button type="button" data-m="' + m + '" onclick="gkPickMethod(this)" style="padding:6px 10px;font-size:13px;border-radius:14px;cursor:pointer;font-family:inherit;border:1.5px solid ' + (on ? 'var(--orange)' : 'var(--border)') + ';background:' + (on ? 'var(--orange)' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--text)') + ';font-weight:700">' + m + '</button>';
+      }).join('') + '</div>' +
+      (r && r.method && GK_METHODS.indexOf(r.method) === -1 ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">今の入試区分：' + escapeHtml(r.method) + '（選び直すと置きかわります）</div>' : '') +
+      '<label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:14px;cursor:pointer"><input id="gk-shin" type="checkbox"' + (r && r.kind === '進学' ? ' checked' : '') + ' style="width:18px;height:18px">★ この大学に進学する<span style="font-size:11px;color:var(--muted)">（決まったら。あとからでもOK）</span></label>' +
+      gkLab('メモ', '任意') + gkInp('gk-note', '', r ? r.note : '', null) +
+      '<div style="display:flex;gap:8px;margin-top:16px">' +
+        (r ? '<button onclick="gkDelete()" style="background:none;border:1.5px solid #E6B0AA;color:#943126;border-radius:9px;padding:10px 14px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">消す</button>' : '') +
+        '<button onclick="gkSave()" style="flex:1;background:linear-gradient(135deg,var(--orange),var(--orange-d));border:none;border-radius:9px;padding:11px;font-size:14px;font-weight:800;color:#fff;cursor:pointer;font-family:inherit">💾 ' + (r ? '保存する' : '登録する') + '</button>' +
+      '</div>' +
+    '</div>';
+  box.dataset.method = r ? (r.method || '') : '';
+  gkFillFac(true);
+  if (!r) setTimeout(function () { var e = document.getElementById('gk-stu'); if (e) e.focus(); }, 50);
+}
+function gkCloseForm() { var b = document.getElementById('gk-form'); if (b) b.style.display = 'none'; gkEditId = null; }
+function gkPickMethod(btn) {
+  var box = document.getElementById('gk-form'), m = btn.getAttribute('data-m');
+  box.dataset.method = (box.dataset.method === m) ? '' : m;
+  document.querySelectorAll('#gk-methods button').forEach(function (b) {
+    var on = b.getAttribute('data-m') === box.dataset.method;
+    b.style.borderColor = on ? 'var(--orange)' : 'var(--border)'; b.style.background = on ? 'var(--orange)' : 'var(--surface)'; b.style.color = on ? '#fff' : 'var(--text)';
+  });
+}
+function gkUnivEntry() { var n = (document.getElementById('gk-univ') || {}).value || ''; n = n.trim(); return (gkUnivs || []).find(function (u) { return u[1] === n; }); }
+function gkFillFac(keep) {
+  var u = gkUnivEntry(), dl = document.getElementById('gk-fac-list');
+  if (!dl) return;
+  dl.innerHTML = u ? u[4].map(function (f) { return '<option value="' + escapeHtml(f[0]) + '">'; }).join('') : '';
+  gkFillDep();
+}
+function gkFillDep() {
+  var u = gkUnivEntry(), dl = document.getElementById('gk-dep-list');
+  if (!dl) return;
+  var fn = ((document.getElementById('gk-fac') || {}).value || '').trim();
+  var f = u ? u[4].find(function (x) { return x[0] === fn; }) : null;
+  dl.innerHTML = f ? f[1].map(function (d) { return '<option value="' + escapeHtml(d[0]) + '">'; }).join('') : '';
+}
+async function gkSave() {
+  var box = document.getElementById('gk-form');
+  var r = gkEditId ? gkRows.find(function (x) { return x.id === gkEditId; }) : null;
+  var stuTxt = (document.getElementById('gk-stu').value || '').trim();
+  var s = gkStudents.find(function (x) { return x.label === stuTxt; });
+  if (!s && !(r && !r.student_id)) {
+    var hits = gkStudents.filter(function (x) { return alNorm(x.name).indexOf(alNorm(stuTxt)) !== -1; });
+    if (hits.length === 1) s = hits[0];
+    else { showToast(hits.length ? '同じ名前の候補が' + hits.length + '人います。候補から選んでください' : '生徒を候補から選んでください', 'error'); return; }
+  }
+  var univ = (document.getElementById('gk-univ').value || '').trim().normalize('NFKC');
+  if (!univ) { showToast('大学を入れてください', 'error'); return; }
+  var shin = document.getElementById('gk-shin').checked;
+  var row = {
+    exam_year: r ? r.exam_year : gkYear,
+    university: univ,
+    faculty: (document.getElementById('gk-fac').value || '').trim() || null,
+    department: (document.getElementById('gk-dep').value || '').trim() || null,
+    method: box.dataset.method || (r ? r.method : null) || null,
+    kind: shin ? '進学' : '合格',
+    note: (document.getElementById('gk-note').value || '').trim() || null
+  };
+  if (s) { row.student_id = s.id; row.student_name = s.name; row.high_school = s.hs; row.track = s.track; }
+  showLoading('保存中…');
+  try {
+    if (r) await sbPatch('alumni_results', 'id=eq.' + r.id, row);
+    else { row.raw_university = univ; await sbPost('alumni_results', [row]); }
+    // ★進学は1人1つ：同じ年のその子のほかの行を「合格」に
+    if (shin) {
+      var sid = row.student_id || (r && r.student_id);
+      var others = gkRows.filter(function (x) { return x.exam_year === row.exam_year && x.kind === '進学' && (!r || x.id !== r.id) && (sid ? x.student_id === sid : x.student_name === (row.student_name || r.student_name)); });
+      for (var i = 0; i < others.length; i++) await sbPatch('alumni_results', 'id=eq.' + others[i].id, { kind: '合格' });
+    }
+    hideLoading();
+    showToast(r ? '✅ 直しました' : '🌸 登録しました', 'success');
+    gkCloseForm(); alRows = null;
+    await gkLoad();
+  } catch (e) { hideLoading(); showToast('保存できませんでした：' + (e.message || e), 'error'); }
+}
+async function gkDelete() {
+  var r = gkRows.find(function (x) { return x.id === gkEditId; });
+  if (!r || !confirm(r.student_name + '　' + r.university + ' の合格を消します。よろしいですか？')) return;
+  showLoading('消しています…');
+  try { await sbDelete('alumni_results', 'id=eq.' + r.id); hideLoading(); showToast('消しました', 'success'); gkCloseForm(); alRows = null; await gkLoad(); }
+  catch (e) { hideLoading(); showToast('消せませんでした：' + (e.message || e), 'error'); }
 }
 
 // ===== 20261012pk1: 保護者向け時間割の「ピックアップ」設定 =====
