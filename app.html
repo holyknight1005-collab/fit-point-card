@@ -6934,7 +6934,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261105ks35';
+const APP_VERSION = '20261105ks37';
 
 // version.txt を見て新版があれば1回だけ自動リロード（無限ループ防止つき）
 async function forceReloadLatest() {
@@ -7410,6 +7410,31 @@ async function sbGetActiveEnrollments(query) {
       throw e2;
     }
   }
+}
+
+// 20261105ks37: 出欠の記録画面（一覧表・日付ごと・出欠一望）用。継続中に加えて、sinceDate 以降に終了した受講も返す。
+//   文系/理系の切り替えなどで受講を終了しても、終了までの出欠を見られる・直せるようにするため。
+//   同じ授業×生徒に継続中の行があれば、終了した行は返さない（期間は継続中の行で決まる）。
+//   返す行のうち終了したものには _ended=true を付ける。query の select に class_master_id・ended_on を含めること。
+async function sbGetEnrollmentsWithHistory(query, sinceDate) {
+  const act = await sbGetActiveEnrollments(query);
+  let ended = [];
+  try {
+    ended = await sbGetAll('class_enrollments', query + '&ended_on=not.is.null' + (sinceDate ? '&ended_on=gte.' + sinceDate : '')) || [];
+  } catch (e) { ended = []; }
+  const actKeys = new Set(act.map(e => (e.class_master_id || '') + '|' + e.student_id));
+  const seen = new Set();
+  const extra = [];
+  ended.sort((a, b) => String(b.ended_on || '').localeCompare(String(a.ended_on || '')));   // 新しい終了を優先
+  ended.forEach(e => {
+    const k = (e.class_master_id || '') + '|' + e.student_id;
+    if (actKeys.has(k) || seen.has(k)) return;
+    if (e.started_on && e.ended_on && e.ended_on < e.started_on) return;   // 登録まちがいの取り消し
+    seen.add(k);
+    e._ended = true;
+    extra.push(e);
+  });
+  return act.concat(extra);
 }
 
 // 受講を「外す」を論理化する。物理 DELETE せず ended_on=今日 を入れる。
@@ -36265,11 +36290,12 @@ async function loadAttOverview() {
     // ※こちらも1000行上限に備えて全件取得（ended_on=is.null で継続中のみ）
     let enrolls;
     try {
-      enrolls = await sbGetAll('class_enrollments', 'class_master_id=in.(' + classIds.join(',') +
-        ')&ended_on=is.null&select=class_master_id,student_id,is_provisional,preferred_period,lap_done');
+      // ks37: 終了した受講も、授業日の最初より後に終了したものは出す（終了後の回は斜線・数えない）
+      enrolls = await sbGetEnrollmentsWithHistory('class_master_id=in.(' + classIds.join(',') +
+        ')&select=class_master_id,student_id,started_on,ended_on,is_provisional,preferred_period,lap_done', sessions.length ? sessions[0].session_date : null);
     } catch (eLap) {
-      enrolls = await sbGetAll('class_enrollments', 'class_master_id=in.(' + classIds.join(',') +
-        ')&ended_on=is.null&select=class_master_id,student_id,is_provisional,preferred_period');
+      enrolls = await sbGetEnrollmentsWithHistory('class_master_id=in.(' + classIds.join(',') +
+        ')&select=class_master_id,student_id,started_on,ended_on,is_provisional,preferred_period', sessions.length ? sessions[0].session_date : null);
     }
 
     // 出欠記録 ※これが1000行上限で切れて未記録表示になっていた → 全件取得に変更
@@ -36295,8 +36321,10 @@ async function loadAttOverview() {
     const provByClass = {};       // classId -> Set(student_id) 仮受講
     const lapByClass = {};        // classId -> Set(student_id) 2周目（1周完了・以降無料）
     const prefByClassStu = {};    // classId|student_id -> preferred_period（担当コマ）。未設定は入れない。
+    const endByClassStu = {};     // ks37: classId|student_id -> 終了日（終了した受講だけ）
     enrolls.forEach(e => {
       if (!stuSet.has(e.student_id)) return;
+      if (e._ended && e.ended_on) endByClassStu[e.class_master_id + '|' + e.student_id] = e.ended_on;
       (enrByClass[e.class_master_id] || (enrByClass[e.class_master_id] = [])).push(e.student_id);
       if (e.is_provisional) (provByClass[e.class_master_id] || (provByClass[e.class_master_id] = new Set())).add(e.student_id);
       if (e.lap_done) (lapByClass[e.class_master_id] || (lapByClass[e.class_master_id] = new Set())).add(e.student_id);
@@ -36306,6 +36334,8 @@ async function loadAttOverview() {
     // preferred_period 未設定なら常に対象（従来通り）。設定済みならその period のときだけ対象。
     const _aoPlan = await fitPlanMap(classIds);   // 20261014pl1: 理科の4回選択
     const stuInPeriod = (classId, sid, period, date) => {
+      const _end = endByClassStu[classId + '|' + sid];
+      if (_end && date && date > _end) return false;   // ks37: 受講終了後の回は対象外（斜線）
       if (date && !fitPlanIn(_aoPlan, classId, sid, date)) return false;
       const pref = prefByClassStu[classId + '|' + sid];
       if (pref == null) return true;
@@ -36433,7 +36463,8 @@ async function loadAttOverview() {
         html += '<td style="position:sticky;left:0;background:var(--surface);z-index:1;padding:4px 8px;border-right:1px solid var(--border);width:120px;min-width:120px">' +
           '<div onclick="openInterviewKarte(\'' + escapeAttr(sid) + '\',\'att\')" style="display:flex;align-items:center;gap:6px;cursor:pointer;min-width:0" title="カルテを開く">' + avatar +
           '<div style="min-width:0;overflow:hidden"><div style="font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(stu.name || '(不明)') + '</div>' +
-          ((sub || isLap) ? '<div style="font-size:9px;color:var(--muted)">' + escapeHtml(sub) + (isProv ? ' ⏳' : '') + lapBadge + '</div>' : '') +
+          ((sub || isLap || endByClassStu[m.id + '|' + sid]) ? '<div style="font-size:9px;color:var(--muted)">' + escapeHtml(sub) + (isProv ? ' ⏳' : '') + lapBadge +
+            (endByClassStu[m.id + '|' + sid] ? '<span style="font-size:8px;color:#8A6D3B;background:#F6EFE2;border:1px solid #D9C6A0;border-radius:7px;padding:0 4px;margin-left:3px;white-space:nowrap" title="受講は終了。終了までの出欠を表示しています">' + (function(d){const x=new Date(d+'T00:00:00+09:00');return (x.getMonth()+1)+'/'+x.getDate();})(endByClassStu[m.id + '|' + sid]) + 'で終了</span>' : '') + '</div>' : '') +
           '</div></div></td>';
         let p = 0, n = 0;
         csess.forEach(s => {
@@ -37056,7 +37087,7 @@ async function loadAttSheet() {
       const gIndex = {};
       viewStudents.forEach((st) => {
         const idx = students.indexOf(st);
-        const gl = fmtGrade(st.grade) || '(学年未設定)';
+        const gl = fmtGrade(st.grade, division) || '(学年未設定)';
         let g = gIndex[gl];
         if (g == null) { g = groups.length; gIndex[gl] = g; groups.push({ school: gl, items: [] }); }
         groups[g].items.push({ st: st, idx: idx });
@@ -37104,7 +37135,7 @@ async function loadAttSheet() {
             (st.num !== '' ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">No.' + escapeHtml(String(st.num)) + '</span>' : '') +
             ' <button onclick="asEditName(\'' + st.id + '\')" title="氏名・フリガナを編集" style="font-size:11px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--muted);cursor:pointer;padding:1px 6px;font-family:\'Noto Sans JP\',sans-serif">✏️</button>' +
             '　' + printedBadge(st.id) + '</div>' +
-            '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade)) : '') + '　受講 ' + st.subjects.length + '科目</div>' +
+            '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade, division)) : '') + '　受講 ' + st.subjects.length + '科目</div>' +
           '</div>' +
           printSelBox(st.id, true) +
           '<button onclick="openAttSheetDoc(' + idx + ')" style="padding:6px 14px;font-size:12px;font-weight:700;border:1px solid var(--orange);border-radius:8px;background:var(--orange-l);color:var(--orange-d);cursor:pointer;font-family:\'Noto Sans JP\',sans-serif;white-space:nowrap">🖨 出席表</button>' +
@@ -37134,7 +37165,7 @@ async function loadAttSheet() {
             (st.num !== '' ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">No.' + escapeHtml(String(st.num)) + '</span>' : '') +
             ' <button onclick="asEditName(\'' + st.id + '\')" title="氏名・フリガナを編集" style="font-size:11px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--muted);cursor:pointer;padding:1px 6px;font-family:\'Noto Sans JP\',sans-serif">✏️</button>' +
             '　<span id="as-badge-' + st.id + '" style="font-size:11px;font-weight:400">' + badge + '</span>　' + printedBadge(st.id) + '</div>' +
-            '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade)) : '') + '　受講 ' + st.subjects.length + '科目' +
+            '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(st.school) + (st.grade ? ' ' + escapeHtml(fmtGrade(st.grade, division)) : '') + '　受講 ' + st.subjects.length + '科目' +
               (st.noSessions ? ' <span style="font-size:10px;font-weight:700;color:#8A5A2B;background:#FBF0E8;border:1px solid #C79A6E;border-radius:10px;padding:0 6px">今月の授業日なし</span>' : '') + '</div>' +
           '</div>' +
           printSelBox(st.id, confirmed) +
@@ -37184,7 +37215,7 @@ async function loadAttSheet() {
         // チェックできる子＝通常授業は「確認済み」の子（保留は除く）。夏期等は全員。
         const meta = _asMeta[st.id] || {};
         const printable = !isNormalG || (meta.confirmed && !meta.on_hold);
-        if (!gmap[gk]) gmap[gk] = { label: fmtGrade(st.grade) || '(学年未設定)', count: 0 };
+        if (!gmap[gk]) gmap[gk] = { label: fmtGrade(st.grade, division) || '(学年未設定)', count: 0 };
         if (printable) gmap[gk].count++;
       });
       const gkeys = Object.keys(gmap).map(Number).sort((a, b) => a - b);
@@ -37938,7 +37969,7 @@ function renderNameFixList() {
   // グループ見出し（学年別 or 学校別）
   const groupOf = (s) => sortMode === 'school'
     ? (s.school || '(学校未設定)')
-    : (fmtGrade(s.grade) || '(学年未設定)');
+    : (fmtGrade(s.grade, s.division) || '(学年未設定)');
 
   let html = '';
 
@@ -38023,7 +38054,7 @@ function nfRowHtml(s) {
   const famk = sp.famk, givk = sp.givk;
   const info = escapeHtml(s.school || '(学校未設定)') +
     (s.school_detail ? '／' + escapeHtml(s.school_detail) : '') +
-    (s.grade ? '　' + escapeHtml(fmtGrade(s.grade)) : '');
+    (s.grade ? '　' + escapeHtml(fmtGrade(s.grade, s.division)) : '');
   const bg = checked ? '#F1F8F1' : (ok ? 'var(--surface)' : '#FCF3F0');
   const border = checked ? '#BFE3BF' : (ok ? 'var(--border)' : '#E7B7AC');
   return '<div id="nf-row-' + s.id + '" style="border:1px solid ' + border + ';border-radius:10px;padding:10px 12px;background:' + bg + ';margin-top:6px">' +
@@ -43028,7 +43059,8 @@ async function loadAttendanceRoster() {
   showLoading('名簿を読み込み中...');
   try {
     // 名簿（デモ生徒は除外）
-    const enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,is_provisional,lap_done');
+    // ks37: この日までに終了した受講の子も、この日が終了前なら名簿に出す（過去の出欠を直せるように）
+    const enrolls = await sbGetEnrollmentsWithHistory('class_master_id=eq.' + classId + '&select=class_master_id,student_id,started_on,ended_on,is_provisional,lap_done', sdate);
     // 申込未提出（見込み）の生徒を控えておく
     attProvisional = {};
     // 2周目（1周完了・以降無料）の生徒を控えておく（請求対象外・出席は付ける）
@@ -43839,9 +43871,11 @@ async function loadAttMatrix() {
     // lap_done は das で追加した列。SQL未適用環境では 400 になるので、失敗時は列なしで再取得する。
     let enrolls;
     try {
-      enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,is_provisional,preferred_period,lap_done');
+      // ks37: 終了した受講も、表の最初の授業日より後に終了したものは出す（終了後の回は斜線）
+      const _since = sessions.length ? sessions[0].session_date : null;
+      enrolls = await sbGetEnrollmentsWithHistory('class_master_id=eq.' + classId + '&select=class_master_id,student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,is_provisional,preferred_period,lap_done', _since);
     } catch (eLap) {
-      enrolls = await sbGetActiveEnrollments('class_master_id=eq.' + classId + '&select=student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,is_provisional,preferred_period');
+      enrolls = await sbGetEnrollmentsWithHistory('class_master_id=eq.' + classId + '&select=class_master_id,student_id,started_on,ended_on,start_cycle_year,start_cycle_month,start_cycle_no,end_cycle_year,end_cycle_month,end_cycle_no,is_provisional,preferred_period', sessions.length ? sessions[0].session_date : null);
     }
     // 仮受講（申込未提出だが参加）の生徒を控える
     attProvisional = {};
