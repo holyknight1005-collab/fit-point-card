@@ -104,8 +104,9 @@ body.view-desktop #screen-school-view .sv-grid-bottom .sv-card{margin-bottom:0}
 body.view-desktop #karte-grid > .karte-sec{break-inside:avoid;-webkit-column-break-inside:avoid;display:inline-block;width:100%}
 /* スタッフホーム：PC幅で 左=カレンダー / 右=その他 の2カラム */
 body.view-desktop #screen-staff{width:100vw;max-width:100vw;margin-left:calc(-50vw + 50%);margin-right:calc(-50vw + 50%)}
-body.view-desktop #screen-staff .staff-content{display:grid;grid-template-columns:minmax(0,1fr) 360px;grid-template-areas:"exec exec" "cal right" "stu stu";gap:16px 22px;align-content:start;max-width:1320px;margin:0 auto;width:100%;box-sizing:border-box;padding-left:16px;padding-right:16px}
+body.view-desktop #screen-staff .staff-content{display:grid;grid-template-columns:minmax(0,1fr) 360px;grid-template-areas:"qb qb" "exec exec" "cal right" "stu stu";gap:16px 22px;align-content:start;max-width:1320px;margin:0 auto;width:100%;box-sizing:border-box;padding-left:16px;padding-right:16px}
 body.view-desktop #screen-staff .staff-content > #exec-dashboard-section{grid-area:exec;min-width:0}
+body.view-desktop #screen-staff .staff-content > #staff-quickbar{grid-area:qb;align-self:start;max-width:520px;margin-bottom:0 !important}
 body.view-desktop #screen-staff .header{max-width:1320px;margin:0 auto;width:100%}
 body.view-desktop #screen-staff .staff-content > #home-left-col{grid-area:cal;align-self:start;min-width:0;display:flex;flex-direction:column;gap:16px}
 body.view-desktop #screen-staff .staff-content > #home-right-col{grid-area:right;display:flex;flex-direction:column;gap:16px;min-width:0}
@@ -7063,7 +7064,7 @@ html.fit-rtool body.view-desktop #screen-staff-manage{left:var(--fitL,0px)!impor
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261107ks42';   // ks41 を上げたあとの直し（未入力一覧・下のメニュー固定・使い方・6桁・スタッフ画面・目安箱など）
+const APP_VERSION = '20261108ks44';   // ks41 を上げたあとの直し（未入力一覧・下のメニュー固定・使い方・6桁・スタッフ画面・目安箱など）
 // 20261107ks39: 同じ置き場所のページへのリンクは、今開いているアドレスを土台にする（github.io でも app.fit-ehime.com でも動く）
 const FIT_BASE = new URL('./', location.href).href;
 
@@ -9488,6 +9489,7 @@ function applyViewMode(){
   const mode = localStorage.getItem('fit_view_mode') || 'auto';
   const wide = mode === 'desktop' || (mode === 'auto' && window.innerWidth >= 900);
   document.body.classList.toggle('view-desktop', wide);
+  try { staffHomePlace(); } catch (e) {}
   ['view-toggle-btn','view-toggle-btn-home'].forEach(function(id){
     const btn = document.getElementById(id);
     if(btn){
@@ -11371,9 +11373,23 @@ function staffHomeTopSetup() {
   bar.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px';
   const B = (ic, label, fn, id) => '<button onclick="' + fn + '" style="position:relative;display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 4px;border:1.5px solid #EFE4D3;border-radius:16px;background:#FFFDF8;color:#5A3A1E;font-size:12px;font-weight:800;cursor:pointer;font-family:\'Noto Sans JP\',sans-serif"><span style="font-size:20px">' + ic + '</span>' + label + (id ? '<span id="' + id + '" style="display:none;position:absolute;top:4px;right:8px;background:#D94040;color:#fff;border-radius:999px;font-size:10px;min-width:17px;height:17px;line-height:17px;padding:0 4px"></span>' : '') + '</button>';
   bar.innerHTML = B('🆕', '新規生徒登録', "openStaffManage('studentreg')") + B('⚠️', '未入力一覧', "openHomeFeature('missing')") + B('📮', '目安箱', 'openMeyasuStaff()', 'staff-meyasu-badge');
-  const tt = document.getElementById('today-tasks-section');
   sc.insertBefore(bar, sc.firstChild);
-  if (tt) { tt.style.marginBottom = '12px'; sc.insertBefore(tt, bar.nextSibling); }
+  staffHomePlace();
+}
+// ks43：PC幅では「今日やること」を右の列（もとの場所）に戻す。スマホ幅だけ一番上に出す
+function staffHomePlace() {
+  const sc = document.querySelector('#screen-staff .staff-content');
+  const bar = document.getElementById('staff-quickbar');
+  const tt = document.getElementById('today-tasks-section');
+  const rc = document.getElementById('home-right-col');
+  if (!sc || !bar || !tt) return;
+  if (document.body.classList.contains('view-desktop') && rc) {
+    tt.style.marginBottom = '';
+    if (tt.parentNode !== rc) rc.insertBefore(tt, rc.firstChild);
+  } else {
+    tt.style.marginBottom = '12px';
+    if (bar.nextSibling !== tt) sc.insertBefore(tt, bar.nextSibling);
+  }
 }
 // 20261107ks42：スタッフ確認用。URL の最後に #demo（または #demo=生徒ID）を付けて開くと、スタッフでログインしたあと、デモ用の生徒の画面をそのまま開く
 //   例：https://app.fit-ehime.com/app.html#demo
@@ -23964,7 +23980,7 @@ async function loadKarteAttendance(classId) {
     }
     const dates = sessions.map(s => s.session_date);
     const minD = dates.reduce((a,b) => a < b ? a : b);
-    const atts = await excludeDemoRows(await sbGet('session_attendance',
+    const atts = await excludeDemoRows(await sbGetAll('session_attendance',
       'class_master_id=eq.' + classId + '&session_date=gte.' + minD +
       '&select=session_date,period,student_id,status') || []);
     const attByKey = {};
@@ -24106,7 +24122,7 @@ async function loadKarteHistory(classId) {
     const todayStr = getTodayJST();
     let attendedStuSet = new Set();
     try {
-      const attRows = await sbGet('session_attendance',
+      const attRows = await sbGetAll('session_attendance',
         'class_master_id=eq.' + classId + '&select=student_id') || [];
       attRows.forEach(a => { if (a.student_id) attendedStuSet.add(a.student_id); });
     } catch (e) { /* 取得失敗時は安全側で「全員取消不可」に倒す */ attendedStuSet = null; }
@@ -28580,7 +28596,7 @@ async function deleteClassMaster(id) {
       const allSessions = await sbGet('class_sessions',
         'class_master_id=eq.' + id + '&select=id,session_date') || [];
       if (allSessions.length) {
-        const att = await sbGet('session_attendance',
+        const att = await sbGetAll('session_attendance',
           'class_master_id=eq.' + id + '&select=session_date') || [];
         const datesWithAtt = new Set(att.map(a => a.session_date));
         let repDates = new Set();
@@ -40134,7 +40150,7 @@ async function rbLoadClasses() {
     [reps, sess, atts, enrolls] = await Promise.all([
       sbGet('class_reports', repQ).catch(() => []),
       sbGet('class_sessions', sesQ).catch(() => []),
-      sbGet('session_attendance', attQ).catch(() => []),
+      sbGetAll('session_attendance', attQ).catch(() => []),
       // 受講人数（在籍名簿ベース・継続中のみ）。期間フィルタは付けない＝現在の在籍数。
       sbGetActiveEnrollments('class_master_id=in.(' + classIds.join(',') + ')&select=class_master_id,student_id').catch(() => [])
     ]);
@@ -44622,7 +44638,7 @@ async function loadAttMatrix() {
       return;
     }
     // 保存済み出欠
-    const atts = await sbGet('session_attendance',
+    const atts = await sbGetAll('session_attendance',
       'class_master_id=eq.' + classId + '&session_date=lte.' + todayStr +
       '&select=session_date,period,student_id,status,note') || [];
     // 来塾（自動推定用）
@@ -68296,7 +68312,7 @@ async function loadClassAnalysis() {
       '&select=session_date,period,student_id,status,note';
     if (since) attQ += '&session_date=gte.' + since;
     attQ += '&session_date=lte.' + todayStr;
-    const atts = await sbGet('session_attendance', attQ) || [];
+    const atts = await sbGetAll('session_attendance', attQ) || [];
 
     // 期間内の来塾（checkins）— 自動出席判定＋ギャップ検出用
     let checkins = [];
