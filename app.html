@@ -5413,6 +5413,9 @@ html.fit-sidenav body.view-desktop .ex2-tabbar{left:224px}
           <option value="all">👥 全学校を表示</option>
           <option value="mine">🙋 自分の担当分のみ</option>
         </select>
+        <select class="form-select" id="as-class-filter" onchange="loadAttSheet()" title="授業でしぼる（その授業を受けている生徒だけ）" style="font-size:12px;padding:6px 8px;min-width:150px">
+          <option value="">📚 すべての授業</option>
+        </select>
         <select class="form-select" id="as-cmtfilter-select" onchange="asOnCmtFilterChange()" title="コメント状態で絞り込み" style="font-size:12px;padding:6px 8px;min-width:150px">
           <option value="all">📋 すべて表示</option>
           <option value="missing">🟡 未入力のみ</option>
@@ -7203,7 +7206,7 @@ html.fit-sidenav body.view-desktop .ex2-tabbar{left:224px}
 
 <script>// ===== アプリバージョン（更新検知用） =====
 // デプロイのたびにこの値を上げる。version.txt の中身と一致させること。
-const APP_VERSION = '20261108ks52';   // ks52: f i t 通信（fit with you）を生徒アプリで読む・スタッフが PDF を入れる／ks51: スタッフのホーム「今日やること」に今日の授業のカード（出欠・報告書の済／まだ）と進み具合の輪／ks50: 代表モードを作り直し（オレンジ・下のタブ：f i t のいま／英語／講師ごと／講習状況・☰メニュー）／ks49: スタッフ画面の上の帯（あいさつ・名前の丸・部門の切りかえを見やすく）／ks48: 生徒カレンダーを手帳風に（授業名の札・休みは赤・来た・課題・祝日・学校の予定）／ks47 まで：   // ks41 を上げたあとの直し（未入力一覧・下のメニュー固定・使い方・6桁・スタッフ画面・目安箱など）
+const APP_VERSION = '20261108ks53';   // ks53: 出席表に「授業でしぼる」（その授業を受けている生徒だけ）／ks52: f i t 通信（fit with you）を生徒アプリで読む・スタッフが PDF を入れる／ks51: スタッフのホーム「今日やること」に今日の授業のカード（出欠・報告書の済／まだ）と進み具合の輪／ks50: 代表モードを作り直し（オレンジ・下のタブ：f i t のいま／英語／講師ごと／講習状況・☰メニュー）／ks49: スタッフ画面の上の帯（あいさつ・名前の丸・部門の切りかえを見やすく）／ks48: 生徒カレンダーを手帳風に（授業名の札・休みは赤・来た・課題・祝日・学校の予定）／ks47 まで：   // ks41 を上げたあとの直し（未入力一覧・下のメニュー固定・使い方・6桁・スタッフ画面・目安箱など）
 // 20261107ks39: 同じ置き場所のページへのリンクは、今開いているアドレスを土台にする（github.io でも app.fit-ehime.com でも動く）
 const FIT_BASE = new URL('./', location.href).href;
 
@@ -38143,6 +38146,7 @@ async function loadAttSheet() {
         grade: stu.grade || '',
         school: stu.school || '',
         subjects: subjects,
+        classIds: Object.keys(cidMap),         // 20261108ks53: 授業でしぼる用
         noSessions: (subjects.length === 0)   // 当月の授業日ゼロ（通常シートで表示・コメントのみ）
       });
     });
@@ -38270,6 +38274,26 @@ async function loadAttSheet() {
       if (!viewStudents.length) {
         body.innerHTML = html + '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">あなたの担当授業を受講中の生徒は、この月・種別にいません。</div>';
         return;
+      }
+    }
+
+    // 20261108ks53: 授業でしぼる（その授業を受けている生徒だけ。出席表の中身はいつもどおり全部の授業）
+    const clsSel = document.getElementById('as-class-filter');
+    if (clsSel) {
+      const keep = clsSel.value;
+      const used = new Set(); students.forEach(st => (st.classIds || []).forEach(c => used.add(c)));
+      const opts = (masters || []).filter(m => used.has(m.id)).map(m => ({ id: m.id, name: m.name || '' }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+      clsSel.innerHTML = '<option value="">📚 すべての授業</option>' + opts.map(o => '<option value="' + escapeAttr(o.id) + '">' + escapeHtml(o.name) + '</option>').join('');
+      if (keep && opts.some(o => o.id === keep)) clsSel.value = keep;
+      if (clsSel.value) {
+        const cid = clsSel.value;
+        viewStudents = viewStudents.filter(st => (st.classIds || []).indexOf(cid) !== -1);
+        if (!viewStudents.length) {
+          body.innerHTML = html + '<div style="font-size:12px;color:var(--muted);text-align:center;padding:20px">この授業を受けている生徒は、この月・種別にいません。</div>';
+          return;
+        }
+        html += '<div style="font-size:12px;font-weight:800;color:#8A5418;background:#FFF3DC;border-radius:8px;padding:6px 10px;margin-bottom:8px">📚 「' + escapeHtml((opts.find(o => o.id === cid) || {}).name || '') + '」を受けている ' + viewStudents.length + '名だけを表示中</div>';
       }
     }
 
