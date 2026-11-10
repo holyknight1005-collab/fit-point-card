@@ -86,6 +86,13 @@ form.add{background:var(--surface);border:1px solid var(--border);border-radius:
 .acts label{display:flex;gap:4px;align-items:center;color:var(--muted);cursor:pointer}
 .empty{font-size:13px;color:var(--muted);border:1px dashed var(--border);border-radius:10px;padding:14px;text-align:center}
 .closed-note{background:var(--surface2);border-radius:10px;padding:8px 12px;font-size:13px;color:var(--muted);margin-top:10px}
+.checks{margin-top:12px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:10px 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.checkbtn{border:2px solid var(--green);background:var(--surface);color:var(--green);border-radius:999px;padding:6px 14px;font-size:14px;font-weight:800;cursor:pointer}
+.checkbtn.on{background:var(--green);color:#fff}
+.checkbtn:disabled{opacity:.5}
+.chk-names{font-size:13px;color:var(--muted);flex:1;min-width:200px}
+.chk-names b{color:var(--green)}
+.chk-names .old{color:var(--muted);font-weight:400}
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
 .modal{background:var(--surface);border-radius:16px;padding:18px;width:100%;max-width:440px;max-height:90vh;overflow:auto}
 .modal h3{margin:0 0 6px;font-size:17px}
@@ -290,6 +297,7 @@ const TOKEN = (qs.get('r') || '').trim();
 let staff = null;          // ログイン中のスタッフ（staff の行）
 let RQ = null;             // 依頼（review_get の中身）
 let NOTES = [];
+let CHECKS = [];
 const ui = { version: 0, onlyOpen: false, hl: null, draft: {}, kind: {}, poll: null, busy: false };
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -374,9 +382,10 @@ async function renderHome() {
     el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => openCreate() }, '＋ 新しい修正依頼')),
     msg, list);
   try {
-    const [reqs, notes] = await Promise.all([
+    const [reqs, notes, checks] = await Promise.all([
       rest('GET', 'review_requests?select=id,token,title,versions,current_version,is_open,created_by,created_at&order=created_at.desc'),
-      rest('GET', 'review_notes?select=request_id,done,hidden&hidden=eq.false&limit=10000')
+      rest('GET', 'review_notes?select=request_id,done,hidden&hidden=eq.false&limit=10000'),
+      rest('GET', 'review_checks?select=request_id,author_name,version&limit=10000')
     ]);
     msg.textContent = reqs.length ? '' : 'まだ修正依頼はありません。';
     for (const r of reqs) {
@@ -389,6 +398,7 @@ async function renderHome() {
         el('div', { class: 'grow' }, t, s),
         el('span', { class: 'badge ' + (r.is_open ? 'b-open' : 'b-closed') }, r.is_open ? '受付中' : '受付終了'),
         el('span', { class: 'badge ' + (open ? 'b-n' : 'b-zero') }, '未対応 ' + open + '／' + mine.length),
+        el('span', { class: 'badge b-open' }, '✓ 確認おわり ' + checks.filter(c => c.request_id === r.id && c.version === r.current_version).length + '人'),
         el('button', { class: 'btn sub small', onclick: () => copyLink(r.token) }, 'リンクをコピー'),
         el('a', { class: 'btn small', href: '?r=' + r.token, style: 'text-decoration:none' }, '開く')));
     }
@@ -545,7 +555,7 @@ async function openRequest() {
   if (!RQ) { app.textContent = ''; app.append(header(), el('div', { class: 'card', style: 'margin-top:16px' }, 'この修正依頼は見つかりませんでした。リンクが正しいか、塾に確かめてください。')); return; }
   if (!RQ.current_version) { app.textContent = ''; app.append(header(), el('div', { class: 'msg' }, 'まだPDFが入っていません。')); return; }
   if (!ui.version || !(RQ.versions || []).some(v => v.v === ui.version)) ui.version = RQ.current_version;
-  if (!staff && !myName() && RQ.is_open) { askName(() => { buildRequest(); renderAll(); }); }
+  if (!staff && !myName() && RQ.is_open) { askName(() => openRequest()); }
   buildRequest();
   await loadNotes();
   startPoll();
@@ -577,7 +587,7 @@ function buildRequest() {
   app.append(header(nameBtn));
   if (backBtn) app.append(backBtn);
   app.append(h1,
-    el('p', { class: 'lead' }, '直したいところをページの画像でクリックすると、そこに番号がつきます。横の欄に「加筆」「修正」などを書いて「残す」を押してください。場所を決めずに書くこともできます。'));
+    el('p', { class: 'lead' }, '直したいところをページの画像でクリックすると、そこに番号がつきます。横の欄に「加筆」「修正」などを書いて「残す」を押してください。場所を決めずに書くこともできます。全部見終わったら「見終わったらチェック」を押してください。'));
   if (RQ.memo) { const m = el('div', { class: 'memo' }); m.textContent = RQ.memo; app.append(m); }
   if (!RQ.is_open) app.append(el('div', { class: 'closed-note' }, 'この依頼は受付を終えました（見るだけできます）。'));
   else if (ui.version !== RQ.current_version) app.append(el('div', { class: 'closed-note' }, '前の版（第' + ui.version + '版）を表示しています。書き込めるのは最新の版だけです。'));
@@ -589,6 +599,7 @@ function buildRequest() {
       el('button', { class: 'btn sub small', onclick: () => setOpen(!RQ.is_open) }, RQ.is_open ? '受付を終える' : '受付を再開する'),
       el('button', { class: 'btn danger small', onclick: openDelete }, '消す')));
   }
+  app.append(el('div', { class: 'checks', id: 'checks' }));
   app.append(el('div', { class: 'msg', id: 'status' }, ''));
   const bar = el('nav', { class: 'bar', id: 'bar' });
   const pages = curPages();
@@ -635,9 +646,14 @@ function buildPage(p) {
 
 async function loadNotes() {
   try {
-    NOTES = await rpc('review_list', { p_token: TOKEN, p_key: myKey() }) || [];
+    const [ns, cs] = await Promise.all([
+      rpc('review_list', { p_token: TOKEN, p_key: myKey() }),
+      rpc('review_check_list', { p_token: TOKEN, p_key: myKey() })
+    ]);
+    NOTES = ns || []; CHECKS = cs || [];
     setStatus('');
     renderAll();
+    renderChecks();
   } catch (e) { setStatus('メモを読み込めませんでした。' + errText(e), true); }
 }
 function setStatus(t, err) { const s = $('#status'); if (s) { s.textContent = t; s.className = 'msg' + (err ? ' err' : ''); } }
@@ -647,6 +663,36 @@ function startPoll() {
 }
 function stopPoll() { if (ui.poll) clearInterval(ui.poll); ui.poll = null; }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && TOKEN && RQ && !document.querySelector('.note textarea')) loadNotes(); });
+
+// ---------- 確認おわりのチェック ----------
+function renderChecks() {
+  const box = $('#checks'); if (!box) return;
+  box.textContent = '';
+  const mine = CHECKS.find(c => c.is_mine && c.version === RQ.current_version);
+  if (RQ.is_open && (staff || myName())) {
+    const b = el('button', { class: 'checkbtn' + (mine ? ' on' : ''), type: 'button' }, mine ? '✓ 確認おわり（はずす）' : '☐ 見終わったらチェック');
+    b.onclick = () => toggleCheck(!mine, b);
+    box.append(b);
+  }
+  const names = el('div', { class: 'chk-names' });
+  const cur = CHECKS.filter(c => c.version === RQ.current_version);
+  const old = CHECKS.filter(c => c.version !== RQ.current_version);
+  if (!CHECKS.length) names.textContent = 'まだ確認おわりの人はいません';
+  else {
+    names.append('確認おわり：');
+    cur.forEach((c, i) => { const s = el('b', {}); s.textContent = (i ? '、' : '') + c.author_name + ' ✓'; names.append(s); });
+    if (!cur.length) names.append('（最新の版ではまだいません）');
+    if (old.length) { const s = el('span', { class: 'old' }); s.textContent = '　前の版で確認：' + old.map(c => c.author_name).join('、'); names.append(s); }
+  }
+  box.append(names);
+}
+async function toggleCheck(on, b) {
+  const name = staff ? (staff.name || staff.staff_id || 'スタッフ') : myName();
+  if (!name) { askName(() => toggleCheck(on, b)); return; }
+  b.disabled = true;
+  try { await rpc('review_check', { p_token: TOKEN, p_key: myKey(), p_name: name, p_on: on }); await loadNotes(); toast(on ? '確認おわりにしました。ありがとうございました' : 'チェックをはずしました'); }
+  catch (e) { b.disabled = false; toast(errText(e)); }
+}
 
 function notesFor(p) { return NOTES.filter(n => n.version === ui.version && n.page === p); }
 function renderAll() { const n = curPages(); for (let p = 1; p <= n; p++) renderPage(p); }
