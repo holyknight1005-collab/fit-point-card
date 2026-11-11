@@ -77,6 +77,16 @@ form.add{background:var(--surface);border:1px solid var(--border);border-radius:
 .meta{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);flex-wrap:wrap}
 .num{background:var(--orange-d);color:#fff;border-radius:10px;padding:0 7px;font-weight:800}
 .note.done .num{background:var(--done)}
+.reply{margin-top:6px;background:var(--green-l);border-radius:8px;padding:6px 10px;font-size:13px;white-space:pre-wrap;word-break:break-word}
+.reply.skip{background:var(--surface2)}
+.reply .rh{font-weight:800;color:var(--green);margin-right:6px}
+.reply.skip .rh{color:var(--slate)}
+.reply .rm{font-size:11.5px;color:var(--muted);margin-left:6px}
+.resform{margin-top:8px;background:var(--surface2);border-radius:8px;padding:8px 10px}
+.resform .opts{display:flex;gap:12px;font-size:13px;margin-bottom:6px;flex-wrap:wrap}
+.resform textarea{min-height:52px}
+.prevsum{margin-top:10px;background:var(--blue-l);border-radius:12px;padding:8px 12px;font-size:13px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.prevsum b{font-weight:800}
 .kind{border-radius:4px;padding:0 6px;font-weight:700;color:#fff}
 .k-加筆{background:var(--green)} .k-修正{background:var(--blue)} .k-削除{background:var(--red)} .k-質問{background:var(--slate)}
 .txt{margin:6px 0 4px;white-space:pre-wrap;word-break:break-word}
@@ -606,13 +616,14 @@ function buildRequest() {
   }
   app.append(el('div', { class: 'checks', id: 'checks' }));
   app.append(el('div', { class: 'checks views', id: 'views' }));
+  app.append(el('div', { id: 'prevsum' }));
   app.append(el('div', { class: 'msg', id: 'status' }, ''));
   const bar = el('nav', { class: 'bar', id: 'bar' });
   const pages = curPages();
   for (let p = 1; p <= pages; p++) bar.append(el('a', { href: '#page-' + p, id: 'nav-' + p }, 'p' + p, el('span', { class: 'n zero' }, '0')));
   bar.append(el('span', { class: 'sp' }));
   if ((RQ.versions || []).length > 1) {
-    const sel = el('select', { onchange: e => { ui.version = +e.target.value; ui.draft = {}; buildRequest(); renderAll(); } });
+    const sel = el('select', { onchange: e => { ui.version = +e.target.value; ui.draft = {}; buildRequest(); renderAll(); renderChecks(); renderViews(); renderPrevSummary(); } });
     for (const v of RQ.versions.slice().reverse()) sel.append(el('option', { value: v.v, selected: v.v === ui.version }, '第' + v.v + '版' + (v.v === RQ.current_version ? '（最新）' : '')));
     bar.append(sel);
   }
@@ -655,7 +666,7 @@ async function loadNotes() {
   try {
     const id = RQ.id, me = meId();
     const [ns, cs, vs] = await Promise.all([
-      rest('GET', 'review_notes?request_id=eq.' + id + '&hidden=eq.false&select=id,version,page,x,y,kind,body,author_name,author_id,done,created_at,updated_at&order=created_at.asc,id.asc'),
+      rest('GET', 'review_notes?request_id=eq.' + id + '&hidden=eq.false&select=id,version,page,x,y,kind,body,author_name,author_id,done,resolution,reply,reply_by,reply_at,created_at,updated_at&order=created_at.asc,id.asc'),
       rest('GET', 'review_checks?request_id=eq.' + id + '&select=staff_id,staff_name,version,checked_at&order=checked_at.asc'),
       rest('GET', 'review_views?request_id=eq.' + id + '&select=staff_id,staff_name,open_count,first_at,last_at&order=last_at.desc')
     ]);
@@ -666,6 +677,7 @@ async function loadNotes() {
     renderAll();
     renderChecks();
     renderViews();
+    renderPrevSummary();
   } catch (e) { setStatus('メモを読み込めませんでした。' + errText(e), true); }
 }
 function setStatus(t, err) { const s = $('#status'); if (s) { s.textContent = t; s.className = 'msg' + (err ? ' err' : ''); } }
@@ -761,14 +773,23 @@ function noteCard(x, num) {
   const nm = el('span', {}); nm.textContent = x.author_name || '';
   const txt = el('div', { class: 'txt' }); txt.textContent = x.body || '';
   const acts = el('div', { class: 'acts' });
-  if (staff) acts.append(el('label', {}, el('input', { type: 'checkbox', checked: !!x.done, onchange: e => setDone(x, e.target.checked, e.target) }), '対応済み'));
+  let replyBox = null;
+  if (x.done) {
+    const skip = x.resolution === 'skipped';
+    replyBox = el('div', { class: 'reply' + (skip ? ' skip' : '') }, el('span', { class: 'rh' }, skip ? '見送り' : '✓ 修正しました'));
+    if (x.reply) { const t = el('span', {}); t.textContent = x.reply; replyBox.append(t); }
+    if (x.reply_by || x.reply_at) { const m = el('span', { class: 'rm' }); m.textContent = '（' + [x.reply_by, fmt(x.reply_at)].filter(Boolean).join(' ') + '）'; replyBox.append(m); }
+    if (staff) acts.append(el('button', { type: 'button', onclick: () => clearResolve(x) }, '対応を取り消す'));
+  } else if (staff) {
+    acts.append(el('button', { type: 'button', style: 'color:var(--green);font-weight:700', onclick: e => openResolve(x, e.currentTarget.closest('.note')) }, '対応する'));
+  }
   if (x.is_mine && open && !x.done) acts.append(el('button', { type: 'button', onclick: () => startEdit(x, txt) }, '書き直す'));
   if ((x.is_mine && open) || staff) acts.append(el('button', { type: 'button', onclick: e => delNote(x, e.currentTarget) }, '消す'));
   const kind = RV_KINDS.includes(x.kind) ? x.kind : '質問';
   const card = el('div', { class: 'note' + (x.done ? ' done' : '') + (ui.hl === x.id ? ' hl' : ''), id: 'note-' + x.id },
     el('div', { class: 'meta' }, el('span', { class: 'num' }, String(num)), el('span', { class: 'kind k-' + kind }, kind), nm, el('span', {}, fmt(x.created_at)),
       x.x == null ? el('span', {}, '・ページ全体') : null, x.updated_at && (new Date(x.updated_at) - new Date(x.created_at)) > 5000 && !x.done ? el('span', {}, '（書き直し）') : null),
-    txt, acts);
+    txt, replyBox, acts);
   card.addEventListener('mouseenter', () => { if (x.x != null) highlight(x.id, false); });
   return card;
 }
@@ -825,10 +846,50 @@ async function delNote(x, b) {
     await loadNotes();
   } catch (e) { b.disabled = false; toast(errText(e)); }
 }
-async function setDone(x, v, cb) {
-  cb.disabled = true;
-  try { await rest('PATCH', 'review_notes?id=eq.' + x.id, { done: v }); await loadNotes(); }
-  catch (e) { cb.checked = !v; cb.disabled = false; toast('変えられませんでした'); }
+// ---------- 対応（修正しました／見送り ＋ ひとこと） ----------
+function openResolve(x, card) {
+  if (!card || card.querySelector('.resform')) return;
+  const name = 'res-' + x.id;
+  const r1 = el('input', { type: 'radio', name, value: 'fixed', checked: true });
+  const r2 = el('input', { type: 'radio', name, value: 'skipped' });
+  const ta = el('textarea', { class: 'in', maxlength: '500', placeholder: 'ひとこと（なくてもよい）例：2行目に加筆しました／今回はページが足りないので見送り' });
+  const save = el('button', { class: 'btn small', type: 'button' }, '保存');
+  const cancel = el('button', { class: 'btn sub small', type: 'button' }, 'やめる');
+  const f = el('div', { class: 'resform' },
+    el('div', { class: 'opts' }, el('label', {}, r1, ' 修正しました'), el('label', {}, r2, ' 見送り')),
+    ta, el('div', { class: 'row' }, save, cancel));
+  card.append(f); ta.focus();
+  cancel.onclick = () => f.remove();
+  save.onclick = async () => {
+    save.disabled = true;
+    try {
+      await rest('PATCH', 'review_notes?id=eq.' + x.id, { done: true, resolution: r2.checked ? 'skipped' : 'fixed', reply: ta.value.trim() || null, reply_by: myName(), reply_at: new Date().toISOString() });
+      await loadNotes();
+    } catch (e) { save.disabled = false; toast('保存できませんでした'); }
+  };
+}
+async function clearResolve(x) {
+  try { await rest('PATCH', 'review_notes?id=eq.' + x.id, { done: false, resolution: null, reply: null, reply_by: null, reply_at: null }); await loadNotes(); }
+  catch (e) { toast('変えられませんでした'); }
+}
+
+// ---------- 前の版のメモのまとめ ----------
+function renderPrevSummary() {
+  const box = $('#prevsum'); if (!box) return;
+  box.textContent = ''; box.className = '';
+  if (ui.version !== RQ.current_version) return;
+  const olds = (RQ.versions || []).filter(v => v.v < RQ.current_version).map(v => v.v);
+  if (!olds.length) return;
+  const pv = olds[olds.length - 1];
+  const ns = NOTES.filter(n => n.version === pv);
+  if (!ns.length) return;
+  const fixed = ns.filter(n => n.done && n.resolution !== 'skipped').length;
+  const skipped = ns.filter(n => n.done && n.resolution === 'skipped').length;
+  const open = ns.filter(n => !n.done).length;
+  box.className = 'prevsum';
+  const t = el('span', {});
+  t.append('第' + pv + '版のメモ ' + ns.length + '件：', el('b', { style: 'color:var(--green)' }, '修正しました ' + fixed), '・', el('b', { style: 'color:var(--slate)' }, '見送り ' + skipped), '・', el('b', { style: open ? 'color:var(--red)' : '' }, '未対応 ' + open));
+  box.append(t, el('button', { class: 'btn sub small', type: 'button', onclick: () => { ui.version = pv; ui.draft = {}; buildRequest(); renderAll(); renderChecks(); renderViews(); window.scrollTo(0, 0); } }, '第' + pv + '版のメモを見る'));
 }
 
 boot();
