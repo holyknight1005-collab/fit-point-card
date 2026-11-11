@@ -286,7 +286,7 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 // ============================================================
 // 修正依頼（review.html）
 // ・スタッフ：依頼を作る（PDF → ページ画像）・リンクを配る・対応済みにする
-// ・リンクを開いた人：ログインなしで名前を入れてメモを残す（関数 review_* だけ使う）
+// ・2026-11-11：fitアプリにスタッフでログインした人だけが使える（名前はログインから自動）
 // ============================================================
 const RV_BUCKET = 'review';
 const RV_PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
@@ -298,6 +298,8 @@ let staff = null;          // ログイン中のスタッフ（staff の行）
 let RQ = null;             // 依頼（review_get の中身）
 let NOTES = [];
 let CHECKS = [];
+let VIEWS = [];
+const IMG_CACHE = {};
 const ui = { version: 0, onlyOpen: false, hl: null, draft: {}, kind: {}, poll: null, busy: false };
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -314,10 +316,25 @@ function el(tag, attrs = {}, ...kids) {
 function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 function uuid() { return (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); })); }
-function myKey() { let k = lsGet('review_key'); if (!k || !/^[0-9a-f-]{36}$/i.test(k)) { k = uuid(); lsSet('review_key', k); } return k; }
-function myName() { return (lsGet('review_name') || '').trim(); }
+function meId() { return staff ? String(staff.id) : ''; }
+function myKeyUnused() { let k = lsGet('review_key'); if (!k || !/^[0-9a-f-]{36}$/i.test(k)) { k = uuid(); lsSet('review_key', k); } return k; }
+function myName() { return staff ? (staff.name || 'スタッフ') : ''; }
 function fmt(iso) { if (!iso) return ''; const d = new Date(iso); if (isNaN(d)) return ''; return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
-function imgUrl(token, v, p, at) { return FIT_SB_URL + '/storage/v1/object/public/' + RV_BUCKET + '/' + token + '/v' + v + '/p-' + p + '.jpg' + (at ? '?t=' + encodeURIComponent(at) : ''); }
+// 画像はログインしたスタッフだけが読める（公開URLなし）→ 読んで blob にして表示
+async function imgBlobUrl(token, v, p) {
+  const path = token + '/v' + v + '/p-' + p + '.jpg';
+  if (IMG_CACHE[path]) return IMG_CACHE[path];
+  const r = await fetch(FIT_SB_URL + '/storage/v1/object/authenticated/' + RV_BUCKET + '/' + path, { headers: { apikey: FIT_ANON } });
+  if (!r.ok) throw new Error('画像 ' + r.status);
+  const u = URL.createObjectURL(await r.blob());
+  IMG_CACHE[path] = u; return u;
+}
+async function loadImages() {
+  const imgs = [...document.querySelectorAll('img[data-p]')];
+  let i = 0;
+  const worker = async () => { while (i < imgs.length) { const im = imgs[i++]; try { im.src = await imgBlobUrl(TOKEN, +im.dataset.v, +im.dataset.p); } catch (e) { im.alt = im.alt + '（画像を読み込めませんでした）'; } } };
+  await Promise.all([worker(), worker(), worker()]);
+}
 function shareUrl(token) { return location.origin + location.pathname + '?r=' + token; }
 
 async function rpc(name, args) {
@@ -345,26 +362,27 @@ function errText(e) {
 
 // ---------- 起動 ----------
 async function boot() {
-  try { const me = await fitResume(); if (me && me.kind === 'staff') staff = me.row; } catch (e) { /* 通信エラーでも見る人の画面は出す */ }
+  let netErr = false;
+  try { const me = await fitResume(); if (me && me.kind === 'staff') staff = me.row; } catch (e) { netErr = true; }
+  if (!staff) return renderNoAccess(netErr);
   if (TOKEN) return openRequest();
-  if (staff) return renderHome();
-  renderNoAccess();
+  renderHome();
 }
 
 function header(extra) {
-  const who = staff ? ('スタッフ：' + (staff.name || staff.staff_id || '')) : (myName() ? ('名前：' + myName()) : '');
+  const who = staff ? ('スタッフ：' + (staff.name || staff.staff_id || '')) : '';
   const w = el('span', { class: 'who' }); w.textContent = who;
   const top = el('div', { class: 'top' }, el('span', { class: 'logo' }, 'fit 修正依頼'), el('span', { class: 'sp' }), w);
   if (extra) top.append(extra);
   return top;
 }
 
-function renderNoAccess() {
+function renderNoAccess(netErr) {
   const app = $('#app'); app.textContent = '';
   app.append(header(),
     el('div', { class: 'card', style: 'margin-top:16px' },
-      el('p', { style: 'margin:0 0 8px;font-weight:700' }, '修正依頼のリンクから開いてください。'),
-      el('p', { class: 'lead' }, '依頼を作るのはスタッフです。fitアプリにスタッフでログインしてから、このページを開き直してください。'),
+      el('p', { style: 'margin:0 0 8px;font-weight:700' }, netErr ? '通信がうまくつながりませんでした。' : 'fitアプリのログインが必要です。'),
+      el('p', { class: 'lead' }, netErr ? '少し待ってから、このページを開き直してください。' : 'この修正依頼は、fitアプリにスタッフでログインした人だけが見られます。同じブラウザでfitアプリにログインしてから、もう一度このリンクを開いてください。'),
       el('p', { style: 'margin:12px 0 0' }, el('a', { href: 'app.html', class: 'btn', style: 'text-decoration:none;display:inline-block' }, 'fitアプリを開く'))));
 }
 
@@ -378,7 +396,7 @@ async function renderHome() {
   const list = el('div', { class: 'reqs' });
   app.append(header(),
     el('h1', {}, '修正依頼'),
-    el('p', { class: 'lead' }, 'PDF を上げて共有リンクを送ると、受け取った人がログインなしで、ページの場所を指定して加筆・修正のメモを残せます。'),
+    el('p', { class: 'lead' }, 'PDF を上げて共有リンクを送ると、受け取ったスタッフ（fitアプリにログインした人）が、ページの場所を指定して加筆・修正のメモを残せます。'),
     el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => openCreate() }, '＋ 新しい修正依頼')),
     msg, list);
   try {
@@ -411,7 +429,8 @@ async function copyLink(token) {
   catch (e) { modal('共有リンク', el('div', {}, el('p', { class: 'lead' }, 'このリンクを長押し（右クリック）でコピーしてください。'), el('div', { class: 'linkbox' }, u))); }
 }
 function toast(t) {
-  const d = el('div', { style: 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#2C2C2A;color:#fff;padding:8px 16px;border-radius:999px;font-size:13px;z-index:60' }, t);
+  document.querySelectorAll('.rv-toast').forEach(x => x.remove());
+  const d = el('div', { class: 'rv-toast', style: 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#2C2C2A;color:#fff;padding:8px 16px;border-radius:999px;font-size:13px;z-index:60' }, t);
   document.body.append(d); setTimeout(() => d.remove(), 1800);
 }
 function modal(title, body, onClose) {
@@ -550,41 +569,27 @@ function openDelete() {
 // ============================================================
 async function openRequest() {
   const app = $('#app');
-  try { RQ = await rpc('review_get', { p_token: TOKEN }); }
+  if (!/^[0-9a-f-]{36}$/i.test(TOKEN)) { app.textContent = ''; app.append(header(), el('div', { class: 'card', style: 'margin-top:16px' }, 'リンクが正しくありません。')); return; }
+  try { const rows = await rest('GET', 'review_requests?token=eq.' + TOKEN + '&select=id,title,memo,versions,current_version,is_open'); RQ = rows[0] || null; }
   catch (e) { app.textContent = ''; app.append(header(), el('div', { class: 'msg err' }, errText(e))); return; }
   if (!RQ) { app.textContent = ''; app.append(header(), el('div', { class: 'card', style: 'margin-top:16px' }, 'この修正依頼は見つかりませんでした。リンクが正しいか、塾に確かめてください。')); return; }
   if (!RQ.current_version) { app.textContent = ''; app.append(header(), el('div', { class: 'msg' }, 'まだPDFが入っていません。')); return; }
   if (!ui.version || !(RQ.versions || []).some(v => v.v === ui.version)) ui.version = RQ.current_version;
-  if (!staff && !myName() && RQ.is_open) { askName(() => openRequest()); }
+  if (!ui.touched) { ui.touched = true; rpc('review_touch', { p_request: RQ.id }).catch(() => {}); }
   buildRequest();
   await loadNotes();
   startPoll();
 }
 
-function askName(after) {
-  const inp = el('input', { class: 'in', maxlength: '40', placeholder: '例：竹田' });
-  inp.value = myName();
-  const say = el('div', { class: 'msg' });
-  const ok = el('button', { class: 'btn' }, 'はじめる');
-  const bg = el('div', { class: 'modal-bg' });
-  const done = () => { const v = inp.value.trim(); if (!v) { say.textContent = '名前を入れてください'; say.className = 'msg err'; return; } lsSet('review_name', v); bg.remove(); after && after(); };
-  ok.onclick = done; inp.addEventListener('keydown', e => { if (e.key === 'Enter') done(); });
-  bg.append(el('div', { class: 'modal' }, el('h3', {}, 'お名前を入れてください'),
-    el('p', { class: 'lead' }, 'メモに表示されます（ログインは要りません）。この端末に覚えておくので、次からは入れなくて大丈夫です。'),
-    inp, el('div', { class: 'row', style: 'justify-content:flex-end' }, ok), say));
-  document.body.append(bg); setTimeout(() => inp.focus(), 50);
-}
-
 function curPages() { const v = (RQ.versions || []).find(x => x.v === ui.version); return v ? v.pages : 0; }
 function curAt() { const v = (RQ.versions || []).find(x => x.v === ui.version); return v ? v.at : ''; }
-function canWrite() { return RQ.is_open && ui.version === RQ.current_version && (staff || myName()); }
+function canWrite() { return !!staff && RQ.is_open && ui.version === RQ.current_version; }
 
 function buildRequest() {
   const app = $('#app'); app.textContent = '';
-  const nameBtn = (!staff && myName()) ? el('button', { class: 'link', onclick: () => askName(() => buildRequest() || renderAll()) }, '名前を変える') : null;
   const backBtn = staff ? el('a', { href: location.pathname, class: 'link', style: 'font-size:13px' }, '‹ 依頼の一覧') : null;
   const h1 = el('h1', {}); h1.textContent = RQ.title;
-  app.append(header(nameBtn));
+  app.append(header());
   if (backBtn) app.append(backBtn);
   app.append(h1,
     el('p', { class: 'lead' }, '直したいところをページの画像でクリックすると、そこに番号がつきます。横の欄に「加筆」「修正」などを書いて「残す」を押してください。場所を決めずに書くこともできます。全部見終わったら「見終わったらチェック」を押してください。'));
@@ -600,6 +605,7 @@ function buildRequest() {
       el('button', { class: 'btn danger small', onclick: openDelete }, '消す')));
   }
   app.append(el('div', { class: 'checks', id: 'checks' }));
+  app.append(el('div', { class: 'checks views', id: 'views' }));
   app.append(el('div', { class: 'msg', id: 'status' }, ''));
   const bar = el('nav', { class: 'bar', id: 'bar' });
   const pages = curPages();
@@ -616,12 +622,13 @@ function buildRequest() {
   const host = el('div', {});
   for (let p = 1; p <= pages; p++) host.append(buildPage(p));
   app.append(host);
+  loadImages();
 }
 
 function buildPage(p) {
   if (!ui.kind[p]) ui.kind[p] = '加筆';
   const writable = canWrite();
-  const img = el('img', { src: imgUrl(TOKEN, ui.version, p, curAt()), alt: p + 'ページ', loading: p <= 2 ? 'eager' : 'lazy', draggable: 'false' });
+  const img = el('img', { 'data-p': p, 'data-v': ui.version, alt: p + 'ページ', draggable: 'false' });
   const box = el('div', { class: 'imgbox' + (writable ? '' : ' ro'), id: 'box-' + p }, img);
   box.addEventListener('click', e => {
     if (e.target.closest('.pin') || !canWrite()) return;
@@ -646,14 +653,19 @@ function buildPage(p) {
 
 async function loadNotes() {
   try {
-    const [ns, cs] = await Promise.all([
-      rpc('review_list', { p_token: TOKEN, p_key: myKey() }),
-      rpc('review_check_list', { p_token: TOKEN, p_key: myKey() })
+    const id = RQ.id, me = meId();
+    const [ns, cs, vs] = await Promise.all([
+      rest('GET', 'review_notes?request_id=eq.' + id + '&hidden=eq.false&select=id,version,page,x,y,kind,body,author_name,author_id,done,created_at,updated_at&order=created_at.asc,id.asc'),
+      rest('GET', 'review_checks?request_id=eq.' + id + '&select=staff_id,staff_name,version,checked_at&order=checked_at.asc'),
+      rest('GET', 'review_views?request_id=eq.' + id + '&select=staff_id,staff_name,open_count,first_at,last_at&order=last_at.desc')
     ]);
-    NOTES = ns || []; CHECKS = cs || [];
+    NOTES = (ns || []).map(n => Object.assign(n, { is_mine: String(n.author_id || '') === me }));
+    CHECKS = (cs || []).map(c => ({ author_name: c.staff_name, staff_id: c.staff_id, version: c.version, is_mine: String(c.staff_id) === me }));
+    VIEWS = vs || [];
     setStatus('');
     renderAll();
     renderChecks();
+    renderViews();
   } catch (e) { setStatus('メモを読み込めませんでした。' + errText(e), true); }
 }
 function setStatus(t, err) { const s = $('#status'); if (s) { s.textContent = t; s.className = 'msg' + (err ? ' err' : ''); } }
@@ -669,7 +681,7 @@ function renderChecks() {
   const box = $('#checks'); if (!box) return;
   box.textContent = '';
   const mine = CHECKS.find(c => c.is_mine && c.version === RQ.current_version);
-  if (RQ.is_open && (staff || myName())) {
+  if (RQ.is_open && staff) {
     const b = el('button', { class: 'checkbtn' + (mine ? ' on' : ''), type: 'button' }, mine ? '✓ 確認おわり（はずす）' : '☐ 見終わったらチェック');
     b.onclick = () => toggleCheck(!mine, b);
     box.append(b);
@@ -687,11 +699,30 @@ function renderChecks() {
   box.append(names);
 }
 async function toggleCheck(on, b) {
-  const name = staff ? (staff.name || staff.staff_id || 'スタッフ') : myName();
-  if (!name) { askName(() => toggleCheck(on, b)); return; }
   b.disabled = true;
-  try { await rpc('review_check', { p_token: TOKEN, p_key: myKey(), p_name: name, p_on: on }); await loadNotes(); toast(on ? '確認おわりにしました。ありがとうございました' : 'チェックをはずしました'); }
+  try {
+    if (on) await rest('POST', 'review_checks?on_conflict=request_id,staff_id', { request_id: RQ.id, staff_id: meId(), staff_name: myName(), version: RQ.current_version, checked_at: new Date().toISOString() }, { 'Prefer': 'resolution=merge-duplicates' });
+    else await rest('DELETE', 'review_checks?request_id=eq.' + RQ.id + '&staff_id=eq.' + encodeURIComponent(meId()));
+    await loadNotes(); toast(on ? '確認おわりにしました。ありがとうございました' : 'チェックをはずしました'); }
   catch (e) { b.disabled = false; toast(errText(e)); }
+}
+
+// ---------- 開いた人（だれが開いたか・チェック済みか） ----------
+function renderViews() {
+  const box = $('#views'); if (!box) return;
+  box.textContent = '';
+  const done = new Set(CHECKS.filter(c => c.version === RQ.current_version).map(c => String(c.staff_id)));
+  const wrap = el('div', { class: 'chk-names' });
+  if (!VIEWS.length) { wrap.textContent = 'まだだれも開いていません'; box.append(wrap); return; }
+  const notYet = VIEWS.filter(v => !done.has(String(v.staff_id)));
+  wrap.append('開いた人 ' + VIEWS.length + '人（チェックまだ ' + notYet.length + '人）：');
+  VIEWS.forEach((v, i) => {
+    const ok = done.has(String(v.staff_id));
+    const sp = el('span', { style: ok ? 'color:var(--green);font-weight:700' : 'color:var(--text)' });
+    sp.textContent = (i ? '、' : '') + v.staff_name + (ok ? ' ✓' : '') + '（' + fmt(v.last_at) + (v.open_count > 1 ? '・' + v.open_count + '回' : '') + '）';
+    wrap.append(sp);
+  });
+  box.append(wrap);
 }
 
 function notesFor(p) { return NOTES.filter(n => n.version === ui.version && n.page === p); }
@@ -731,7 +762,6 @@ function noteCard(x, num) {
   const txt = el('div', { class: 'txt' }); txt.textContent = x.body || '';
   const acts = el('div', { class: 'acts' });
   if (staff) acts.append(el('label', {}, el('input', { type: 'checkbox', checked: !!x.done, onchange: e => setDone(x, e.target.checked, e.target) }), '対応済み'));
-  else if (x.done) acts.append(el('span', {}, '✓ 対応済み'));
   if (x.is_mine && open && !x.done) acts.append(el('button', { type: 'button', onclick: () => startEdit(x, txt) }, '書き直す'));
   if ((x.is_mine && open) || staff) acts.append(el('button', { type: 'button', onclick: e => delNote(x, e.currentTarget) }, '消す'));
   const kind = RV_KINDS.includes(x.kind) ? x.kind : '質問';
@@ -756,12 +786,11 @@ function highlight(id, scroll) {
 async function addNote(p, ta, btn) {
   const body = ta.value.trim();
   if (!body) return;
-  const name = staff ? (staff.name || staff.staff_id || 'スタッフ') : myName();
-  if (!name) { askName(() => addNote(p, ta, btn)); return; }
+  if (!staff) return;
   btn.disabled = true;
   const d = ui.draft[p];
   try {
-    await rpc('review_add', { p_token: TOKEN, p_key: myKey(), p_version: ui.version, p_page: p, p_x: d ? d.x : null, p_y: d ? d.y : null, p_kind: ui.kind[p], p_body: body, p_name: name });
+    await rest('POST', 'review_notes', { request_id: RQ.id, version: ui.version, page: p, x: d ? d.x : null, y: d ? d.y : null, kind: ui.kind[p], body, author_name: myName(), author_id: meId() });
     ta.value = ''; delete ui.draft[p];
     await loadNotes();
     toast('残しました');
@@ -778,8 +807,8 @@ function startEdit(x, txt) {
     const t = ta.value.trim(); if (!t) return;
     save.disabled = true;
     try {
-      const ok = await rpc('review_edit', { p_token: TOKEN, p_key: myKey(), p_id: x.id, p_body: t });
-      if (!ok) toast('書き直せませんでした（受付終了か、対応済みかもしれません）');
+      const rows = await rest('PATCH', 'review_notes?id=eq.' + x.id + '&author_id=eq.' + encodeURIComponent(meId()), { body: t, updated_at: new Date().toISOString() }, { 'Prefer': 'return=representation' });
+      if (!rows || !rows.length) toast('書き直せませんでした（受付終了か、対応済みかもしれません）');
       await loadNotes();
     } catch (e) { save.disabled = false; toast(errText(e)); }
   };
@@ -792,8 +821,7 @@ async function delNote(x, b) {
   }
   b.disabled = true;
   try {
-    if (x.is_mine) await rpc('review_hide', { p_token: TOKEN, p_key: myKey(), p_id: x.id });
-    else if (staff) await rest('PATCH', 'review_notes?id=eq.' + x.id, { hidden: true, updated_at: new Date().toISOString() });
+    await rest('PATCH', 'review_notes?id=eq.' + x.id, { hidden: true, updated_at: new Date().toISOString() });
     await loadNotes();
   } catch (e) { b.disabled = false; toast(errText(e)); }
 }
