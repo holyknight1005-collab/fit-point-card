@@ -7583,6 +7583,152 @@ async function stuNoticesRender() {
   });
 }
 // ===== スタッフ：一覧 =====
+// ===== 📲 アプリ登録のすすめ（スタッフ・ks86）=====
+// 名簿や名簿生（roster_only）にいて、アプリのアカウントがない子を出す。文のコピー・Liny 用の名前一覧・送った日の記録。
+const AI_REGISTER_URL = 'https://app.fit-ehime.com/fit_register.html';
+const AI_ABOUT_URL = 'https://app.fit-ehime.com/about.html';
+let aiPeople = null, aiInvites = [], aiInviteTable = true, aiApps = [];
+let aiView = 'todo', aiFilter = { div: '全部', grade: '全学年', school: '全校', unsent: false }, aiSel = new Set();
+function aiMessage(name) {
+  return '【fit塾】' + (name ? name + 'さん　' : '') + 'アプリ登録のお願い📱\n'
+    + 'fitのアプリで、授業日程・小テスト・英単語・ビデオ補習の予約、ポイントの確認ができます。\n'
+    + 'まだ登録していない人は、こちらから1分で登録できます👇\n' + AI_REGISTER_URL + '\n'
+    + 'できることの紹介はこちら👇\n' + AI_ABOUT_URL + '\n'
+    + 'わからないことは、塾で先生に声をかけてね！';
+}
+function aiCopy(txt, done) {
+  const ok = () => { showToast('コピーしました', 'success'); if (done) done(); };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(ok, () => { prompt('この文をコピーしてください', txt); if (done) done(); });
+  else { prompt('この文をコピーしてください', txt); if (done) done(); }
+}
+async function openAppInvite() {
+  fitPwModal(fitPwHead('📲 アプリ未登録の生徒') + '<div id="ai-body" style="margin-top:8px;font-size:13px;color:var(--muted)">読み込み中…</div>');
+  const ov = document.getElementById('fitpw-ov'); if (ov && ov.firstChild) ov.firstChild.style.maxWidth = '560px';
+  const realMail = em => !!em && !/@fit\.local$|\.invalid$/i.test(String(em));
+  let students = [], roster = [];
+  try { students = await sbGetAll('students', 'select=id,name,school,grade,division,roster_only,email,is_active,inactive_reason') || []; } catch (e) { students = []; }
+  try { roster = await sbGet('roster', 'is_active=eq.true&select=name,school,grade,division,status,withdraw_date') || []; } catch (e) { roster = []; }
+  try { aiApps = await sbGet('student_applications', 'status=eq.pending&select=name,school') || []; } catch (e) { aiApps = []; }
+  try { aiInvites = await sbGet('app_invites', 'select=*&order=sent_at.desc&limit=5000') || []; aiInviteTable = true; } catch (e) { aiInvites = []; aiInviteTable = false; }
+  const map = new Map(), names = new Set();
+  students.forEach(st => {
+    if (st.is_active === false || st.inactive_reason === '除外') return;
+    const k = rosterKey(st.name, st.school);
+    const reg = st.roster_only !== true && realMail(st.email);
+    names.add(normalizeName(st.name));
+    const cur = map.get(k);
+    if (!cur || (reg && !cur.registered)) map.set(k, { key: k, name: st.name, school: st.school || '', grade: st.grade || '', division: st.division || '高校部', student_id: st.id, registered: reg });
+  });
+  const today = getTodayJST();
+  roster.forEach(r => {
+    const out = (r.status === '退塾') || (!r.status && r.withdraw_date);
+    if (out && (!r.withdraw_date || today > r.withdraw_date)) return;
+    const k = rosterKey(r.name, r.school);
+    if (map.has(k) || names.has(normalizeName(r.name))) return;
+    map.set(k, { key: k, name: r.name, school: r.school || '', grade: r.grade || '', division: r.division || '高校部', student_id: null, registered: false });
+  });
+  const appKeys = new Set(aiApps.map(a => normalizeName(a.name)));
+  aiPeople = [...map.values()].map(x => {
+    const inv = aiInvites.filter(v => (x.student_id && v.student_id === x.student_id) || rosterKey(v.name, v.school) === x.key);
+    x.invites = inv; x.lastSent = inv.length ? inv[0].sent_at : null;
+    x.applied = !x.registered && appKeys.has(normalizeName(x.name));
+    return x;
+  });
+  aiSel = new Set();
+  aiRender();
+}
+function aiFiltered() {
+  return (aiPeople || []).filter(x => {
+    if (aiView === 'todo' ? x.registered : !(x.registered && x.invites.length)) return false;
+    if (aiFilter.div !== '全部' && x.division !== aiFilter.div) return false;
+    if (aiFilter.grade !== '全学年' && fmtGrade(x.grade, x.division) !== aiFilter.grade) return false;
+    if (aiFilter.school !== '全校' && x.school !== aiFilter.school) return false;
+    if (aiView === 'todo' && aiFilter.unsent && x.lastSent) return false;
+    return true;
+  }).sort((a, b) => String(a.division).localeCompare(String(b.division)) || String(fmtGrade(a.grade, a.division)).localeCompare(String(fmtGrade(b.grade, b.division))) || String(a.school).localeCompare(String(b.school), 'ja') || String(a.name).localeCompare(String(b.name), 'ja'));
+}
+function aiSet(k, v) { aiFilter[k] = v; if (k === 'div') { aiFilter.grade = '全学年'; aiFilter.school = '全校'; } aiSel = new Set(); aiRender(); }
+function aiSetView(v) { aiView = v; aiSel = new Set(); aiRender(); }
+function aiDate(iso) { if (!iso) return ''; const d = new Date(iso); return (d.getMonth() + 1) + '/' + d.getDate(); }
+function aiRender() {
+  const el = document.getElementById('ai-body'); if (!el) return;
+  const all = aiPeople || [];
+  const todoN = all.filter(x => !x.registered).length, doneN = all.filter(x => x.registered && x.invites.length).length;
+  const base = all.filter(x => aiView === 'todo' ? !x.registered : (x.registered && x.invites.length));
+  const chip = (k, v, on) => '<button onclick="aiSet(\'' + k + '\',' + (typeof v === 'boolean' ? v : '\'' + escapeHtml(v).replace(/'/g, "\\'") + '\'') + ')" style="padding:5px 11px;border-radius:999px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;' + (on ? 'background:var(--orange);color:#fff;border:1.5px solid var(--orange)' : 'background:#fff;color:var(--text);border:1.5px solid var(--border)') + '">' + escapeHtml(typeof v === 'boolean' ? 'まだ送っていない子だけ' : v) + '</button>';
+  const divs = [...new Set(base.map(x => x.division))].sort();
+  const inDiv = base.filter(x => aiFilter.div === '全部' || x.division === aiFilter.div);
+  const grades = [...new Set(inDiv.map(x => fmtGrade(x.grade, x.division)).filter(Boolean))].sort();
+  const schools = [...new Set(inDiv.map(x => x.school).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja'));
+  const list = aiFiltered();
+  let h = '';
+  if (!aiInviteTable) h += '<div style="background:#FFF6E5;border:1px solid #E8C193;border-radius:8px;padding:8px 10px;font-size:12px;color:#8F5F12;margin-bottom:8px;line-height:1.6">送った日を残す表（app_invites）がまだありません。SQL を流すと記録できるようになります。一覧とコピーは今でも使えます。</div>';
+  h += '<div style="display:flex;gap:6px;margin-bottom:10px">'
+    + '<button onclick="aiSetView(\'todo\')" style="flex:1;padding:9px 4px;border-radius:10px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;' + (aiView === 'todo' ? 'background:var(--orange);color:#fff;border:1.5px solid var(--orange)' : 'background:#fff;color:var(--muted);border:1.5px solid var(--border)') + '">まだ登録していない（' + todoN + '人）</button>'
+    + '<button onclick="aiSetView(\'done\')" style="flex:1;padding:9px 4px;border-radius:10px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;' + (aiView === 'done' ? 'background:var(--green-d);color:#fff;border:1.5px solid var(--green-d)' : 'background:#fff;color:var(--muted);border:1.5px solid var(--border)') + '">送ったあと登録した（' + doneN + '人）</button></div>';
+  h += '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px">' + chip('div', '全部', aiFilter.div === '全部') + divs.map(d => chip('div', d, aiFilter.div === d)).join('') + '</div>';
+  h += '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px">' + chip('grade', '全学年', aiFilter.grade === '全学年') + grades.map(g => chip('grade', g, aiFilter.grade === g)).join('') + '</div>';
+  h += '<div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap"><select onchange="aiSet(\'school\',this.value)" class="form-select" style="flex:1;min-width:140px;padding:7px;font-size:13px"><option>全校</option>' + schools.map(sc => '<option' + (aiFilter.school === sc ? ' selected' : '') + '>' + escapeHtml(sc) + '</option>').join('') + '</select>'
+    + (aiView === 'todo' ? chip('unsent', !aiFilter.unsent, aiFilter.unsent) : '') + '</div>';
+  if (aiView === 'todo') {
+    const nSel = list.filter(x => aiSel.has(x.key)).length;
+    h += '<div style="background:#F4F8FC;border:1px solid #C9DBEE;border-radius:10px;padding:10px;margin-bottom:10px">'
+      + '<div style="font-size:12px;font-weight:700;color:#2D5FA6;margin-bottom:6px">まとめて送る（Liny）　選んだ人：' + nSel + '人</div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap">'
+      + '<button onclick="aiSelAll(true)" style="padding:6px 10px;border:1px solid #9CC0E8;background:#fff;border-radius:8px;font-size:12px;cursor:pointer;font-family:inherit">表示中を全部選ぶ</button>'
+      + '<button onclick="aiSelAll(false)" style="padding:6px 10px;border:1px solid #9CC0E8;background:#fff;border-radius:8px;font-size:12px;cursor:pointer;font-family:inherit">選ぶのをやめる</button></div>'
+      + '<div style="display:flex;gap:6px;margin-top:8px">'
+      + '<button onclick="aiCopyNames()" style="flex:1;padding:9px 4px;border:none;background:#2D5FA6;color:#fff;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">① 名前をコピー</button>'
+      + '<button onclick="aiCopy(aiMessage(\'\'))" style="flex:1;padding:9px 4px;border:none;background:#2D5FA6;color:#fff;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">② 文をコピー</button>'
+      + '<button onclick="aiMarkSent()" style="flex:1;padding:9px 4px;border:none;background:var(--green-d);color:#fff;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">③ 送った記録</button></div>'
+      + '<div style="font-size:11px;color:#456;margin-top:6px;line-height:1.5">①で Liny のグループ（タグ）を作り、②の文を一斉送信 → 送ったら③を押して記録します。1人ずつ送るときは、各行の「文をコピー」（押すと送った日が残ります）。</div></div>';
+  }
+  if (!list.length) h += '<div style="text-align:center;padding:16px;border:1px dashed var(--border);border-radius:10px;font-size:12.5px">' + (aiView === 'todo' ? 'この条件の未登録の生徒はいません' : 'まだいません') + '</div>';
+  h += list.map(x => {
+    const sub = [x.division !== '高校部' ? x.division : '', fmtGrade(x.grade, x.division), x.school].filter(Boolean).join(' ');
+    const badge = x.registered ? '<span style="font-size:10px;background:#E3F1DA;color:var(--green-d);padding:2px 7px;border-radius:9px;font-weight:700">✅ 登録した</span>'
+      : x.applied ? '<span style="font-size:10px;background:#EAF2FB;color:#2D5FA6;padding:2px 7px;border-radius:9px;font-weight:700">📝 申請中</span>'
+      : '<span style="font-size:10px;background:#F4F1EA;color:var(--muted);padding:2px 7px;border-radius:9px;font-weight:700">まだ</span>';
+    const sent = x.lastSent ? '送った ' + aiDate(x.lastSent) + (x.invites.length > 1 ? '（' + x.invites.length + '回）' : '') : (aiView === 'todo' ? '<span style="color:#C75050">まだ送っていない</span>' : '');
+    const k = escapeHtml(x.key).replace(/'/g, "\\'");
+    return '<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:6px">'
+      + (aiView === 'todo' ? '<input type="checkbox" ' + (aiSel.has(x.key) ? 'checked ' : '') + 'onchange="aiToggle(\'' + k + '\',this.checked)" style="width:18px;height:18px;flex:0 0 auto">' : '')
+      + '<div style="flex:1;min-width:0"><div style="font-size:13.5px;font-weight:700">' + escapeHtml(x.name) + '　' + badge + '</div>'
+      + '<div style="font-size:11px;color:var(--muted)">' + escapeHtml(sub) + (sent ? '　' + sent : '') + '</div></div>'
+      + (aiView === 'todo' ? '<button onclick="aiCopyOne(\'' + k + '\')" style="padding:7px 10px;border:1.5px solid var(--orange);background:var(--orange-l);color:var(--orange-d);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:inherit">📋 文をコピー</button>' : '')
+      + '</div>';
+  }).join('');
+  el.innerHTML = h;
+}
+function aiToggle(k, on) { if (on) aiSel.add(k); else aiSel.delete(k); aiRender(); }
+function aiSelAll(on) { aiSel = new Set(on ? aiFiltered().map(x => x.key) : []); aiRender(); }
+function aiCopyNames() {
+  const sel = aiFiltered().filter(x => aiSel.has(x.key));
+  if (!sel.length) { showToast('先に生徒を選んでください', 'info'); return; }
+  aiCopy(sel.map(x => x.name).join('\n'));
+}
+async function aiRecord(people, method) {
+  if (!aiInviteTable) { showToast('送った日の表（app_invites）がまだないので、記録はされません', 'info'); return; }
+  const now = new Date().toISOString();
+  const rows = people.map(x => ({ student_id: x.student_id, name: x.name, school: x.school || null, grade: x.grade || null, division: x.division || null, method: method, sent_at: now, sent_by: currentStaff ? currentStaff.id : null }));
+  try {
+    await sbPost('app_invites', rows);
+    rows.forEach((r, i) => { const x = people[i]; x.invites.unshift(r); x.lastSent = now; aiInvites.unshift(r); });
+  } catch (e) { showToast('記録に失敗しました: ' + (e.message || e), 'error'); }
+}
+function aiCopyOne(k) {
+  const x = (aiPeople || []).find(p => p.key === k); if (!x) return;
+  aiCopy(aiMessage(x.name), async () => { await aiRecord([x], 'copy'); aiRender(); });
+}
+async function aiMarkSent() {
+  const sel = aiFiltered().filter(x => aiSel.has(x.key));
+  if (!sel.length) { showToast('先に生徒を選んでください', 'info'); return; }
+  if (!confirm(sel.length + '人に「送った」と記録しますか？')) return;
+  await aiRecord(sel, 'liny');
+  aiSel = new Set(); aiRender();
+  showToast('✅ ' + sel.length + '人に送った日を記録しました', 'success');
+}
+
 async function openNoticesStaff() {
   fitPwModal(fitPwHead('📢 生徒へのお知らせ') + '<div id="nt-body" style="margin-top:8px;font-size:13px;color:var(--muted)">読み込み中…</div>');
   try {
@@ -8752,6 +8898,7 @@ const FEAT_DESC = {
   'app-eitango': '英単語のアプリです。',
   studentreg: '入塾した生徒のアカウントを作ります。氏名・メール・学校・学年・入塾日を入れると、パスワードを自動で発行します。',
   calreg: '予定・イベントをカレンダーに入れます。自分だけ・全員・学校と学年・人・学校担当・保護者面談から、だれに出すか選べます。',
+  appinvite: '名簿にいてアプリに登録していない生徒の一覧。登録のお願いの文をコピーしたり、Liny でまとめて送ったりできます。送った日と、そのあと登録したかも見られます。',
   notices: '生徒アプリのホームの「お知らせ」に出す文・画像・リンクを作ります。出す相手（部門・学年・学校・生徒）と期間を選べます。',
   fitwithyou: '毎月の f i t 通信（PDF）を入れると、生徒アプリで1面ずつ読めるようになります。',
   prospects: '入塾前の問い合わせ・体験の子の管理です。状態を切りかえ、入塾が決まったら生徒登録へ進みます。',
@@ -18365,7 +18512,7 @@ var BASIC_FEATS = ['home', 'myclasses', 'missing', 'makeup', 'todo', 'meyasu', '
   'calreg', 'proxycheckin', 'checkinqr', 'attsheet', 'supervision', 'reportedit', 'reportbatch', 'billcheck', 'plans', 'akahon',
   // 20261109ks73: Junki「1・2・9・10・11 は入れて」
   'studentreg', 'fitwithyou', 'trial', 'graduates', 'online',
-  'notices'];   // 20261112ks84: お知らせはスタッフ全員（Junki）
+  'notices', 'appinvite'];   // 20261112ks84: お知らせはスタッフ全員（Junki）／ks86: アプリ未登録の生徒も全員
 function isManagerStaff() {
   if (!currentStaff) return false;
   if (currentStaff.role === 'admin') return true;
@@ -18396,6 +18543,7 @@ var FEATURE_CATALOG = [
   { key:'help',          icon:'📖', label:'使い方',       action:function(){ openHelp(); } },   // 20261109ks70: 説明書・検索
   { key:'appidea',       icon:'💡', label:'アプリへの意見', action:function(){ openAppIdeas(); } },   // 20261109ks71: スタッフ → 管理者の意見箱
   { key:'notices',       icon:'📢', label:'生徒へのお知らせ', action:function(){ openNoticesStaff(); } },   // 20261112ks84
+  { key:'appinvite',     icon:'📲', label:'アプリ未登録の生徒', action:function(){ openAppInvite(); } },   // 20261112ks86
   { key:'fitwithyou',    icon:'📰', label:'f i t 通信',   action:function(){ openTsushinStaff(); } },   // 20261108ks52: 毎月の fit with you を入れる（ks54: 前からある「📡 通信」(tsushin) と名前がかぶっていたので変更）   // 20261107ks41: 生徒からの「こう変えてほしい！」
   { key:'birthday',      icon:'🎂', label:'誕生日',       action:function(){ goHomeBirthdays(); }, hidden:true },   // 20261010gp1: ホームのカレンダーへ一本化
   { key:'alert',         icon:'🚨', label:'アラート',     action:function(){ openHomeFeature('alert'); } },
@@ -74311,7 +74459,7 @@ var NAV_GROUPS = [
   { t: '毎日',         main: ['home', 'myclasses', 'missing', 'makeup', 'todo', 'meyasu', 'help', 'appidea'], more: [] },
   { t: '生徒',         main: ['interview', 'examreq', 'alumni', 'passlist', 'taiken', 'studentanalysis'], more: ['alert', 'schoolview', 'tsushin', 'shakei', 'classanalysis'] },
   { t: '授業・時間割', main: ['attendance', 'monthtt'], more: ['class-master', 'check-item', 'quizstatus', 'appusage', 'testprep', 'timetable', 'attoverview', 'app-math', 'app-chem', 'app-quiz', 'app-kobun', 'app-eitango'] },
-  { t: '入塾・連絡',   main: ['studentreg', 'calreg', 'fitwithyou', 'notices'], more: ['prospects', 'proxycheckin', 'checkinqr', 'seats', 'line', 'demo'] },
+  { t: '入塾・連絡',   main: ['studentreg', 'calreg', 'fitwithyou', 'notices', 'appinvite'], more: ['prospects', 'proxycheckin', 'checkinqr', 'seats', 'line', 'demo'] },
   { t: '事務',         main: [], more: ['jimu', 'attsheet', 'supervision', 'reportedit', 'reportbatch', 'billcheck', 'komacount', 'revenue', 'teacherrole', 'reghistory', 'rostercheck', 'terms', 'settings', 'kubs'] }
 ];
 function navFoldOpen(t) { try { return localStorage.getItem('fit_navopen_' + t) === '1'; } catch (e) { return false; } }
