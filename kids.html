@@ -67,6 +67,25 @@ h3{font-size:15px;margin:0 0 6px;font-weight:900}
 .stf input{width:20px;height:20px}
 .big{font-size:44px;line-height:1;text-align:center;margin:6px 0}
 .center{text-align:center}
+.sec{font-size:16px;margin:20px 2px 8px}
+.big-btn{font-size:18px;padding:16px;box-shadow:0 4px 0 #D9A900}
+.chip.blue{background:var(--sky);color:var(--blue-d)}
+.lesson{background:#fff;border:2px solid var(--blue);border-radius:18px;padding:14px;margin-bottom:10px}
+.lesson-d{font-size:20px;font-weight:900;color:var(--blue-d)}
+.lesson-d span{font-size:15px;margin-left:10px;color:var(--ink)}
+.pick{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:#fff;border:1.5px solid var(--line);border-radius:14px;padding:12px 14px;margin-top:8px;cursor:pointer;min-height:52px}
+.pick:disabled{opacity:.5;cursor:default}
+.pick.on{border-color:var(--blue);background:var(--sky)}
+.pick .rank{flex:none;min-width:64px;text-align:center;border-radius:999px;padding:3px 8px;font-size:12.5px;font-weight:900;background:#EEF3F8;color:var(--muted)}
+.pick.on .rank{background:var(--blue);color:#fff}
+.kinds{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.pick.kind{flex-direction:column;gap:2px;justify-content:center;text-align:center;margin-top:0;padding:14px 8px}
+.pick.kind .big{font-size:34px;margin:0}
+.day{margin-top:12px}
+.day-h{font-weight:900;color:var(--blue-d);border-bottom:2px solid var(--sky);padding-bottom:2px}
+.steps{display:flex;gap:6px;margin:4px 0 12px}
+.steps span{flex:1;height:5px;border-radius:9px;background:var(--line)}
+.steps span.on{background:var(--sun)}
 @media (max-width:420px){.two{grid-template-columns:1fr}}
 </style>
 </head>
@@ -258,7 +277,8 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 //        スタッフ「家庭の登録」（保護者と子どもを1回で登録 → ログイン情報をメール）・責任者「PE スタッフ」（だれが何をできるか）
 // ・表：kids_children・pe_places・pe_slots・pe_requests・pe_staff（01_メモ/20261113_kids1.sql）。小学生は students には入れない
 // ============================================================
-const KD_VERSION = '20261113kd2';   // kd2：スタッフ「枠と申請」に、枠の登録（日・時刻・場所）と場所のリスト
+const KD_VERSION = '20261113kd3';   // kd3：保護者の予約（種類 → 第1〜第3希望 → 申請）・確定したレッスン・変更・キャンセル／スタッフの承認・動かす・中止／はじめての方の登録の申請（SQL kids2）。
+//   // kd2：スタッフ「枠と申請」に、枠の登録（日・時刻・場所）と場所のリスト
 const KD_URL = location.origin + location.pathname;
 const KD_HDR = { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' };
 const KD_GRADES = ['年少', '年中', '年長', '小1', '小2', '小3', '小4', '小5', '小6'];
@@ -349,7 +369,9 @@ function viewLogin(prefill) {
     '<label class="muted row" style="margin-top:8px"><input type="checkbox" id="lg-show" style="width:18px;height:18px">パスワードを表示する</label>' +
     '<div class="msg bad" id="lg-msg" style="display:none"></div>' +
     '<button class="btn wide" id="lg-go" style="margin-top:14px">ログイン</button>' +
-    '<div class="center" style="margin-top:6px"><button class="btn plain" id="lg-forgot">パスワードを忘れたとき</button></div></div>';
+    '<div class="center" style="margin-top:6px"><button class="btn plain" id="lg-forgot">パスワードを忘れたとき</button></div></div>' +
+    '<div class="card center"><b>はじめての方</b><div class="muted" style="margin:4px 0 10px">fit kids の個別レッスンを受けている方は、ここから登録を申請できます。</div><button class="btn ghost" id="lg-signup">登録を申請する</button></div>';
+  $('#lg-signup').onclick = viewSignup;
   $('#lg-show').onchange = e => { $('#lg-pw').type = e.target.checked ? 'text' : 'password'; };
   $('#lg-go').onclick = doLogin;
   $('#lg-pw').onkeydown = e => { if (e.key === 'Enter') doLogin(); };
@@ -365,6 +387,38 @@ async function doLogin() {
   if (!j.ok) return showMsg('lg-msg', fitLoginErrorText(j, (kind === 'parent' ? 'メールアドレス' : 'ID') + 'かパスワードがちがいます'));
   ME = { kind: j.kind, row: j.account };
   route();
+}
+
+// ---------- はじめての方：登録の申請（スタッフが承認すると、ログイン情報がメールで届く） ----------
+function viewSignup() {
+  let n = 1;
+  app().innerHTML =
+    '<div class="card"><h2>登録の申請</h2><div class="muted">fit kids のスタッフが確認したあと、ログイン情報をメールでお送りします。</div>' +
+    '<label class="lbl" for="su-name">保護者のお名前</label><input class="in" id="su-name" autocomplete="name">' +
+    '<label class="lbl" for="su-mail">メールアドレス</label><input class="in" id="su-mail" type="email" autocomplete="email" autocapitalize="off">' +
+    '<label class="lbl" for="su-mail2">メールアドレス（もう一度）</label><input class="in" id="su-mail2" type="email" autocomplete="off" autocapitalize="off">' +
+    '<div id="su-kids">' + kidFields(0) + '</div>' +
+    '<div style="margin-top:8px"><button class="btn ghost sm" id="su-more">＋ きょうだいも入れる</button></div>' +
+    '<label class="lbl" for="su-msg-in">スタッフへのひとこと（なくてもよい）</label><textarea class="in" id="su-msg-in" rows="2" maxlength="300"></textarea>' +
+    '<div class="msg bad" id="su-msg" style="display:none"></div>' +
+    '<button class="btn wide" id="su-go" style="margin-top:14px">申請する</button>' +
+    '<div class="center" style="margin-top:6px"><button class="btn plain" id="su-back">ログインにもどる</button></div></div>';
+  $('#su-back').onclick = () => viewLogin();
+  $('#su-more').onclick = () => { if (n < 6) { $('#su-kids').insertAdjacentHTML('beforeend', kidFields(n)); n++; } };
+  $('#su-go').onclick = async () => {
+    const name = ($('#su-name').value || '').trim(), mail = ($('#su-mail').value || '').trim().toLowerCase(), mail2 = ($('#su-mail2').value || '').trim().toLowerCase();
+    const kids = []; for (let i = 0; i < n; i++) { const k = readKid(i); if (k.name) kids.push(k); }
+    if (!name) return showMsg('su-msg', '保護者のお名前を入れてください');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) return showMsg('su-msg', 'メールアドレスを正しく入れてください');
+    if (mail !== mail2) return showMsg('su-msg', 'メールアドレスが2回とも同じになっていません');
+    if (!kids.length) return showMsg('su-msg', 'お子さまの名前を入れてください');
+    const b = $('#su-go'); busy(b, true, '送っています…');
+    try {
+      await rpc('pe_signup', { p: { parent_name: name, email: mail, children: kids, message: ($('#su-msg-in').value || '').trim() || null } });
+      app().innerHTML = '<div class="card center"><div class="big">✅</div><b>申請を受け付けました</b><div class="muted" style="margin-top:6px">スタッフが確認したあと、<b>' + esc(mail) + '</b> にログイン情報をお送りします。少しお待ちください。</div><button class="btn wide" style="margin-top:14px" id="su-ok">とじる</button></div>';
+      $('#su-ok').onclick = () => viewLogin(mail);
+    } catch (e) { busy(b, false); showMsg('su-msg', e.message); }
+  };
 }
 
 // ---------- パスワードを忘れたとき ----------
@@ -433,19 +487,158 @@ function openChangePw() {
 function openOv(html) { $('#ov').innerHTML = '<div class="ov"><div class="modal" role="dialog" aria-modal="true">' + html + '</div></div>'; }
 function closeOv() { $('#ov').innerHTML = ''; }
 
-// ---------- 保護者の画面（kd1：予約はこれから。お子さまの確認とパスワードだけ） ----------
+// ---------- 保護者の画面（kd3：予約・確定した日程・変更・キャンセル） ----------
+const KD_KINDS = ['運動全般', 'かけっこ', '水泳', '鉄棒', '自転車'];
+const KD_KIND_ICON = { '運動全般': '🤸', 'かけっこ': '🏃', '水泳': '🏊', '鉄棒': '🏋️', '自転車': '🚲' };
+const KD_WD = ['日', '月', '火', '水', '木', '金', '土'];
+function todayJST() { return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' }); }
+function addDays(d, n) { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
+function wdOf(d) { return new Date(d + 'T00:00:00Z').getUTCDay(); }
+function dateLabel(d) { return Number(d.slice(5, 7)) + '/' + Number(d.slice(8, 10)) + '（' + KD_WD[wdOf(d)] + '）'; }
+function timeLabel(t) { const h = Number(String(t).slice(0, 2)), m = String(t).slice(3, 5); return h + ':' + m + '〜' + (h + 1) + ':' + m; }
+// 変更・キャンセルの締め切り（前の日の18時・日本時間）を過ぎていないか。最後はサーバーが決める
+function beforeDeadline(slotDate) { return Date.now() < new Date(addDays(slotDate, -1) + 'T18:00:00+09:00').getTime(); }
+async function rpc(name, args) {
+  const r = await fetch(FIT_SB_URL + '/rest/v1/rpc/' + name, { method: 'POST', headers: KD_HDR, body: JSON.stringify(args || {}) });
+  const tx = await r.text(); let j = null; try { j = tx ? JSON.parse(tx) : null; } catch (e) {}
+  if (!r.ok) { const m = (j && j.message) || ''; throw new Error(m.indexOf('fit: ') === 0 ? m.slice(5) : ('うまくいきませんでした（' + r.status + '）' + (m ? ' ' + m.slice(0, 120) : ''))); }
+  return j;
+}
+let P = { kids: [], places: {}, slots: {}, reqs: [] };
+let W = null;   // 予約の途中：{ child, kind, picks:[枠ID], open:[], changeOf }
+async function loadParent() {
+  const month0 = todayJST().slice(0, 8) + '01';
+  const [kids, places, slots, reqs] = await Promise.all([
+    api('kids_children?parent_id=eq.' + encodeURIComponent(ME.row.id) + '&is_active=eq.true&select=id,name,grade,school&order=created_at'),
+    api('pe_places?select=id,name,meet_at,parent_note,kinds'),
+    api('pe_slots?slot_date=gte.' + month0 + '&select=id,slot_date,start_time,place_id,capacity,status&order=slot_date,start_time'),
+    api('pe_requests?parent_id=eq.' + encodeURIComponent(ME.row.id) + '&select=*&order=created_at.desc&limit=200')
+  ]);
+  P = { kids: kids || [], places: {}, slots: {}, reqs: reqs || [] };
+  (places || []).forEach(p => { P.places[p.id] = p; });
+  (slots || []).forEach(s => { P.slots[s.id] = s; });
+}
+const kidName = id => { const k = P.kids.find(x => x.id === id); return k ? k.name : 'お子さま'; };
+function slotText(id) { const s = P.slots[id]; if (!s) return '（前の日程）'; const p = P.places[s.place_id] || {}; return dateLabel(s.slot_date) + ' ' + timeLabel(s.start_time) + '　' + (p.name || ''); }
+// その子の、その月の何回目か（確定している日程を、日にちの順に数える）
+function lessonNo(req) {
+  const s = P.slots[req.confirmed_slot_id]; if (!s) return '';
+  const ym = s.slot_date.slice(0, 7);
+  const same = P.reqs.filter(r => r.status === 'confirmed' && r.child_id === req.child_id && P.slots[r.confirmed_slot_id] && P.slots[r.confirmed_slot_id].slot_date.slice(0, 7) === ym)
+    .sort((a, b) => (P.slots[a.confirmed_slot_id].slot_date + P.slots[a.confirmed_slot_id].start_time).localeCompare(P.slots[b.confirmed_slot_id].slot_date + P.slots[b.confirmed_slot_id].start_time));
+  return Number(ym.slice(5, 7)) + '月 ' + (same.findIndex(r => r.id === req.id) + 1) + '回目';
+}
 async function viewParent() {
   app().innerHTML = '<div class="card center muted">読み込み中…</div>';
-  let kids = [];
-  try { kids = await api('kids_children?parent_id=eq.' + encodeURIComponent(ME.row.id) + '&is_active=eq.true&select=id,name,grade,school&order=created_at') || []; }
+  try { await loadParent(); }
   catch (e) { app().innerHTML = '<div class="card"><div class="msg bad" style="display:block;margin-top:0">読み込めませんでした。時間をおいて、もう一度お試しください。</div><div class="row" style="margin-top:12px"><button class="btn" onclick="route()">もう一度</button><button class="btn ghost" onclick="doLogout()">ログアウト</button></div></div>'; return; }
-  const list = kids.length
-    ? kids.map(k => '<div class="kid"><span class="kid-n">' + esc(k.name) + '</span>' + (k.grade ? '<span class="chip">' + esc(k.grade) + '</span>' : '') + '</div>').join('')
-    : '<div class="muted">お子さまの登録がまだありません。fit kids のスタッフまでお問い合わせください。</div>';
+  const t0 = todayJST();
+  const conf = P.reqs.filter(r => r.status === 'confirmed' && P.slots[r.confirmed_slot_id] && P.slots[r.confirmed_slot_id].slot_date >= t0)
+    .sort((a, b) => (P.slots[a.confirmed_slot_id].slot_date + P.slots[a.confirmed_slot_id].start_time).localeCompare(P.slots[b.confirmed_slot_id].slot_date + P.slots[b.confirmed_slot_id].start_time));
+  const pend = P.reqs.filter(r => r.status === 'pending');
+  const since = new Date(Date.now() - 14 * 86400000).toISOString();
+  const news = P.reqs.filter(r => (r.status === 'rejected' || (r.status === 'cancelled' && r.reply)) && String(r.updated_at || '') >= since).slice(0, 5);
+  const confHtml = conf.map(r => {
+    const s = P.slots[r.confirmed_slot_id], p = P.places[s.place_id] || {}, can = beforeDeadline(s.slot_date), chg = pend.some(x => x.change_of === r.id);
+    return '<div class="lesson"><div class="lesson-d">' + dateLabel(s.slot_date) + '<span>' + timeLabel(s.start_time) + '</span></div>' +
+      '<div class="row" style="margin:6px 0"><b>' + esc(kidName(r.child_id)) + '</b><span class="chip">' + (KD_KIND_ICON[r.kind] || '') + ' ' + esc(r.kind) + '</span><span class="chip blue">' + lessonNo(r) + '</span></div>' +
+      '<div>📍 <b>' + esc(p.name || '') + '</b></div>' + (p.meet_at ? '<div class="muted">集合：' + esc(p.meet_at) + '</div>' : '') + (p.parent_note ? '<div class="muted">' + esc(p.parent_note) + '</div>' : '') +
+      (r.reply ? '<div class="msg info" style="display:block">スタッフより：' + esc(r.reply) + '</div>' : '') +
+      (chg ? '<div class="msg info" style="display:block">日程の変更を申請しています（スタッフの返事を待っています）</div>' : '') +
+      (can ? '<div class="row" style="margin-top:10px">' + (chg ? '' : '<button class="btn ghost sm" data-pact="change" data-rid="' + esc(r.id) + '">日程を変える</button>') + '<button class="btn ghost sm" data-pact="cancel" data-rid="' + esc(r.id) + '">キャンセル</button></div>'
+           : '<div class="muted" style="margin-top:8px">変更・キャンセルは前の日の18時までです。お急ぎのときは、fit kids の公式LINE でご連絡ください。</div>') + '</div>';
+  }).join('');
+  const pendHtml = pend.map(r =>
+    '<div class="fam"><div class="row"><b>' + esc(kidName(r.child_id)) + '</b><span class="chip">' + (KD_KIND_ICON[r.kind] || '') + ' ' + esc(r.kind) + '</span>' + (r.change_of ? '<span class="chip blue">日程の変更</span>' : '') + '</div>' +
+    [r.slot1_id, r.slot2_id, r.slot3_id].map((id, i) => id ? '<div class="muted" style="color:var(--ink)">第' + (i + 1) + '希望：' + esc(slotText(id)) + '</div>' : '').join('') +
+    (r.message ? '<div class="muted">ひとこと：' + esc(r.message) + '</div>' : '') +
+    '<div class="row" style="margin-top:8px"><span class="muted" style="flex:1">スタッフが確認しています</span><button class="btn ghost sm" data-pact="cancel" data-rid="' + esc(r.id) + '">取り消す</button></div></div>').join('');
+  const newsHtml = news.map(r => '<div class="fam"><div class="row"><b>' + esc(kidName(r.child_id)) + '</b><span class="chip">' + esc(r.kind) + '</span><span class="muted">' + (r.status === 'rejected' ? '今回は日程が合いませんでした' : 'この日程はなくなりました') + '</span></div>' +
+    '<div class="muted" style="color:var(--ink)">' + esc(slotText(r.confirmed_slot_id || r.slot1_id)) + '</div>' + (r.reply ? '<div class="msg info" style="display:block">スタッフより：' + esc(r.reply) + '</div>' : '') + '</div>').join('');
   app().innerHTML =
-    '<div class="card"><h2>こんにちは、' + esc(ME.row.name || '') + ' さま</h2>' + list + '</div>' +
-    '<div class="card center"><div class="big">🏃</div><b>個別レッスンの予約は、もうすぐ始まります</b><div class="muted" style="margin-top:6px">準備ができたら、fit kids の公式LINE でお知らせします。</div></div>' +
-    '<div class="row" style="justify-content:center"><button class="btn ghost" onclick="openChangePw()">🔑 パスワードを変える</button><button class="btn plain" onclick="doLogout()">ログアウト</button></div>';
+    (P.kids.length
+      ? '<button class="btn sun wide big-btn" id="p-new">＋ レッスンを予約する</button>'
+      : '<div class="card center"><div class="big">🙇</div>お子さまの登録がまだありません。<div class="muted">fit kids のスタッフまでお問い合わせください。</div></div>') +
+    '<h2 class="sec">📅 確定したレッスン</h2>' + (confHtml || '<div class="card center muted">これからのレッスンは、まだありません。</div>') +
+    (pendHtml ? '<h2 class="sec">⏳ 確認中の申請</h2>' + pendHtml : '') +
+    (newsHtml ? '<h2 class="sec">📣 お知らせ</h2>' + newsHtml : '') +
+    '<div class="row" style="justify-content:center;margin-top:18px"><button class="btn plain" onclick="openChangePw()">🔑 パスワードを変える</button><button class="btn plain" onclick="doLogout()">ログアウト</button></div>';
+  const nb = $('#p-new'); if (nb) nb.onclick = () => startBooking(null);
+  app().querySelectorAll('[data-pact]').forEach(b => b.onclick = () => parentAct(b.dataset.pact, b.dataset.rid));
+}
+function parentAct(act, rid) {
+  const r = P.reqs.find(x => x.id === rid); if (!r) return;
+  if (act === 'change') return startBooking(r);
+  const conf = r.status === 'confirmed';
+  openOv('<div class="modal-h"><b>' + (conf ? 'このレッスンをキャンセルしますか？' : 'この申請を取り消しますか？') + '</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' +
+    '<div><b>' + esc(kidName(r.child_id)) + '</b>　' + esc(r.kind) + '</div><div>' + esc(slotText(conf ? r.confirmed_slot_id : r.slot1_id)) + '</div>' +
+    '<div class="msg bad" id="pc-msg" style="display:none"></div><div class="row" style="margin-top:14px"><button class="btn ghost" onclick="closeOv()">やめる</button><button class="btn" id="pc-go">' + (conf ? 'キャンセルする' : '取り消す') + '</button></div>');
+  $('#pc-go').onclick = async () => {
+    const b = $('#pc-go'); busy(b, true);
+    try { await rpc('pe_request_cancel', { p_id: rid }); closeOv(); await viewParent(); }
+    catch (e) { busy(b, false); showMsg('pc-msg', e.message); }
+  };
+}
+// ----- 予約：子ども → 種類 → 枠（第1〜第3希望）→ 申請 -----
+function startBooking(changeReq) {
+  W = { child: changeReq ? changeReq.child_id : (P.kids.length === 1 ? P.kids[0].id : null), kind: changeReq ? changeReq.kind : null, picks: [], open: [], changeOf: changeReq ? changeReq.id : null };
+  if (!W.child) return bookChild();
+  if (!W.kind) return bookKind();
+  bookSlots();
+}
+function bookHead(title, step) {
+  return '<div class="modal-h"><b>' + title + '</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' + (W.changeOf ? '<div class="msg info" style="display:block;margin-top:0">日程の変更の申請です。新しい日程が決まるまで、今の日程はそのままです。</div>' : '') +
+    '<div class="steps" aria-hidden="true">' + [1, 2, 3].map(i => '<span class="' + (i <= step ? 'on' : '') + '"></span>').join('') + '</div>';
+}
+function bookChild() {
+  openOv(bookHead('どのお子さまのレッスンですか？', 1) + P.kids.map(k => '<button class="pick" data-c="' + esc(k.id) + '"><b>' + esc(k.name) + '</b>' + (k.grade ? '<span class="chip">' + esc(k.grade) + '</span>' : '') + '</button>').join(''));
+  $('#ov').querySelectorAll('[data-c]').forEach(b => b.onclick = () => { W.child = b.dataset.c; bookKind(); });
+}
+function bookKind() {
+  openOv(bookHead('レッスンの種類をえらんでください', 2) + '<div class="muted">' + esc(kidName(W.child)) + ' さん</div>' +
+    '<div class="kinds">' + KD_KINDS.map(k => '<button class="pick kind" data-k="' + esc(k) + '"><span class="big" aria-hidden="true">' + KD_KIND_ICON[k] + '</span><b>' + esc(k) + '</b></button>').join('') + '</div>' +
+    (P.kids.length > 1 && !W.changeOf ? '<button class="btn plain" id="bk-back">‹ お子さまをえらび直す</button>' : ''));
+  $('#ov').querySelectorAll('[data-k]').forEach(b => b.onclick = () => { W.kind = b.dataset.k; W.picks = []; bookSlots(); });
+  const bb = $('#bk-back'); if (bb) bb.onclick = bookChild;
+}
+async function bookSlots() {
+  openOv(bookHead('希望の日時をえらんでください', 3) + '<div class="center muted" style="padding:20px 0">空いている枠をさがしています…</div>');
+  try { W.open = await rpc('pe_open_slots', { p_kind: W.kind }) || []; }
+  catch (e) { openOv(bookHead('希望の日時をえらんでください', 3) + '<div class="msg bad" style="display:block">' + esc(e.message) + '</div><button class="btn wide" style="margin-top:12px" onclick="closeOv()">とじる</button>'); return; }
+  // 変更のときは、今の日程と同じ枠は出さない
+  if (W.changeOf) { const cur = (P.reqs.find(r => r.id === W.changeOf) || {}).confirmed_slot_id; W.open = W.open.filter(s => s.id !== cur); }
+  drawSlots();
+}
+function drawSlots() {
+  const days = {}; W.open.forEach(s => { (days[s.slot_date] || (days[s.slot_date] = [])).push(s); });
+  const list = Object.keys(days).sort().map(d => '<div class="day"><div class="day-h">' + dateLabel(d) + '</div>' + days[d].map(s => {
+    const i = W.picks.indexOf(s.id);
+    return '<button class="pick slot' + (i >= 0 ? ' on' : '') + '" data-s="' + esc(s.id) + '" aria-pressed="' + (i >= 0) + '"><span class="rank">' + (i >= 0 ? '第' + (i + 1) + '希望' : 'えらぶ') + '</span><span style="flex:1;min-width:0;text-align:left"><b>' + timeLabel(s.start_time) + '</b><br><span class="muted">' + esc(s.place) + (s.taken ? '・あと' + (s.capacity - s.taken) + '人' : '') + '</span></span></button>';
+  }).join('') + '</div>').join('');
+  const back = W.changeOf ? '' : '<button class="btn plain" id="bk-back">‹ 種類をえらび直す</button>';
+  openOv(bookHead('希望の日時をえらんでください', 3) +
+    '<div class="row"><b>' + esc(kidName(W.child)) + '</b><span class="chip">' + KD_KIND_ICON[W.kind] + ' ' + esc(W.kind) + '</span></div>' +
+    (W.open.length
+      ? '<div class="muted" style="margin:6px 0">押した順に、第1〜第3希望になります（1つだけでも申請できます）。もう一度押すと外れます。</div>' + list +
+        '<label class="lbl" for="bk-msg-in">スタッフへのひとこと（なくてもよい）</label><textarea class="in" id="bk-msg-in" rows="2" maxlength="300">' + esc(W.msg || '') + '</textarea>' +
+        '<div class="msg bad" id="bk-msg" style="display:none"></div><button class="btn wide" id="bk-go" style="margin-top:12px"' + (W.picks.length ? '' : ' disabled') + '>' + (W.picks.length ? W.picks.length + 'つの希望で申請する' : '日時をえらんでください') + '</button>'
+      : '<div class="card center" style="margin-top:12px"><div class="big">🗓</div>今、申請できる枠がありません。<div class="muted">申請は3日前まで・1か月先までです。ほかの種類もお試しください。</div></div>') + back);
+  const bb = $('#bk-back'); if (bb) bb.onclick = bookKind;
+  const keep = () => { const t = $('#bk-msg-in'); if (t) W.msg = t.value; };
+  $('#ov').querySelectorAll('[data-s]').forEach(b => b.onclick = () => {
+    keep(); const id = b.dataset.s, i = W.picks.indexOf(id);
+    if (i >= 0) W.picks.splice(i, 1); else if (W.picks.length < 3) W.picks.push(id); else { drawSlots(); return showMsg('bk-msg', '希望は3つまでです。外したい枠をもう一度押してください'); }
+    drawSlots();
+  });
+  const go = $('#bk-go'); if (go) go.onclick = async () => {
+    keep(); busy(go, true, '申請しています…');
+    try {
+      await rpc('pe_request_create', { p_child: W.child, p_kind: W.kind, p_slot1: W.picks[0], p_slot2: W.picks[1] || null, p_slot3: W.picks[2] || null, p_message: W.msg || null, p_change_of: W.changeOf });
+      W = null;
+      openOv('<div class="center"><div class="big">✅</div><b>申請しました</b><div class="muted" style="margin-top:6px">スタッフが確認して、日程を決めます。決まったら、このページの「確定したレッスン」に出ます。</div><button class="btn wide" style="margin-top:14px" id="bk-ok">とじる</button></div>');
+      $('#bk-ok').onclick = () => { closeOv(); viewParent(); };
+    } catch (e) { busy(go, false); showMsg('bk-msg', e.message); if (/うまった|締め切/.test(e.message)) { W.picks = []; try { W.open = await rpc('pe_open_slots', { p_kind: W.kind }) || []; } catch (e2) {} } }
+  };
 }
 
 // ---------- スタッフの画面 ----------
@@ -493,11 +686,13 @@ async function loadFam() {
 }
 async function paneFam() {
   const pane = $('#pane');
-  try { await loadFam(); } catch (e) { pane.innerHTML = '<div class="card"><div class="msg bad" style="display:block;margin-top:0">読み込めませんでした</div><div class="muted" style="word-break:break-all;margin-top:6px">' + esc(e.message) + '</div></div>'; return; }
+  try { await loadFam(); SIGNUPS = await api('kids_signups?status=eq.pending&select=*&order=created_at').catch(() => []) || []; } catch (e) { pane.innerHTML = '<div class="card"><div class="msg bad" style="display:block;margin-top:0">読み込めませんでした</div><div class="muted" style="word-break:break-all;margin-top:6px">' + esc(e.message) + '</div></div>'; return; }
   const nKids = FAM.reduce((n, f) => n + f.kids.filter(k => k.is_active).length, 0);
   pane.innerHTML =
     '<div class="card"><div class="row"><div style="flex:1;min-width:150px"><h2 style="margin:0">家庭の登録</h2><div class="muted">' + FAM.length + '家庭・お子さま ' + nKids + '人</div></div><button class="btn sun" id="fam-new">＋ 家庭を登録</button></div></div>' +
+    (SIGNUPS.length ? '<h2 class="sec">📝 登録の申請（' + SIGNUPS.length + '件）</h2>' + SIGNUPS.map(signupHtml).join('') + '<h2 class="sec">登録ずみの家庭</h2>' : '') +
     (FAM.length ? FAM.map(famHtml).join('') : '<div class="card center muted">まだ登録がありません。「＋ 家庭を登録」から入れてください。</div>');
+  pane.querySelectorAll('[data-su-act]').forEach(b => b.onclick = () => signupAct(b.dataset.suAct, b.dataset.suid));
   $('#fam-new').onclick = () => openFamForm();
   pane.querySelectorAll('[data-act]').forEach(b => b.onclick = () => famAct(b.dataset.act, b.dataset.pid, b.dataset.kid));
 }
@@ -545,27 +740,55 @@ function openFamForm() {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) return showMsg('ff-msg', 'メールアドレスを正しく入れてください');
     if (!kids.length) return showMsg('ff-msg', 'お子さまの名前を入れてください');
     const send = $('#ff-send').checked, btn = $('#ff-go'); busy(btn, true, '登録しています…');
+    try { const r = await makeFamily(name, mail, kids, send); busy(btn, false); await paneFam(); showMade(r, name, mail, send); }
+    catch (e) { busy(btn, false); showMsg('ff-msg', '登録できませんでした：' + e.message); }
+  };
+}
+// 保護者（なければ作る）＋子どもを登録し、新しい保護者なら6桁を発行する。戻り値 { parent, isNew, issue }
+async function makeFamily(name, mail, kids, send) {
+  const dup = await api('parent_accounts?login_id=eq.' + encodeURIComponent(mail) + '&select=id,name,is_active') || [];
+  let parent = dup[0], isNew = false;
+  if (!parent) {
+    // 最初のパスワードは、このあとサーバーがランダムに作る。ここでは、だれにも分からない値を入れておく
+    const junk = 'pw-' + Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2, '0')).join('');
+    const made = await apiPost('parent_accounts', { login_id: mail, pin: junk, name: name, is_active: true });
+    parent = Array.isArray(made) ? made[0] : made; isNew = true;
+    if (!parent || !parent.id) throw new Error('保護者を登録できませんでした');
+  }
+  await apiPost('kids_children', kids.map(k => ({ parent_id: parent.id, created_by: ME.row.id, name: k.name, kana: k.kana || null, grade: k.grade || null, school: k.school || null })));
+  const issue = isNew ? await pwCall('issue', { parent_id: parent.id, send_mail: send }, true) : null;
+  return { parent: parent, isNew: isNew, issue: issue };
+}
+function showMade(r, name, mail, send) {
+  if (!r.isNew) return openOv('<div class="center"><div class="big">👪</div><b>お子さまを足しました</b><div class="muted" style="margin-top:6px">このメールアドレスは、もう登録のある保護者（' + esc(r.parent.name || '') + ' さま）でした。保護者の登録とパスワードはそのままです。</div><button class="btn wide" style="margin-top:14px" onclick="closeOv()">とじる</button></div>');
+  if (!r.issue.ok) return openOv('<div class="center"><div class="big">⚠️</div><b>登録はできましたが、パスワードを発行できませんでした</b><div class="muted" style="margin-top:6px">' + esc(pwErr(r.issue)) + '<br>一覧の「🔑 新しいパスワードを発行」から、もう一度お試しください。</div><button class="btn wide" style="margin-top:14px" onclick="closeOv()">とじる</button></div>');
+  showIssued(Object.assign({}, r.parent, { name: name, login_id: mail }), r.issue, send, true);
+}
+// 保護者からの「登録の申請」を承認する・見送る
+let SIGNUPS = [];
+function signupHtml(su) {
+  const kids = Array.isArray(su.children) ? su.children : [];
+  return '<div class="fam" style="border-color:var(--sun);border-width:2px"><div class="fam-h"><b>' + esc(su.parent_name) + '</b><span class="sp"></span><span class="muted">' + esc(String(su.created_at || '').slice(0, 10).replace(/-/g, '/')) + ' に申請</span></div><div class="mail">' + esc(su.email) + '</div>' +
+    kids.map(k => '<div class="kid"><span class="kid-n">' + esc(k.name) + '</span>' + (k.kana ? '<span class="muted">' + esc(k.kana) + '</span>' : '') + (k.grade ? '<span class="chip">' + esc(k.grade) + '</span>' : '') + (k.school ? '<span class="muted">' + esc(k.school) + '</span>' : '') + '</div>').join('') +
+    (su.message ? '<div class="msg info" style="display:block">ひとこと：' + esc(su.message) + '</div>' : '') +
+    '<div class="row" style="margin-top:10px"><button class="btn sm" data-su-act="ok" data-suid="' + esc(su.id) + '">承認して、ログイン情報を送る</button><button class="btn ghost sm" data-su-act="ng" data-suid="' + esc(su.id) + '">見送る</button></div></div>';
+}
+function signupAct(act, id) {
+  const su = SIGNUPS.find(x => x.id === id); if (!su) return;
+  const ok = act === 'ok';
+  openOv('<div class="modal-h"><b>' + (ok ? 'この申請を承認しますか？' : 'この申請を見送りますか？') + '</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' +
+    '<div><b>' + esc(su.parent_name) + '</b> さま</div><div class="mail">' + esc(su.email) + '</div>' +
+    '<div class="muted" style="margin-top:8px">' + (ok ? '保護者とお子さまを登録して、6桁のパスワードをメールで送ります。fit kids に通っているご家庭か、確かめてから押してください。' : '一覧から消えます。保護者にはお知らせは届きません。') + '</div>' +
+    '<div class="msg bad" id="sa-msg" style="display:none"></div><div class="row" style="margin-top:14px"><button class="btn ghost" onclick="closeOv()">やめる</button><button class="btn" id="sa-go">' + (ok ? '承認する' : '見送る') + '</button></div>');
+  $('#sa-go').onclick = async () => {
+    const b = $('#sa-go'); busy(b, true);
     try {
-      const dup = await api('parent_accounts?login_id=eq.' + encodeURIComponent(mail) + '&select=id,name,is_active') || [];
-      let parent = dup[0], isNew = false;
-      if (!parent) {
-        // 最初のパスワードは、このあとサーバーがランダムに作る。ここでは、だれにも分からない値を入れておく
-        const junk = 'pw-' + Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2, '0')).join('');
-        const made = await apiPost('parent_accounts', { login_id: mail, pin: junk, name: name, is_active: true });
-        parent = Array.isArray(made) ? made[0] : made; isNew = true;
-        if (!parent || !parent.id) throw new Error('保護者を登録できませんでした');
-      }
-      await apiPost('kids_children', kids.map(k => Object.assign({ parent_id: parent.id, created_by: ME.row.id }, k)));
-      if (!isNew) {
-        busy(btn, false); await paneFam();
-        openOv('<div class="center"><div class="big">👪</div><b>お子さまを足しました</b><div class="muted" style="margin-top:6px">このメールアドレスは、もう登録のある保護者（' + esc(parent.name || '') + ' さま）でした。保護者の登録とパスワードはそのままです。</div><button class="btn wide" style="margin-top:14px" onclick="closeOv()">とじる</button></div>');
-        return;
-      }
-      const j = await pwCall('issue', { parent_id: parent.id, send_mail: send }, true);
-      busy(btn, false); await paneFam();
-      if (!j.ok) { openOv('<div class="center"><div class="big">⚠️</div><b>登録はできましたが、パスワードを発行できませんでした</b><div class="muted" style="margin-top:6px">' + esc(pwErr(j)) + '<br>一覧の「🔑 新しいパスワードを発行」から、もう一度お試しください。</div><button class="btn wide" style="margin-top:14px" onclick="closeOv()">とじる</button></div>'); return; }
-      showIssued(Object.assign({}, parent, { name: name, login_id: mail }), j, send, true);
-    } catch (e) { busy(btn, false); showMsg('ff-msg', '登録できませんでした：' + e.message); }
+      let r = null;
+      if (ok) r = await makeFamily(su.parent_name, su.email, Array.isArray(su.children) ? su.children : [], true);
+      await apiPatch('kids_signups', 'id=eq.' + encodeURIComponent(id), { status: ok ? 'approved' : 'rejected', parent_id: r ? r.parent.id : null, decided_by: ME.row.id, decided_at: new Date().toISOString() });
+      closeOv(); await paneFam();
+      if (r) showMade(r, su.parent_name, su.email, true);
+    } catch (e) { busy(b, false); showMsg('sa-msg', 'うまくいきませんでした：' + e.message); }
   };
 }
 function openKidForm(parent, kid) {
@@ -609,49 +832,92 @@ function showIssued(parent, j, send, isNew) {
     '<button class="btn wide" style="margin-top:14px" onclick="closeOv()">とじる</button>');
 }
 
-// ----- 枠と申請（kd2：枠の登録と場所のリスト。申請の承認は次の版）-----
-const KD_KINDS = ['運動全般', 'かけっこ', '水泳', '鉄棒', '自転車'];
-const KD_WD = ['日', '月', '火', '水', '木', '金', '土'];
+// ----- 枠と申請（kd2：枠の登録と場所のリスト／kd3：申請の承認・確定した日程を動かす・中止）-----
 let PLACES = [], SLOTS = [], REQS = [];
-function todayJST() { return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' }); }
-function addDays(d, n) { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
-function wdOf(d) { return new Date(d + 'T00:00:00Z').getUTCDay(); }
-function dateLabel(d) { return Number(d.slice(5, 7)) + '/' + Number(d.slice(8, 10)) + '（' + KD_WD[wdOf(d)] + '）'; }
-function timeLabel(t) { const h = Number(String(t).slice(0, 2)), m = String(t).slice(3, 5); return h + ':' + m + '〜' + (h + 1) + ':' + m; }
 // 開始時刻の目安（PE スタッフの答え：平日 13〜17時／土日 16〜18時）。ほかの時刻もえらべる
 function usualHours(d) { const w = wdOf(d); return (w === 0 || w === 6) ? [16, 17, 18] : [13, 14, 15, 16, 17]; }
+let SKIDS = {}, SPAR = {};   // スタッフ用：子ども・保護者の名前
 async function loadSlots() {
+  const t0 = todayJST();
   PLACES = await api('pe_places?select=*&order=sort_no,name') || [];
-  SLOTS = await api('pe_slots?slot_date=gte.' + todayJST() + '&select=*&order=slot_date,start_time') || [];
-  REQS = SLOTS.length ? (await api('pe_requests?status=in.(pending,confirmed)&select=id,status,slot1_id,slot2_id,slot3_id,confirmed_slot_id') || []) : [];
+  SLOTS = await api('pe_slots?slot_date=gte.' + t0 + '&select=*&order=slot_date,start_time') || [];
+  REQS = await api('pe_requests?status=in.(pending,confirmed)&select=*&order=created_at') || [];
+  SKIDS = {}; SPAR = {};
+  const kids = REQS.length ? (await api('kids_children?select=id,name,grade,parent_id') || []) : [];
+  kids.forEach(k => { SKIDS[k.id] = k; });
+  const pids = [...new Set(REQS.map(r => r.parent_id))];
+  if (pids.length) (await api('parent_accounts?id=in.(' + pids.join(',') + ')&select=id,name') || []).forEach(p => { SPAR[p.id] = p; });
 }
 function slotUse(id) {
   let conf = 0, pend = 0;
   REQS.forEach(r => { if (r.status === 'confirmed' && r.confirmed_slot_id === id) conf++; else if (r.status === 'pending' && (r.slot1_id === id || r.slot2_id === id || r.slot3_id === id)) pend++; });
   return { conf: conf, pend: pend };
 }
+const sSlot = id => SLOTS.find(s => s.id === id);
+const sPlace = id => PLACES.find(p => p.id === id) || {};
+function sSlotText(id) { const s = sSlot(id); if (!s) return '（過ぎた枠・なくなった枠）'; return dateLabel(s.slot_date) + ' ' + timeLabel(s.start_time) + '　' + (sPlace(s.place_id).name || ''); }
+function sKid(r) { const k = SKIDS[r.child_id] || {}; return esc(k.name || '（名前なし）') + (k.grade ? ' <span class="chip">' + esc(k.grade) + '</span>' : ''); }
 async function paneSlot() {
   const pane = $('#pane');
   try { await loadSlots(); } catch (e) { pane.innerHTML = '<div class="card"><div class="msg bad" style="display:block;margin-top:0">読み込めませんでした</div><div class="muted" style="word-break:break-all;margin-top:6px">' + esc(e.message) + '</div></div>'; return; }
-  const pById = {}; PLACES.forEach(p => { pById[p.id] = p; });
+  const pend = REQS.filter(r => r.status === 'pending');
+  const pendHtml = pend.map(r => {
+    const old = r.change_of ? REQS.find(x => x.id === r.change_of) : null;
+    return '<div class="fam"><div class="row"><b>' + sKid(r) + '</b><span class="chip">' + (KD_KIND_ICON[r.kind] || '') + ' ' + esc(r.kind) + '</span>' + (r.change_of ? '<span class="chip blue">日程の変更</span>' : '') + '<span class="sp"></span><span class="muted">' + esc((SPAR[r.parent_id] || {}).name || '') + ' さま</span></div>' +
+      (old ? '<div class="muted">今の日程：' + esc(sSlotText(old.confirmed_slot_id)) + '（確定すると、こちらは自動で取り消されます）</div>' : '') +
+      (r.message ? '<div class="msg info" style="display:block">ひとこと：' + esc(r.message) + '</div>' : '') +
+      [r.slot1_id, r.slot2_id, r.slot3_id].map((id, i) => {
+        if (!id) return '';
+        const s = sSlot(id); if (!s) return '<div class="muted" style="margin-top:6px">第' + (i + 1) + '希望：（過ぎた枠・なくなった枠）</div>';
+        const u = slotUse(id), full = u.conf >= s.capacity;
+        return '<button class="pick slot" data-ract="ok" data-rid="' + esc(r.id) + '" data-sid="' + esc(id) + '"' + (full ? ' disabled' : '') + '><span class="rank">第' + (i + 1) + '希望</span><span style="flex:1;min-width:0;text-align:left"><b>' + esc(sSlotText(id)) + '</b><br><span class="muted">確定 ' + u.conf + '/' + s.capacity + '人' + (full ? '・いっぱい' : '・押すと確定') + '</span></span></button>';
+      }).join('') +
+      '<div class="row" style="margin-top:8px"><span class="sp"></span><button class="btn ghost sm" data-ract="ng" data-rid="' + esc(r.id) + '">今回はむずかしい</button></div></div>';
+  }).join('');
   const days = {}; SLOTS.forEach(sl => { (days[sl.slot_date] || (days[sl.slot_date] = [])).push(sl); });
   const open = SLOTS.filter(sl => sl.status === 'open').length;
   const dayHtml = Object.keys(days).sort().map(d =>
     '<div class="card"><h3>' + dateLabel(d) + '</h3>' + days[d].map(sl => {
-      const p = pById[sl.place_id] || {}, u = slotUse(sl.id), stop = sl.status !== 'open';
+      const p = sPlace(sl.place_id), u = slotUse(sl.id), stop = sl.status !== 'open';
+      const who = REQS.filter(r => r.status === 'confirmed' && r.confirmed_slot_id === sl.id).map(r =>
+        '<div class="row" style="width:100%;padding-left:8px"><span>👤 <b>' + sKid(r) + '</b>　' + esc(r.kind) + '</span><span class="sp"></span><button class="btn ghost sm" data-ract="move" data-rid="' + esc(r.id) + '">動かす・中止</button></div>').join('');
       return '<div class="kid' + (stop ? ' off' : '') + '"><span class="kid-n">' + timeLabel(sl.start_time) + '</span><span>' + esc(p.name || '（場所なし）') + '</span>' +
         (p.kinds || []).map(k => '<span class="chip">' + esc(k) + '</span>').join('') +
         '<span class="muted">確定 ' + u.conf + '/' + sl.capacity + '人' + (u.pend ? '・申請中 ' + u.pend + '件' : '') + (stop ? '・止めています' : '') + '</span><span class="sp"></span>' +
         '<button class="btn ghost sm" data-sact="' + (stop ? 'open' : 'stop') + '" data-sid="' + esc(sl.id) + '">' + (stop ? 'また出す' : '止める') + '</button>' +
-        (u.conf || u.pend ? '' : '<button class="btn ghost sm" data-sact="del" data-sid="' + esc(sl.id) + '">消す</button>') + '</div>';
+        (u.conf || u.pend ? '' : '<button class="btn ghost sm" data-sact="del" data-sid="' + esc(sl.id) + '">消す</button>') + who + '</div>';
     }).join('') + '</div>').join('');
   pane.innerHTML =
-    '<div class="card"><div class="row"><div style="flex:1;min-width:150px"><h2 style="margin:0">レッスンの枠</h2><div class="muted">今日からの枠 ' + SLOTS.length + 'こ（保護者に出ている枠 ' + open + 'こ）・1枠60分</div></div><button class="btn ghost sm" id="sl-places">📍 場所のリスト</button><button class="btn sun" id="sl-new">＋ 枠を登録</button></div>' +
-    '<div class="msg info" style="display:block">保護者の申請と承認は、次の版で入ります。先に枠を入れておけます。</div></div>' +
+    '<h2 class="sec" style="margin-top:0">📨 申請（確認中 ' + pend.length + '件）</h2>' + (pendHtml || '<div class="card center muted">確認中の申請はありません。</div>') +
+    '<div class="card" style="margin-top:18px"><div class="row"><div style="flex:1;min-width:150px"><h2 style="margin:0">🗓 レッスンの枠</h2><div class="muted">今日からの枠 ' + SLOTS.length + 'こ（保護者に出ている枠 ' + open + 'こ）・1枠60分</div></div><button class="btn ghost sm" id="sl-places">📍 場所のリスト</button><button class="btn sun" id="sl-new">＋ 枠を登録</button></div></div>' +
     (dayHtml || '<div class="card center muted">今日からの枠は、まだありません。「＋ 枠を登録」から入れてください。</div>');
   $('#sl-new').onclick = () => openSlotForm();
   $('#sl-places').onclick = () => openPlaces();
   pane.querySelectorAll('[data-sact]').forEach(b => b.onclick = () => slotAct(b.dataset.sact, b.dataset.sid, b));
+  pane.querySelectorAll('[data-ract]').forEach(b => b.onclick = () => reqAct(b.dataset.ract, b.dataset.rid, b.dataset.sid));
+}
+function reqAct(act, rid, sid) {
+  const r = REQS.find(x => x.id === rid); if (!r) return;
+  const who = '<div><b>' + sKid(r) + '</b>　' + esc(r.kind) + '　<span class="muted">' + esc((SPAR[r.parent_id] || {}).name || '') + ' さま</span></div>';
+  const reply = '<label class="lbl" for="rq-reply">保護者へのひとこと（なくてもよい）</label><textarea class="in" id="rq-reply" rows="2" maxlength="300"></textarea>';
+  const foot = (label) => '<div class="msg bad" id="rq-msg" style="display:none"></div><div class="row" style="margin-top:14px"><button class="btn ghost" onclick="closeOv()">やめる</button><button class="btn" id="rq-go">' + label + '</button></div>';
+  const run = (fn) => { $('#rq-go').onclick = async () => { const b = $('#rq-go'); busy(b, true); try { await fn(($('#rq-reply') || {}).value || null); closeOv(); await paneSlot(); } catch (e) { busy(b, false); showMsg('rq-msg', e.message); } }; };
+  if (act === 'ok') {
+    openOv('<div class="modal-h"><b>この日程で確定しますか？</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' + who + '<div class="pw" style="font-size:18px;letter-spacing:0;margin-top:8px">' + esc(sSlotText(sid)) + '</div>' + reply + foot('確定する'));
+    return run(rep => rpc('pe_decide', { p_id: rid, p_slot: sid, p_reply: rep }));
+  }
+  if (act === 'ng') {
+    openOv('<div class="modal-h"><b>今回はむずかしい、と返しますか？</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' + who + '<div class="muted" style="margin-top:6px">保護者の画面に「今回は日程が合いませんでした」と出ます。ほかの日をすすめるときは、ひとことに書いてください。</div>' + reply + foot('返す'));
+    return run(rep => rpc('pe_decide', { p_id: rid, p_slot: null, p_reply: rep }));
+  }
+  if (act === 'move') {
+    const cur = r.confirmed_slot_id;
+    const opts = SLOTS.filter(s => s.id !== cur && s.status !== 'cancelled' && slotUse(s.id).conf < s.capacity && (sPlace(s.place_id).kinds || []).indexOf(r.kind) >= 0);
+    openOv('<div class="modal-h"><b>日程を動かす・中止する</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' + who + '<div class="muted">今の日程：' + esc(sSlotText(cur)) + '</div>' +
+      '<label class="lbl" for="rq-to">どうしますか</label><select class="in" id="rq-to"><option value="">このレッスンを中止する</option>' + opts.map(s => '<option value="' + esc(s.id) + '">動かす → ' + esc(sSlotText(s.id)) + '</option>').join('') + '</select>' +
+      '<div class="muted" style="margin-top:6px">雨の日などに使います。保護者には LINE でも連絡してください（アプリからの通知は、まだありません）。</div>' + reply + foot('決める'));
+    return run(rep => rpc('pe_staff_move', { p_id: rid, p_slot: $('#rq-to').value || null, p_reply: rep }));
+  }
 }
 async function slotAct(act, sid, btn) {
   const sl = SLOTS.find(x => x.id === sid); if (!sl) return;
