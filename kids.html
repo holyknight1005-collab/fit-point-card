@@ -277,7 +277,8 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 //        スタッフ「家庭の登録」（保護者と子どもを1回で登録 → ログイン情報をメール）・責任者「PE スタッフ」（だれが何をできるか）
 // ・表：kids_children・pe_places・pe_slots・pe_requests・pe_staff（01_メモ/20261113_kids1.sql）。小学生は students には入れない
 // ============================================================
-const KD_VERSION = '20261113kd3';   // kd3：保護者の予約（種類 → 第1〜第3希望 → 申請）・確定したレッスン・変更・キャンセル／スタッフの承認・動かす・中止／はじめての方の登録の申請（SQL kids2）。
+const KD_VERSION = '20261113kd4';   // kd4：保護者が希望の日時（第1〜第3・00分か30分から・2日前まで）を出せる → スタッフが場所をえらんで確定（SQL kids4）／枠の登録も30分からを選べる。
+//   // kd3：保護者の予約（種類 → 第1〜第3希望 → 申請）・確定したレッスン・変更・キャンセル／スタッフの承認・動かす・中止／はじめての方の登録の申請（SQL kids2）。
 //   // kd2：スタッフ「枠と申請」に、枠の登録（日・時刻・場所）と場所のリスト
 const KD_URL = location.origin + location.pathname;
 const KD_HDR = { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' };
@@ -519,6 +520,23 @@ async function loadParent() {
   (slots || []).forEach(s => { P.slots[s.id] = s; });
 }
 const kidName = id => { const k = P.kids.find(x => x.id === id); return k ? k.name : 'お子さま'; };
+// 保護者が出した希望の日時（{ d:'2026-11-20', t:'13:30' }）
+function wishText(w) { return w ? dateLabel(w.d) + ' ' + timeLabel(w.t) : ''; }
+// 申請のいちばん上の希望を、文にする（枠からえらんだ申請・希望の日時の申請のどちらでも）
+function firstWishText(r) { return (r.wishes && r.wishes.length) ? wishText(r.wishes[0]) + '　（場所はスタッフが決めます）' : slotText(r.slot1_id); }
+// 希望の日時でえらべる開始の時刻（PE スタッフの決まり：平日 13:00〜17:00／土日 16:00〜18:00・00分か30分）
+function wishTimes(d) {
+  if (!d) return [];
+  const we = wdOf(d) === 0 || wdOf(d) === 6, from = we ? 16 : 13, to = we ? 18 : 17, out = [];
+  for (let h = from; h <= to; h++) { out.push(String(h).padStart(2, '0') + ':00'); if (h < to) out.push(String(h).padStart(2, '0') + ':30'); }
+  return out;
+}
+// 1か月先の日（月末は、次の月の月末まで）
+function addMonth(d) {
+  const y = Number(d.slice(0, 4)), m = Number(d.slice(5, 7)), day = Number(d.slice(8, 10));
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(y, m, Math.min(day, last))).toISOString().slice(0, 10);
+}
 function slotText(id) { const s = P.slots[id]; if (!s) return '（前の日程）'; const p = P.places[s.place_id] || {}; return dateLabel(s.slot_date) + ' ' + timeLabel(s.start_time) + '　' + (p.name || ''); }
 // その子の、その月の何回目か（確定している日程を、日にちの順に数える）
 function lessonNo(req) {
@@ -550,11 +568,13 @@ async function viewParent() {
   }).join('');
   const pendHtml = pend.map(r =>
     '<div class="fam"><div class="row"><b>' + esc(kidName(r.child_id)) + '</b><span class="chip">' + (KD_KIND_ICON[r.kind] || '') + ' ' + esc(r.kind) + '</span>' + (r.change_of ? '<span class="chip blue">日程の変更</span>' : '') + '</div>' +
-    [r.slot1_id, r.slot2_id, r.slot3_id].map((id, i) => id ? '<div class="muted" style="color:var(--ink)">第' + (i + 1) + '希望：' + esc(slotText(id)) + '</div>' : '').join('') +
+    ((r.wishes && r.wishes.length)
+      ? r.wishes.map((w, i) => '<div class="muted" style="color:var(--ink)">第' + (i + 1) + '希望：' + esc(wishText(w)) + '</div>').join('') + '<div class="muted">場所は、スタッフが決めてお知らせします</div>'
+      : [r.slot1_id, r.slot2_id, r.slot3_id].map((id, i) => id ? '<div class="muted" style="color:var(--ink)">第' + (i + 1) + '希望：' + esc(slotText(id)) + '</div>' : '').join('')) +
     (r.message ? '<div class="muted">ひとこと：' + esc(r.message) + '</div>' : '') +
     '<div class="row" style="margin-top:8px"><span class="muted" style="flex:1">スタッフが確認しています</span><button class="btn ghost sm" data-pact="cancel" data-rid="' + esc(r.id) + '">取り消す</button></div></div>').join('');
   const newsHtml = news.map(r => '<div class="fam"><div class="row"><b>' + esc(kidName(r.child_id)) + '</b><span class="chip">' + esc(r.kind) + '</span><span class="muted">' + (r.status === 'rejected' ? '今回は日程が合いませんでした' : 'この日程はなくなりました') + '</span></div>' +
-    '<div class="muted" style="color:var(--ink)">' + esc(slotText(r.confirmed_slot_id || r.slot1_id)) + '</div>' + (r.reply ? '<div class="msg info" style="display:block">スタッフより：' + esc(r.reply) + '</div>' : '') + '</div>').join('');
+    '<div class="muted" style="color:var(--ink)">' + esc(r.confirmed_slot_id ? slotText(r.confirmed_slot_id) : firstWishText(r)) + '</div>' + (r.reply ? '<div class="msg info" style="display:block">スタッフより：' + esc(r.reply) + '</div>' : '') + '</div>').join('');
   app().innerHTML =
     (P.kids.length
       ? '<button class="btn sun wide big-btn" id="p-new">＋ レッスンを予約する</button>'
@@ -571,7 +591,7 @@ function parentAct(act, rid) {
   if (act === 'change') return startBooking(r);
   const conf = r.status === 'confirmed';
   openOv('<div class="modal-h"><b>' + (conf ? 'このレッスンをキャンセルしますか？' : 'この申請を取り消しますか？') + '</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' +
-    '<div><b>' + esc(kidName(r.child_id)) + '</b>　' + esc(r.kind) + '</div><div>' + esc(slotText(conf ? r.confirmed_slot_id : r.slot1_id)) + '</div>' +
+    '<div><b>' + esc(kidName(r.child_id)) + '</b>　' + esc(r.kind) + '</div><div>' + esc(conf ? slotText(r.confirmed_slot_id) : firstWishText(r)) + '</div>' +
     '<div class="msg bad" id="pc-msg" style="display:none"></div><div class="row" style="margin-top:14px"><button class="btn ghost" onclick="closeOv()">やめる</button><button class="btn" id="pc-go">' + (conf ? 'キャンセルする' : '取り消す') + '</button></div>');
   $('#pc-go').onclick = async () => {
     const b = $('#pc-go'); busy(b, true);
@@ -615,7 +635,8 @@ function drawSlots() {
     const i = W.picks.indexOf(s.id);
     return '<button class="pick slot' + (i >= 0 ? ' on' : '') + '" data-s="' + esc(s.id) + '" aria-pressed="' + (i >= 0) + '"><span class="rank">' + (i >= 0 ? '第' + (i + 1) + '希望' : 'えらぶ') + '</span><span style="flex:1;min-width:0;text-align:left"><b>' + timeLabel(s.start_time) + '</b><br><span class="muted">' + esc(s.place) + (s.taken ? '・あと' + (s.capacity - s.taken) + '人' : '') + '</span></span></button>';
   }).join('') + '</div>').join('');
-  const back = W.changeOf ? '' : '<button class="btn plain" id="bk-back">‹ 種類をえらび直す</button>';
+  const back = '<div class="card center" style="margin-top:14px;background:var(--sky);border-color:var(--sky)"><b>' + (W.open.length ? '合う日時がないときは' : '希望の日時を、スタッフに伝えられます') + '</b><div class="muted" style="margin:4px 0 10px">ご希望の日時を3つまで出せます。場所はスタッフが決めます。</div><button class="btn ghost" id="bk-wish">✏️ 希望の日時を伝える</button></div>' +
+    (W.changeOf ? '' : '<button class="btn plain" id="bk-back">‹ 種類をえらび直す</button>');
   openOv(bookHead('希望の日時をえらんでください', 3) +
     '<div class="row"><b>' + esc(kidName(W.child)) + '</b><span class="chip">' + KD_KIND_ICON[W.kind] + ' ' + esc(W.kind) + '</span></div>' +
     (W.open.length
@@ -624,6 +645,7 @@ function drawSlots() {
         '<div class="msg bad" id="bk-msg" style="display:none"></div><button class="btn wide" id="bk-go" style="margin-top:12px"' + (W.picks.length ? '' : ' disabled') + '>' + (W.picks.length ? W.picks.length + 'つの希望で申請する' : '日時をえらんでください') + '</button>'
       : '<div class="card center" style="margin-top:12px"><div class="big">🗓</div>今、申請できる枠がありません。<div class="muted">申請は3日前まで・1か月先までです。ほかの種類もお試しください。</div></div>') + back);
   const bb = $('#bk-back'); if (bb) bb.onclick = bookKind;
+  $('#bk-wish').onclick = () => { const t = $('#bk-msg-in'); if (t) W.msg = t.value; bookWish(); };
   const keep = () => { const t = $('#bk-msg-in'); if (t) W.msg = t.value; };
   $('#ov').querySelectorAll('[data-s]').forEach(b => b.onclick = () => {
     keep(); const id = b.dataset.s, i = W.picks.indexOf(id);
@@ -638,6 +660,51 @@ function drawSlots() {
       openOv('<div class="center"><div class="big">✅</div><b>申請しました</b><div class="muted" style="margin-top:6px">スタッフが確認して、日程を決めます。決まったら、このページの「確定したレッスン」に出ます。</div><button class="btn wide" style="margin-top:14px" id="bk-ok">とじる</button></div>');
       $('#bk-ok').onclick = () => { closeOv(); viewParent(); };
     } catch (e) { busy(go, false); showMsg('bk-msg', e.message); if (/うまった|締め切/.test(e.message)) { W.picks = []; try { W.open = await rpc('pe_open_slots', { p_kind: W.kind }) || []; } catch (e2) {} } }
+  };
+}
+
+// ----- 予約：希望の日時を伝える（第1〜第3希望。開始は00分か30分。場所はスタッフが決める）-----
+function bookWish() {
+  const t0 = todayJST(), min = addDays(t0, 2), max = addMonth(t0);
+  W.wish = W.wish || [{ d: '', t: '' }, { d: '', t: '' }, { d: '', t: '' }];
+  const row = i => '<div class="kidrow"><div class="lbl" style="margin-top:0">第' + (i + 1) + '希望' + (i ? '（なくてもよい）' : '') + '</div><div class="two">' +
+    '<div><label class="muted" for="bw-d-' + i + '">日にち</label><input class="in" type="date" id="bw-d-' + i + '" min="' + min + '" max="' + max + '" value="' + esc(W.wish[i].d) + '"></div>' +
+    '<div><label class="muted" for="bw-t-' + i + '">開始の時刻</label><select class="in" id="bw-t-' + i + '"></select></div></div><div class="muted" id="bw-n-' + i + '"></div></div>';
+  openOv(bookHead('希望の日時を教えてください', 3) +
+    '<div class="row"><b>' + esc(kidName(W.child)) + '</b><span class="chip">' + KD_KIND_ICON[W.kind] + ' ' + esc(W.kind) + '</span></div>' +
+    '<div class="muted" style="margin:6px 0">' + dateLabel(min) + ' 〜 ' + dateLabel(max) + ' の日でえらべます（2日前まで）。レッスンは60分です。開始は、平日 13:00〜17:00・土日 16:00〜18:00 の、00分か30分です。</div>' +
+    row(0) + row(1) + row(2) +
+    '<label class="lbl" for="bk-msg-in">スタッフへのひとこと（なくてもよい）</label><textarea class="in" id="bk-msg-in" rows="2" maxlength="300">' + esc(W.msg || '') + '</textarea>' +
+    '<div class="msg bad" id="bk-msg" style="display:none"></div><button class="btn wide" id="bw-go" style="margin-top:12px">この希望で申請する</button>' +
+    '<button class="btn plain" id="bw-back">‹ 空いている枠からえらぶ</button>');
+  const fill = i => {
+    const d = $('#bw-d-' + i).value, sel = $('#bw-t-' + i), ts = wishTimes(d), cur = W.wish[i].t;
+    sel.innerHTML = d ? '<option value="">えらぶ</option>' + ts.map(t => '<option value="' + t + '"' + (t === cur ? ' selected' : '') + '>' + timeLabel(t) + '</option>').join('') : '<option value="">先に日にちを</option>';
+    sel.disabled = !d;
+    $('#bw-n-' + i).textContent = d ? dateLabel(d) + (wdOf(d) === 0 || wdOf(d) === 6 ? '・土日は 16:00〜18:00 から' : '・平日は 13:00〜17:00 から') : '';
+  };
+  const read = () => { for (let i = 0; i < 3; i++) W.wish[i] = { d: $('#bw-d-' + i).value, t: $('#bw-t-' + i).value }; W.msg = $('#bk-msg-in').value; };
+  for (let i = 0; i < 3; i++) { fill(i); $('#bw-d-' + i).onchange = () => { W.wish[i].t = ''; fill(i); showMsg('bk-msg', ''); }; $('#bw-t-' + i).onchange = () => showMsg('bk-msg', ''); }
+  $('#bw-back').onclick = () => { read(); drawSlots(); };
+  $('#bw-go').onclick = async () => {
+    read();
+    const list = [];
+    for (let i = 0; i < 3; i++) {
+      const w = W.wish[i];
+      if (!w.d && !w.t) continue;
+      if (!w.d || !w.t) return showMsg('bk-msg', '第' + (i + 1) + '希望の、日にちと時刻の両方をえらんでください');
+      if (w.d < min || w.d > max) return showMsg('bk-msg', '第' + (i + 1) + '希望は、' + dateLabel(min) + ' 〜 ' + dateLabel(max) + ' の日にしてください');
+      if (list.some(x => x.d === w.d && x.t === w.t)) return showMsg('bk-msg', '同じ日時が2回入っています');
+      list.push({ d: w.d, t: w.t });
+    }
+    if (!W.wish[0].d) return showMsg('bk-msg', '第1希望を入れてください');
+    const go = $('#bw-go'); busy(go, true, '申請しています…');
+    try {
+      await rpc('pe_request_wish', { p_child: W.child, p_kind: W.kind, p_wishes: list, p_message: W.msg || null, p_change_of: W.changeOf });
+      W = null;
+      openOv('<div class="center"><div class="big">✅</div><b>申請しました</b><div class="muted" style="margin-top:6px">スタッフが確認して、日時と場所を決めます。決まったら、このページの「確定したレッスン」に出ます。</div><button class="btn wide" style="margin-top:14px" id="bk-ok">とじる</button></div>');
+      $('#bk-ok').onclick = () => { closeOv(); viewParent(); };
+    } catch (e) { busy(go, false); showMsg('bk-msg', e.message); }
   };
 }
 
@@ -866,6 +933,8 @@ async function paneSlot() {
     return '<div class="fam"><div class="row"><b>' + sKid(r) + '</b><span class="chip">' + (KD_KIND_ICON[r.kind] || '') + ' ' + esc(r.kind) + '</span>' + (r.change_of ? '<span class="chip blue">日程の変更</span>' : '') + '<span class="sp"></span><span class="muted">' + esc((SPAR[r.parent_id] || {}).name || '') + ' さま</span></div>' +
       (old ? '<div class="muted">今の日程：' + esc(sSlotText(old.confirmed_slot_id)) + '（確定すると、こちらは自動で取り消されます）</div>' : '') +
       (r.message ? '<div class="msg info" style="display:block">ひとこと：' + esc(r.message) + '</div>' : '') +
+      ((r.wishes && r.wishes.length) ? '<div class="muted" style="margin-top:6px">保護者が出した希望の日時です。押すと、場所をえらんで確定できます。</div>' + r.wishes.map((w, i) =>
+        '<button class="pick slot" data-ract="wish" data-rid="' + esc(r.id) + '" data-no="' + (i + 1) + '"' + (w.d < todayJST() ? ' disabled' : '') + '><span class="rank">第' + (i + 1) + '希望</span><span style="flex:1;min-width:0;text-align:left"><b>' + esc(wishText(w)) + '</b><br><span class="muted">' + (w.d < todayJST() ? '過ぎた日です' : '場所をえらんで確定') + '</span></span></button>').join('') : '') +
       [r.slot1_id, r.slot2_id, r.slot3_id].map((id, i) => {
         if (!id) return '';
         const s = sSlot(id); if (!s) return '<div class="muted" style="margin-top:6px">第' + (i + 1) + '希望：（過ぎた枠・なくなった枠）</div>';
@@ -894,9 +963,9 @@ async function paneSlot() {
   $('#sl-new').onclick = () => openSlotForm();
   $('#sl-places').onclick = () => openPlaces();
   pane.querySelectorAll('[data-sact]').forEach(b => b.onclick = () => slotAct(b.dataset.sact, b.dataset.sid, b));
-  pane.querySelectorAll('[data-ract]').forEach(b => b.onclick = () => reqAct(b.dataset.ract, b.dataset.rid, b.dataset.sid));
+  pane.querySelectorAll('[data-ract]').forEach(b => b.onclick = () => reqAct(b.dataset.ract, b.dataset.rid, b.dataset.sid, b.dataset.no));
 }
-function reqAct(act, rid, sid) {
+function reqAct(act, rid, sid, no) {
   const r = REQS.find(x => x.id === rid); if (!r) return;
   const who = '<div><b>' + sKid(r) + '</b>　' + esc(r.kind) + '　<span class="muted">' + esc((SPAR[r.parent_id] || {}).name || '') + ' さま</span></div>';
   const reply = '<label class="lbl" for="rq-reply">保護者へのひとこと（なくてもよい）</label><textarea class="in" id="rq-reply" rows="2" maxlength="300"></textarea>';
@@ -909,6 +978,19 @@ function reqAct(act, rid, sid) {
   if (act === 'ng') {
     openOv('<div class="modal-h"><b>今回はむずかしい、と返しますか？</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' + who + '<div class="muted" style="margin-top:6px">保護者の画面に「今回は日程が合いませんでした」と出ます。ほかの日をすすめるときは、ひとことに書いてください。</div>' + reply + foot('返す'));
     return run(rep => rpc('pe_decide', { p_id: rid, p_slot: null, p_reply: rep }));
+  }
+  if (act === 'wish') {
+    const w = (r.wishes || [])[Number(no) - 1]; if (!w) return;
+    const places = PLACES.filter(p => p.is_active && (p.kinds || []).indexOf(r.kind) >= 0);
+    if (!places.length) return alertBox('「' + r.kind + '」ができる場所が、場所のリストにありません');
+    const same = SLOTS.filter(s => s.slot_date === w.d && s.status !== 'cancelled');
+    openOv('<div class="modal-h"><b>場所をえらんで確定します</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' + who +
+      '<div class="pw" style="font-size:18px;letter-spacing:0;margin-top:8px">' + esc(wishText(w)) + '</div>' +
+      '<label class="lbl" for="rq-place">場所</label><select class="in" id="rq-place">' + places.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('') + '</select>' +
+      '<div class="muted" style="margin-top:6px">この日時・場所の枠がなければ作ります（定員2人。あと1人分は、ほかの家庭にも出ます）。あれば、そこに入れます。</div>' +
+      (same.length ? '<div class="msg info" style="display:block">この日の、ほかの枠：' + same.map(s => '<br>' + esc(timeLabel(s.start_time) + '　' + (sPlace(s.place_id).name || '') + '（確定 ' + slotUse(s.id).conf + '/' + s.capacity + '人）')).join('') + '</div>' : '') +
+      reply + foot('確定する'));
+    return run(rep => rpc('pe_decide_wish', { p_id: rid, p_no: Number(no), p_place: $('#rq-place').value, p_reply: rep }));
   }
   if (act === 'move') {
     const cur = r.confirmed_slot_id;
@@ -951,6 +1033,7 @@ function openSlotForm() {
     '<label class="lbl" for="sf-place">場所</label><select class="in" id="sf-place">' + act.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('') + '</select>' +
     '<div class="muted" id="sf-kinds" style="margin-top:6px"></div>' +
     '<div class="lbl">開始の時刻（いくつでもえらべます・1枠60分）</div><div class="row" id="sf-hours"></div>' +
+    '<label class="lbl" for="sf-min">何分から</label><select class="in" id="sf-min"><option value="00">00分から（例 16:00〜17:00）</option><option value="30">30分から（例 16:30〜17:30）</option></select>' +
     '<label class="lbl" for="sf-cap">1枠の人数</label><select class="in" id="sf-cap"><option>1</option><option selected>2</option></select>' +
     '<div class="msg bad" id="sf-msg" style="display:none"></div><button class="btn wide" id="sf-go" style="margin-top:14px">登録する</button>');
   const picked = new Set();
@@ -972,9 +1055,10 @@ function openSlotForm() {
     const btn = $('#sf-go'); busy(btn, true, '登録しています…');
     try {
       const have = await api('pe_slots?slot_date=eq.' + d + '&place_id=eq.' + encodeURIComponent(pid) + '&select=start_time') || [];
-      const taken = new Set(have.map(x => Number(String(x.start_time).slice(0, 2))));
-      const add = [...picked].sort((a, b) => a - b).filter(h => !taken.has(h));
-      if (add.length) await apiPost('pe_slots', add.map(h => ({ slot_date: d, start_time: String(h).padStart(2, '0') + ':00', place_id: pid, capacity: cap, created_by: ME.row.id })));
+      const mm = $('#sf-min').value === '30' ? '30' : '00';
+      const taken = new Set(have.map(x => String(x.start_time).slice(0, 5)));
+      const add = [...picked].sort((a, b) => a - b).map(h => String(h).padStart(2, '0') + ':' + mm).filter(t => !taken.has(t));
+      if (add.length) await apiPost('pe_slots', add.map(t => ({ slot_date: d, start_time: t, place_id: pid, capacity: cap, created_by: ME.row.id })));
       const skip = picked.size - add.length;
       closeOv(); await paneSlot();
       if (skip) alertBox(add.length + 'この枠を登録しました。同じ日・同じ時刻・同じ場所の枠が ' + skip + 'こ、もうあったので、それは足していません。');
