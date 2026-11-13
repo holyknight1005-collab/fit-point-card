@@ -258,7 +258,7 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 //        スタッフ「家庭の登録」（保護者と子どもを1回で登録 → ログイン情報をメール）・責任者「PE スタッフ」（だれが何をできるか）
 // ・表：kids_children・pe_places・pe_slots・pe_requests・pe_staff（01_メモ/20261113_kids1.sql）。小学生は students には入れない
 // ============================================================
-const KD_VERSION = '20261113kd1';
+const KD_VERSION = '20261113kd2';   // kd2：スタッフ「枠と申請」に、枠の登録（日・時刻・場所）と場所のリスト
 const KD_URL = location.origin + location.pathname;
 const KD_HDR = { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' };
 const KD_GRADES = ['年少', '年中', '年長', '小1', '小2', '小3', '小4', '小5', '小6'];
@@ -478,7 +478,7 @@ function renderStaff() {
   app().innerHTML = '<div class="tabs">' + tabs.map(t => '<button class="tab' + (TAB === t[0] ? ' on' : '') + '" data-tab="' + t[0] + '">' + t[1] + '</button>').join('') + '</div><div id="pane"><div class="card center muted">読み込み中…</div></div>' +
     '<div class="row" style="justify-content:center;margin-top:8px"><a class="btn plain" href="app.html">fitアプリへ</a><button class="btn plain" onclick="doLogout()">ログアウト</button></div>';
   app().querySelectorAll('.tab').forEach(b => b.onclick = () => { TAB = b.dataset.tab; renderStaff(); });
-  if (TAB === 'fam') paneFam(); else if (TAB === 'stf') paneStf(); else $('#pane').innerHTML = '<div class="card center"><div class="big">🛠</div><b>枠の登録と申請の承認は、これから作ります</b><div class="muted" style="margin-top:6px">先に「家庭の登録」で、保護者とお子さまを入れておけます。</div></div>';
+  if (TAB === 'fam') paneFam(); else if (TAB === 'stf') paneStf(); else paneSlot();
 }
 
 // ----- 家庭の登録 -----
@@ -607,6 +607,143 @@ function showIssued(parent, j, send, isNew) {
     '<div class="msg ' + (j.mailed ? 'good' : (send ? 'bad' : 'info')) + '" style="display:block">' + (j.mailed ? '📧 保護者のメールにも送りました' : (send ? '⚠ メールは送れませんでした。この画面のパスワードを、直接お伝えください' : 'メールは送っていません。この画面のパスワードを、直接お伝えください')) + '</div>' +
     '<div class="muted" style="margin-top:8px">このパスワードは、この画面をとじると二度と見られません。</div>' +
     '<button class="btn wide" style="margin-top:14px" onclick="closeOv()">とじる</button>');
+}
+
+// ----- 枠と申請（kd2：枠の登録と場所のリスト。申請の承認は次の版）-----
+const KD_KINDS = ['運動全般', 'かけっこ', '水泳', '鉄棒', '自転車'];
+const KD_WD = ['日', '月', '火', '水', '木', '金', '土'];
+let PLACES = [], SLOTS = [], REQS = [];
+function todayJST() { return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' }); }
+function addDays(d, n) { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); }
+function wdOf(d) { return new Date(d + 'T00:00:00Z').getUTCDay(); }
+function dateLabel(d) { return Number(d.slice(5, 7)) + '/' + Number(d.slice(8, 10)) + '（' + KD_WD[wdOf(d)] + '）'; }
+function timeLabel(t) { const h = Number(String(t).slice(0, 2)), m = String(t).slice(3, 5); return h + ':' + m + '〜' + (h + 1) + ':' + m; }
+// 開始時刻の目安（PE スタッフの答え：平日 13〜17時／土日 16〜18時）。ほかの時刻もえらべる
+function usualHours(d) { const w = wdOf(d); return (w === 0 || w === 6) ? [16, 17, 18] : [13, 14, 15, 16, 17]; }
+async function loadSlots() {
+  PLACES = await api('pe_places?select=*&order=sort_no,name') || [];
+  SLOTS = await api('pe_slots?slot_date=gte.' + todayJST() + '&select=*&order=slot_date,start_time') || [];
+  REQS = SLOTS.length ? (await api('pe_requests?status=in.(pending,confirmed)&select=id,status,slot1_id,slot2_id,slot3_id,confirmed_slot_id') || []) : [];
+}
+function slotUse(id) {
+  let conf = 0, pend = 0;
+  REQS.forEach(r => { if (r.status === 'confirmed' && r.confirmed_slot_id === id) conf++; else if (r.status === 'pending' && (r.slot1_id === id || r.slot2_id === id || r.slot3_id === id)) pend++; });
+  return { conf: conf, pend: pend };
+}
+async function paneSlot() {
+  const pane = $('#pane');
+  try { await loadSlots(); } catch (e) { pane.innerHTML = '<div class="card"><div class="msg bad" style="display:block;margin-top:0">読み込めませんでした</div><div class="muted" style="word-break:break-all;margin-top:6px">' + esc(e.message) + '</div></div>'; return; }
+  const pById = {}; PLACES.forEach(p => { pById[p.id] = p; });
+  const days = {}; SLOTS.forEach(sl => { (days[sl.slot_date] || (days[sl.slot_date] = [])).push(sl); });
+  const open = SLOTS.filter(sl => sl.status === 'open').length;
+  const dayHtml = Object.keys(days).sort().map(d =>
+    '<div class="card"><h3>' + dateLabel(d) + '</h3>' + days[d].map(sl => {
+      const p = pById[sl.place_id] || {}, u = slotUse(sl.id), stop = sl.status !== 'open';
+      return '<div class="kid' + (stop ? ' off' : '') + '"><span class="kid-n">' + timeLabel(sl.start_time) + '</span><span>' + esc(p.name || '（場所なし）') + '</span>' +
+        (p.kinds || []).map(k => '<span class="chip">' + esc(k) + '</span>').join('') +
+        '<span class="muted">確定 ' + u.conf + '/' + sl.capacity + '人' + (u.pend ? '・申請中 ' + u.pend + '件' : '') + (stop ? '・止めています' : '') + '</span><span class="sp"></span>' +
+        '<button class="btn ghost sm" data-sact="' + (stop ? 'open' : 'stop') + '" data-sid="' + esc(sl.id) + '">' + (stop ? 'また出す' : '止める') + '</button>' +
+        (u.conf || u.pend ? '' : '<button class="btn ghost sm" data-sact="del" data-sid="' + esc(sl.id) + '">消す</button>') + '</div>';
+    }).join('') + '</div>').join('');
+  pane.innerHTML =
+    '<div class="card"><div class="row"><div style="flex:1;min-width:150px"><h2 style="margin:0">レッスンの枠</h2><div class="muted">今日からの枠 ' + SLOTS.length + 'こ（保護者に出ている枠 ' + open + 'こ）・1枠60分</div></div><button class="btn ghost sm" id="sl-places">📍 場所のリスト</button><button class="btn sun" id="sl-new">＋ 枠を登録</button></div>' +
+    '<div class="msg info" style="display:block">保護者の申請と承認は、次の版で入ります。先に枠を入れておけます。</div></div>' +
+    (dayHtml || '<div class="card center muted">今日からの枠は、まだありません。「＋ 枠を登録」から入れてください。</div>');
+  $('#sl-new').onclick = () => openSlotForm();
+  $('#sl-places').onclick = () => openPlaces();
+  pane.querySelectorAll('[data-sact]').forEach(b => b.onclick = () => slotAct(b.dataset.sact, b.dataset.sid, b));
+}
+async function slotAct(act, sid, btn) {
+  const sl = SLOTS.find(x => x.id === sid); if (!sl) return;
+  if (act === 'del') {
+    openOv('<div class="modal-h"><b>この枠を消しますか？</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div><div>' + dateLabel(sl.slot_date) + ' ' + timeLabel(sl.start_time) + '</div><div class="muted" style="margin-top:6px">まだだれも申請していない枠です。消すと元にもどせません。</div><div class="msg bad" id="sd-msg" style="display:none"></div><div class="row" style="margin-top:14px"><button class="btn ghost" onclick="closeOv()">やめる</button><button class="btn" id="sd-go">消す</button></div>');
+    $('#sd-go').onclick = async () => {
+      const b = $('#sd-go'); busy(b, true);
+      try {
+        // 消す直前に、申請が入っていないかをもう一度見る
+        const q = 'or=(slot1_id.eq.' + sid + ',slot2_id.eq.' + sid + ',slot3_id.eq.' + sid + ',confirmed_slot_id.eq.' + sid + ')&select=id&limit=1';
+        const used = await api('pe_requests?' + q) || [];
+        if (used.length) { busy(b, false); return showMsg('sd-msg', 'この枠には申請が入りました。消さずに「止める」を使ってください'); }
+        await api('pe_slots?id=eq.' + encodeURIComponent(sid), { method: 'DELETE' });
+        closeOv(); await paneSlot();
+      } catch (e) { busy(b, false); showMsg('sd-msg', '消せませんでした：' + e.message); }
+    };
+    return;
+  }
+  busy(btn, true, '…');
+  try { await apiPatch('pe_slots', 'id=eq.' + encodeURIComponent(sid), { status: act === 'stop' ? 'closed' : 'open' }); await paneSlot(); }
+  catch (e) { busy(btn, false); alertBox('変えられませんでした：' + e.message); }
+}
+function alertBox(text) { openOv('<div class="center"><div class="big">⚠️</div><div>' + esc(text) + '</div><button class="btn wide" style="margin-top:14px" onclick="closeOv()">とじる</button></div>'); }
+function openSlotForm() {
+  const act = PLACES.filter(p => p.is_active);
+  if (!act.length) return alertBox('先に「📍 場所のリスト」で、場所を入れてください');
+  const t0 = todayJST();
+  openOv('<div class="modal-h"><b>＋ 枠を登録</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' +
+    '<label class="lbl" for="sf-date">日にち</label><input class="in" id="sf-date" type="date" min="' + t0 + '" value="' + addDays(t0, 3) + '">' +
+    '<div class="muted" id="sf-daynote"></div>' +
+    '<label class="lbl" for="sf-place">場所</label><select class="in" id="sf-place">' + act.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('') + '</select>' +
+    '<div class="muted" id="sf-kinds" style="margin-top:6px"></div>' +
+    '<div class="lbl">開始の時刻（いくつでもえらべます・1枠60分）</div><div class="row" id="sf-hours"></div>' +
+    '<label class="lbl" for="sf-cap">1枠の人数</label><select class="in" id="sf-cap"><option>1</option><option selected>2</option></select>' +
+    '<div class="msg bad" id="sf-msg" style="display:none"></div><button class="btn wide" id="sf-go" style="margin-top:14px">登録する</button>');
+  const picked = new Set();
+  const drawHours = () => {
+    const d = $('#sf-date').value; if (!d) { $('#sf-hours').innerHTML = ''; return; }
+    const us = usualHours(d), all = []; for (let h = 9; h <= 19; h++) all.push(h);
+    $('#sf-daynote').textContent = dateLabel(d) + '・よく使う時刻は ' + us.map(h => h + '時').join('・') + (d < addDays(todayJST(), 3) ? '（保護者の申請は3日前までなので、この日は申請できません）' : '');
+    $('#sf-hours').innerHTML = all.map(h => '<button type="button" class="tab' + (picked.has(h) ? ' on' : '') + '" data-h="' + h + '" style="' + (us.indexOf(h) < 0 ? 'opacity:.55' : '') + '" aria-pressed="' + picked.has(h) + '">' + h + ':00</button>').join('');
+    $('#sf-hours').querySelectorAll('[data-h]').forEach(b => b.onclick = () => { const h = Number(b.dataset.h); if (picked.has(h)) picked.delete(h); else picked.add(h); showMsg('sf-msg', ''); drawHours(); });
+  };
+  const drawKinds = () => { const p = PLACES.find(x => x.id === $('#sf-place').value) || {}; $('#sf-kinds').innerHTML = 'できるレッスン：' + ((p.kinds || []).map(k => '<span class="chip">' + esc(k) + '</span>').join(' ') || 'なし') + (p.meet_at ? '<br>集合：' + esc(p.meet_at) : ''); };
+  $('#sf-date').onchange = () => { picked.clear(); drawHours(); };
+  $('#sf-place').onchange = drawKinds;
+  drawHours(); drawKinds();
+  $('#sf-go').onclick = async () => {
+    const d = $('#sf-date').value, pid = $('#sf-place').value, cap = Number($('#sf-cap').value);
+    if (!d || d < todayJST()) return showMsg('sf-msg', '今日からあとの日にちをえらんでください');
+    if (!picked.size) return showMsg('sf-msg', '開始の時刻をえらんでください');
+    const btn = $('#sf-go'); busy(btn, true, '登録しています…');
+    try {
+      const have = await api('pe_slots?slot_date=eq.' + d + '&place_id=eq.' + encodeURIComponent(pid) + '&select=start_time') || [];
+      const taken = new Set(have.map(x => Number(String(x.start_time).slice(0, 2))));
+      const add = [...picked].sort((a, b) => a - b).filter(h => !taken.has(h));
+      if (add.length) await apiPost('pe_slots', add.map(h => ({ slot_date: d, start_time: String(h).padStart(2, '0') + ':00', place_id: pid, capacity: cap, created_by: ME.row.id })));
+      const skip = picked.size - add.length;
+      closeOv(); await paneSlot();
+      if (skip) alertBox(add.length + 'この枠を登録しました。同じ日・同じ時刻・同じ場所の枠が ' + skip + 'こ、もうあったので、それは足していません。');
+    } catch (e) { busy(btn, false); showMsg('sf-msg', '登録できませんでした：' + e.message); }
+  };
+}
+function openPlaces() {
+  openOv('<div class="modal-h"><b>📍 場所のリスト</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' +
+    PLACES.map(p => '<div class="kid' + (p.is_active ? '' : ' off') + '"><div style="flex:1;min-width:0"><div class="kid-n">' + esc(p.name) + (p.is_active ? '' : '（使っていない）') + '</div><div class="muted">集合：' + esc(p.meet_at || '') + '</div><div>' + (p.kinds || []).map(k => '<span class="chip">' + esc(k) + '</span>').join(' ') + '</div></div><button class="btn ghost sm" data-pl="' + esc(p.id) + '">直す</button></div>').join('') +
+    '<button class="btn ghost wide" id="pl-new" style="margin-top:12px">＋ 場所を足す</button>');
+  $('#pl-new').onclick = () => openPlaceForm(null);
+  $('#ov').querySelectorAll('[data-pl]').forEach(b => b.onclick = () => openPlaceForm(PLACES.find(p => p.id === b.dataset.pl)));
+}
+function openPlaceForm(p) {
+  const v = p || { kinds: [], is_active: true };
+  openOv('<div class="modal-h"><b>' + (p ? '場所を直す' : '＋ 場所を足す') + '</b><button class="x" id="pf-x" aria-label="もどる">×</button></div>' +
+    '<label class="lbl" for="pf-name">場所の名前</label><input class="in" id="pf-name" value="' + esc(v.name || '') + '">' +
+    '<label class="lbl" for="pf-meet">集合する場所</label><input class="in" id="pf-meet" value="' + esc(v.meet_at || '') + '">' +
+    '<label class="lbl" for="pf-note">保護者に伝えること</label><textarea class="in" id="pf-note" rows="2">' + esc(v.parent_note || '') + '</textarea>' +
+    '<div class="lbl">ここでするレッスン</div><div class="row">' + KD_KINDS.map(k => '<label class="row" style="gap:4px;min-height:36px"><input type="checkbox" data-kind="' + esc(k) + '"' + ((v.kinds || []).indexOf(k) >= 0 ? ' checked' : '') + ' style="width:20px;height:20px">' + esc(k) + '</label>').join('') + '</div>' +
+    (p ? '<label class="row" style="margin-top:12px"><input type="checkbox" id="pf-active"' + (v.is_active ? ' checked' : '') + ' style="width:20px;height:20px"><span>この場所を使う（外すと、新しい枠でえらべなくなります）</span></label>' : '') +
+    '<div class="msg bad" id="pf-msg" style="display:none"></div><button class="btn wide" id="pf-go" style="margin-top:14px">保存する</button>');
+  $('#pf-x').onclick = openPlaces;
+  $('#pf-go').onclick = async () => {
+    const name = ($('#pf-name').value || '').trim(); if (!name) return showMsg('pf-msg', '場所の名前を入れてください');
+    const kinds = [...$('#ov').querySelectorAll('[data-kind]')].filter(c => c.checked).map(c => c.dataset.kind);
+    if (!kinds.length) return showMsg('pf-msg', 'ここでするレッスンを1つ以上えらんでください');
+    const body = { name: name, meet_at: ($('#pf-meet').value || '').trim() || null, parent_note: ($('#pf-note').value || '').trim() || null, kinds: kinds };
+    const btn = $('#pf-go'); busy(btn, true);
+    try {
+      if (p) await apiPatch('pe_places', 'id=eq.' + encodeURIComponent(p.id), Object.assign({ is_active: $('#pf-active').checked }, body));
+      else await apiPost('pe_places', Object.assign({ sort_no: PLACES.length + 1 }, body));
+      await paneSlot(); openPlaces();
+    } catch (e) { busy(btn, false); showMsg('pf-msg', /23505|duplicate/.test(e.message) ? '同じ名前の場所が、もうあります' : '保存できませんでした：' + e.message); }
+  };
 }
 
 // ----- PE スタッフ（責任者だけ）-----
