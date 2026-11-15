@@ -291,7 +291,7 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 // ・見られるのは fitアプリにスタッフでログインした人だけ（表 talk_records・talk_paragraphs はスタッフだけ）
 // ・記録を足す：Claude が作った「まとめと全文」の .md を選ぶ（＋YouTube の URL）
 // ============================================================
-const KR_VERSION = '20261115kr4';
+const KR_VERSION = '20261115kr5';
 const KR_HDR = { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' };
 const REC_COLS = 'id,title,talk_date,univ,category,place,speaker,theme,keywords,hitokoto,koma,youtube_id,source_name';
 let ME = null, RECS = [], PARAS = {}, view = 'list', backY = 0, seq = 0;
@@ -359,20 +359,61 @@ function ask(title, text, okLabel, danger) {
 function hero() {
   const who = ME && ME.kind === 'staff' ? ('スタッフ：' + esc(ME.row.name || '')) : '';
   $('#hero').innerHTML = `<div class="hero"><div class="hero-in"><a class="back" href="app.html">‹ アプリに戻る</a>
-    ${who ? `<span class="who">${who}</span>` : ''}<h1>話の記録さがし</h1></div></div>`;
+    ${who ? `<span class="who">${who}　<a href="#" data-logout style="color:#fff">ログアウト</a></span>` : ''}<h1>話の記録さがし</h1></div></div>`;
 }
 async function boot() {
   let netErr = false;
-  try { ME = await fitResume(); } catch (e) { netErr = true; }
+  try { ME = await fitResume(); } catch (e) { netErr = true; }   // fitアプリに入っている端末は、そのまま自動で入れる
   hero();
-  if (!ME || ME.kind !== 'staff') {
-    $('#list').innerHTML = `<div class="card"><p style="margin:0 0 8px;font-weight:700">${netErr ? '通信がうまくつながりませんでした。' : (ME ? 'このページはスタッフだけが見られます。' : 'fitアプリのログインが必要です。')}</p>
-      <p class="msg">${netErr ? '少し待ってから、このページを開き直してください。' : 'fitアプリにスタッフでログインしてから、もう一度開いてください。'}</p>
-      <p style="margin:12px 0 0"><a href="app.html" class="btn">fitアプリを開く</a></p></div>`;
+  if (netErr) {
+    $('#list').innerHTML = `<div class="card"><p style="margin:0 0 8px;font-weight:700">通信がうまくつながりませんでした。</p><p class="msg">少し待ってから、このページを開き直してください。</p></div>`;
     return;
   }
+  if (!ME) return loginView();
+  if (ME.kind !== 'staff') return notStaff();
+  start();
+}
+async function start() {
+  hero();
   $('#bar').hidden = false;
   await loadRecs();
+}
+function notStaff() {
+  $('#bar').hidden = true;
+  $('#list').innerHTML = `<div class="card"><p style="margin:0 0 8px;font-weight:700">このページはスタッフだけが見られます。</p>
+    <p class="msg">いまは生徒・保護者のアカウントでログインしています。スタッフのIDで入り直してください。</p>
+    <p style="margin:12px 0 0"><button class="btn sub" data-logout>ログアウトして、スタッフで入る</button></p></div>`;
+}
+function loginView(msg) {
+  $('#bar').hidden = true;
+  $('#list').innerHTML = `<div class="card" style="max-width:420px;margin:10px auto">
+    <p style="margin:0 0 4px;font-weight:800;font-size:16px">スタッフのログイン</p>
+    <p class="msg" style="margin-top:0">fitアプリと同じスタッフIDとパスワードで入れます。一度入ると、この端末では次から自動で入れます（fitアプリも同じです）。</p>
+    <label class="lbl" for="lg-id">スタッフID</label><input class="in" id="lg-id" type="text" autocomplete="username" autocapitalize="off" spellcheck="false">
+    <label class="lbl" for="lg-pw">パスワード</label><input class="in" id="lg-pw" type="password" autocomplete="current-password">
+    <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:var(--muted);margin-top:6px"><input type="checkbox" id="lg-show">パスワードを表示する</label>
+    <div id="lg-msg" class="msg err">${esc(msg || '')}</div>
+    <button class="btn" id="lg-go" style="width:100%;margin-top:4px">ログイン</button>
+    <p class="msg" style="text-align:center">パスワードを忘れたときは、fitアプリの管理者に聞いてください。<br><a href="app.html" style="color:var(--orange-d)">fitアプリを開く</a></p></div>`;
+  $('#lg-show').onchange = e => { $('#lg-pw').type = e.target.checked ? 'text' : 'password'; };
+  $('#lg-go').onclick = doLogin;
+  $('#lg-pw').onkeydown = e => { if (e.key === 'Enter') doLogin(); };
+  $('#lg-id').focus();
+}
+async function doLogin() {
+  const id = ($('#lg-id').value || '').trim().toLowerCase(), pw = ($('#lg-pw').value || '').trim();
+  if (!id || !pw) { $('#lg-msg').textContent = 'スタッフIDとパスワードを入れてください'; return; }
+  const btn = $('#lg-go'); btn.disabled = true; btn.textContent = 'ログイン中…';
+  const j = await fitLogin('staff', id, pw);
+  btn.disabled = false; btn.textContent = 'ログイン';
+  if (!j.ok) { $('#lg-msg').textContent = fitLoginErrorText(j, 'IDかパスワードがちがいます'); return; }
+  if (j.account && j.account.must_change_pw) {
+    $('#lg-msg').innerHTML = '最初にパスワードを変える必要があります。<a href="app.html" style="color:var(--orange-d)">fitアプリ</a>で変えてから、もう一度開いてください。';
+    return;
+  }
+  ME = { kind: j.kind, row: j.account };
+  if (ME.kind !== 'staff') return notStaff();
+  start();
 }
 async function loadRecs() {
   try { RECS = await rest('GET', 'talk_records?select=' + REC_COLS); }
@@ -694,6 +735,7 @@ $('#q').addEventListener('input', () => { clearTimeout(timer); timer = setTimeou
 $('#fr').addEventListener('change', () => { renderList(); if ($('#q').value.trim()) renderSearch(); else if ($('#fr').value) openReader(+$('#fr').value); });
 document.addEventListener('click', e => {
   const row = e.target.closest('[data-open-row]'); if (row) { openReader(+row.dataset.openRow); return; }
+  const lo = e.target.closest('[data-logout]'); if (lo) { e.preventDefault(); fitLogout(); ME = null; RECS = []; PARAS = {}; hero(); loginView(); return; }
   const oa = e.target.closest('[data-open-a]'); if (oa) { e.preventDefault(); openReader(+oa.dataset.openA); return; }
   const b = e.target.closest('button'); if (!b) return;
   if (b.dataset.v) { show(b.dataset.v); if (b.dataset.v === 'list') renderList(); else renderSearch(); }
