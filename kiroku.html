@@ -62,6 +62,15 @@ mark{background:var(--mark);padding:0 1px;border-radius:2px;color:inherit}
 #reader h4{font-size:15px;margin:18px 0 4px;color:var(--orange-d);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 #reader p{margin:6px 0;white-space:pre-wrap;word-break:break-word}
 #reader .flash{background:#fff7d1;border-radius:6px}
+.drow{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-top:1px dashed var(--border);cursor:pointer}
+.drow:first-of-type{border-top:0}
+.drow:hover .rtitle{color:var(--orange-d)}
+.dmark{font-size:20px;font-weight:800;color:var(--orange-d);line-height:1.3;min-width:24px}
+.dtheme{font-size:13px;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.dgo{font-size:22px;color:var(--muted);line-height:1}
+.dnav{display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--orange-l);border-radius:12px;padding:8px 10px;margin:0 0 10px}
+.dpos{font-size:12.5px;color:var(--orange-d);text-align:center}
+.dpos b{font-size:16px} .dpos a{color:var(--orange-d);font-size:16px;text-decoration:none;padding:0 2px}
 .empty{background:var(--surface);border:1px dashed var(--border);border-radius:14px;padding:22px;color:var(--muted)}
 .lbl{font-size:12px;font-weight:800;display:block;margin:12px 0 3px;color:var(--muted)}
 input.in{width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:10px;font-size:15px;background:var(--surface)}
@@ -282,7 +291,7 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 // ・見られるのは fitアプリにスタッフでログインした人だけ（表 talk_records・talk_paragraphs はスタッフだけ）
 // ・記録を足す：Claude が作った「まとめと全文」の .md を選ぶ（＋YouTube の URL）
 // ============================================================
-const KR_VERSION = '20261115kr3';
+const KR_VERSION = '20261115kr4';
 const KR_HDR = { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' };
 const REC_COLS = 'id,title,talk_date,univ,category,place,speaker,theme,keywords,hitokoto,koma,youtube_id,source_name';
 let ME = null, RECS = [], PARAS = {}, view = 'list', backY = 0, seq = 0;
@@ -396,6 +405,18 @@ function show(v) {
   if (v !== 'reader') { view = v; document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.v === v)); }
 }
 
+// ---------- 同じ日の講義（続き） ----------
+const CIRC = '①②③④⑤⑥⑦⑧⑨⑩';
+function siblings(r) { return RECS.filter(x => x.univ === r.univ && (x.talk_date || '') === (r.talk_date || '') && r.talk_date); }
+function komaMark(r, sibs) { const i = sibs.indexOf(r); return sibs.length > 1 ? (CIRC[i] || String(i + 1)) : ''; }
+function navBar(r) {
+  const sibs = siblings(r); if (sibs.length < 2) return '';
+  const i = sibs.indexOf(r), prev = sibs[i - 1], next = sibs[i + 1];
+  return `<div class="dnav">${prev ? `<button class="btn sub small" data-open="${prev.id}">← ${komaMark(prev, sibs)} へ</button>` : '<span></span>'}
+    <span class="dpos">${ymd(r.talk_date)}の講義 ${sibs.map(x => x === r ? `<b>${komaMark(x, sibs)}</b>` : `<a href="#" data-open-a="${x.id}">${komaMark(x, sibs)}</a>`).join(' ')}</span>
+    ${next ? `<button class="btn small" data-open="${next.id}">${komaMark(next, sibs)} へ →</button>` : '<span></span>'}</div>`;
+}
+
 // ---------- 一覧 ----------
 function renderList() {
   const rs = RECS.filter(pass);
@@ -403,13 +424,25 @@ function renderList() {
   if (!RECS.length) h += `<div class="empty">まだ記録がありません。「＋ 記録を足す」から、Claude が作った「まとめと全文」の .md ファイルを入れてください。</div>`;
   else if (!rs.length) h += `<div class="empty">この条件の講義はありません。</div>`;
   let last = null;
-  rs.forEach(r => {
-    if (r.univ !== last) { h += `<div class="ug">${esc(r.univ)}</div>`; last = r.univ; }
-    const d = r.talk_date ? `<span>${r.talk_date.slice(0, 4)}</span><b>${+r.talk_date.slice(5, 7)}/${+r.talk_date.slice(8, 10)}</b>` : '<span>日付<br>なし</span>';
-    h += `<div class="card lrow" data-open-row="${r.id}"><div class="ldate">${d}</div><div class="lbody"><p class="rtitle">${esc(st(r.title))}</p>
-      <div class="rmeta"><span class="badge">${esc(r.category || 'そのほか')}</span>${esc(r.place || '')}${r.youtube_id ? '｜▶ 動画あり' : ''}</div>
-      ${r.theme ? `<div style="font-size:14px">${esc(r.theme)}</div>` : ''}
-      ${(r.hitokoto || []).length ? `<ul class="hk">${r.hitokoto.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div></div>`;
+  const groups = [];
+  rs.forEach(r => { const g = groups[groups.length - 1]; if (g && g.univ === r.univ && r.talk_date && g.date === r.talk_date) g.items.push(r); else groups.push({ univ: r.univ, date: r.talk_date, items: [r] }); });
+  groups.forEach(g => {
+    if (g.univ !== last) { h += `<div class="ug">${esc(g.univ)}</div>`; last = g.univ; }
+    const d = g.date ? `<span>${g.date.slice(0, 4)}</span><b>${+g.date.slice(5, 7)}/${+g.date.slice(8, 10)}</b>` : '<span>日付<br>なし</span>';
+    if (g.items.length === 1) {
+      const r = g.items[0];
+      h += `<div class="card lrow" data-open-row="${r.id}"><div class="ldate">${d}</div><div class="lbody"><p class="rtitle">${esc(st(r.title))}</p>
+        <div class="rmeta"><span class="badge">${esc(r.category || 'そのほか')}</span>${esc(r.place || '')}${r.youtube_id ? '｜▶ 動画あり' : ''}</div>
+        ${r.theme ? `<div style="font-size:14px">${esc(r.theme)}</div>` : ''}
+        ${(r.hitokoto || []).length ? `<ul class="hk">${r.hitokoto.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div></div>`;
+    } else {
+      const sibs = siblings(g.items[0]);
+      h += `<div class="card" style="display:flex;gap:14px;align-items:flex-start"><div class="ldate">${d}</div><div class="lbody">
+        <div class="rmeta" style="margin-top:0"><span class="badge">${esc(g.items[0].category || 'そのほか')}</span>${ymd(g.date)}の講義（${g.items.length}つ）</div>
+        ${g.items.map(r => `<div class="drow" data-open-row="${r.id}"><span class="dmark">${komaMark(r, sibs)}</span><div style="flex:1;min-width:0"><p class="rtitle">${esc(st(r.title))}</p>
+          ${r.theme ? `<div class="dtheme">${esc(r.theme)}</div>` : ''}${r.youtube_id ? '<div class="rmeta" style="margin:0">▶ 動画あり</div>' : ''}</div><span class="dgo">›</span></div>`).join('')}
+      </div></div>`;
+    }
   });
   $('#list').innerHTML = h;
 }
@@ -475,7 +508,8 @@ async function openReader(id, ord) {
     catch (e) { box.innerHTML = `<button class="btn sub small" data-back>← もどる</button><div class="msg err">${esc(errText(e))}</div>`; return; }
   }
   const words = qWords();
-  let h = `<div class="btns"><button class="btn sub small" data-back>← もどる</button><span style="flex:1"></span>
+  const nav = navBar(r);
+  let h = nav + `<div class="btns"><button class="btn sub small" data-back>← もどる</button><span style="flex:1"></span>
     <button class="btn sub small" data-yt="${r.id}">${r.youtube_id ? '▶ YouTube の URL を直す' : '▶ YouTube の URL を入れる'}</button></div>
     <h2>${esc(st(r.title))}</h2>
     <div class="rmeta"><span class="badge">${esc(r.univ)}</span>${ymd(r.talk_date)}${r.place ? '｜' + esc(r.place) : ''}${r.speaker ? '｜話し手：' + esc(r.speaker) : ''}</div>`;
@@ -487,6 +521,7 @@ async function openReader(id, ord) {
     if ((p.head || p.time_sec != null) && p.head !== lastHead) { h += `<h4>${esc(p.head || '')} ${timeBtn(r, p.time_sec)}</h4>`; lastHead = p.head; }
     h += `<p id="p_${p.ord}">${words.length ? highlight(p.body, words, false) : esc(p.body)}</p>`;
   });
+  if (nav) h += '<div style="margin-top:28px">' + nav + '</div>';
   h += `<div style="margin-top:40px;padding-top:12px;border-top:1px dashed var(--border);text-align:right"><button class="btn danger small" data-del="${r.id}">この記録を消す</button></div>`;
   box.innerHTML = h;
   const elp = ord != null ? document.getElementById('p_' + ord) : null;
@@ -659,6 +694,7 @@ $('#q').addEventListener('input', () => { clearTimeout(timer); timer = setTimeou
 $('#fr').addEventListener('change', () => { renderList(); if ($('#q').value.trim()) renderSearch(); else if ($('#fr').value) openReader(+$('#fr').value); });
 document.addEventListener('click', e => {
   const row = e.target.closest('[data-open-row]'); if (row) { openReader(+row.dataset.openRow); return; }
+  const oa = e.target.closest('[data-open-a]'); if (oa) { e.preventDefault(); openReader(+oa.dataset.openA); return; }
   const b = e.target.closest('button'); if (!b) return;
   if (b.dataset.v) { show(b.dataset.v); if (b.dataset.v === 'list') renderList(); else renderSearch(); }
   else if (b.dataset.open) openReader(+b.dataset.open, b.dataset.ord != null ? +b.dataset.ord : null);
