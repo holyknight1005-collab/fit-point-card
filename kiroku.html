@@ -57,9 +57,17 @@ mark{background:var(--mark);padding:0 1px;border-radius:2px;color:inherit}
 .btn.danger{background:var(--surface);color:var(--red);border:1.5px solid var(--red-l);font-weight:500}
 .time{font-size:12.5px;color:var(--orange-d);white-space:nowrap}
 .more{color:var(--orange-d);cursor:pointer;font-size:13px;background:none;border:none;padding:4px 0;font-weight:700}
-#reader h2{font-size:19px;margin:6px 0 2px;line-height:1.45}
-#reader h3{font-size:16.5px;margin:26px 0 6px;padding-bottom:4px;border-bottom:2px solid var(--border)}
-#reader h4{font-size:15px;margin:18px 0 4px;color:var(--orange-d);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+/* kr6：記録のページの文字の大きさ（小15・中17・大19・特大22px。端末ごとに覚える） */
+#reader{font-size:var(--rfs,17px)}
+#reader .rmeta{font-size:.83em}
+#reader ul.hk{font-size:.95em}
+#reader h4 .btn.small,#reader .time{font-size:.83em}
+.fsz{display:inline-flex;align-items:center;gap:4px;font-size:12.5px;color:var(--muted)}
+.fsz button{border:1.5px solid var(--border);background:var(--surface);border-radius:8px;padding:2px 9px;font-weight:700;cursor:pointer;min-height:30px;color:var(--text)}
+.fsz button.on{background:var(--orange);border-color:var(--orange);color:#fff}
+#reader h2{font-size:1.27em;margin:6px 0 2px;line-height:1.45}
+#reader h3{font-size:1.1em;margin:26px 0 6px;padding-bottom:4px;border-bottom:2px solid var(--border)}
+#reader h4{font-size:1em;margin:18px 0 4px;color:var(--orange-d);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 #reader p{margin:6px 0;white-space:pre-wrap;word-break:break-word}
 #reader .flash{background:#fff7d1;border-radius:6px}
 .drow{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-top:1px dashed var(--border);cursor:pointer}
@@ -291,7 +299,13 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 // ・見られるのは fitアプリにスタッフでログインした人だけ（表 talk_records・talk_paragraphs はスタッフだけ）
 // ・記録を足す：Claude が作った「まとめと全文」の .md を選ぶ（＋YouTube の URL）
 // ============================================================
-const KR_VERSION = '20261115kr5';
+const KR_VERSION = '20261115kr6';
+// 記録のページの文字の大きさ（kr6）
+const FS = [['小', 15], ['中', 17], ['大', 19], ['特大', 22]];
+function getFs() { try { const v = +localStorage.getItem('kiroku_fs'); if (FS.some(f => f[1] === v)) return v; } catch (e) {} return 17; }
+function setFs(v) { try { localStorage.setItem('kiroku_fs', String(v)); } catch (e) {} applyFs(); }
+function applyFs() { const v = getFs(); const box = document.getElementById('reader'); if (box) box.style.setProperty('--rfs', v + 'px'); document.querySelectorAll('[data-fs]').forEach(b => b.classList.toggle('on', +b.dataset.fs === v)); }
+function fsBar() { return `<span class="fsz">文字${FS.map(f => `<button type="button" data-fs="${f[1]}">${f[0]}</button>`).join('')}</span>`; }
 const KR_HDR = { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' };
 const REC_COLS = 'id,title,talk_date,univ,category,place,speaker,theme,keywords,hitokoto,koma,youtube_id,source_name';
 let ME = null, RECS = [], PARAS = {}, view = 'list', backY = 0, seq = 0;
@@ -551,6 +565,7 @@ async function openReader(id, ord) {
   const words = qWords();
   const nav = navBar(r);
   let h = nav + `<div class="btns"><button class="btn sub small" data-back>← もどる</button><span style="flex:1"></span>
+    ${fsBar()}
     <button class="btn sub small" data-yt="${r.id}">${r.youtube_id ? '▶ YouTube の URL を直す' : '▶ YouTube の URL を入れる'}</button></div>
     <h2>${esc(st(r.title))}</h2>
     <div class="rmeta"><span class="badge">${esc(r.univ)}</span>${ymd(r.talk_date)}${r.place ? '｜' + esc(r.place) : ''}${r.speaker ? '｜話し手：' + esc(r.speaker) : ''}</div>`;
@@ -565,6 +580,7 @@ async function openReader(id, ord) {
   if (nav) h += '<div style="margin-top:28px">' + nav + '</div>';
   h += `<div style="margin-top:40px;padding-top:12px;border-top:1px dashed var(--border);text-align:right"><button class="btn danger small" data-del="${r.id}">この記録を消す</button></div>`;
   box.innerHTML = h;
+  applyFs();
   const elp = ord != null ? document.getElementById('p_' + ord) : null;
   if (elp) { elp.scrollIntoView({ block: 'center' }); elp.classList.add('flash'); setTimeout(() => elp.classList.remove('flash'), 1600); }
   else window.scrollTo(0, 0);
@@ -740,6 +756,7 @@ document.addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   if (b.dataset.v) { show(b.dataset.v); if (b.dataset.v === 'list') renderList(); else renderSearch(); }
   else if (b.dataset.open) openReader(+b.dataset.open, b.dataset.ord != null ? +b.dataset.ord : null);
+  else if (b.dataset.fs) setFs(+b.dataset.fs);
   else if (b.dataset.play) play(+b.dataset.play, +b.dataset.t);
   else if (b.dataset.back != null) { show(view); window.scrollTo(0, backY); }
   else if (b.dataset.more != null) { b.parentElement.querySelectorAll('[data-extra]').forEach(x => x.hidden = false); b.remove(); }
