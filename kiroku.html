@@ -282,7 +282,7 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 // ・見られるのは fitアプリにスタッフでログインした人だけ（表 talk_records・talk_paragraphs はスタッフだけ）
 // ・記録を足す：Claude が作った「まとめと全文」の .md を選ぶ（＋YouTube の URL）
 // ============================================================
-const KR_VERSION = '20261115kr2';
+const KR_VERSION = '20261115kr3';
 const KR_HDR = { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' };
 const REC_COLS = 'id,title,talk_date,univ,category,place,speaker,theme,keywords,hitokoto,koma,youtube_id,source_name';
 let ME = null, RECS = [], PARAS = {}, view = 'list', backY = 0, seq = 0;
@@ -479,7 +479,7 @@ async function openReader(id, ord) {
     <button class="btn sub small" data-yt="${r.id}">${r.youtube_id ? '▶ YouTube の URL を直す' : '▶ YouTube の URL を入れる'}</button></div>
     <h2>${esc(st(r.title))}</h2>
     <div class="rmeta"><span class="badge">${esc(r.univ)}</span>${ymd(r.talk_date)}${r.place ? '｜' + esc(r.place) : ''}${r.speaker ? '｜話し手：' + esc(r.speaker) : ''}</div>`;
-  if (r.youtube_id) h += `<div class="btns"><button class="btn play small" data-play="${r.id}" data-t="0">▶ 動画をはじめから</button></div>`;
+  if (r.youtube_id) h += `<div class="vframe" style="margin:10px 0 4px;border-radius:12px;overflow:hidden;background:#000"><iframe src="https://www.youtube.com/embed/${r.youtube_id}?rel=0&playsinline=1" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen loading="lazy"></iframe></div><div class="note" style="margin:0">下の「▶ 時刻 から」を押すと、その場面から再生します。</div>`;
   if ((r.hitokoto || []).length) h += `<h3>ひとことで</h3><ul class="hk">${r.hitokoto.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
   let lastPart = null, lastHead = null;
   PARAS[id].forEach(p => {
@@ -567,51 +567,68 @@ function addDialog() {
   const cats = [...new Set(RECS.map(r => r.category).filter(Boolean))];
   if (!cats.includes('田尾先生')) cats.unshift('田尾先生');
   const bg = modal(`<h3>記録を足す</h3>
-    <div class="msg" style="margin-top:0">Claude が作った「まとめと全文」の .md ファイルを選んでください。</div>
-    <label class="lbl">ファイル（.md）</label><input type="file" id="af" accept=".md,text/markdown,text/plain">
-    <label class="lbl">YouTube の URL（あとからでも入れられます）</label><input class="in" id="ay" placeholder="https://youtu.be/…">
+    <div class="msg" style="margin-top:0">Claude が作った「まとめと全文」の .md ファイルを選んでください。<b>いくつでもまとめて選べます。</b>.md に「- 動画：URL」があれば、動画も自動で入ります。</div>
+    <label class="lbl">ファイル（.md・複数可）</label><input type="file" id="af" accept=".md,text/markdown,text/plain" multiple>
+    <div id="one"><label class="lbl">YouTube の URL（1つだけ選んだとき・あとからでも入れられます）</label><input class="in" id="ay" placeholder="https://youtu.be/…"></div>
     <label class="lbl">分類</label><input class="in" id="ac" list="acl" value="田尾先生"><datalist id="acl">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist>
     <div id="ap" class="msg"></div>
     <div class="mb"><button class="btn sub" data-no>やめる</button><button class="btn" data-ok disabled>入れる</button></div>`);
-  let parsed = null;
-  const ok = bg.querySelector('[data-ok]');
+  let list = [];
+  const ok = bg.querySelector('[data-ok]'), ap = bg.querySelector('#ap');
   bg.querySelector('[data-no]').onclick = () => bg.remove();
   bg.querySelector('#af').onchange = async e => {
-    const f = e.target.files[0]; parsed = null; ok.disabled = true;
-    if (!f) return;
-    try {
-      parsed = parseMd(await f.text(), f.name);
-      const r = parsed.rec;
-      const dup = RECS.find(x => x.title === r.title && x.talk_date === r.talk_date);
-      bg.querySelector('#ap').innerHTML = `<b>${esc(st(r.title))}</b><br>${ymd(r.talk_date)}｜${esc(r.univ)}｜段落 ${parsed.ps.length}（動画の時刻つきの見出しの段落 ${parsed.times}）`
-        + (dup ? '<br><span style="color:var(--red)">同じ題名・日付の記録があります。入れると入れかえます。</span>' : '')
-        + (!parsed.ps.length ? '<br><span style="color:var(--red)">中身が読めませんでした。</span>' : '');
-      if (parsed.yt && !bg.querySelector('#ay').value.trim()) bg.querySelector('#ay').value = 'https://youtu.be/' + parsed.yt;
-      ok.disabled = !parsed.ps.length;
-    } catch (err) { bg.querySelector('#ap').textContent = '読めませんでした：' + err.message; }
+    list = []; ok.disabled = true; ap.innerHTML = '';
+    const files = [...e.target.files];
+    for (const f of files) {
+      try { const p = parseMd(await f.text(), f.name); p.fname = f.name; list.push(p); }
+      catch (err) { ap.insertAdjacentHTML('beforeend', `<div style="color:var(--red)">${esc(f.name)}：読めませんでした</div>`); }
+    }
+    bg.querySelector('#one').hidden = list.length > 1;
+    if (list.length === 1 && list[0].yt && !bg.querySelector('#ay').value.trim()) bg.querySelector('#ay').value = 'https://youtu.be/' + list[0].yt;
+    ap.innerHTML += list.map(p => {
+      const r = p.rec, dup = RECS.find(x => x.title === r.title && x.talk_date === r.talk_date);
+      return `<div style="padding:4px 0;border-top:1px dashed var(--border)"><b>${esc(st(r.title))}</b><br>${ymd(r.talk_date)}｜${esc(r.univ)}｜段落 ${p.ps.length}${p.yt ? '｜▶ 動画あり' : ''}`
+        + (dup ? '<br><span style="color:var(--orange-d)">同じ題名・日付の記録があるので、入れかえます</span>' : '')
+        + (!p.ps.length ? '<br><span style="color:var(--red)">中身が読めませんでした（入れません）</span>' : '') + '</div>';
+    }).join('');
+    list = list.filter(p => p.ps.length);
+    ok.disabled = !list.length; ok.textContent = list.length > 1 ? list.length + ' 件を入れる' : '入れる';
   };
-  ok.onclick = async () => {
-    if (!parsed) return;
-    const yraw = bg.querySelector('#ay').value.trim(), yid = ytId(yraw);
-    if (yraw && !yid) { bg.querySelector('#ap').insertAdjacentHTML('beforeend', '<br><span style="color:var(--red)">YouTube の URL の形が読めませんでした。</span>'); return; }
-    ok.disabled = true; ok.textContent = '入れています…';
-    const rec = Object.assign({}, parsed.rec, { category: bg.querySelector('#ac').value.trim() || '田尾先生', youtube_id: yid || null, created_by: ME.row.name || null });
+  async function insertOne(p, yid, cat) {
+    const rec = Object.assign({}, p.rec, { category: cat, youtube_id: yid || null, created_by: ME.row.name || null });
+    const dup = RECS.find(x => x.title === rec.title && x.talk_date === rec.talk_date);
     let newId = null;
     try {
-      const dup = RECS.find(x => x.title === rec.title && x.talk_date === rec.talk_date);
       const ins = await rest('POST', 'talk_records?select=id', rec, { 'Prefer': 'return=representation' });
       newId = ins[0].id;
-      for (let i = 0; i < parsed.ps.length; i += 200) {
-        await rest('POST', 'talk_paragraphs', parsed.ps.slice(i, i + 200).map(p => Object.assign({ record_id: newId }, p)), { 'Prefer': 'return=minimal' });
+      for (let i = 0; i < p.ps.length; i += 200) {
+        await rest('POST', 'talk_paragraphs', p.ps.slice(i, i + 200).map(x => Object.assign({ record_id: newId }, x)), { 'Prefer': 'return=minimal' });
       }
-      if (dup) { await rest('DELETE', 'talk_records?id=eq.' + dup.id); delete PARAS[dup.id]; }
-      bg.remove();
-      await loadRecs();
+      if (dup) { await rest('DELETE', 'talk_records?id=eq.' + dup.id); delete PARAS[dup.id]; RECS = RECS.filter(x => x.id !== dup.id); }
     } catch (err) {
       if (newId) { try { await rest('DELETE', 'talk_records?id=eq.' + newId); } catch (e2) {} }
-      ok.disabled = false; ok.textContent = '入れる';
-      bg.querySelector('#ap').insertAdjacentHTML('beforeend', `<br><span style="color:var(--red)">${esc(errText(err))}</span>`);
+      throw err;
     }
+  }
+  ok.onclick = async () => {
+    if (!list.length) return;
+    const cat = bg.querySelector('#ac').value.trim() || '田尾先生';
+    let one = null;
+    if (list.length === 1) {
+      const yraw = bg.querySelector('#ay').value.trim(); one = ytId(yraw);
+      if (yraw && !one) { ap.insertAdjacentHTML('beforeend', '<div style="color:var(--red)">YouTube の URL の形が読めませんでした。</div>'); return; }
+    }
+    ok.disabled = true;
+    let done = 0; const fails = [];
+    for (const p of list) {
+      ok.textContent = `入れています… ${done + 1}/${list.length}`;
+      try { await insertOne(p, list.length === 1 ? one : p.yt, cat); done++; }
+      catch (err) { fails.push(st(p.rec.title) + '：' + errText(err)); }
+    }
+    await loadRecs();
+    if (!fails.length) { bg.remove(); return; }
+    ap.innerHTML = `<div>${done} 件入れました。入らなかったもの：</div>` + fails.map(f => `<div style="color:var(--red)">${esc(f)}</div>`).join('');
+    ok.textContent = '閉じる'; ok.disabled = false; ok.onclick = () => bg.remove();
   };
 }
 function ytDialog(id) {
