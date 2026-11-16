@@ -268,7 +268,7 @@ async function load() {
     const r = await fetch(FIT_SB_URL + '/rest/v1/tyoukankaku_events?select=*&order=id.asc&limit=1000&offset=' + off, { headers: { apikey: FIT_ANON } });
     if (!r.ok) { $('#app').innerHTML = '<p class="msg err">読みこめませんでした（' + r.status + '）。SQL tk1 を流したか、スタッフでログインしているかを確かめてください。</p>'; return; }
     const rows = await r.json();
-    rows.forEach(x => { const d = new Date(x.ts); x.day = fmtD.format(d); x.hour = +fmtH.format(d) % 24; x.wd = WMAP[fmtW.format(d)]; });
+    rows.forEach(x => { x.area = x.pref || (x.country && x.country !== 'JP' ? '海外（' + x.country + '）' : '（わからない）'); const d = new Date(x.ts); x.day = fmtD.format(d); x.hour = +fmtH.format(d) % 24; x.wd = WMAP[fmtW.format(d)]; });
     ALL = ALL.concat(rows);
     if (rows.length < 1000) break;
   }
@@ -350,6 +350,8 @@ function render() {
   h += box('来た経路', 'URLに utm_source をつけたときは、その名前で数えます', breakdown(lpV, amz, 'src'));
   const withCmp = lpV.filter(x => x.cmp);
   h += box('投稿の印（utm_campaign）', withCmp.length ? '' : 'まだありません。配るURLの最後に ?utm_source=line&utm_campaign=1116告知 のようにつけると、ここに出ます', withCmp.length ? breakdown(withCmp, amz, 'cmp') : '');
+  // 地域（kr：Cloudflare の Worker を通した記録だけ）
+  h += box('地域（都道府県）', '通信の住所から出したおおよその地域。スマホの通信は東京・大阪などに見えることが多いので、傾向として見てください', breakdown(lpV, amz, 'area'));
   // 端末・OS・アプリ
   h += box('端末', '', breakdown(lpV, amz, 'dev'));
   h += box('OS', '', breakdown(lpV, amz, 'os'));
@@ -369,8 +371,8 @@ function render() {
 }
 function csv() {
   const R = rows();
-  const cols = ['ts', 'page', 'ev', 'label', 'num', 'vid', 'sid', 'is_new', 'src', 'med', 'cmp', 'ref', 'dev', 'os', 'app', 'sw', 'lang', 'staff'];
-  const head = ['日時', 'ページ', 'できごと', 'ラベル', '数（秒など）', '端末番号', '開いた回の番号', 'はじめて', '来た経路', 'utm_medium', 'utm_campaign', '前のページ', '端末', 'OS', 'アプリ', '画面の幅', '言語', 'スタッフ'];
+  const cols = ['ts', 'page', 'ev', 'label', 'num', 'vid', 'sid', 'is_new', 'src', 'med', 'cmp', 'ref', 'dev', 'os', 'app', 'sw', 'lang', 'pref', 'country', 'staff'];
+  const head = ['日時', 'ページ', 'できごと', 'ラベル', '数（秒など）', '端末番号', '開いた回の番号', 'はじめて', '来た経路', 'utm_medium', 'utm_campaign', '前のページ', '端末', 'OS', 'アプリ', '画面の幅', '言語', '都道府県', '国', 'スタッフ'];
   const q = v => { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const lines = [head.join(',')].concat(R.map(x => cols.map(c => q(c === 'ts' ? fmtT.format(new Date(x.ts)) : x[c])).join(',')));
   const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv' });
