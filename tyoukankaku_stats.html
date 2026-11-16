@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>アクセスの集計｜超感覚英語 予約ページ</title>
+<style>
+:root{--orange:#F59A2E;--orange-d:#A8480A;--bg:#FFF9F0;--surface:#fff;--border:#FFD9A8;--text:#3B2A1A;--muted:#6B5644}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:'Hiragino Maru Gothic ProN','Hiragino Sans','Noto Sans JP',sans-serif;font-size:14px;line-height:1.6}
+header{background:linear-gradient(90deg,#F59A2E,#E8891C);color:#fff;padding:14px 20px}
+header h1{margin:0;font-size:19px}
+header p{margin:2px 0 0;font-size:12px;opacity:.9}
+.wrap{max-width:1200px;margin:0 auto;padding:16px 16px 80px}
+.ctl{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:#fff;border-radius:14px;padding:10px 14px;margin-bottom:14px}
+.ctl label{font-size:13px;color:var(--muted);display:flex;gap:6px;align-items:center}
+.in{font:inherit;border:1.5px solid var(--border);border-radius:8px;padding:6px 8px;background:#fff}
+.btn{font:inherit;font-weight:700;border:0;border-radius:999px;padding:8px 18px;background:var(--orange);color:#3B2306;cursor:pointer}
+.btn.sub{background:#fff;border:1.5px solid var(--orange)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-bottom:14px}
+.cd{background:#fff;border-radius:14px;padding:12px 14px}
+.cd .k{font-size:12px;color:var(--muted)}.cd .v{font-size:26px;font-weight:800;color:var(--orange-d);line-height:1.3}.cd .s{font-size:12px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px}
+.box{background:#fff;border-radius:14px;padding:14px 16px;overflow-x:auto}
+.box h2{margin:0 0 4px;font-size:15px;color:var(--orange-d)}
+.box .note{margin:0 0 8px;font-size:12px;color:var(--muted)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:4px 6px;border-bottom:1px solid #F3E6D6;text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{font-size:12px;color:var(--muted);font-weight:700;background:#FFF7EC;position:sticky;top:0}
+td.bar{width:40%;min-width:80px;text-align:left}
+td.bar i{display:block;height:10px;border-radius:5px;background:var(--orange);min-width:1px}
+.wide{grid-column:1/-1}
+.msg{color:var(--muted);font-size:13px}.err{color:#C0392B}
+.card{background:#fff;border-radius:14px;padding:18px}
+.lbl{display:block;font-size:13px;color:var(--muted);margin-top:8px}
+.card .in{width:100%}
+</style>
+</head>
+<body>
+<header><h1>アクセスの集計｜超感覚英語 予約ページ</h1><p>tyoukankaku.html（予約ページ）・tyoukankaku_voice.html（感想のページ）。スタッフだけが見られます</p></header>
+<div class="wrap" id="app"><p class="msg">読みこみ中…</p></div>
+<script>
+// ===== fit 共通ログイン（Supabase Auth セッション）sec1 =====
+// ・ID＋PINの照合はサーバー（Edge Function fit-login）で行い、ブラウザには PIN を残さない。
+// ・発行されたセッションは localStorage 'fit_session_v1' に保存し、同じサイトの全アプリで共有する。
+// ・Supabase への fetch は自動でログイン中のトークンに差し替え、期限切れなら自動更新して1回だけ再送する。
+const FIT_SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
+const FIT_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
+const FIT_SESSION_KEY = 'fit_session_v1';
+const FIT_LEGACY_KEYS = ['fit_pin', 'fit_parent_pin', 'fit_staff_hash', 'fit_staff_pin'];
+let fitSession = null;
+let fitRefreshing = null;
+const fitRawFetch = window.fetch.bind(window);
+
+function fitLoadSession() {
+  try { fitSession = JSON.parse(localStorage.getItem(FIT_SESSION_KEY) || 'null'); } catch (e) { fitSession = fitSession || null; }
+  return fitSession;
+}
+function fitSaveSession(s) {
+  fitSession = s || null;
+  try { if (s) localStorage.setItem(FIT_SESSION_KEY, JSON.stringify(s)); else localStorage.removeItem(FIT_SESSION_KEY); } catch (e) {}
+}
+function fitClearLegacy() {
+  try { FIT_LEGACY_KEYS.forEach(k => localStorage.removeItem(k)); } catch (e) {}
+}
+// 'ok' | 'invalid'（ログインし直しが必要） | 'error'（通信エラー等。セッションは残す）| 'none'
+async function fitRefresh(force) {
+  const cur = fitLoadSession();
+  if (!cur || !cur.refresh_token) return 'none';
+  const now = Math.floor(Date.now() / 1000);
+  if (!force && (cur.expires_at || 0) - now > 300) return 'ok';
+  if (fitRefreshing) return fitRefreshing;
+  fitRefreshing = (async () => {
+    try {
+      const r = await fitRawFetch(FIT_SB_URL + '/auth/v1/token?grant_type=refresh_token', {
+        method: 'POST',
+        headers: { 'apikey': FIT_ANON, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: cur.refresh_token })
+      });
+      if (r.status === 400 || r.status === 401 || r.status === 403) {
+        // 別タブが先に更新していればそちらを使う
+        const latest = fitLoadSession();
+        if (latest && latest.refresh_token !== cur.refresh_token) return 'ok';
+        fitSaveSession(null);
+        return 'invalid';
+      }
+      if (!r.ok) return 'error';
+      const j = await r.json();
+      fitSaveSession(Object.assign({}, cur, {
+        access_token: j.access_token,
+        refresh_token: j.refresh_token,
+        expires_at: j.expires_at || (now + (j.expires_in || 3600))
+      }));
+      return 'ok';
+    } catch (e) { return 'error'; }
+    finally { fitRefreshing = null; }
+  })();
+  return fitRefreshing;
+}
+// ログイン：kind = 'staff' | 'student' | 'parent' | 'online'
+// 戻り値 { ok:true, kind, account } / { ok:false, error:'invalid'|'blocked'|'locked'|... }
+async function fitLogin(kind, id, pin) {
+  let r, j = null;
+  try {
+    r = await fitRawFetch(FIT_SB_URL + '/functions/v1/fit-login', {
+      method: 'POST',
+      headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: kind, id: id, pin: pin })
+    });
+    j = await r.json();
+  } catch (e) { return { ok: false, error: 'network' }; }
+  if (!j) return { ok: false, error: 'network' };
+  if (j.ok) {
+    fitSaveSession(Object.assign({}, j.session, { kind: j.kind, account_id: String(j.account.id) }));
+    fitClearLegacy();
+  }
+  return j;
+}
+function fitLoginErrorText(j, fallback) {
+  if (!j) return fallback;
+  if (j.error === 'locked') return 'ログインの失敗が続いたため、15分ほど待ってからお試しください。';
+  if (j.error === 'blocked') return 'このアカウントは現在ご利用いただけません。塾までお問い合わせください。';
+  if (j.error === 'network' || j.error === 'server') return '通信がうまくつながりませんでした。電波の良い場所でもう一度お試しください。';
+  return fallback;
+}
+// ===== 段階B：サーバー関数（RPC）=====
+// ポイント加算・ログインボーナス・面談共有メモなどは、サーバー側の関数で行う（生徒は直接書き換えできない）。
+async function fitRpc(name, args) {
+  const r = await fetch(FIT_SB_URL + '/rest/v1/rpc/' + name, {
+    method: 'POST',
+    headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' },
+    body: JSON.stringify(args || {})
+  });
+  const tx = await r.text();
+  if (!r.ok) throw new Error('rpc ' + name + ' ' + r.status + ' ' + tx);
+  return tx ? JSON.parse(tx) : null;
+}
+// 戻り値 { awarded: 実際に加算された点, points: 加算後の合計 }
+async function fitAwardPoints(type, points, reason, ref) {
+  return await fitRpc('fit_award_points', { p_type: type, p_points: points, p_reason: reason || null, p_ref: ref == null ? null : String(ref) });
+}
+function fitLogout() {
+  const s = fitSession || fitLoadSession();
+  fitSaveSession(null);
+  fitClearLegacy();
+  if (s && s.access_token) {
+    fitRawFetch(FIT_SB_URL + '/auth/v1/logout?scope=local', {
+      method: 'POST', headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token }
+    }).catch(() => {});
+  }
+}
+// 保存済みセッションから本人の行を取り直す。旧方式（PIN保存）の端末は1回だけ自動で移行する。
+// 戻り値 { kind, row } / null（未ログイン）。通信エラー時は例外（ログイン情報は消さない）。
+async function fitResume() {
+  let s = fitLoadSession();
+  if (!s) {
+    let email = null, pin = null, pid = null, ppin = null, role = null;
+    try {
+      email = localStorage.getItem('fit_email'); pin = localStorage.getItem('fit_pin');
+      pid = localStorage.getItem('fit_parent_id'); ppin = localStorage.getItem('fit_parent_pin');
+      role = localStorage.getItem('fit_role');
+    } catch (e) {}
+    let j = null;
+    if (email && pin) j = await fitLogin(role === 'staff' ? 'staff' : 'student', email, pin);
+    else if (pid && ppin) j = await fitLogin('parent', pid, ppin);
+    if (j && j.error === 'network') throw new Error('network');
+    fitClearLegacy();
+    s = fitLoadSession();
+    if (!s) return null;
+  }
+  const rr = await fitRefresh(false);
+  if (rr === 'invalid' || rr === 'none') return null;
+  s = fitLoadSession();
+  if (!s) return null;
+  const table = { staff: 'staff', student: 'students', parent: 'parent_accounts', online: 'online_students' }[s.kind];
+  if (!table) { fitLogout(); return null; }
+  // sec4: 生徒・保護者は students を直接読まず、表示用の列だけ返す関数から受け取る（生徒は自分の1行）
+  const res = s.kind === 'student'
+    ? await fitRawFetch(FIT_SB_URL + '/rest/v1/rpc/fit_my_students', {
+        method: 'POST',
+        headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token, 'Content-Type': 'application/json' },
+        body: '{}'
+      })
+    : await fitRawFetch(FIT_SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(s.account_id) + '&select=*', {
+        headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token }
+      });
+  if (res.status === 401 || res.status === 403) {
+    const again = await fitRefresh(true);
+    if (again === 'invalid' || again === 'none') return null;
+    throw new Error('auth ' + res.status);
+  }
+  if (!res.ok) throw new Error('resume ' + res.status);
+  const rows = await res.json();
+  if (!rows.length || rows[0].is_active === false && s.kind !== 'student') { fitLogout(); return null; }
+  return { kind: s.kind, row: rows[0] };
+}
+// Supabase への fetch をログイン中のトークンに差し替える（各画面のコードはそのまま使える）
+window.fetch = async function (input, init) {
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  if (url.indexOf(FIT_SB_URL) !== 0 || url.indexOf('/auth/v1/') > 0 || url.indexOf('/functions/v1/fit-login') > 0) {
+    return fitRawFetch(input, init);
+  }
+  // 呼び出し時点のトークンを控えておく（直後にログアウトしても、その前に始めた保存は通す）
+  const tokenAtCall = fitLoadSession() ? fitSession.access_token : null;
+  if (tokenAtCall) await fitRefresh(false);
+  const send = () => {
+    const opt = Object.assign({}, init || {});
+    const h = new Headers(opt.headers || (input && typeof input !== 'string' ? input.headers : undefined));
+    const tok = (fitSession && fitSession.access_token) || tokenAtCall;
+    if (tok) h.set('Authorization', 'Bearer ' + tok);
+    opt.headers = h;
+    return fitRawFetch(input, opt);
+  };
+  let res = await send();
+  if (res.status === 401 && fitSession && fitSession.refresh_token) {
+    const rr = await fitRefresh(true);
+    if (rr === 'ok') res = await send();
+  }
+  return res;
+};
+setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
+
+// ============================================================
+// アクセスの集計（tyoukankaku_stats.html）2026-11-16
+// 表 tyoukankaku_events（SQL tk1）を全部読み、画面で集計する。スタッフだけ（RLS：fit_is_staff()）
+// ============================================================
+const $ = s => document.querySelector(s);
+const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const SECS = ['単語の紹介', '問いかけ', '特典', '受け取り方', 'メッセージ', '動画', '受講生の声', '書籍概要', 'プロフィール', 'よくあるご質問', '最後の案内'];
+const WD = ['日', '月', '火', '水', '木', '金', '土'];
+let ALL = [];
+const fmtD = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' });
+const fmtH = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tokyo', hour: 'numeric', hourCycle: 'h23' });
+const fmtW = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tokyo', weekday: 'short' });
+const fmtT = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const WMAP = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+async function boot() {
+  let me = null;
+  try { me = await fitResume(); } catch (e) { $('#app').innerHTML = '<p class="msg err">通信がうまくつながりませんでした。読みこみ直してください。</p>'; return; }
+  if (!me || me.kind !== 'staff') { loginView(); return; }
+  await load();
+}
+function loginView(msg) {
+  $('#app').innerHTML = `<div class="card" style="max-width:420px;margin:10px auto">
+    <p style="margin:0 0 4px;font-weight:800;font-size:16px">スタッフのログイン</p>
+    <p class="msg" style="margin-top:0">fitアプリと同じスタッフIDとパスワードで入れます。</p>
+    <label class="lbl" for="lg-id">スタッフID</label><input class="in" id="lg-id" type="text" autocomplete="username" autocapitalize="off" spellcheck="false">
+    <label class="lbl" for="lg-pw">パスワード</label><input class="in" id="lg-pw" type="password" autocomplete="current-password">
+    <div id="lg-msg" class="msg err">${esc(msg || '')}</div>
+    <button class="btn" id="lg-go" style="width:100%;margin-top:6px">ログイン</button></div>`;
+  $('#lg-go').onclick = doLogin;
+  $('#lg-pw').onkeydown = e => { if (e.key === 'Enter') doLogin(); };
+}
+async function doLogin() {
+  const id = ($('#lg-id').value || '').trim().toLowerCase(), pw = ($('#lg-pw').value || '').trim();
+  if (!id || !pw) { $('#lg-msg').textContent = 'スタッフIDとパスワードを入れてください'; return; }
+  const j = await fitLogin('staff', id, pw);
+  if (!j.ok) { $('#lg-msg').textContent = fitLoginErrorText(j, 'IDかパスワードがちがいます'); return; }
+  await load();
+}
+async function load() {
+  $('#app').innerHTML = '<p class="msg">記録を読みこみ中…</p>';
+  ALL = [];
+  for (let off = 0; ; off += 1000) {
+    const r = await fetch(FIT_SB_URL + '/rest/v1/tyoukankaku_events?select=*&order=id.asc&limit=1000&offset=' + off, { headers: { apikey: FIT_ANON } });
+    if (!r.ok) { $('#app').innerHTML = '<p class="msg err">読みこめませんでした（' + r.status + '）。SQL tk1 を流したか、スタッフでログインしているかを確かめてください。</p>'; return; }
+    const rows = await r.json();
+    rows.forEach(x => { const d = new Date(x.ts); x.day = fmtD.format(d); x.hour = +fmtH.format(d) % 24; x.wd = WMAP[fmtW.format(d)]; });
+    ALL = ALL.concat(rows);
+    if (rows.length < 1000) break;
+  }
+  frame();
+}
+function frame() {
+  const days = ALL.map(x => x.day).sort();
+  const today = fmtD.format(new Date());
+  $('#app').innerHTML = `<div class="ctl">
+    <label>期間 <input type="date" class="in" id="f-from" value="${days[0] || today}"> 〜 <input type="date" class="in" id="f-to" value="${today}"></label>
+    <label><input type="checkbox" id="f-staff" checked> スタッフの端末をのぞく</label>
+    <span style="flex:1"></span>
+    <button class="btn sub" id="f-reload">最新にする</button>
+    <button class="btn" id="f-csv">CSVでダウンロード</button>
+    <span class="msg">記録 ${ALL.length.toLocaleString()} 件</span></div>
+    <div id="out"></div>`;
+  ['#f-from', '#f-to', '#f-staff'].forEach(s => $(s).onchange = render);
+  $('#f-reload').onclick = load;
+  $('#f-csv').onclick = csv;
+  render();
+}
+function rows() {
+  const a = $('#f-from').value, b = $('#f-to').value, st = $('#f-staff').checked;
+  return ALL.filter(x => (!a || x.day >= a) && (!b || x.day <= b) && (!st || !x.staff));
+}
+const uniq = (arr, f) => new Set(arr.map(f || (x => x.vid))).size;
+const pct = (a, b) => b ? Math.round(a / b * 1000) / 10 + '%' : '—';
+function table(head, body, barCol, max) {
+  return `<table><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}${barCol != null ? '<th></th>' : ''}</tr>${body.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}${barCol != null ? `<td class="bar"><i style="width:${max ? Math.round(r[barCol] / max * 100) : 0}%"></i></td>` : ''}</tr>`).join('')}</table>`;
+}
+function box(title, note, inner, wide) { return `<div class="box${wide ? ' wide' : ''}"><h2>${esc(title)}</h2>${note ? `<p class="note">${esc(note)}</p>` : ''}${inner}</div>`; }
+function groupBy(arr, f) { const m = new Map(); arr.forEach(x => { const k = f(x); if (!m.has(k)) m.set(k, []); m.get(k).push(x); }); return m; }
+function breakdown(views, amz, key) {
+  const amzBy = groupBy(amz, x => x[key] || '（なし）');
+  const list = [...groupBy(views, x => x[key] || '（なし）')].map(([k, v]) => { const p = uniq(v); const ap = uniq((amzBy.get(k) || [])); return [k, v.length, p, ap, pct(ap, p)]; }).sort((a, b) => b[2] - a[2]);
+  const max = Math.max(1, ...list.map(r => r[2]));
+  return table(['', '開いた回数', '人数', 'Amazonを押した人', '押した割合'], list, 2, max);
+}
+function render() {
+  const R = rows();
+  const lp = R.filter(x => x.page === 'lp'), vc = R.filter(x => x.page === 'voice');
+  const lpV = lp.filter(x => x.ev === 'view'), vcV = vc.filter(x => x.ev === 'view');
+  const amz = R.filter(x => x.ev === 'amazon'), chat = R.filter(x => x.ev === 'chat');
+  const allV = R.filter(x => x.ev === 'view');
+  const lpP = uniq(lpV), amzP = uniq(amz);
+  const newP = uniq(allV.filter(x => x.is_new));
+  const leaves = [...groupBy(lp.filter(x => x.ev === 'leave'), x => x.sid)].map(([k, v]) => ({ sec: Math.max(...v.map(x => x.num || 0)), dep: Math.max(...v.map(x => +x.label || 0)) }));
+  const secs = leaves.map(x => x.sec).sort((a, b) => a - b);
+  const med = secs.length ? secs[Math.floor(secs.length / 2)] : 0;
+  const avg = secs.length ? Math.round(secs.reduce((a, b) => a + b, 0) / secs.length) : 0;
+  const mmss = s => Math.floor(s / 60) + '分' + String(s % 60).padStart(2, '0') + '秒';
+  let h = `<div class="cards">
+    <div class="cd"><div class="k">予約ページを開いた回数</div><div class="v">${lpV.length.toLocaleString()}</div><div class="s">人数 ${lpP.toLocaleString()} 人</div></div>
+    <div class="cd"><div class="k">はじめて来た人（端末）</div><div class="v">${newP.toLocaleString()}</div><div class="s">2つのページの合計</div></div>
+    <div class="cd"><div class="k">Amazonのボタンを押した人</div><div class="v">${amzP.toLocaleString()}</div><div class="s">${amz.length} 回／予約ページの人の ${pct(amzP, lpP)}</div></div>
+    <div class="cd"><div class="k">オープンチャットを押した人</div><div class="v">${uniq(chat).toLocaleString()}</div><div class="s">${chat.length} 回</div></div>
+    <div class="cd"><div class="k">感想のページを開いた人</div><div class="v">${uniq(vcV).toLocaleString()}</div><div class="s">${vcV.length} 回</div></div>
+    <div class="cd"><div class="k">予約ページにいた時間</div><div class="v">${mmss(med)}</div><div class="s">まん中の値（平均 ${mmss(avg)}）</div></div>
+  </div><div class="grid">`;
+  // 流れ（どこまで読んだか → Amazon）
+  const secBy = groupBy(lp.filter(x => x.ev === 'sec'), x => x.label);
+  const fun = [['予約ページを開いた', lpP]].concat(SECS.map(s => [s + ' まで読んだ', uniq(secBy.get(s) || [])])).concat([['Amazonのボタンを押した', amzP]]);
+  h += box('どこまで読んだか → 予約ボタン', '各欄の見出しが画面に出た人の数（予約ページを開いた人に対する割合）', table(['', '人数', '割合'], fun.map(r => [r[0], r[1], pct(r[1], lpP)]), 1, Math.max(1, lpP)));
+  // Amazon ボタンの場所
+  const place = [...groupBy(amz, x => x.label || '（不明）')].map(([k, v]) => [k + (v[0].page === 'voice' ? '（感想のページ）' : ''), v.length, uniq(v)]).sort((a, b) => b[1] - a[1]);
+  h += box('押されたAmazonボタンの場所', '予約ページのボタンは、いちばん上・特典の受け取り方・最後の案内の3か所', table(['場所', '回数', '人数'], place, 1, Math.max(1, ...place.map(r => r[1]))));
+  // 日ごと
+  const dayRows = [...groupBy(R, x => x.day)].sort((a, b) => b[0] < a[0] ? -1 : 1).map(([d, v]) => {
+    const lv = v.filter(x => x.page === 'lp' && x.ev === 'view'); const p = uniq(lv); const ap = uniq(v.filter(x => x.ev === 'amazon'));
+    return [d.slice(5).replace('-', '/') + '（' + WD[new Date(d + 'T12:00:00+09:00').getUTCDay()] + '）', lv.length, p, uniq(v.filter(x => x.ev === 'view' && x.is_new)), v.filter(x => x.page === 'voice' && x.ev === 'view').length, ap, pct(ap, p), uniq(v.filter(x => x.ev === 'chat'))];
+  });
+  h += box('日ごと', '', table(['日', '予約ページ 回数', '人数', 'はじめて', '感想のページ 回数', 'Amazonを押した人', '押した割合', 'オープンチャット'], dayRows, 1, Math.max(1, ...dayRows.map(r => r[1]))), true);
+  // 時間帯・曜日
+  const hrs = Array.from({ length: 24 }, (_, i) => { const v = lpV.filter(x => x.hour === i); return [i + '時', v.length, uniq(v)]; });
+  h += box('時間帯（予約ページを開いた回数）', '', table(['時間', '回数', '人数'], hrs, 1, Math.max(1, ...hrs.map(r => r[1]))));
+  const wds = [1, 2, 3, 4, 5, 6, 0].map(i => { const v = lpV.filter(x => x.wd === i); return [WD[i] + '曜', v.length, uniq(v)]; });
+  h += box('曜日（予約ページを開いた回数）', '', table(['曜日', '回数', '人数'], wds, 1, Math.max(1, ...wds.map(r => r[1]))));
+  // 来た経路・投稿の印
+  h += box('来た経路', 'URLに utm_source をつけたときは、その名前で数えます', breakdown(lpV, amz, 'src'));
+  const withCmp = lpV.filter(x => x.cmp);
+  h += box('投稿の印（utm_campaign）', withCmp.length ? '' : 'まだありません。配るURLの最後に ?utm_source=line&utm_campaign=1116告知 のようにつけると、ここに出ます', withCmp.length ? breakdown(withCmp, amz, 'cmp') : '');
+  // 端末・OS・アプリ
+  h += box('端末', '', breakdown(lpV, amz, 'dev'));
+  h += box('OS', '', breakdown(lpV, amz, 'os'));
+  h += box('開いたアプリ・ブラウザ', 'LINE や Instagram の中で開いた人も分かれます', breakdown(lpV, amz, 'app'));
+  // スクロールの深さ
+  const bk = [['0〜24%', 0, 24], ['25〜49%', 25, 49], ['50〜74%', 50, 74], ['75〜99%', 75, 99], ['100%（いちばん下）', 100, 100]].map(([n, a, b]) => [n, leaves.filter(x => x.dep >= a && x.dep <= b).length]);
+  h += box('どこまでスクロールしたか', 'ページを閉じた・ほかのアプリに切りかえたときのいちばん深い位置（開いた回ごと）', table(['', '回数'], bk, 1, Math.max(1, ...bk.map(r => r[1]))));
+  const tb = [['10秒まで', 0, 10], ['11〜30秒', 11, 30], ['31秒〜1分', 31, 60], ['1〜3分', 61, 180], ['3〜10分', 181, 600], ['10分より長い', 601, 1e9]].map(([n, a, b]) => [n, secs.filter(s => s >= a && s <= b).length]);
+  h += box('ページにいた時間', '画面に出ていた時間（開いた回ごと）', table(['', '回数'], tb, 1, Math.max(1, ...tb.map(r => r[1]))));
+  // そのほかのボタン
+  const other = [['オープンチャット', chat], ['受講生の声を読む（感想のページへ）', R.filter(x => x.ev === 'voice')], ['動画を押した', R.filter(x => x.ev === 'video')], ['感想の「続きを読む」', R.filter(x => x.ev === 'open')], ['感想の「もっと見る」', R.filter(x => x.ev === 'more')], ['感想の世代ボタン', R.filter(x => x.ev === 'ku')], ['ほかのリンク', R.filter(x => x.ev === 'link')]].map(([n, v]) => [n, v.length, uniq(v)]);
+  h += box('そのほかのボタン', '', table(['', '回数', '人数'], other, 1, Math.max(1, ...other.map(r => r[1]))));
+  const kuRows = [...groupBy(R.filter(x => x.ev === 'ku'), x => x.label)].map(([k, v]) => [k, v.length]).sort((a, b) => b[1] - a[1]);
+  if (kuRows.length) h += box('感想のページ：押された世代ボタン', '', table(['世代', '回数'], kuRows, 1, Math.max(1, ...kuRows.map(r => r[1]))));
+  h += '</div>';
+  $('#out').innerHTML = h;
+}
+function csv() {
+  const R = rows();
+  const cols = ['ts', 'page', 'ev', 'label', 'num', 'vid', 'sid', 'is_new', 'src', 'med', 'cmp', 'ref', 'dev', 'os', 'app', 'sw', 'lang', 'staff'];
+  const head = ['日時', 'ページ', 'できごと', 'ラベル', '数（秒など）', '端末番号', '開いた回の番号', 'はじめて', '来た経路', 'utm_medium', 'utm_campaign', '前のページ', '端末', 'OS', 'アプリ', '画面の幅', '言語', 'スタッフ'];
+  const q = v => { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const lines = [head.join(',')].concat(R.map(x => cols.map(c => q(c === 'ts' ? fmtT.format(new Date(x.ts)) : x[c])).join(',')));
+  const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'tyoukankaku_アクセス_' + $('#f-from').value + '_' + $('#f-to').value + '.csv'; a.click();
+}
+boot();
+</script>
+</body>
+</html>
