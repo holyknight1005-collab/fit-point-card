@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>アクセスの集計｜定期テスト特設ページ</title>
+<style>
+:root{--orange:#8E1F2F;--orange-d:#8E1F2F;--bg:#FBF4F2;--surface:#fff;--border:#E9C3BF;--text:#2F2224;--muted:#6A5558}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:'Hiragino Maru Gothic ProN','Hiragino Sans','Noto Sans JP',sans-serif;font-size:14px;line-height:1.6}
+header{background:linear-gradient(90deg,#8E1F2F,#5E1420);color:#fff;padding:14px 20px}
+header h1{margin:0;font-size:19px}
+header p{margin:2px 0 0;font-size:12px;opacity:.9}
+.wrap{max-width:1200px;margin:0 auto;padding:16px 16px 80px}
+.ctl{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:#fff;border-radius:14px;padding:10px 14px;margin-bottom:14px}
+.ctl label{font-size:13px;color:var(--muted);display:flex;gap:6px;align-items:center}
+.in{font:inherit;border:1.5px solid var(--border);border-radius:8px;padding:6px 8px;background:#fff}
+.btn{font:inherit;font-weight:700;border:0;border-radius:999px;padding:8px 18px;background:var(--orange);color:#fff;cursor:pointer}
+.btn.sub{background:#fff;color:var(--orange);border:1.5px solid var(--orange)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-bottom:14px}
+.cd{background:#fff;border-radius:14px;padding:12px 14px}
+.cd .k{font-size:12px;color:var(--muted)}.cd .v{font-size:26px;font-weight:800;color:var(--orange-d);line-height:1.3}.cd .s{font-size:12px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px}
+.box{background:#fff;border-radius:14px;padding:14px 16px;overflow-x:auto}
+.box h2{margin:0 0 4px;font-size:15px;color:var(--orange-d)}
+.box .note{margin:0 0 8px;font-size:12px;color:var(--muted)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:4px 6px;border-bottom:1px solid #F1E2DF;text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{font-size:12px;color:var(--muted);font-weight:700;background:#FBEDEA;position:sticky;top:0}
+td.bar{width:40%;min-width:80px;text-align:left}
+td.bar i{display:block;height:10px;border-radius:5px;background:var(--orange);min-width:1px}
+.wide{grid-column:1/-1}
+.msg{color:var(--muted);font-size:13px}.err{color:#C0392B}
+.card{background:#fff;border-radius:14px;padding:18px}
+.lbl{display:block;font-size:13px;color:var(--muted);margin-top:8px}
+.card .in{width:100%}
+</style>
+</head>
+<body>
+<header><a id="back-app" href="app.html#exec" style="display:none;font-size:13px;font-weight:700;color:inherit;opacity:.85;text-decoration:none;margin-bottom:6px">‹ アプリに戻る</a><script>/* 20261118ks99: アプリ（代表モード）から来たときだけ戻るを出す */try{if(/[?&]from=app\b/.test(location.search))document.getElementById("back-app").style.display="inline-block";}catch(e){}</script><h1>アクセスの集計｜定期テスト特設ページ</h1><p>teikitest.html（定期テスト特設ページ）。スタッフだけが見られます</p></header>
+<div class="wrap" id="app"><p class="msg">読みこみ中…</p></div>
+<script>
+// ===== fit 共通ログイン（Supabase Auth セッション）sec1 =====
+// ・ID＋PINの照合はサーバー（Edge Function fit-login）で行い、ブラウザには PIN を残さない。
+// ・発行されたセッションは localStorage 'fit_session_v1' に保存し、同じサイトの全アプリで共有する。
+// ・Supabase への fetch は自動でログイン中のトークンに差し替え、期限切れなら自動更新して1回だけ再送する。
+const FIT_SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
+const FIT_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
+const FIT_SESSION_KEY = 'fit_session_v1';
+const FIT_LEGACY_KEYS = ['fit_pin', 'fit_parent_pin', 'fit_staff_hash', 'fit_staff_pin'];
+let fitSession = null;
+let fitRefreshing = null;
+const fitRawFetch = window.fetch.bind(window);
+
+function fitLoadSession() {
+  try { fitSession = JSON.parse(localStorage.getItem(FIT_SESSION_KEY) || 'null'); } catch (e) { fitSession = fitSession || null; }
+  return fitSession;
+}
+function fitSaveSession(s) {
+  fitSession = s || null;
+  try { if (s) localStorage.setItem(FIT_SESSION_KEY, JSON.stringify(s)); else localStorage.removeItem(FIT_SESSION_KEY); } catch (e) {}
+}
+function fitClearLegacy() {
+  try { FIT_LEGACY_KEYS.forEach(k => localStorage.removeItem(k)); } catch (e) {}
+}
+// 'ok' | 'invalid'（ログインし直しが必要） | 'error'（通信エラー等。セッションは残す）| 'none'
+async function fitRefresh(force) {
+  const cur = fitLoadSession();
+  if (!cur || !cur.refresh_token) return 'none';
+  const now = Math.floor(Date.now() / 1000);
+  if (!force && (cur.expires_at || 0) - now > 300) return 'ok';
+  if (fitRefreshing) return fitRefreshing;
+  fitRefreshing = (async () => {
+    try {
+      const r = await fitRawFetch(FIT_SB_URL + '/auth/v1/token?grant_type=refresh_token', {
+        method: 'POST',
+        headers: { 'apikey': FIT_ANON, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: cur.refresh_token })
+      });
+      if (r.status === 400 || r.status === 401 || r.status === 403) {
+        // 別タブが先に更新していればそちらを使う
+        const latest = fitLoadSession();
+        if (latest && latest.refresh_token !== cur.refresh_token) return 'ok';
+        fitSaveSession(null);
+        return 'invalid';
+      }
+      if (!r.ok) return 'error';
+      const j = await r.json();
+      fitSaveSession(Object.assign({}, cur, {
+        access_token: j.access_token,
+        refresh_token: j.refresh_token,
+        expires_at: j.expires_at || (now + (j.expires_in || 3600))
+      }));
+      return 'ok';
+    } catch (e) { return 'error'; }
+    finally { fitRefreshing = null; }
+  })();
+  return fitRefreshing;
+}
+// ログイン：kind = 'staff' | 'student' | 'parent' | 'online'
+// 戻り値 { ok:true, kind, account } / { ok:false, error:'invalid'|'blocked'|'locked'|... }
+async function fitLogin(kind, id, pin) {
+  let r, j = null;
+  try {
+    r = await fitRawFetch(FIT_SB_URL + '/functions/v1/fit-login', {
+      method: 'POST',
+      headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: kind, id: id, pin: pin })
+    });
+    j = await r.json();
+  } catch (e) { return { ok: false, error: 'network' }; }
+  if (!j) return { ok: false, error: 'network' };
+  if (j.ok) {
+    fitSaveSession(Object.assign({}, j.session, { kind: j.kind, account_id: String(j.account.id) }));
+    fitClearLegacy();
+  }
+  return j;
+}
+function fitLoginErrorText(j, fallback) {
+  if (!j) return fallback;
+  if (j.error === 'locked') return 'ログインの失敗が続いたため、15分ほど待ってからお試しください。';
+  if (j.error === 'blocked') return 'このアカウントは現在ご利用いただけません。塾までお問い合わせください。';
+  if (j.error === 'network' || j.error === 'server') return '通信がうまくつながりませんでした。電波の良い場所でもう一度お試しください。';
+  return fallback;
+}
+// ===== 段階B：サーバー関数（RPC）=====
+// ポイント加算・ログインボーナス・面談共有メモなどは、サーバー側の関数で行う（生徒は直接書き換えできない）。
+async function fitRpc(name, args) {
+  const r = await fetch(FIT_SB_URL + '/rest/v1/rpc/' + name, {
+    method: 'POST',
+    headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' },
+    body: JSON.stringify(args || {})
+  });
+  const tx = await r.text();
+  if (!r.ok) throw new Error('rpc ' + name + ' ' + r.status + ' ' + tx);
+  return tx ? JSON.parse(tx) : null;
+}
+// 戻り値 { awarded: 実際に加算された点, points: 加算後の合計 }
+async function fitAwardPoints(type, points, reason, ref) {
+  return await fitRpc('fit_award_points', { p_type: type, p_points: points, p_reason: reason || null, p_ref: ref == null ? null : String(ref) });
+}
+function fitLogout() {
+  const s = fitSession || fitLoadSession();
+  fitSaveSession(null);
+  fitClearLegacy();
+  if (s && s.access_token) {
+    fitRawFetch(FIT_SB_URL + '/auth/v1/logout?scope=local', {
+      method: 'POST', headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token }
+    }).catch(() => {});
+  }
+}
+// 保存済みセッションから本人の行を取り直す。旧方式（PIN保存）の端末は1回だけ自動で移行する。
+// 戻り値 { kind, row } / null（未ログイン）。通信エラー時は例外（ログイン情報は消さない）。
+async function fitResume() {
+  let s = fitLoadSession();
+  if (!s) {
+    let email = null, pin = null, pid = null, ppin = null, role = null;
+    try {
+      email = localStorage.getItem('fit_email'); pin = localStorage.getItem('fit_pin');
+      pid = localStorage.getItem('fit_parent_id'); ppin = localStorage.getItem('fit_parent_pin');
+      role = localStorage.getItem('fit_role');
+    } catch (e) {}
+    let j = null;
+    if (email && pin) j = await fitLogin(role === 'staff' ? 'staff' : 'student', email, pin);
+    else if (pid && ppin) j = await fitLogin('parent', pid, ppin);
+    if (j && j.error === 'network') throw new Error('network');
+    fitClearLegacy();
+    s = fitLoadSession();
+    if (!s) return null;
+  }
+  const rr = await fitRefresh(false);
+  if (rr === 'invalid' || rr === 'none') return null;
+  s = fitLoadSession();
+  if (!s) return null;
+  const table = { staff: 'staff', student: 'students', parent: 'parent_accounts', online: 'online_students' }[s.kind];
+  if (!table) { fitLogout(); return null; }
+  // sec4: 生徒・保護者は students を直接読まず、表示用の列だけ返す関数から受け取る（生徒は自分の1行）
+  const res = s.kind === 'student'
+    ? await fitRawFetch(FIT_SB_URL + '/rest/v1/rpc/fit_my_students', {
+        method: 'POST',
+        headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token, 'Content-Type': 'application/json' },
+        body: '{}'
+      })
+    : await fitRawFetch(FIT_SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(s.account_id) + '&select=*', {
+        headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token }
+      });
+  if (res.status === 401 || res.status === 403) {
+    const again = await fitRefresh(true);
+    if (again === 'invalid' || again === 'none') return null;
+    throw new Error('auth ' + res.status);
+  }
+  if (!res.ok) throw new Error('resume ' + res.status);
+  const rows = await res.json();
+  if (!rows.length || rows[0].is_active === false && s.kind !== 'student') { fitLogout(); return null; }
+  return { kind: s.kind, row: rows[0] };
+}
+// Supabase への fetch をログイン中のトークンに差し替える（各画面のコードはそのまま使える）
+window.fetch = async function (input, init) {
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  if (url.indexOf(FIT_SB_URL) !== 0 || url.indexOf('/auth/v1/') > 0 || url.indexOf('/functions/v1/fit-login') > 0) {
+    return fitRawFetch(input, init);
+  }
+  // 呼び出し時点のトークンを控えておく（直後にログアウトしても、その前に始めた保存は通す）
+  const tokenAtCall = fitLoadSession() ? fitSession.access_token : null;
+  if (tokenAtCall) await fitRefresh(false);
+  const send = () => {
+    const opt = Object.assign({}, init || {});
+    const h = new Headers(opt.headers || (input && typeof input !== 'string' ? input.headers : undefined));
+    const tok = (fitSession && fitSession.access_token) || tokenAtCall;
+    if (tok) h.set('Authorization', 'Bearer ' + tok);
+    opt.headers = h;
+    return fitRawFetch(input, opt);
+  };
+  let res = await send();
+  if (res.status === 401 && fitSession && fitSession.refresh_token) {
+    const rr = await fitRefresh(true);
+    if (rr === 'ok') res = await send();
+  }
+  return res;
+};
+setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
+
+// ============================================================
+// アクセスの集計（tyoukankaku_stats.html）2026-11-16
+// 表 tyoukankaku_events（SQL tk1）を全部読み、画面で集計する。スタッフだけ（RLS：fit_is_staff()）
+// ============================================================
+const $ = s => document.querySelector(s);
+const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const WD = ['日', '月', '火', '水', '木', '金', '土'];
+let ALL = [];
+// 来た経路（utm_source）の表示名。リンクの末尾 ?utm_source=〇〇 の〇〇
+const SRCNAME = { instagram: 'Instagram（プロフィール）', story: 'Instagram（ストーリーズ）', ad: 'Instagram広告', line: 'LINE', app: 'fitアプリ', direct: '直接・ブックマーク', search: '検索', facebook: 'Facebook' };
+const EVNAME = { line: '参加予約（公式LINE）', tel: '電話', nittei: '「日程を見る」', jishu: '「自習室について」', insta: 'Instagramへ', link: 'ほかのリンク' };
+// ページ（テストごと）の名前。teikitest.html の PAGE と合わせる
+const PAGENAME = { 'kita-2026-2ki-kimatsu': '北高 2学期期末（2026）' };
+const COLS = 'id,ts,page,ev,label,num,vid,sid,is_new,src,med,cmp,ref,dev,os,app,sw,staff';
+const fmtD = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' });
+const fmtH = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tokyo', hour: 'numeric', hourCycle: 'h23' });
+const fmtW = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tokyo', weekday: 'short' });
+const fmtT = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const WMAP = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+async function boot() {
+  let me = null;
+  try { me = await fitResume(); } catch (e) { $('#app').innerHTML = '<p class="msg err">通信がうまくつながりませんでした。読みこみ直してください。</p>'; return; }
+  if (!me || me.kind !== 'staff') { loginView(); return; }
+  await load();
+}
+function loginView(msg) {
+  $('#app').innerHTML = `<div class="card" style="max-width:420px;margin:10px auto">
+    <p style="margin:0 0 4px;font-weight:800;font-size:16px">スタッフのログイン</p>
+    <p class="msg" style="margin-top:0">fitアプリと同じスタッフIDとパスワードで入れます。</p>
+    <label class="lbl" for="lg-id">スタッフID</label><input class="in" id="lg-id" type="text" autocomplete="username" autocapitalize="off" spellcheck="false">
+    <label class="lbl" for="lg-pw">パスワード</label><input class="in" id="lg-pw" type="password" autocomplete="current-password">
+    <div id="lg-msg" class="msg err">${esc(msg || '')}</div>
+    <button class="btn" id="lg-go" style="width:100%;margin-top:6px">ログイン</button></div>`;
+  $('#lg-go').onclick = doLogin;
+  $('#lg-pw').onkeydown = e => { if (e.key === 'Enter') doLogin(); };
+}
+async function doLogin() {
+  const id = ($('#lg-id').value || '').trim().toLowerCase(), pw = ($('#lg-pw').value || '').trim();
+  if (!id || !pw) { $('#lg-msg').textContent = 'スタッフIDとパスワードを入れてください'; return; }
+  const j = await fitLogin('staff', id, pw);
+  if (!j.ok) { $('#lg-msg').textContent = fitLoginErrorText(j, 'IDかパスワードがちがいます'); return; }
+  await load();
+}
+async function load() {
+  $('#app').innerHTML = '<p class="msg">記録を読みこみ中…</p>';
+  ALL = [];
+  for (let off = 0; ; off += 1000) {
+    const r = await fetch(FIT_SB_URL + '/rest/v1/teiki_events?select=' + COLS + '&order=id.asc&limit=1000&offset=' + off, { headers: { apikey: FIT_ANON } });
+    if (!r.ok) { $('#app').innerHTML = '<p class="msg err">読みこめませんでした（' + r.status + '）。表 teiki_events を作るSQLを流したか、スタッフでログインしているかを確かめてください。</p>'; return; }
+    const rows = await r.json();
+    rows.forEach(x => { x.srcName = SRCNAME[x.src] || x.src || '（なし）'; const d = new Date(x.ts); x.day = fmtD.format(d); x.hour = +fmtH.format(d) % 24; x.wd = WMAP[fmtW.format(d)]; });
+    ALL = ALL.concat(rows);
+    if (rows.length < 1000) break;
+  }
+  frame();
+}
+function frame() {
+  const days = ALL.map(x => x.day).sort();
+  const today = fmtD.format(new Date());
+  const pages = [...new Set(ALL.map(x => x.page || ''))].sort().reverse();
+  $('#app').innerHTML = `<div class="ctl">
+    <label>ページ <select class="in" id="f-page"><option value="">すべて</option>${pages.map(p => `<option value="${esc(p)}">${esc(PAGENAME[p] || p)}</option>`).join('')}</select></label>
+    <label>期間 <input type="date" class="in" id="f-from" value="${days[0] || today}"> 〜 <input type="date" class="in" id="f-to" value="${today}"></label>
+    <label><input type="checkbox" id="f-staff" checked> スタッフの端末をのぞく</label>
+    <span style="flex:1"></span>
+    <button class="btn sub" id="f-reload">最新にする</button>
+    <button class="btn" id="f-csv">CSVでダウンロード</button>
+    <span class="msg">記録 ${ALL.length.toLocaleString()} 件</span></div>
+    <div id="out"></div>`;
+  ['#f-page', '#f-from', '#f-to', '#f-staff'].forEach(s => $(s).onchange = render);
+  $('#f-reload').onclick = load;
+  $('#f-csv').onclick = csv;
+  render();
+}
+function rows() {
+  const pg = $('#f-page').value, a = $('#f-from').value, b = $('#f-to').value, st = $('#f-staff').checked;
+  return ALL.filter(x => (!pg || x.page === pg) && (!a || x.day >= a) && (!b || x.day <= b) && (!st || !x.staff));
+}
+const uniq = (arr, f) => new Set(arr.map(f || (x => x.vid))).size;
+const pct = (a, b) => b ? Math.round(a / b * 1000) / 10 + '%' : '—';
+function table(head, body, barCol, max) {
+  return `<table><tr>${head.map(h => `<th>${esc(h)}</th>`).join('')}${barCol != null ? '<th></th>' : ''}</tr>${body.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}${barCol != null ? `<td class="bar"><i style="width:${max ? Math.round(r[barCol] / max * 100) : 0}%"></i></td>` : ''}</tr>`).join('')}</table>`;
+}
+function box(title, note, inner, wide) { return `<div class="box${wide ? ' wide' : ''}"><h2>${esc(title)}</h2>${note ? `<p class="note">${esc(note)}</p>` : ''}${inner}</div>`; }
+function groupBy(arr, f) { const m = new Map(); arr.forEach(x => { const k = f(x); if (!m.has(k)) m.set(k, []); m.get(k).push(x); }); return m; }
+// 見た人（view）を key で分けて、そのうち参加予約（LINE）を押した人の数と割合
+function breakdown(R, key, label) {
+  const views = R.filter(x => x.ev === 'view'), lines = R.filter(x => x.ev === 'line');
+  const lineBy = groupBy(lines, x => x[key] == null || x[key] === '' ? '（なし）' : x[key]);
+  const list = [...groupBy(views, x => x[key] == null || x[key] === '' ? '（なし）' : x[key])].map(([k, v]) => { const p = uniq(v); const lp = uniq(lineBy.get(k) || []); return [k, v.length, p, lp, pct(lp, p)]; }).sort((a, b) => b[2] - a[2]);
+  const max = Math.max(1, ...list.map(r => r[2]));
+  return table([label || '', '開いた回数', '人数', '参加予約を押した人', '押した割合'], list, 2, max);
+}
+function render() {
+  const R = rows();
+  const V = R.filter(x => x.ev === 'view');
+  const people = uniq(V), newP = uniq(V.filter(x => x.is_new));
+  const lineP = uniq(R.filter(x => x.ev === 'line')), telP = uniq(R.filter(x => x.ev === 'tel'));
+  const jishuSeen = uniq(R.filter(x => x.ev === 'sec' && /自習室/.test(x.label || '')));
+  const lv = R.filter(x => x.ev === 'leave' && x.num != null);
+  const sec = lv.map(x => x.num).sort((a, b) => a - b);
+  const med = sec.length ? sec[Math.floor(sec.length / 2)] : null;
+  const card = (k, v, s) => `<div class="cd"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div><div class="s">${esc(s || '')}</div></div>`;
+  let h = `<div class="cards">
+    ${card('開いた回数', V.length.toLocaleString(), '')}
+    ${card('見た人（端末）', people.toLocaleString(), 'うち はじめて ' + newP)}
+    ${card('参加予約（LINE）を押した人', lineP.toLocaleString(), '見た人の ' + pct(lineP, people))}
+    ${card('電話を押した人', telP.toLocaleString(), '見た人の ' + pct(telP, people))}
+    ${card('自習室の欄まで見た人', jishuSeen.toLocaleString(), '見た人の ' + pct(jishuSeen, people))}
+    ${card('いた時間（まん中の人）', med == null ? '—' : (med >= 60 ? Math.floor(med / 60) + '分' + (med % 60) + '秒' : med + '秒'), '')}
+  </div><div class="grid">`;
+
+  // 日ごと
+  const dayRows = [...groupBy(V, x => x.day)].sort((a, b) => a[0] < b[0] ? 1 : -1).map(([d, v]) => {
+    const all = R.filter(x => x.day === d);
+    return [d.slice(5).replace('-', '/') + '（' + WD[new Date(d + 'T12:00:00+09:00').getUTCDay()] + '）', v.length, uniq(v), uniq(all.filter(x => x.ev === 'line')), uniq(all.filter(x => x.ev === 'tel'))];
+  });
+  h += box('日ごと', '新しい日が上', dayRows.length ? table(['日', '開いた回数', '人数', '参加予約', '電話'], dayRows, 2, Math.max(1, ...dayRows.map(r => r[2]))) : '<p class="msg">まだ記録がありません</p>');
+
+  // 来た経路
+  h += box('来た経路', 'リンクの末尾 ?utm_source=〇〇 の印（なければアプリや前のページから自動で判定）', breakdown(R, 'srcName', '経路'));
+
+  // 学年のタブ
+  const gr = [...groupBy(R.filter(x => x.ev === 'grade'), x => x.label || '（不明）')].map(([k, v]) => [k, v.length, uniq(v)]).sort((a, b) => b[2] - a[2]);
+  h += box('学年のタブ', '1年生／2年生のタブを押した数（最初に出ている1年生は数えない）', gr.length ? table(['学年', '押した回数', '人数'], gr, 2, Math.max(1, ...gr.map(r => r[2]))) : '<p class="msg">まだ押されていません</p>');
+
+  // ボタン
+  const bt = [...groupBy(R.filter(x => EVNAME[x.ev]), x => EVNAME[x.ev] + '｜' + (x.ev === 'link' ? x.label : (x.label || '')))].map(([k, v]) => [k, v.length, uniq(v)]).sort((a, b) => b[2] - a[2]);
+  h += box('押されたボタン', 'ボタンの名前｜ページのどこにあったボタンか（トップ・日程・最後 など）', bt.length ? table(['ボタン', '押した回数', '人数'], bt, 2, Math.max(1, ...bt.map(r => r[2]))) : '<p class="msg">まだ押されていません</p>');
+
+  // どこまで読んだか
+  const secs = [...groupBy(R.filter(x => x.ev === 'sec'), x => x.label || '')].map(([k, v]) => [k, uniq(v), pct(uniq(v), people)]);
+  const ORDER = ['テスト対策の日程', '自習室も開放中！', '参加予約の流れ', 'fitに来たくなる', '担当スタッフ'];
+  secs.sort((a, b) => { const ia = ORDER.findIndex(o => a[0].indexOf(o.slice(0, 5)) === 0), ib = ORDER.findIndex(o => b[0].indexOf(o.slice(0, 5)) === 0); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib); });
+  h += box('どこまで読んだか', '欄の見出しが画面に出た人の数（上から順）', secs.length ? table(['欄', '人数', '見た人のうち'], secs, 1, Math.max(1, people)) : '<p class="msg">まだ記録がありません</p>');
+
+  // 端末・アプリ
+  h += box('端末', '', breakdown(R, 'dev', '端末'));
+  h += box('開いたアプリ', 'LINE・Instagram の中で開いたか、ブラウザで開いたか', breakdown(R, 'app', 'アプリ'));
+
+  // 時間帯
+  const hr = [...Array(24).keys()].map(i => { const v = V.filter(x => x.hour === i); return [i + '時台', v.length, uniq(v)]; }).filter(r => r[1] > 0);
+  h += box('時間帯', '開いた時間（日本時間）', hr.length ? table(['時間', '開いた回数', '人数'], hr, 2, Math.max(1, ...hr.map(r => r[2]))) : '<p class="msg">まだ記録がありません</p>');
+
+  // スクロール
+  const dp = [[0, 25], [25, 50], [50, 75], [75, 100], [100, 101]].map(([a, b]) => { const v = lv.filter(x => { const p = +x.label || 0; return p >= a && p < b; }); return [b === 101 ? '100%（いちばん下まで）' : a + '〜' + (b - 1) + '%', v.length]; });
+  h += box('スクロールの深さ', 'ページを閉じた・切りかえたときに、いちばん下までのうちどこまで見たか', table(['深さ', '回数'], dp, 1, Math.max(1, ...dp.map(r => r[1]))));
+
+  h += '</div>';
+  $('#out').innerHTML = h;
+}
+function csv() {
+  const R = rows();
+  const cols = ['ts', 'page', 'ev', 'label', 'num', 'vid', 'sid', 'is_new', 'src', 'med', 'cmp', 'ref', 'dev', 'os', 'app', 'sw', 'staff'];
+  const head = ['日時', 'ページ', 'できごと', 'ラベル', '数（秒など）', '端末番号', '開いた回の番号', 'はじめて', '来た経路', 'utm_medium', 'utm_campaign', '前のページ', '端末', 'OS', 'アプリ', '画面の幅', 'スタッフの端末'];
+  const q = v => { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const lines = [head.join(',')].concat(R.map(x => cols.map(c => q(c === 'ts' ? fmtT.format(new Date(x.ts)) : x[c])).join(',')));
+  const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'teikitest_アクセス_' + $('#f-from').value + '_' + $('#f-to').value + '.csv'; a.click();
+}
+boot();
+</script>
+</body>
+</html>
