@@ -251,7 +251,7 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 // ・消せるのは自分のルート（責任者は全部）。GPX ファイルそのものは残さない（道すじの点だけ・1本 8000 点くらいまで・1m より小さいずれだけ間引く）
 // ・地図は国土地理院の地図（淡色地図）＋ Leaflet
 // ============================================================
-const RT_VERSION = '20261123rt2';   // rt2：配った範囲（太い帯）と道すじの切りかえ・ポスティングの町の印（済＝緑／まだ＝灰色）・エリアの一覧／地図は 淡色・標準・航空写真 を切りかえ
+const RT_VERSION = '20261123rt3';   // rt3：配った人の名前（walker_name。はじめは取り込んだ人・大学生など アプリにいない人の名前にも変えられる・あとから「名前を変える」）。人ごとの色・合計・しぼり込みは配った人で（SQL rt2）／rt2：配った範囲（太い帯）と道すじの切りかえ・ポスティングの町の印（済＝緑／まだ＝灰色）・エリアの一覧／地図は 淡色・標準・航空写真 を切りかえ
 const RT_KINDS = ['ポスティング', 'その他'];
 const RT_MAXPTS = 8000;
 const RT_COLORS = ['#E74C3C', '#2980B9', '#27AE60', '#8E44AD', '#E67E22', '#16A085', '#C0392B', '#2C3E50', '#D35400', '#7D3C98', '#1ABC9C', '#B7950B', '#5D6D7E', '#A93226', '#1F618D'];
@@ -393,7 +393,7 @@ function drawTowns() {
     const m = L.circleMarker(x.pos, { radius: 7, color: '#fff', weight: 2, fillColor: done ? '#27AE60' : '#95A5A6', fillOpacity: 0.95 });
     m.bindTooltip(esc(t.n), { permanent: true, direction: 'right', offset: [8, 0], className: 'tlabel' + (done ? ' done' : '') });
     m.bindPopup('<b>' + esc(t.n) + '</b>（' + esc(t.area) + '）' + (t.note ? '<br><span style="color:#888">' + esc(t.note) + '</span>' : '') + '<br>' +
-      (done ? '最後に通った日：' + esc(md(last.started_at || last.created_at)) + '（' + esc((STAFF[last.staff_id] || {}).name || '') + '）<br>この期間に ' + x.hits.length + '本' : 'この期間はまだ通っていません'));
+      (done ? '最後に通った日：' + esc(md(last.started_at || last.created_at)) + '（' + esc(whoOf(last)) + '）<br>この期間に ' + x.hits.length + '本' : 'この期間はまだ通っていません'));
     m.addTo(TOWN_LAYER);
   });
   // エリアの一覧
@@ -506,34 +506,39 @@ function range() {
 }
 async function load() {
   const [a, b] = range();
-  let q = 'staff_routes?select=id,staff_id,kind,memo,title,started_at,ended_at,distance_m,point_count,points,created_at&order=started_at.desc.nullslast';
+  let q = 'staff_routes?select=id,staff_id,walker_name,kind,memo,title,started_at,ended_at,distance_m,point_count,points,created_at&order=started_at.desc.nullslast';
   if (a) q += '&started_at=gte.' + a + 'T00:00:00%2B09:00';
   if (b) q += '&started_at=lt.' + b + 'T00:00:00%2B09:00';
   $('#list').innerHTML = '<div class="msg">読み込み中…</div>';
   try { ROUTES = await rest('GET', q) || []; }
   catch (e) { $('#list').innerHTML = '<div class="msg err">' + esc(errText(e)) + '</div>'; ROUTES = []; }
-  const ids = [...new Set(ROUTES.map(r => r.staff_id).filter(Boolean))];
+  const ids = [...new Set(ROUTES.map(whoOf))].sort((x, y) => x.localeCompare(y, 'ja'));
   const sel = $('#f-staff'), cur = F.staff;
-  sel.innerHTML = '<option value="">全員</option>' + ids.map(id => '<option value="' + esc(id) + '"' + (id === cur ? ' selected' : '') + '>' + esc((STAFF[id] || {}).name || '（不明）') + '</option>').join('');
+  sel.innerHTML = '<option value="">全員</option>' + ids.map(id => '<option value="' + esc(id) + '"' + (id === cur ? ' selected' : '') + '>' + esc(id) + '</option>').join('');
   if (cur && ids.indexOf(cur) < 0) F.staff = '';
   draw(true);
 }
-function colorOf(staffId) {
-  const ids = Object.keys(STAFF).sort((x, y) => String((STAFF[x] || {}).sid).localeCompare(String((STAFF[y] || {}).sid)));
-  const i = Math.max(0, ids.indexOf(staffId));
-  return RT_COLORS[i % RT_COLORS.length];
+// 配った人：walker_name（なければ取り込んだスタッフの名前）。色は名前から決める（同じ人はいつも同じ色）
+function whoOf(r) { return String((r && r.walker_name) || ((STAFF[r && r.staff_id] || {}).name) || '（不明）').trim(); }
+function colorOf(name) {
+  let h = 0; const t = String(name || ''); for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
+  return RT_COLORS[h % RT_COLORS.length];
 }
-function shown() { return ROUTES.filter(r => (!F.staff || r.staff_id === F.staff) && (!F.kind || r.kind === F.kind)); }
+function walkerNames() {   // 入力の候補：これまでの配った人＋スタッフ
+  const a = new Set(); ROUTES.forEach(r => a.add(whoOf(r))); Object.keys(STAFF).forEach(id => { if (STAFF[id].active) a.add(STAFF[id].name); });
+  return [...a].filter(Boolean).sort((x, y) => x.localeCompare(y, 'ja'));
+}
+function shown() { return ROUTES.filter(r => (!F.staff || whoOf(r) === F.staff) && (!F.kind || r.kind === F.kind)); }
 function draw(fit) {
   LAYER.clearLayers(); LINES = {};
   const list = shown();
   let bounds = null;
   list.forEach(r => {
     const segs = Array.isArray(r.points) ? r.points : [];
-    const col = colorOf(r.staff_id);
+    const col = colorOf(whoOf(r));
     const pl = VIEW === 'band' ? L.polyline(segs, { color: col, weight: bandPx(), opacity: 0.35, lineCap: 'round', lineJoin: 'round' })
                                : L.polyline(segs, { color: col, weight: SEL === r.id ? 6 : 4, opacity: SEL && SEL !== r.id ? 0.35 : 0.85 });
-    pl.bindPopup('<b>' + esc((STAFF[r.staff_id] || {}).name || '') + '</b>　' + esc(r.kind || '') + '<br>' + esc(md(r.started_at || r.created_at)) + ' ' + esc(hm(r.started_at)) + (r.ended_at ? '〜' + esc(hm(r.ended_at)) : '') + '　' + km(r.distance_m) + (r.memo ? '<br>' + esc(r.memo) : ''));
+    pl.bindPopup('<b>' + esc(whoOf(r)) + '</b>　' + esc(r.kind || '') + '<br>' + esc(md(r.started_at || r.created_at)) + ' ' + esc(hm(r.started_at)) + (r.ended_at ? '〜' + esc(hm(r.ended_at)) : '') + '　' + km(r.distance_m) + (r.memo ? '<br>' + esc(r.memo) : ''));
     pl.on('click', () => { SEL = r.id; highlight(); });
     pl.addTo(LAYER); LINES[r.id] = pl;
     try { const bb = pl.getBounds(); if (bb.isValid()) bounds = bounds ? bounds.extend(bb) : L.latLngBounds(bb.getSouthWest(), bb.getNorthEast()); } catch (e) {}
@@ -542,19 +547,21 @@ function draw(fit) {
   drawTowns();
   // 人ごとの合計
   const by = {};
-  list.forEach(r => { const k = r.staff_id || '-'; by[k] = by[k] || { n: 0, m: 0 }; by[k].n++; by[k].m += r.distance_m || 0; });
+  list.forEach(r => { const k = whoOf(r); by[k] = by[k] || { n: 0, m: 0 }; by[k].n++; by[k].m += r.distance_m || 0; });
   const tot = list.reduce((a, r) => a + (r.distance_m || 0), 0);
-  $('#sum').innerHTML = Object.keys(by).length ? Object.keys(by).sort((a, b) => by[b].m - by[a].m).map(k => '<span class="chip' + (F.staff === k ? ' on' : '') + '" data-st="' + esc(k) + '"><span class="dot" style="background:' + colorOf(k) + '"></span>' + esc((STAFF[k] || {}).name || '（不明）') + '　' + by[k].n + '本・' + km(by[k].m) + '</span>').join('') + '<span class="msg" style="align-self:center">合計 ' + list.length + '本・' + km(tot) + '</span>' : '<span class="msg">この期間のルートはありません</span>';
+  $('#sum').innerHTML = Object.keys(by).length ? Object.keys(by).sort((a, b) => by[b].m - by[a].m).map(k => '<span class="chip' + (F.staff === k ? ' on' : '') + '" data-st="' + esc(k) + '"><span class="dot" style="background:' + colorOf(k) + '"></span>' + esc(k) + '　' + by[k].n + '本・' + km(by[k].m) + '</span>').join('') + '<span class="msg" style="align-self:center">合計 ' + list.length + '本・' + km(tot) + '</span>' : '<span class="msg">この期間のルートはありません</span>';
   document.querySelectorAll('[data-st]').forEach(c => c.onclick = () => { F.staff = F.staff === c.dataset.st ? '' : c.dataset.st; $('#f-staff').value = F.staff; draw(true); });
   // 一覧
   $('#list').innerHTML = list.length ? list.map(r => {
     const mine = r.staff_id === ME.row.id;
-    return '<div class="row' + (SEL === r.id ? ' on' : '') + '" data-id="' + r.id + '"><span class="dot" style="background:' + colorOf(r.staff_id) + '"></span><div class="rmain"><div class="rt">' + esc(md(r.started_at || r.created_at)) + ' ' + esc(hm(r.started_at)) + (r.ended_at ? '〜' + esc(hm(r.ended_at)) : '') + '　' + esc((STAFF[r.staff_id] || {}).name || '') + '</div>' +
-      '<div class="rm">' + esc(r.kind || '') + '・' + km(r.distance_m) + (r.memo ? '・' + esc(r.memo) : '') + '</div></div>' +
-      (mine || IS_MGR ? '<button class="btn danger small" data-del="' + r.id + '">消す</button>' : '') + '</div>';
+    const up = (STAFF[r.staff_id] || {}).name || '';
+    return '<div class="row' + (SEL === r.id ? ' on' : '') + '" data-id="' + r.id + '"><span class="dot" style="background:' + colorOf(whoOf(r)) + '"></span><div class="rmain"><div class="rt">' + esc(md(r.started_at || r.created_at)) + ' ' + esc(hm(r.started_at)) + (r.ended_at ? '〜' + esc(hm(r.ended_at)) : '') + '　' + esc(whoOf(r)) + '</div>' +
+      '<div class="rm">' + esc(r.kind || '') + '・' + km(r.distance_m) + (r.memo ? '・' + esc(r.memo) : '') + (up && up !== whoOf(r) ? '・取り込み：' + esc(up) : '') + '</div></div>' +
+      (mine || IS_MGR ? '<button class="btn sub small" data-ren="' + r.id + '">名前を変える</button><button class="btn danger small" data-del="' + r.id + '">消す</button>' : '') + '</div>';
   }).join('') : '<div class="msg">この期間のルートはありません。「＋ GPX を取り込む」から入れてください。</div>';
-  document.querySelectorAll('.row[data-id]').forEach(el => el.onclick = (e) => { if (e.target.closest('[data-del]')) return; SEL = el.dataset.id; highlight(true); });
+  document.querySelectorAll('.row[data-id]').forEach(el => el.onclick = (e) => { if (e.target.closest('[data-del],[data-ren]')) return; SEL = el.dataset.id; highlight(true); });
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => delRoute(b.dataset.del));
+  document.querySelectorAll('[data-ren]').forEach(b => b.onclick = () => renameRoute(b.dataset.ren));
 }
 function highlight(zoom) {
   if (VIEW === 'line') Object.keys(LINES).forEach(id => LINES[id].setStyle({ weight: id === SEL ? 6 : 4, opacity: id === SEL ? 0.95 : 0.3 }));
@@ -564,12 +571,32 @@ function highlight(zoom) {
 }
 async function delRoute(id) {
   const r = ROUTES.find(x => x.id === id); if (!r) return;
-  const bg = modal('<h3>このルートを消しますか？</h3><div class="msg">' + esc(md(r.started_at || r.created_at)) + '　' + esc((STAFF[r.staff_id] || {}).name || '') + '　' + km(r.distance_m) + '<br>消すと元に戻せません。</div><div class="mb"><button class="btn sub" data-no>やめる</button><button class="btn danger" data-ok>消す</button></div>');
+  const bg = modal('<h3>このルートを消しますか？</h3><div class="msg">' + esc(md(r.started_at || r.created_at)) + '　' + esc(whoOf(r)) + '　' + km(r.distance_m) + '<br>消すと元に戻せません。</div><div class="mb"><button class="btn sub" data-no>やめる</button><button class="btn danger" data-ok>消す</button></div>');
   bg.querySelector('[data-no]').onclick = () => bg.remove();
   bg.querySelector('[data-ok]').onclick = async () => {
     bg.remove();
     try { await rest('DELETE', 'staff_routes?id=eq.' + encodeURIComponent(id), null, { Prefer: 'return=representation' }).then(rows => { if (!rows || !rows.length) throw new Error('消せませんでした（自分のルートだけ消せます）'); }); if (SEL === id) SEL = null; load(); }
     catch (e) { alert(errText(e)); }
+  };
+}
+
+// ---------- 配った人の名前を変える（取り込んだ人・責任者）----------
+function nameInput(id, val) {
+  return '<input class="in" id="' + id + '" list="' + id + '-l" value="' + esc(val || '') + '" style="width:100%" placeholder="例：松山 太郎（大学生）"><datalist id="' + id + '-l">' + walkerNames().map(n => '<option value="' + esc(n) + '">').join('') + '</datalist>';
+}
+function renameRoute(id) {
+  const r = ROUTES.find(x => x.id === id); if (!r) return;
+  const bg = modal('<h3>配った人の名前を変える</h3><div class="msg">' + esc(md(r.started_at || r.created_at)) + '　' + km(r.distance_m) + '</div><label class="lbl">配った人</label>' + nameInput('rn-name', whoOf(r)) +
+    '<div class="msg" style="margin-top:4px">大学生など、アプリに入っていない人の名前も入れられます。同じ人は同じ書き方にすると、合計がまとまります。</div>' +
+    '<div class="mb"><button class="btn sub" data-no>やめる</button><button class="btn" data-ok>変える</button></div>');
+  bg.querySelector('[data-no]').onclick = () => bg.remove();
+  bg.querySelector('[data-ok]').onclick = async () => {
+    const v = ($('#rn-name').value || '').trim(); if (!v) { alert('名前を入れてください'); return; }
+    try {
+      const rows = await rest('PATCH', 'staff_routes?id=eq.' + encodeURIComponent(id), { walker_name: v }, { Prefer: 'return=representation' });
+      if (!rows || !rows.length) throw new Error('変えられませんでした（自分が取り込んだルートだけ変えられます）');
+      bg.remove(); load();
+    } catch (e) { alert(/walker_name/.test(String(e.message)) ? '「配った人」の列がまだありません。SQL rt2 を流してください。' : errText(e)); }
   };
 }
 
@@ -588,6 +615,7 @@ async function importFiles(files) {
     items.map((g, i) => g.error ? '<div class="frow err">✕ ' + esc(g.file) + '：' + esc(g.error) + '</div>' :
       '<div class="frow"><b>' + esc(g.file) + '</b>　' + km(g.distance_m) + '・' + g.point_count + '点' + (g.raw_count > g.point_count ? '（' + g.raw_count + '点から間引き）' : '') +
       '<br>日にち <input type="date" class="in" data-date="' + i + '" value="' + g.date + '">' + (g.started_at ? '　' + hm(g.started_at) + (g.ended_at ? '〜' + hm(g.ended_at) : '') : '　<span class="msg">（時刻なし）</span>') + '</div>').join('') +
+    '<label class="lbl">配った人（はじめは自分。大学生などに変えられます）</label>' + nameInput('im-who', ME.row.name || '') +
     '<label class="lbl">種類</label><select class="in" id="im-kind">' + RT_KINDS.map(k => '<option>' + k + '</option>').join('') + '</select>' +
     '<label class="lbl">ひとこと（なくてもよい）</label><input class="in" id="im-memo" style="width:100%" placeholder="例：〇〇町 冬期講習のチラシ 300枚">' +
     '<div class="msg" style="margin-top:6px">地図の黒い点線が、これから入れるルートです。GPX ファイルそのものは残しません。</div>' +
@@ -595,18 +623,18 @@ async function importFiles(files) {
   const close = () => { bg.remove(); MAP.removeLayer(prev); };
   bg.querySelector('[data-no]').onclick = close;
   bg.querySelector('[data-ok]').onclick = async () => {
-    const kind = $('#im-kind').value, memo = ($('#im-memo').value || '').trim();
+    const kind = $('#im-kind').value, memo = ($('#im-memo').value || '').trim(), who = ($('#im-who').value || '').trim() || (ME.row.name || '');
     const rows = [];
     items.forEach((g, i) => {
       if (g.error) return;
       const d = (bg.querySelector('[data-date="' + i + '"]') || {}).value || g.date;
       let st = g.started_at, en = g.ended_at;
       if (!st || jstDate(st) !== d) { st = d + 'T00:00:00+09:00'; if (!g.started_at) en = null; else { st = d + 'T' + hm(g.started_at) + ':00+09:00'; en = g.ended_at ? d + 'T' + hm(g.ended_at) + ':00+09:00' : null; } }
-      rows.push({ staff_id: ME.row.id, kind: kind, memo: memo || null, title: g.name || null, started_at: st, ended_at: en, distance_m: g.distance_m, point_count: g.point_count, points: g.points });
+      rows.push({ staff_id: ME.row.id, walker_name: who, kind: kind, memo: memo || null, title: g.name || null, started_at: st, ended_at: en, distance_m: g.distance_m, point_count: g.point_count, points: g.points });
     });
     const btn = bg.querySelector('[data-ok]'); btn.disabled = true; btn.textContent = '登録中…';
     try { await rest('POST', 'staff_routes', rows, { Prefer: 'return=minimal' }); close(); load(); }
-    catch (e) { btn.disabled = false; btn.textContent = '登録する'; alert(errText(e)); }
+    catch (e) { btn.disabled = false; btn.textContent = '登録する'; alert(/walker_name/.test(String(e.message)) ? '「配った人」の列がまだありません。SQL rt2 を流してください。' : errText(e)); }
   };
 }
 
