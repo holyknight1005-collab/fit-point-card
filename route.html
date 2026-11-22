@@ -251,7 +251,7 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 // ・消せるのは自分のルート（責任者は全部）。GPX ファイルそのものは残さない（道すじの点だけ・1本 8000 点くらいまで・1m より小さいずれだけ間引く）
 // ・地図は国土地理院の地図（淡色地図）＋ Leaflet
 // ============================================================
-const RT_VERSION = '20261123rt3';   // rt3：配った人の名前（walker_name。はじめは取り込んだ人・大学生など アプリにいない人の名前にも変えられる・あとから「名前を変える」）。人ごとの色・合計・しぼり込みは配った人で（SQL rt2）／rt2：配った範囲（太い帯）と道すじの切りかえ・ポスティングの町の印（済＝緑／まだ＝灰色）・エリアの一覧／地図は 淡色・標準・航空写真 を切りかえ
+const RT_VERSION = '20261123rt4';   // rt4：取り込んだあと、その日が見える期間に切りかえて地図をそのルートへ寄せる（前は「今月」のままで、9月の GPX が見えず、何も起きていないように見えた）・同じルートをもう一度入れようとしたら知らせて入れない／rt3：配った人の名前（walker_name。はじめは取り込んだ人・大学生など アプリにいない人の名前にも変えられる・あとから「名前を変える」）。人ごとの色・合計・しぼり込みは配った人で（SQL rt2）／rt2：配った範囲（太い帯）と道すじの切りかえ・ポスティングの町の印（済＝緑／まだ＝灰色）・エリアの一覧／地図は 淡色・標準・航空写真 を切りかえ
 const RT_KINDS = ['ポスティング', 'その他'];
 const RT_MAXPTS = 8000;
 const RT_COLORS = ['#E74C3C', '#2980B9', '#27AE60', '#8E44AD', '#E67E22', '#16A085', '#C0392B', '#2C3E50', '#D35400', '#7D3C98', '#1ABC9C', '#B7950B', '#5D6D7E', '#A93226', '#1F618D'];
@@ -633,7 +633,25 @@ async function importFiles(files) {
       rows.push({ staff_id: ME.row.id, walker_name: who, kind: kind, memo: memo || null, title: g.name || null, started_at: st, ended_at: en, distance_m: g.distance_m, point_count: g.point_count, points: g.points });
     });
     const btn = bg.querySelector('[data-ok]'); btn.disabled = true; btn.textContent = '登録中…';
-    try { await rest('POST', 'staff_routes', rows, { Prefer: 'return=minimal' }); close(); load(); }
+    try {
+      // 同じルート（始まりの時刻と距離が同じ）がもう入っていれば入れない
+      const dup = [];
+      for (const r of rows) {
+        const q = 'staff_routes?select=id&started_at=eq.' + encodeURIComponent(new Date(r.started_at).toISOString()) + '&distance_m=eq.' + r.distance_m + '&limit=1';
+        try { const hit = await rest('GET', q); if (hit && hit.length) dup.push(r); } catch (e) {}
+      }
+      const put = rows.filter(r => dup.indexOf(r) < 0);
+      if (put.length) await rest('POST', 'staff_routes', put, { Prefer: 'return=minimal' });
+      close();
+      // 入れた日が見える期間にして、そのルートへ寄せる
+      const ds = rows.map(r => jstDate(r.started_at)).sort();
+      const [a, b] = range();
+      const endEx = b ? b : '9999-12-31';
+      if ((a && ds[0] < a) || ds[ds.length - 1] >= endEx) { F.period = 'all'; $('#f-period').value = 'all'; $('#f-range').style.display = 'none'; }
+      F.staff = ''; $('#f-staff').value = '';
+      await load();
+      alert((put.length ? put.length + '本 登録しました（' + ds.map(d => md(d + 'T12:00:00+09:00')).filter((x, i, arr) => arr.indexOf(x) === i).join('・') + '）。' : '') + (dup.length ? '\n' + dup.length + '本は、もう入っていたので入れませんでした。' : ''));
+    }
     catch (e) { btn.disabled = false; btn.textContent = '登録する'; alert(/walker_name/.test(String(e.message)) ? '「配った人」の列がまだありません。SQL rt2 を流してください。' : errText(e)); }
   };
 }
