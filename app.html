@@ -15877,8 +15877,10 @@ function ttsRender() {
     h += sect('🔴 アプリだけにある → アプリから消す', '#C0392B', rems, x => '<b>' + faiEsc(ttsCname(x.cid)) + '</b>' + (x.s.school ? '（' + faiEsc(x.s.school) + '）' : '') + ' ' + ttsMd(x.date) + ' ' + (x.s.period != null ? x.s.period + '限' : String(x.s.start_time || '').slice(0, 5)) + (x.s.cycle_no != null && !x.s.is_makeup ? '　回：' + ttsCycText(x.s.cycle_month, x.s.cycle_no) : '') + (x.s.is_makeup ? '・補習' : '') +
       (x.locked ? '<div style="font-size:11px;color:#C0392B">出欠が入っているので消せません。Google に入れ忘れていないか見てください</div>' : '<div style="font-size:11px;color:var(--muted)">Google に入れ忘れたときは、チェックを入れずに「Google に書く」</div>') +
       (x.applied ? '' : '<button onclick="event.preventDefault();event.stopPropagation();ttsToGoogle(' + tts.diffs.indexOf(x) + ',\'add\')" style="' + FAI_BTN2 + ';padding:3px 8px;margin-top:4px">📅 Google に書く</button>'));
+    const roomOnly = chs.filter(x => !x.applied && x.ch.every(c => c.k === 'room'));
+    if (roomOnly.length) h += '<div style="text-align:right;margin:-2px 0 6px"><button onclick="ttsRoomsToGoogle()" style="' + FAI_BTN2 + ';padding:4px 10px">📅 教室のちがい（' + roomOnly.length + '件）を全部 Google をアプリに合わせる</button></div>';
     h += sect('🟡 ちがうところ → アプリを Google に合わせる', '#E0A800', chs, x => '<b>' + faiEsc(ttsCname(x.cid)) + '</b>' + (x.s.school ? '（' + faiEsc(x.s.school) + '）' : '') + ' ' + ttsMd(x.date) + '<div style="font-size:12px">' + x.ch.map(c => ({ period: '時限', time: '時刻', cycle: '回番号', room: '教室' })[c.k] + '：' + faiEsc(c.t)).join('　') + '</div>' +
-      (x.ch.some(c => c.soft) && !x.ch.some(c => !c.soft) ? '<div style="font-size:11px;color:var(--muted)">教室だけのちがいは、はじめはチェックを外しています</div>' : '') + (x.s.school ? '<div style="font-size:11px;color:var(--muted)">学校別の回なので、はじめはチェックを外しています</div>' : ''));
+      (x.ch.some(c => c.soft) && !x.ch.some(c => !c.soft) ? '<div style="font-size:11px;color:var(--muted)">教室だけのちがいは、はじめはチェックを外しています</div>' + (x.applied ? '' : '<button onclick="event.preventDefault();event.stopPropagation();ttsToGoogle(' + tts.diffs.indexOf(x) + ',\'room\')" style="' + FAI_BTN2 + ';padding:3px 8px;margin-top:4px">📅 Google をアプリに合わせる</button>') : '') + (x.s.school ? '<div style="font-size:11px;color:var(--muted)">学校別の回なので、はじめはチェックを外しています</div>' : ''));
     if (tts.diffs.some(x => !x.applied)) h += '<div style="position:sticky;bottom:0;background:var(--bg);padding:10px 0"><button onclick="ttsApply()" style="' + FAI_BTN + ';width:100%;padding:12px">✅ チェックしたものを反映（アプリを直す）</button></div>';
   }
   if (tts.unmatched.length) {
@@ -15927,10 +15929,22 @@ async function ttsToGoogle(i, kind) {
   const x = tts.diffs[i]; if (!x) return;
   if (kind === 'remove' && !confirm('Google の時間割から「' + ttsCname(x.cid) + ' ' + ttsMd(x.date) + ' ' + x.g.period + '限」を消します。よろしいですか？')) return;
   showLoading('Google を直しています...');
-  const out = kind === 'add' ? await ttpPush({ adds: [x.s] }, { quiet: true }) : await ttpPush({ removes: [{ class_master_id: x.cid, session_date: x.date, period: x.g.period, start_time: x.g.start || null }] }, { quiet: true });
+  const out = (kind === 'add' || kind === 'room') ? await ttpPush({ adds: [x.s] }, { quiet: true }) : await ttpPush({ removes: [{ class_master_id: x.cid, session_date: x.date, period: x.g.period, start_time: x.g.start || null }] }, { quiet: true });
   hideLoading();
   if (out.ng.length) alert('Google を直せませんでした：\n' + out.ng.join('\n'));
   else showToast('📅 Google を直しました', 'success');
+  await ttsRun();
+}
+
+async function ttsRoomsToGoogle() {
+  const list = tts.diffs.filter(x => x.type === 'change' && !x.applied && x.ch.every(c => c.k === 'room'));
+  if (!list.length) return;
+  if (!confirm('Google の時間割で、' + list.length + '件の授業をアプリの教室へ動かします。よろしいですか？')) return;
+  showLoading('Google を直しています...');
+  const out = await ttpPush({ adds: list.map(x => x.s) }, { quiet: true });
+  hideLoading();
+  if (out.ng.length) alert('Google を直せなかったもの：\n' + out.ng.join('\n'));
+  else showToast('📅 Google の教室をアプリに合わせました', 'success');
   await ttsRun();
 }
 
@@ -16064,7 +16078,7 @@ async function ttpCall(groups) {
 async function ttpPush(ops, opts) {
   opts = opts || {};
   const adds = (ops.adds || []).filter(s => s && s.class_master_id && s.session_date), rems = (ops.removes || []).filter(s => s && s.class_master_id && s.session_date);
-  const out = { ok: [], ng: [] };
+  const out = { ok: [], ng: [], wait: [] };
   if (!adds.length && !rems.length) return out;
   try {
     const tj = await ttsCall('tabs');
@@ -16090,48 +16104,114 @@ async function ttpPush(ops, opts) {
     };
     const roomOf = (s, c) => { if (s.room) return s.room; let sr = c.slot_rooms; try { if (typeof sr === 'string') sr = JSON.parse(sr); } catch (e) { sr = null; } const wd = ['日','月','火','水','木','金','土'][new Date(+s.session_date.slice(0, 4), +s.session_date.slice(5, 7) - 1, +s.session_date.slice(8, 10)).getDay()]; return (sr && s.period != null && sr[wd + s.period]) || c.default_room || ''; };
     const lab = (s, c) => (c ? c.name : '?') + ' ' + ttsMd(s.session_date) + (s.period != null ? ' ' + s.period + '限' : '');
-    const groups = [], meta = {};
-    const used = {};   // 同じ呼び出しの中で、消したセルに足せるように
+    // plan：書く予定（1つの操作＝授業名のマスと先生のマス）。同じマスを2回さわるとき（入れ替え）は、あとの操作の文字にまとめる
+    const plan = [];
+    const cur = {};   // tab|row|col → 予定のあとの中身（はじめは Google の中身）
+    const cellNow = (Lt, row, col) => { const k = Lt.tab + '|' + row + '|' + col; return (k in cur) ? cur[k] : String(((Lt.V[row] || [])[col]) || ''); };
+    const setCell = (op, Lt, row, col, text) => { op.cells.push({ tab: Lt.tab, row: row, col: col, orig: String(((Lt.V[row] || [])[col]) || ''), text: text }); cur[Lt.tab + '|' + row + '|' + col] = text; };
+    const rowAt = (Lt, row) => Object.values(Lt.rowOf).find(x => x.row === row);
+    // Google のマスにある「その授業・その日・その時限」（まだ予定で消していないもの）
+    const gHas = (Lt, cid, d, per, st) => Lt.P.items.filter(i => i.date === d && (i.period === per || (per == null && i.start && i.start === st)) && idsOf(i).indexOf(String(cid)) >= 0 && cellNow(Lt, i.row, i.col).trim() === String(i.raw).trim());
+    const clearItem = (op, Lt, it) => { setCell(op, Lt, it.row, it.col, ''); const rr = rowAt(Lt, it.row); if (rr && rr.trow != null) setCell(op, Lt, rr.trow, it.col, ''); };
     // 消す
     for (const s of rems) {
       const c = cBy[String(s.class_master_id)]; const lb = lab(s, c);
       const Lt = await layoutFor(s.session_date); if (Lt.error) { out.ng.push(lb + '：' + Lt.error); continue; }
-      const it = Lt.P.items.find(i => i.date === s.session_date && (i.period === s.period || (s.period == null && i.start && i.start === String(s.start_time || '').slice(0, 5))) && idsOf(i).indexOf(String(s.class_master_id)) >= 0);
-      if (!it) { out.ok.push(lb + '：Google にはもともとありません'); continue; }
-      const id = 'r' + groups.length; meta[id] = lb + '（Google から消す）';
-      const cells = [{ a1: ttpColA1(it.col) + (it.row + 1), expect: it.raw, text: '' }];
-      const rr = Object.values(Lt.rowOf).find(x => x.row === it.row);
-      if (rr && rr.trow != null) cells.push({ a1: ttpColA1(it.col) + (rr.trow + 1), expect: (Lt.V[rr.trow] || [])[it.col] || '', text: '' });
-      groups.push({ id: id, tab: Lt.tab, cells: cells });
-      used[Lt.tab + '|' + it.row + '|' + it.col] = true;
+      const its = gHas(Lt, s.class_master_id, s.session_date, s.period, String(s.start_time || '').slice(0, 5));
+      if (!its.length) { out.ok.push(lb + '：Google にはもともとありません'); continue; }
+      const op = { label: lb + '（Google から消す）', cells: [] };
+      clearItem(op, Lt, its[0]);
+      plan.push(op);
     }
-    // 足す
-    for (const s of adds) {
-      const c = cBy[String(s.class_master_id)]; const lb = lab(s, c);
+    // 足す（同じ日・同じ時限のほかの教室にあれば、そのマスを動かす。行き先に、アプリではもう別の教室に動いた授業がいれば、いっしょに動かす＝入れ替え）
+    const queue = adds.map(x => ({ s: x }));
+    const seenQ = {};
+    const pend = new Set();   // 入れ替えで、あとから動かす予定の回
+    const evicted = {};       // 入れ替えで先にどかしたマスの文字（あとで行き先に書く）
+    const qkey = (cid, d, per) => cid + '|' + d + '|' + per;
+    const sessOf = async (cid, d, per) => { try { const r = await sbGet('class_sessions', 'class_master_id=eq.' + cid + '&session_date=eq.' + d + '&period=eq.' + per + '&select=id,class_master_id,session_date,period,start_time,end_time,room,school,cycle_month,cycle_no,is_makeup&limit=1') || []; return r[0] || null; } catch (e) { return null; } };
+    while (queue.length) {
+      const q0 = queue.shift(); const s = q0.s;
+      const qk = qkey(s.class_master_id, s.session_date, s.period);
+      pend.delete(qk);
+      if (seenQ[qk] && !q0.chain) continue;
+      if ((seenQ[qk] || 0) > 2) continue;
+      seenQ[qk] = (seenQ[qk] || 0) + 1;
+      let c = cBy[String(s.class_master_id)];
+      if (!c) { try { const r = await sbGet('class_master', 'id=eq.' + s.class_master_id + '&select=id,name,teacher_staff_id,default_room,slot_rooms') || []; if (r[0]) { c = r[0]; cBy[String(c.id)] = c; } } catch (e) {} }
+      const lb = lab(s, c);
       if (!c) { out.ng.push(lb + '：授業が見つかりません'); continue; }
       if (s.period == null) { out.ng.push(lb + '：時限のない回（時刻だけ）は Google に書けません。手で入れてください'); continue; }
       const Lt = await layoutFor(s.session_date); if (Lt.error) { out.ng.push(lb + '：' + Lt.error); continue; }
-      if (Lt.P.items.some(i => i.date === s.session_date && i.period === s.period && idsOf(i).indexOf(String(s.class_master_id)) >= 0)) { out.ok.push(lb + '：Google にもう入っています'); continue; }
       const room = roomOf(s, c);
       if (!room) { out.ng.push(lb + '：教室が決まっていないので、Google のどの行か分かりません'); continue; }
       const rr = Lt.rowOf[s.period + '|' + room];
       if (!rr) { out.ng.push(lb + '：Google の ' + s.period + '限に「' + dttRoomLabel(room) + '」の行がありません'); continue; }
       const col = Lt.colOf[s.session_date];
       if (col == null) { out.ng.push(lb + '：Google のタブにその日の列がありません'); continue; }
-      const key = Lt.tab + '|' + rr.row + '|' + col;
-      const curC = used[key] ? '' : ((Lt.V[rr.row] || [])[col] || '');
-      const curT = (rr.trow != null && !used[key]) ? ((Lt.V[rr.trow] || [])[col] || '') : '';
-      if (curC.trim()) { out.ng.push(lb + '：Google のそのマス（' + dttRoomLabel(room) + '）には「' + curC.trim() + '」が入っています'); continue; }
-      const id = 'a' + groups.length; meta[id] = lb + '（Google に書く）';
-      const cells = [{ a1: ttpColA1(col) + (rr.row + 1), expect: '', text: ttpCellText(c, s) }];
-      if (rr.trow != null) cells.push({ a1: ttpColA1(col) + (rr.trow + 1), expect: curT, text: fam[String(c.teacher_staff_id)] || curT });
-      groups.push({ id: id, tab: Lt.tab, cells: cells });
-      used[key] = 'add';
+      const have = gHas(Lt, s.class_master_id, s.session_date, s.period, '');
+      if (have.some(i => i.row === rr.row)) { if (!q0.chain) out.ok.push(lb + '：Google にもう入っています'); continue; }
+      const moveFrom = have[0] || null;   // ほかの教室の行にある → 動かす
+      const occ = cellNow(Lt, rr.row, col).trim();
+      let evict = null;
+      if (occ) {
+        const oit0 = Lt.P.items.find(i => i.row === rr.row && i.col === col && String(i.raw).trim() === occ);
+        // 2つの授業がおたがいの教室へ（入れ替え）：相手もあとで動かす予定なら、相手のマスを先にどかす
+        if (oit0 && idsOf(oit0).some(oid => pend.has(qkey(oid, s.session_date, s.period)))) evict = oit0;
+      }
+      if (occ && !evict) {
+        // 行き先にいる授業：アプリでその日・その時限に別の教室へ動いていれば、いっしょに動かす
+        const oit = Lt.P.items.find(i => i.row === rr.row && i.col === col && String(i.raw).trim() === occ);
+        let chained = false;
+        if (oit) {
+          for (const oid of idsOf(oit)) {
+            const os = await sessOf(oid, s.session_date, s.period);
+            if (!os) continue;
+            let oc = cBy[String(oid)];
+            if (!oc) { try { const r = await sbGet('class_master', 'id=eq.' + oid + '&select=id,name,teacher_staff_id,default_room,slot_rooms') || []; if (r[0]) { oc = r[0]; cBy[String(oc.id)] = oc; } } catch (e) {} }
+            if (oc && roomOf(os, oc) && roomOf(os, oc) !== room) { chained = true; pend.add(qk); pend.add(qkey(oid, s.session_date, s.period)); queue.unshift({ s: s, chain: true }); queue.unshift({ s: os, chain: true }); break; }
+          }
+        }
+        if (chained) continue;
+        if (opts.soft) out.wait.push(lb + '：Google のそのマス（' + dttRoomLabel(room) + '）には「' + occ + '」が入っています（入れ替えなら、もう一方を動かすとそろいます）');
+        else out.ng.push(lb + '：Google のそのマス（' + dttRoomLabel(room) + '）には「' + occ + '」が入っています');
+        continue;
+      }
+      const op = { label: lb + (moveFrom ? '（Google でも ' + dttRoomLabel(room) + ' へ動かす）' : '（Google に書く）'), cells: [] };
+      let text = ttpCellText(c, s), tText = fam[String(c.teacher_staff_id)] || '';
+      if (evicted[qk]) { text = evicted[qk].raw; tText = evicted[qk].t || tText; }
+      if (evict) {
+        const er = rowAt(Lt, evict.row);
+        const eT = (er && er.trow != null) ? cellNow(Lt, er.trow, evict.col) : '';
+        idsOf(evict).forEach(oid => { evicted[qkey(oid, s.session_date, s.period)] = { raw: evict.raw, t: eT }; });
+        clearItem(op, Lt, evict);
+      }
+      if (moveFrom) {
+        text = moveFrom.raw;   // 動かすときは、Google に書いてあった文字のまま
+        const fr = rowAt(Lt, moveFrom.row); if (fr && fr.trow != null) tText = cellNow(Lt, fr.trow, moveFrom.col) || tText;
+        clearItem(op, Lt, moveFrom);
+      }
+      setCell(op, Lt, rr.row, col, text);
+      if (rr.trow != null) setCell(op, Lt, rr.trow, col, tText || cellNow(Lt, rr.trow, col));
+      plan.push(op);
     }
+    // 同じマスを2回さわるときは、あとの操作にまとめる（書く前の中身は、はじめの Google の中身で確かめる）
+    const lastOf = {};
+    plan.forEach((op, oi) => op.cells.forEach(cl => { lastOf[cl.tab + '|' + cl.row + '|' + cl.col] = oi; }));
+    const groups = [], meta = {};
+    plan.forEach((op, oi) => {
+      const cells = op.cells.filter(cl => lastOf[cl.tab + '|' + cl.row + '|' + cl.col] === oi);
+      if (!cells.length) { out.ok.push(op.label); return; }
+      const byTab = {};
+      cells.forEach(cl => { (byTab[cl.tab] = byTab[cl.tab] || []).push({ a1: ttpColA1(cl.col) + (cl.row + 1), expect: cl.orig, text: cl.text }); });
+      Object.keys(byTab).forEach(t => { for (let i = 0; i < byTab[t].length; i += 4) { const id = 'g' + groups.length; meta[id] = op.label; groups.push({ id: id, tab: t, cells: byTab[t].slice(i, i + 4) }); } });
+    });
     if (groups.length) {
       const wj = await ttpCall(groups);
-      if (!wj || !wj.ok) { groups.forEach(g => out.ng.push(meta[g.id] + '：書けませんでした（' + ttsErrText(wj) + '）')); }
-      else (wj.results || []).forEach(r => { if (r.ok) out.ok.push(meta[r.id]); else out.ng.push(meta[r.id] + '：Google のマスがほかの人に書きかえられていたので、書きませんでした' + (r.current ? '（今：' + r.current + '）' : '')); });
+      if (!wj || !wj.ok) { [...new Set(groups.map(g => meta[g.id]))].forEach(l => out.ng.push(l + '：書けませんでした（' + ttsErrText(wj) + '）')); }
+      else { const okL = {}, ngL = {}; (wj.results || []).forEach(r => { if (r.ok) okL[meta[r.id]] = true; else ngL[meta[r.id]] = r.current || ''; });
+        Object.keys(okL).forEach(l => { if (!(l in ngL)) out.ok.push(l); });
+        Object.keys(ngL).forEach(l => out.ng.push(l + '：Google のマスがほかの人に書きかえられていたので、書きませんでした' + (ngL[l] ? '（今：' + ngL[l] + '）' : ''))); }
     }
   } catch (e) { out.ng.push('Google に書く途中で止まりました：' + String(e.message || e).slice(0, 80)); }
   return ttpReport(out, opts);
@@ -16139,6 +16219,8 @@ async function ttpPush(ops, opts) {
 function ttpReport(out, opts) {
   if (opts.quiet) return out;
   const wrote = out.ok.filter(t => !/もともと|もう入って/.test(t)).length;
+  if (out.wait.length && out.ng.length) out.ng = out.ng.concat(out.wait);
+  if (!out.ng.length && out.wait.length) { showToast('📅 Google は入れ替え待ちです（もう一方を動かすとそろいます）', 'info'); return out; }
   if (out.ng.length) {
     showToast('📅 Google に書けなかったものがあります（' + out.ng.length + '件）', 'error');
     setTimeout(() => alert('Google の時間割に書けなかったもの：\n' + out.ng.join('\n') + '\n\nGoogle の時間割は手で直してください。'), 300);
@@ -16146,9 +16228,9 @@ function ttpReport(out, opts) {
   return out;
 }
 // アプリで登録・変更・削除したあとに呼ぶ（設定がオフなら何もしない・待たせない）
-function ttpAuto(ops) {
+function ttpAuto(ops, opts) {
   if (!ttpOn()) return;
-  setTimeout(() => { ttpPush(ops).catch(() => {}); }, 50);
+  setTimeout(() => { ttpPush(ops, opts).catch(() => {}); }, 50);
 }
 
 // ===== 📋 依頼の記録 =====
@@ -75567,6 +75649,19 @@ async function dttSaveEdit() {
       if (t) { body.start_time = t[0]; body.end_time = t[1]; }
     }
     if (Object.keys(body).length) await sbPatch('class_sessions', 'id=eq.' + x.id, body);
+    // ks108: その日の教室・時限を変えたら Google も動かす（入れ替えは、もう一方を動かしたときにそろう）
+    try {
+      var newRoom = room || x.defRoom || '';
+      if (per !== x.per || newRoom !== (x.at || '')) {
+        var oldPer = x.per;
+        sbGet('class_sessions', 'id=eq.' + x.id + '&select=id,class_master_id,session_date,period,start_time,end_time,room,school,cycle_month,cycle_no,is_makeup').then(function (rs) {
+          var row = rs && rs[0]; if (!row) return;
+          var nS = Object.assign({}, row, { room: row.room || newRoom || null });
+          if (row.period !== oldPer) ttpAuto({ removes: [Object.assign({}, row, { period: oldPer })], adds: [nS] }, { soft: true });
+          else ttpAuto({ adds: [nS] }, { soft: true });
+        }).catch(function () {});
+      }
+    } catch (e) {}
     dttCloseEdit();
     showToast('保存しました', 'success');
     dttLoad();
