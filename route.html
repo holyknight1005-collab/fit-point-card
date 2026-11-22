@@ -51,6 +51,10 @@ button,input,textarea,select{font-family:inherit;color:inherit}
 .mb{display:flex;gap:8px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap}
 .lbl{display:block;font-size:12.5px;color:var(--muted);margin:8px 0 2px}
 .frow{border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin:6px 0;font-size:13px}
+.leaflet-tooltip.tlabel{background:rgba(255,255,255,.85);border:0;box-shadow:none;padding:0 4px;font-size:11px;font-weight:700;color:#5D6D7E}
+.leaflet-tooltip.tlabel.done{color:#1E8449}
+.leaflet-tooltip.tlabel:before{display:none}
+.hide-labels .leaflet-tooltip.tlabel{display:none}
 </style>
 </head>
 <body>
@@ -247,7 +251,7 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 // ・消せるのは自分のルート（責任者は全部）。GPX ファイルそのものは残さない（道すじの点だけ・1本 8000 点くらいまで・1m より小さいずれだけ間引く）
 // ・地図は国土地理院の地図（淡色地図）＋ Leaflet
 // ============================================================
-const RT_VERSION = '20261122rt1';   // 地図は 淡色・標準・航空写真 を切りかえ
+const RT_VERSION = '20261123rt2';   // rt2：配った範囲（太い帯）と道すじの切りかえ・ポスティングの町の印（済＝緑／まだ＝灰色）・エリアの一覧／地図は 淡色・標準・航空写真 を切りかえ
 const RT_KINDS = ['ポスティング', 'その他'];
 const RT_MAXPTS = 8000;
 const RT_COLORS = ['#E74C3C', '#2980B9', '#27AE60', '#8E44AD', '#E67E22', '#16A085', '#C0392B', '#2C3E50', '#D35400', '#7D3C98', '#1ABC9C', '#B7950B', '#5D6D7E', '#A93226', '#1F618D'];
@@ -330,6 +334,87 @@ function rtParseGpx(text, fileName) {
     started_at: isFinite(t0) ? new Date(t0).toISOString() : null, ended_at: isFinite(t1) ? new Date(t1).toISOString() : null };
 }
 
+// ---------- ポスティングの町（Junki 11/23 の一覧）----------
+// q＝国土地理院の住所検索に渡す文字（なければ「愛媛県松山市」＋名前）。r＝「通った」とみなす半径（m）
+const RT_AREAS = [
+  ['北部・北西', ['久万ノ台', '久枝', '鴨川', '姫山', '姫原', '山越', { n: '旭ヶ丘', note: '朝日ヶ丘の可能性あり' }]],
+  ['西部', ['衣山', '美沢', '愛光町', '三津', '石風呂', '松江町', '生石町']],
+  ['中心部', ['清水', '清水町', '勝山', '東雲', '木屋町', '萱町', '緑町', '鉄炮町', '春日町', '味酒', '大手町', '南持田', '湊町', '昭和町', '新玉', '南江戸']],
+  ['道後・東部', ['道後', '道後上市', '道後今市', '道後北代', '白水台', '湯渡', '石手', '湯の山', { n: '桑原（1・5・6・7丁目）', q: '愛媛県松山市桑原' }, '樽味', '三町', { n: '松末1丁目', q: '愛媛県松山市松末1丁目' }, '福音寺', '枝松', '小坂', '正円寺']],
+  ['久米・石井', ['来住町', '久米', '南久米', '鷹子', '星岡', '東石井', '石井', '北土居', '北井門', '井門町', '椿']],
+  ['南部', ['古川', '古川北', '西石井', '余土', '土居田', '小栗', { n: '雄郡一丁目', q: '愛媛県松山市雄郡1丁目' }, { n: '竹原2丁目', q: '愛媛県松山市竹原2丁目' }, { n: '竹原3丁目', q: '愛媛県松山市竹原3丁目' }, '藤原', '土橋', '市坪']],
+  ['松山市外', [{ n: '東温市', q: '愛媛県東温市', r: 2500 }, { n: '砥部町（宮内）', q: '愛媛県伊予郡砥部町宮内', r: 800 }]]
+].map(([area, list]) => [area, list.map(t => typeof t === 'string' ? { n: t } : t)]);
+RT_AREAS.forEach(([area, list]) => list.forEach(t => { t.area = area; t.q = t.q || ('愛媛県松山市' + t.n); t.r = t.r || 500; }));
+const RT_TOWNS = [].concat(...RT_AREAS.map(a => a[1]));
+const GEO_KEY = 'fit_route_geo_v1';
+let GEO = {}; try { GEO = JSON.parse(localStorage.getItem(GEO_KEY) || '{}') || {}; } catch (e) { GEO = {}; }
+let VIEW = 'line', TOWN_LAYER = null, GEO_BUSY = false;
+async function geocodeTowns() {
+  if (GEO_BUSY) return; GEO_BUSY = true;
+  const todo = RT_TOWNS.filter(t => !(t.q in GEO));
+  for (const t of todo) {
+    try {
+      const r = await fitRawFetch('https://msearch.gsi.go.jp/address-search/AddressSearch?q=' + encodeURIComponent(t.q));
+      const j = r.ok ? await r.json() : [];
+      const hit = (j || [])[0];
+      GEO[t.q] = hit && hit.geometry && hit.geometry.coordinates ? [hit.geometry.coordinates[1], hit.geometry.coordinates[0]] : null;
+    } catch (e) { /* 通信できないときは次の機会に */ break; }
+    try { localStorage.setItem(GEO_KEY, JSON.stringify(GEO)); } catch (e) {}
+    await new Promise(res => setTimeout(res, 120));
+  }
+  GEO_BUSY = false;
+  drawTowns();
+}
+// 町ごとに、表示中のルートが中心から r m 以内を通ったか
+function townStatus(list) {
+  const st = {};
+  RT_TOWNS.forEach(t => {
+    const c = GEO[t.q]; st[t.n] = { pos: c || null, hits: [] };
+    if (!c) return;
+    const dLat = t.r / 110540, dLng = t.r / (111320 * Math.cos(c[0] * Math.PI / 180));
+    list.forEach(r => {
+      const segs = Array.isArray(r.points) ? r.points : [];
+      let hit = false;
+      for (const sg of segs) { for (const q of sg) { if (Math.abs(q[0] - c[0]) <= dLat && Math.abs(q[1] - c[1]) <= dLng && rtDist(q, c) <= t.r) { hit = true; break; } } if (hit) break; }
+      if (hit) st[t.n].hits.push(r);
+    });
+  });
+  return st;
+}
+function drawTowns() {
+  if (!MAP) return;
+  if (TOWN_LAYER) TOWN_LAYER.clearLayers(); else TOWN_LAYER = L.layerGroup().addTo(MAP);
+  const st = townStatus(shown());
+  RT_TOWNS.forEach(t => {
+    const x = st[t.n]; if (!x.pos) return;
+    const done = x.hits.length > 0;
+    const last = done ? x.hits.slice().sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || '')))[0] : null;
+    const m = L.circleMarker(x.pos, { radius: 7, color: '#fff', weight: 2, fillColor: done ? '#27AE60' : '#95A5A6', fillOpacity: 0.95 });
+    m.bindTooltip(esc(t.n), { permanent: true, direction: 'right', offset: [8, 0], className: 'tlabel' + (done ? ' done' : '') });
+    m.bindPopup('<b>' + esc(t.n) + '</b>（' + esc(t.area) + '）' + (t.note ? '<br><span style="color:#888">' + esc(t.note) + '</span>' : '') + '<br>' +
+      (done ? '最後に通った日：' + esc(md(last.started_at || last.created_at)) + '（' + esc((STAFF[last.staff_id] || {}).name || '') + '）<br>この期間に ' + x.hits.length + '本' : 'この期間はまだ通っていません'));
+    m.addTo(TOWN_LAYER);
+  });
+  // エリアの一覧
+  const box = $('#areas'); if (!box) return;
+  const nAll = RT_TOWNS.length, nDone = RT_TOWNS.filter(t => st[t.n].hits.length).length, nNoPos = RT_TOWNS.filter(t => !st[t.n].pos).length;
+  box.innerHTML = '<div class="msg" style="margin-bottom:6px">この期間に通った町：<b>' + nDone + '</b> / ' + nAll + '（町の中心から500m以内を通ったら「済」。おおよその目安です）' + (GEO_BUSY ? '　位置を調べています…' : nNoPos ? '　位置が分からない町：' + nNoPos : '') + '</div>' +
+    RT_AREAS.map(([area, list]) => {
+      const d = list.filter(t => st[t.n].hits.length).length;
+      return '<div style="margin:8px 0 2px;font-weight:800;font-size:13.5px">' + esc(area) + '　<span class="msg">' + d + ' / ' + list.length + '</span></div><div class="sum">' +
+        list.map(t => { const x = st[t.n], ok = x.hits.length > 0; return '<span class="chip" data-town="' + esc(t.n) + '" style="' + (ok ? 'border-color:#27AE60;background:#E9F7EF' : '') + (x.pos ? '' : ';opacity:.5') + '">' + (ok ? '✅' : '⬜') + ' ' + esc(t.n) + '</span>'; }).join('') + '</div>';
+    }).join('');
+  box.querySelectorAll('[data-town]').forEach(c => c.onclick = () => {
+    const t = RT_TOWNS.find(x => x.n === c.dataset.town); const pos = t && GEO[t.q];
+    if (!pos) { alert('この町の位置が分かりませんでした'); return; }
+    MAP.setView(pos, t.r > 1000 ? 13 : 16); window.scrollTo({ top: $('#map').offsetTop - 10, behavior: 'smooth' });
+  });
+}
+// 配った範囲：帯の太さを、地図の縮尺に合わせて約60mにする
+const BAND_M = 60;
+function bandPx() { const z = MAP.getZoom(), lat = MAP.getCenter().lat; const mpp = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, z); return Math.max(3, BAND_M / mpp); }
+
 // ---------- 起動・ログイン ----------
 function hero() {
   const who = ME && ME.kind === 'staff' ? ('スタッフ：' + esc(ME.row.name || '')) : '';
@@ -379,8 +464,10 @@ async function start() {
       '<select class="in" id="f-kind"><option value="">種類：ぜんぶ</option>' + RT_KINDS.map(k => '<option>' + k + '</option>').join('') + '</select>' +
       '<label class="btn" style="margin-left:auto">＋ GPX を取り込む<input type="file" id="gpx-in" accept=".gpx,application/gpx+xml,application/xml,text/xml" multiple style="display:none"></label>' +
     '</div>' +
+    '<div style="display:flex;gap:6px;margin:0 0 6px"><button class="btn small" id="v-line">道すじ</button><button class="btn sub small" id="v-band">配った範囲</button></div>' +
     '<div id="map"></div>' +
     '<div class="msg" style="margin-top:4px">ルートヒストリーで記録 →「GPX で書き出す」→ ここで取り込み。人ごとに色を分けています。線を押すと、だれの・いつのルートかが出ます。</div>' +
+    '<div class="card"><h3>ポスティングの町</h3><div id="areas"><div class="msg">読み込み中…</div></div></div>' +
     '<div class="card"><h3>人ごとの合計</h3><div id="sum" class="sum"></div></div>' +
     '<div class="card"><h3>ルートの一覧</h3><div id="list"></div></div>';
   $('#f-period').onchange = (e) => { F.period = e.target.value; $('#f-range').style.display = F.period === 'range' ? '' : 'none'; load(); };
@@ -400,6 +487,12 @@ async function start() {
   bases['淡色地図'].addTo(MAP);
   L.control.layers(bases, null, { position: 'topright', collapsed: false }).addTo(MAP);
   LAYER = L.layerGroup().addTo(MAP);
+  const setView = (v) => { VIEW = v; $('#v-line').className = 'btn small' + (v === 'line' ? '' : ' sub'); $('#v-band').className = 'btn small' + (v === 'band' ? '' : ' sub'); draw(); };
+  $('#v-line').onclick = () => setView('line'); $('#v-band').onclick = () => setView('band');
+  const labelZoom = () => $('#map').classList.toggle('hide-labels', MAP.getZoom() < 14);   // 引いて見るときは町の名前を消す（丸だけ）
+  MAP.on('zoomend', () => { labelZoom(); if (VIEW === 'band') Object.keys(LINES).forEach(id => LINES[id].setStyle({ weight: bandPx() })); });
+  labelZoom();
+  geocodeTowns();
   load();
 }
 function range() {
@@ -438,13 +531,15 @@ function draw(fit) {
   list.forEach(r => {
     const segs = Array.isArray(r.points) ? r.points : [];
     const col = colorOf(r.staff_id);
-    const pl = L.polyline(segs, { color: col, weight: SEL === r.id ? 6 : 4, opacity: SEL && SEL !== r.id ? 0.35 : 0.85 });
+    const pl = VIEW === 'band' ? L.polyline(segs, { color: col, weight: bandPx(), opacity: 0.35, lineCap: 'round', lineJoin: 'round' })
+                               : L.polyline(segs, { color: col, weight: SEL === r.id ? 6 : 4, opacity: SEL && SEL !== r.id ? 0.35 : 0.85 });
     pl.bindPopup('<b>' + esc((STAFF[r.staff_id] || {}).name || '') + '</b>　' + esc(r.kind || '') + '<br>' + esc(md(r.started_at || r.created_at)) + ' ' + esc(hm(r.started_at)) + (r.ended_at ? '〜' + esc(hm(r.ended_at)) : '') + '　' + km(r.distance_m) + (r.memo ? '<br>' + esc(r.memo) : ''));
     pl.on('click', () => { SEL = r.id; highlight(); });
     pl.addTo(LAYER); LINES[r.id] = pl;
     try { const bb = pl.getBounds(); if (bb.isValid()) bounds = bounds ? bounds.extend(bb) : L.latLngBounds(bb.getSouthWest(), bb.getNorthEast()); } catch (e) {}
   });
   if (fit && bounds) MAP.fitBounds(bounds, { padding: [20, 20] });
+  drawTowns();
   // 人ごとの合計
   const by = {};
   list.forEach(r => { const k = r.staff_id || '-'; by[k] = by[k] || { n: 0, m: 0 }; by[k].n++; by[k].m += r.distance_m || 0; });
@@ -462,7 +557,7 @@ function draw(fit) {
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => delRoute(b.dataset.del));
 }
 function highlight(zoom) {
-  Object.keys(LINES).forEach(id => LINES[id].setStyle({ weight: id === SEL ? 6 : 4, opacity: id === SEL ? 0.95 : 0.3 }));
+  if (VIEW === 'line') Object.keys(LINES).forEach(id => LINES[id].setStyle({ weight: id === SEL ? 6 : 4, opacity: id === SEL ? 0.95 : 0.3 }));
   document.querySelectorAll('.row[data-id]').forEach(el => el.classList.toggle('on', el.dataset.id === SEL));
   const pl = LINES[SEL];
   if (pl) { pl.bringToFront(); if (zoom) { try { MAP.fitBounds(pl.getBounds(), { padding: [30, 30] }); } catch (e) {} pl.openPopup(); } }
