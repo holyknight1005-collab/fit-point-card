@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#F5A623">
+<title>ルートの記録｜fit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root{--orange:#F5A623;--orange-d:#D4831A;--orange-l:#FFF3DC;--bg:#FDF9F4;--surface:#FFFFFF;--text:#2C2C2A;--muted:#7A7770;--border:#E8E0D4;--red:#D94040}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 "Noto Sans JP",sans-serif}
+button,input,textarea,select{font-family:inherit;color:inherit}
+.hero{background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;padding:12px max(16px,env(safe-area-inset-right)) 14px max(16px,env(safe-area-inset-left))}
+.hero-in{max-width:1200px;margin:0 auto}
+.back{display:inline-flex;align-items:center;gap:4px;margin:0 0 8px;padding:4px 12px;border-radius:999px;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.45);color:#fff;font-size:12.5px;font-weight:700;text-decoration:none}
+.hero h1{margin:0;font-size:21px;font-weight:800;line-height:1.35}
+.hero .who{float:right;font-size:12px;opacity:.9;margin-top:4px}
+.wrap{max-width:1200px;margin:0 auto;padding:12px max(16px,env(safe-area-inset-right)) 90px max(16px,env(safe-area-inset-left))}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 10px}
+.in{padding:7px 9px;border:1.5px solid var(--border);border-radius:9px;background:var(--surface);font-size:14px;max-width:100%}
+.btn{border:0;border-radius:10px;padding:8px 14px;font-size:14px;font-weight:700;cursor:pointer;background:linear-gradient(135deg,var(--orange),var(--orange-d));color:#fff;display:inline-flex;align-items:center;gap:4px}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.sub{background:var(--surface);color:var(--text);border:1.5px solid var(--border);font-weight:500}
+.btn.small{padding:3px 10px;font-size:12.5px}
+.btn.danger{background:var(--surface);color:var(--red);border:1.5px solid #F2B8B8;font-weight:500}
+#map{height:58vh;min-height:320px;border-radius:14px;border:1px solid var(--border);z-index:1}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 14px;margin:12px 0}
+.card h3{margin:0 0 6px;font-size:15px}
+.sum{display:flex;gap:8px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1.5px solid var(--border);border-radius:999px;padding:3px 12px 3px 6px;font-size:13px;background:var(--surface);cursor:pointer}
+.chip.on{border-color:var(--orange);background:var(--orange-l)}
+.dot{width:14px;height:14px;border-radius:50%;display:inline-block;flex:none}
+.row{display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px dashed var(--border);cursor:pointer}
+.row:first-child{border-top:0}
+.row.on{background:#FFF8E6}
+.rmain{flex:1;min-width:0}
+.rt{font-weight:700;font-size:14px}
+.rm{font-size:12.5px;color:var(--muted)}
+.msg{color:var(--muted);font-size:13.5px}
+.err{color:var(--red)}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal{background:var(--surface);border-radius:16px;padding:16px;max-width:560px;width:100%;max-height:90vh;overflow:auto}
+.modal h3{margin:0 0 8px;font-size:17px}
+.mb{display:flex;gap:8px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap}
+.lbl{display:block;font-size:12.5px;color:var(--muted);margin:8px 0 2px}
+.frow{border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin:6px 0;font-size:13px}
+</style>
+</head>
+<body>
+<div id="hero"></div>
+<div class="wrap">
+  <div id="main"><div class="msg">読み込み中…</div></div>
+</div>
+<script>
+// ===== fit 共通ログイン（Supabase Auth セッション）sec1 =====
+// ・ID＋PINの照合はサーバー（Edge Function fit-login）で行い、ブラウザには PIN を残さない。
+// ・発行されたセッションは localStorage 'fit_session_v1' に保存し、同じサイトの全アプリで共有する。
+// ・Supabase への fetch は自動でログイン中のトークンに差し替え、期限切れなら自動更新して1回だけ再送する。
+const FIT_SB_URL = 'https://bqdvmfskpnlshqljwhqz.supabase.co';
+const FIT_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxZHZtZnNrcG5sc2hxbGp3aHF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwOTYzOTksImV4cCI6MjA5NDY3MjM5OX0.I26ODw819ueVfEnfS3SN8ZT_O_oJg6ET6W8GWsRSBfU';
+const FIT_SESSION_KEY = 'fit_session_v1';
+const FIT_LEGACY_KEYS = ['fit_pin', 'fit_parent_pin', 'fit_staff_hash', 'fit_staff_pin'];
+let fitSession = null;
+let fitRefreshing = null;
+const fitRawFetch = window.fetch.bind(window);
+
+function fitLoadSession() {
+  try { fitSession = JSON.parse(localStorage.getItem(FIT_SESSION_KEY) || 'null'); } catch (e) { fitSession = fitSession || null; }
+  return fitSession;
+}
+function fitSaveSession(s) {
+  fitSession = s || null;
+  try { if (s) localStorage.setItem(FIT_SESSION_KEY, JSON.stringify(s)); else localStorage.removeItem(FIT_SESSION_KEY); } catch (e) {}
+}
+function fitClearLegacy() {
+  try { FIT_LEGACY_KEYS.forEach(k => localStorage.removeItem(k)); } catch (e) {}
+}
+// 'ok' | 'invalid'（ログインし直しが必要） | 'error'（通信エラー等。セッションは残す）| 'none'
+async function fitRefresh(force) {
+  const cur = fitLoadSession();
+  if (!cur || !cur.refresh_token) return 'none';
+  const now = Math.floor(Date.now() / 1000);
+  if (!force && (cur.expires_at || 0) - now > 300) return 'ok';
+  if (fitRefreshing) return fitRefreshing;
+  fitRefreshing = (async () => {
+    try {
+      const r = await fitRawFetch(FIT_SB_URL + '/auth/v1/token?grant_type=refresh_token', {
+        method: 'POST',
+        headers: { 'apikey': FIT_ANON, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: cur.refresh_token })
+      });
+      if (r.status === 400 || r.status === 401 || r.status === 403) {
+        // 別タブが先に更新していればそちらを使う
+        const latest = fitLoadSession();
+        if (latest && latest.refresh_token !== cur.refresh_token) return 'ok';
+        fitSaveSession(null);
+        return 'invalid';
+      }
+      if (!r.ok) return 'error';
+      const j = await r.json();
+      fitSaveSession(Object.assign({}, cur, {
+        access_token: j.access_token,
+        refresh_token: j.refresh_token,
+        expires_at: j.expires_at || (now + (j.expires_in || 3600))
+      }));
+      return 'ok';
+    } catch (e) { return 'error'; }
+    finally { fitRefreshing = null; }
+  })();
+  return fitRefreshing;
+}
+// ログイン：kind = 'staff' | 'student' | 'parent' | 'online'
+// 戻り値 { ok:true, kind, account } / { ok:false, error:'invalid'|'blocked'|'locked'|... }
+async function fitLogin(kind, id, pin) {
+  let r, j = null;
+  try {
+    r = await fitRawFetch(FIT_SB_URL + '/functions/v1/fit-login', {
+      method: 'POST',
+      headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: kind, id: id, pin: pin })
+    });
+    j = await r.json();
+  } catch (e) { return { ok: false, error: 'network' }; }
+  if (!j) return { ok: false, error: 'network' };
+  if (j.ok) {
+    fitSaveSession(Object.assign({}, j.session, { kind: j.kind, account_id: String(j.account.id) }));
+    fitClearLegacy();
+  }
+  return j;
+}
+function fitLoginErrorText(j, fallback) {
+  if (!j) return fallback;
+  if (j.error === 'locked') return 'ログインの失敗が続いたため、15分ほど待ってからお試しください。';
+  if (j.error === 'blocked') return 'このアカウントは現在ご利用いただけません。塾までお問い合わせください。';
+  if (j.error === 'network' || j.error === 'server') return '通信がうまくつながりませんでした。電波の良い場所でもう一度お試しください。';
+  return fallback;
+}
+// ===== 段階B：サーバー関数（RPC）=====
+// ポイント加算・ログインボーナス・面談共有メモなどは、サーバー側の関数で行う（生徒は直接書き換えできない）。
+async function fitRpc(name, args) {
+  const r = await fetch(FIT_SB_URL + '/rest/v1/rpc/' + name, {
+    method: 'POST',
+    headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' },
+    body: JSON.stringify(args || {})
+  });
+  const tx = await r.text();
+  if (!r.ok) throw new Error('rpc ' + name + ' ' + r.status + ' ' + tx);
+  return tx ? JSON.parse(tx) : null;
+}
+// 戻り値 { awarded: 実際に加算された点, points: 加算後の合計 }
+async function fitAwardPoints(type, points, reason, ref) {
+  return await fitRpc('fit_award_points', { p_type: type, p_points: points, p_reason: reason || null, p_ref: ref == null ? null : String(ref) });
+}
+function fitLogout() {
+  const s = fitSession || fitLoadSession();
+  fitSaveSession(null);
+  fitClearLegacy();
+  if (s && s.access_token) {
+    fitRawFetch(FIT_SB_URL + '/auth/v1/logout?scope=local', {
+      method: 'POST', headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token }
+    }).catch(() => {});
+  }
+}
+// 保存済みセッションから本人の行を取り直す。旧方式（PIN保存）の端末は1回だけ自動で移行する。
+// 戻り値 { kind, row } / null（未ログイン）。通信エラー時は例外（ログイン情報は消さない）。
+async function fitResume() {
+  let s = fitLoadSession();
+  if (!s) {
+    let email = null, pin = null, pid = null, ppin = null, role = null;
+    try {
+      email = localStorage.getItem('fit_email'); pin = localStorage.getItem('fit_pin');
+      pid = localStorage.getItem('fit_parent_id'); ppin = localStorage.getItem('fit_parent_pin');
+      role = localStorage.getItem('fit_role');
+    } catch (e) {}
+    let j = null;
+    if (email && pin) j = await fitLogin(role === 'staff' ? 'staff' : 'student', email, pin);
+    else if (pid && ppin) j = await fitLogin('parent', pid, ppin);
+    if (j && j.error === 'network') throw new Error('network');
+    fitClearLegacy();
+    s = fitLoadSession();
+    if (!s) return null;
+  }
+  const rr = await fitRefresh(false);
+  if (rr === 'invalid' || rr === 'none') return null;
+  s = fitLoadSession();
+  if (!s) return null;
+  const table = { staff: 'staff', student: 'students', parent: 'parent_accounts', online: 'online_students' }[s.kind];
+  if (!table) { fitLogout(); return null; }
+  // sec4: 生徒・保護者は students を直接読まず、表示用の列だけ返す関数から受け取る（生徒は自分の1行）
+  const res = s.kind === 'student'
+    ? await fitRawFetch(FIT_SB_URL + '/rest/v1/rpc/fit_my_students', {
+        method: 'POST',
+        headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token, 'Content-Type': 'application/json' },
+        body: '{}'
+      })
+    : await fitRawFetch(FIT_SB_URL + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(s.account_id) + '&select=*', {
+        headers: { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + s.access_token }
+      });
+  if (res.status === 401 || res.status === 403) {
+    const again = await fitRefresh(true);
+    if (again === 'invalid' || again === 'none') return null;
+    throw new Error('auth ' + res.status);
+  }
+  if (!res.ok) throw new Error('resume ' + res.status);
+  const rows = await res.json();
+  if (!rows.length || rows[0].is_active === false && s.kind !== 'student') { fitLogout(); return null; }
+  return { kind: s.kind, row: rows[0] };
+}
+// Supabase への fetch をログイン中のトークンに差し替える（各画面のコードはそのまま使える）
+window.fetch = async function (input, init) {
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  if (url.indexOf(FIT_SB_URL) !== 0 || url.indexOf('/auth/v1/') > 0 || url.indexOf('/functions/v1/fit-login') > 0) {
+    return fitRawFetch(input, init);
+  }
+  // 呼び出し時点のトークンを控えておく（直後にログアウトしても、その前に始めた保存は通す）
+  const tokenAtCall = fitLoadSession() ? fitSession.access_token : null;
+  if (tokenAtCall) await fitRefresh(false);
+  const send = () => {
+    const opt = Object.assign({}, init || {});
+    const h = new Headers(opt.headers || (input && typeof input !== 'string' ? input.headers : undefined));
+    const tok = (fitSession && fitSession.access_token) || tokenAtCall;
+    if (tok) h.set('Authorization', 'Bearer ' + tok);
+    opt.headers = h;
+    return fitRawFetch(input, opt);
+  };
+  let res = await send();
+  if (res.status === 401 && fitSession && fitSession.refresh_token) {
+    const rr = await fitRefresh(true);
+    if (rr === 'ok') res = await send();
+  }
+  return res;
+};
+setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
+
+
+// ============================================================
+// ルートの記録（route.html）2026-11-22
+// ・ルートヒストリーなどで記録した GPX を取り込み、スタッフ全員の道すじを1枚の地図に重ねる（ポスティングの配り終わった所を見る）
+// ・見られるのは fit アプリにスタッフでログインした人だけ（表 staff_routes・SQL rt1）。見られるのはスタッフ全員（Junki 11/22）
+// ・消せるのは自分のルート（責任者は全部）。GPX ファイルそのものは残さない（道すじの点だけ・1本 2000 点くらいに間引く）
+// ・地図は国土地理院の地図（淡色地図）＋ Leaflet
+// ============================================================
+const RT_VERSION = '20261122rt1';
+const RT_KINDS = ['ポスティング', 'その他'];
+const RT_MAXPTS = 2000;
+const RT_COLORS = ['#E74C3C', '#2980B9', '#27AE60', '#8E44AD', '#E67E22', '#16A085', '#C0392B', '#2C3E50', '#D35400', '#7D3C98', '#1ABC9C', '#B7950B', '#5D6D7E', '#A93226', '#1F618D'];
+const HDR = { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' };
+let ME = null, IS_MGR = false, STAFF = {}, ROUTES = [], MAP = null, LAYER = null, LINES = {}, SEL = null;
+const F = { period: 'month', staff: '', kind: '', from: '', to: '' };
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const jstDate = (d) => new Date(new Date(d).getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+const today = () => jstDate(Date.now());
+const md = (iso) => { if (!iso) return ''; const d = jstDate(iso); const p = d.split('-').map(Number); return p[1] + '/' + p[2] + '（' + '日月火水木金土'[new Date(p[0], p[1] - 1, p[2]).getDay()] + '）'; };
+const hm = (iso) => iso ? new Date(new Date(iso).getTime() + 9 * 3600 * 1000).toISOString().slice(11, 16) : '';
+const km = (m) => (Math.round((m || 0) / 100) / 10).toFixed(1) + 'km';
+
+async function rest(method, path, body, extra) {
+  const r = await fetch(FIT_SB_URL + '/rest/v1/' + path, { method, headers: Object.assign({}, HDR, extra || {}), body: body == null ? undefined : JSON.stringify(body) });
+  const tx = await r.text();
+  if (!r.ok) { let m = tx; try { m = JSON.parse(tx).message || tx; } catch (e) {} throw new Error(method + ' ' + r.status + ' ' + String(m).slice(0, 160)); }
+  return tx ? JSON.parse(tx) : null;
+}
+function errText(e) {
+  const m = String((e && e.message) || e || '');
+  if (/Failed to fetch|NetworkError|network/i.test(m)) return '通信がうまくつながりませんでした。もう一度お試しください。';
+  if (/staff_routes/.test(m) && /does not exist|schema cache|404/.test(m)) return 'まだ表（staff_routes）ができていません。SQL rt1 を流してください。';
+  return 'うまくいきませんでした。（' + m.slice(0, 120) + '）';
+}
+function modal(html) { const bg = document.createElement('div'); bg.className = 'modal-bg'; bg.innerHTML = '<div class="modal">' + html + '</div>'; document.body.append(bg); return bg; }
+
+// ---------- GPX を読む（app.html の これ登録して ⑤ と同じ作り）----------
+function rtDist(a, b) {
+  const R = 6371000, toR = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * toR, dLng = (b[1] - a[1]) * toR;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(a[0] * toR) * Math.cos(b[0] * toR) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(x)));
+}
+function rtSimplify(pts, eps) {   // Douglas-Peucker（メートルに近い目安で）
+  if (pts.length <= 2) return pts.slice();
+  const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+  const stack = [[0, pts.length - 1]];
+  const kx = Math.cos(pts[0][0] * Math.PI / 180) * 111320, ky = 110540;
+  while (stack.length) {
+    const [s, e] = stack.pop();
+    const ax = pts[s][1] * kx, ay = pts[s][0] * ky, bx = pts[e][1] * kx, by = pts[e][0] * ky;
+    const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+    let maxD = -1, idx = -1;
+    for (let i = s + 1; i < e; i++) {
+      const px = pts[i][1] * kx, py = pts[i][0] * ky;
+      let t = L ? ((px - ax) * dx + (py - ay) * dy) / L : 0; t = Math.max(0, Math.min(1, t));
+      const qx = ax + t * dx - px, qy = ay + t * dy - py, d = qx * qx + qy * qy;
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (idx >= 0 && maxD > eps * eps) { keep[idx] = 1; stack.push([s, idx], [idx, e]); }
+  }
+  return pts.filter((p, i) => keep[i]);
+}
+function rtParseGpx(text, fileName) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('GPX として読めませんでした');
+  const segs = [];
+  const take = (nodes) => { const a = []; for (const n of nodes) { const lat = parseFloat(n.getAttribute('lat')), lng = parseFloat(n.getAttribute('lon')); if (!isFinite(lat) || !isFinite(lng)) continue; const te = n.getElementsByTagNameNS('*', 'time')[0]; a.push([lat, lng, te ? Date.parse(te.textContent) : NaN]); } return a; };
+  const trksegs = doc.getElementsByTagNameNS('*', 'trkseg');
+  for (const sg of trksegs) { const a = take(sg.getElementsByTagNameNS('*', 'trkpt')); if (a.length) segs.push(a); }
+  if (!segs.length) for (const rt of doc.getElementsByTagNameNS('*', 'rte')) { const a = take(rt.getElementsByTagNameNS('*', 'rtept')); if (a.length) segs.push(a); }
+  if (!segs.length) throw new Error('道すじの点がありません');
+  let dist = 0, n = 0, t0 = NaN, t1 = NaN;
+  segs.forEach(sg => { for (let i = 0; i < sg.length; i++) { if (i) dist += rtDist(sg[i - 1], sg[i]); n++; const t = sg[i][2]; if (isFinite(t)) { if (!isFinite(t0) || t < t0) t0 = t; if (!isFinite(t1) || t > t1) t1 = t; } } });
+  // 間引く（合わせて RT_MAXPTS 点以下になるまで、ゆるめていく）
+  let eps = 2, out = null;
+  for (let k = 0; k < 14; k++) {
+    out = segs.map(sg => rtSimplify(sg, eps)).filter(sg => sg.length >= 1);
+    if (out.reduce((a, sg) => a + sg.length, 0) <= RT_MAXPTS) break;
+    eps *= 1.6;
+  }
+  const r5 = (v) => Math.round(v * 1e5) / 1e5;
+  const points = out.map(sg => sg.map(p => [r5(p[0]), r5(p[1])]));
+  const nameEl = doc.getElementsByTagNameNS('*', 'name')[0];
+  return { name: (nameEl && nameEl.textContent.trim()) || String(fileName || '').replace(/\.gpx$/i, ''), points: points,
+    point_count: points.reduce((a, sg) => a + sg.length, 0), raw_count: n, distance_m: Math.round(dist),
+    started_at: isFinite(t0) ? new Date(t0).toISOString() : null, ended_at: isFinite(t1) ? new Date(t1).toISOString() : null };
+}
+
+// ---------- 起動・ログイン ----------
+function hero() {
+  const who = ME && ME.kind === 'staff' ? ('スタッフ：' + esc(ME.row.name || '')) : '';
+  $('#hero').innerHTML = '<div class="hero"><div class="hero-in"><a class="back" href="' + (/[?&]from=exec\b/.test(location.search) ? 'app.html#exec' : 'app.html') + '">‹ アプリに戻る</a>' +
+    (who ? '<span class="who">' + who + '　<a href="#" id="lo" style="color:#fff">ログアウト</a></span>' : '') + '<h1>🗺 ルートの記録</h1></div></div>';
+  const lo = $('#lo'); if (lo) lo.onclick = (e) => { e.preventDefault(); fitLogout(); ME = null; boot(); };
+}
+async function boot() {
+  let netErr = false;
+  try { ME = await fitResume(); } catch (e) { netErr = true; }
+  hero();
+  if (netErr) { $('#main').innerHTML = '<div class="card"><b>通信がうまくつながりませんでした。</b><div class="msg">少し待ってから開き直してください。</div></div>'; return; }
+  if (!ME) return loginView();
+  if (ME.kind !== 'staff') { $('#main').innerHTML = '<div class="card"><b>このページはスタッフだけが見られます。</b><p><button class="btn sub" id="lo2">ログアウトして、スタッフで入る</button></p></div>'; $('#lo2').onclick = () => { fitLogout(); ME = null; boot(); }; return; }
+  start();
+}
+function loginView(msg) {
+  $('#main').innerHTML = '<div class="card" style="max-width:420px;margin:10px auto"><b style="font-size:16px">スタッフのログイン</b>' +
+    '<div class="msg">fit アプリと同じスタッフIDとパスワードで入れます。一度入ると、この端末では次から自動で入れます。</div>' +
+    '<label class="lbl">スタッフID</label><input class="in" id="lg-id" style="width:100%" autocomplete="username" autocapitalize="off">' +
+    '<label class="lbl">パスワード</label><input class="in" id="lg-pw" type="password" style="width:100%" autocomplete="current-password">' +
+    '<div id="lg-msg" class="msg err">' + esc(msg || '') + '</div><button class="btn" id="lg-go" style="width:100%;justify-content:center;margin-top:6px">ログイン</button></div>';
+  $('#lg-go').onclick = doLogin; $('#lg-pw').onkeydown = e => { if (e.key === 'Enter') doLogin(); };
+}
+async function doLogin() {
+  const id = ($('#lg-id').value || '').trim().toLowerCase(), pw = ($('#lg-pw').value || '').trim();
+  if (!id || !pw) { $('#lg-msg').textContent = 'スタッフIDとパスワードを入れてください'; return; }
+  const btn = $('#lg-go'); btn.disabled = true;
+  const j = await fitLogin('staff', id, pw);
+  btn.disabled = false;
+  if (!j.ok) { $('#lg-msg').textContent = fitLoginErrorText(j, 'IDかパスワードがちがいます'); return; }
+  if (j.account && j.account.must_change_pw) { $('#lg-msg').innerHTML = '最初にパスワードを変える必要があります。fit アプリで変えてから開き直してください。'; return; }
+  ME = { kind: j.kind, row: j.account };
+  hero(); start();
+}
+
+// ---------- 画面 ----------
+async function start() {
+  IS_MGR = ME.row.role === 'admin';
+  try { if (!IS_MGR) { const p = await rest('GET', 'staff_permissions?staff_id=eq.' + encodeURIComponent(ME.row.staff_id) + '&select=is_manager'); IS_MGR = !!(p && p[0] && p[0].is_manager); } } catch (e) {}
+  try { (await rest('GET', 'staff?select=id,name,staff_id,is_active&order=staff_id') || []).forEach((s, i) => { STAFF[s.id] = { name: s.name, sid: s.staff_id, active: s.is_active !== false }; }); } catch (e) {}
+  $('#main').innerHTML =
+    '<div class="filters">' +
+      '<select class="in" id="f-period"><option value="month">今月</option><option value="last">先月</option><option value="3m">この3か月</option><option value="all">ぜんぶ</option><option value="range">日にちを選ぶ</option></select>' +
+      '<span id="f-range" style="display:none"><input type="date" class="in" id="f-from"> 〜 <input type="date" class="in" id="f-to"></span>' +
+      '<select class="in" id="f-staff"><option value="">全員</option></select>' +
+      '<select class="in" id="f-kind"><option value="">種類：ぜんぶ</option>' + RT_KINDS.map(k => '<option>' + k + '</option>').join('') + '</select>' +
+      '<label class="btn" style="margin-left:auto">＋ GPX を取り込む<input type="file" id="gpx-in" accept=".gpx,application/gpx+xml,application/xml,text/xml" multiple style="display:none"></label>' +
+    '</div>' +
+    '<div id="map"></div>' +
+    '<div class="msg" style="margin-top:4px">ルートヒストリーで記録 →「GPX で書き出す」→ ここで取り込み。人ごとに色を分けています。線を押すと、だれの・いつのルートかが出ます。</div>' +
+    '<div class="card"><h3>人ごとの合計</h3><div id="sum" class="sum"></div></div>' +
+    '<div class="card"><h3>ルートの一覧</h3><div id="list"></div></div>';
+  $('#f-period').onchange = (e) => { F.period = e.target.value; $('#f-range').style.display = F.period === 'range' ? '' : 'none'; load(); };
+  $('#f-from').onchange = (e) => { F.from = e.target.value; load(); };
+  $('#f-to').onchange = (e) => { F.to = e.target.value; load(); };
+  $('#f-staff').onchange = (e) => { F.staff = e.target.value; draw(); };
+  $('#f-kind').onchange = (e) => { F.kind = e.target.value; draw(); };
+  $('#gpx-in').onchange = (e) => { const fs = [...(e.target.files || [])]; e.target.value = ''; if (fs.length) importFiles(fs); };
+  MAP = L.map('map', { zoomControl: true }).setView([33.8392, 132.7657], 13);   // 松山
+  L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">地理院タイル</a>' }).addTo(MAP);
+  LAYER = L.layerGroup().addTo(MAP);
+  load();
+}
+function range() {
+  const t = today(), y = +t.slice(0, 4), m = +t.slice(5, 7);
+  const ym = (yy, mm) => { while (mm < 1) { mm += 12; yy--; } return yy + '-' + String(mm).padStart(2, '0') + '-01'; };
+  if (F.period === 'month') return [ym(y, m), null];
+  if (F.period === 'last') return [ym(y, m - 1), ym(y, m)];
+  if (F.period === '3m') return [ym(y, m - 2), null];
+  if (F.period === 'range') return [F.from || null, F.to ? new Date(Date.parse(F.to + 'T00:00:00+09:00') + 86400000).toISOString().slice(0, 10) : null];
+  return [null, null];
+}
+async function load() {
+  const [a, b] = range();
+  let q = 'staff_routes?select=id,staff_id,kind,memo,title,started_at,ended_at,distance_m,point_count,points,created_at&order=started_at.desc.nullslast';
+  if (a) q += '&started_at=gte.' + a + 'T00:00:00%2B09:00';
+  if (b) q += '&started_at=lt.' + b + 'T00:00:00%2B09:00';
+  $('#list').innerHTML = '<div class="msg">読み込み中…</div>';
+  try { ROUTES = await rest('GET', q) || []; }
+  catch (e) { $('#list').innerHTML = '<div class="msg err">' + esc(errText(e)) + '</div>'; ROUTES = []; }
+  const ids = [...new Set(ROUTES.map(r => r.staff_id).filter(Boolean))];
+  const sel = $('#f-staff'), cur = F.staff;
+  sel.innerHTML = '<option value="">全員</option>' + ids.map(id => '<option value="' + esc(id) + '"' + (id === cur ? ' selected' : '') + '>' + esc((STAFF[id] || {}).name || '（不明）') + '</option>').join('');
+  if (cur && ids.indexOf(cur) < 0) F.staff = '';
+  draw(true);
+}
+function colorOf(staffId) {
+  const ids = Object.keys(STAFF).sort((x, y) => String((STAFF[x] || {}).sid).localeCompare(String((STAFF[y] || {}).sid)));
+  const i = Math.max(0, ids.indexOf(staffId));
+  return RT_COLORS[i % RT_COLORS.length];
+}
+function shown() { return ROUTES.filter(r => (!F.staff || r.staff_id === F.staff) && (!F.kind || r.kind === F.kind)); }
+function draw(fit) {
+  LAYER.clearLayers(); LINES = {};
+  const list = shown();
+  let bounds = null;
+  list.forEach(r => {
+    const segs = Array.isArray(r.points) ? r.points : [];
+    const col = colorOf(r.staff_id);
+    const pl = L.polyline(segs, { color: col, weight: SEL === r.id ? 6 : 4, opacity: SEL && SEL !== r.id ? 0.35 : 0.85 });
+    pl.bindPopup('<b>' + esc((STAFF[r.staff_id] || {}).name || '') + '</b>　' + esc(r.kind || '') + '<br>' + esc(md(r.started_at || r.created_at)) + ' ' + esc(hm(r.started_at)) + (r.ended_at ? '〜' + esc(hm(r.ended_at)) : '') + '　' + km(r.distance_m) + (r.memo ? '<br>' + esc(r.memo) : ''));
+    pl.on('click', () => { SEL = r.id; highlight(); });
+    pl.addTo(LAYER); LINES[r.id] = pl;
+    try { const bb = pl.getBounds(); if (bb.isValid()) bounds = bounds ? bounds.extend(bb) : L.latLngBounds(bb.getSouthWest(), bb.getNorthEast()); } catch (e) {}
+  });
+  if (fit && bounds) MAP.fitBounds(bounds, { padding: [20, 20] });
+  // 人ごとの合計
+  const by = {};
+  list.forEach(r => { const k = r.staff_id || '-'; by[k] = by[k] || { n: 0, m: 0 }; by[k].n++; by[k].m += r.distance_m || 0; });
+  const tot = list.reduce((a, r) => a + (r.distance_m || 0), 0);
+  $('#sum').innerHTML = Object.keys(by).length ? Object.keys(by).sort((a, b) => by[b].m - by[a].m).map(k => '<span class="chip' + (F.staff === k ? ' on' : '') + '" data-st="' + esc(k) + '"><span class="dot" style="background:' + colorOf(k) + '"></span>' + esc((STAFF[k] || {}).name || '（不明）') + '　' + by[k].n + '本・' + km(by[k].m) + '</span>').join('') + '<span class="msg" style="align-self:center">合計 ' + list.length + '本・' + km(tot) + '</span>' : '<span class="msg">この期間のルートはありません</span>';
+  document.querySelectorAll('[data-st]').forEach(c => c.onclick = () => { F.staff = F.staff === c.dataset.st ? '' : c.dataset.st; $('#f-staff').value = F.staff; draw(true); });
+  // 一覧
+  $('#list').innerHTML = list.length ? list.map(r => {
+    const mine = r.staff_id === ME.row.id;
+    return '<div class="row' + (SEL === r.id ? ' on' : '') + '" data-id="' + r.id + '"><span class="dot" style="background:' + colorOf(r.staff_id) + '"></span><div class="rmain"><div class="rt">' + esc(md(r.started_at || r.created_at)) + ' ' + esc(hm(r.started_at)) + (r.ended_at ? '〜' + esc(hm(r.ended_at)) : '') + '　' + esc((STAFF[r.staff_id] || {}).name || '') + '</div>' +
+      '<div class="rm">' + esc(r.kind || '') + '・' + km(r.distance_m) + (r.memo ? '・' + esc(r.memo) : '') + '</div></div>' +
+      (mine || IS_MGR ? '<button class="btn danger small" data-del="' + r.id + '">消す</button>' : '') + '</div>';
+  }).join('') : '<div class="msg">この期間のルートはありません。「＋ GPX を取り込む」から入れてください。</div>';
+  document.querySelectorAll('.row[data-id]').forEach(el => el.onclick = (e) => { if (e.target.closest('[data-del]')) return; SEL = el.dataset.id; highlight(true); });
+  document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => delRoute(b.dataset.del));
+}
+function highlight(zoom) {
+  Object.keys(LINES).forEach(id => LINES[id].setStyle({ weight: id === SEL ? 6 : 4, opacity: id === SEL ? 0.95 : 0.3 }));
+  document.querySelectorAll('.row[data-id]').forEach(el => el.classList.toggle('on', el.dataset.id === SEL));
+  const pl = LINES[SEL];
+  if (pl) { pl.bringToFront(); if (zoom) { try { MAP.fitBounds(pl.getBounds(), { padding: [30, 30] }); } catch (e) {} pl.openPopup(); } }
+}
+async function delRoute(id) {
+  const r = ROUTES.find(x => x.id === id); if (!r) return;
+  const bg = modal('<h3>このルートを消しますか？</h3><div class="msg">' + esc(md(r.started_at || r.created_at)) + '　' + esc((STAFF[r.staff_id] || {}).name || '') + '　' + km(r.distance_m) + '<br>消すと元に戻せません。</div><div class="mb"><button class="btn sub" data-no>やめる</button><button class="btn danger" data-ok>消す</button></div>');
+  bg.querySelector('[data-no]').onclick = () => bg.remove();
+  bg.querySelector('[data-ok]').onclick = async () => {
+    bg.remove();
+    try { await rest('DELETE', 'staff_routes?id=eq.' + encodeURIComponent(id), null, { Prefer: 'return=representation' }).then(rows => { if (!rows || !rows.length) throw new Error('消せませんでした（自分のルートだけ消せます）'); }); if (SEL === id) SEL = null; load(); }
+    catch (e) { alert(errText(e)); }
+  };
+}
+
+// ---------- 取り込み ----------
+async function importFiles(files) {
+  const items = [];
+  for (const f of files) {
+    try { const txt = await f.text(); const g = rtParseGpx(txt, f.name); g.file = f.name; g.date = g.started_at ? jstDate(g.started_at) : today(); items.push(g); }
+    catch (e) { items.push({ file: f.name, error: String(e.message || e) }); }
+  }
+  const ok = items.filter(x => !x.error);
+  const prev = L.layerGroup().addTo(MAP);
+  ok.forEach(g => L.polyline(g.points, { color: '#000', weight: 4, dashArray: '6 6', opacity: 0.8 }).addTo(prev));
+  try { const b = L.featureGroup(prev.getLayers()).getBounds(); if (b.isValid()) MAP.fitBounds(b, { padding: [20, 20] }); } catch (e) {}
+  const bg = modal('<h3>GPX を取り込む（' + ok.length + '本）</h3>' +
+    items.map((g, i) => g.error ? '<div class="frow err">✕ ' + esc(g.file) + '：' + esc(g.error) + '</div>' :
+      '<div class="frow"><b>' + esc(g.file) + '</b>　' + km(g.distance_m) + '・' + g.point_count + '点' + (g.raw_count > g.point_count ? '（' + g.raw_count + '点から間引き）' : '') +
+      '<br>日にち <input type="date" class="in" data-date="' + i + '" value="' + g.date + '">' + (g.started_at ? '　' + hm(g.started_at) + (g.ended_at ? '〜' + hm(g.ended_at) : '') : '　<span class="msg">（時刻なし）</span>') + '</div>').join('') +
+    '<label class="lbl">種類</label><select class="in" id="im-kind">' + RT_KINDS.map(k => '<option>' + k + '</option>').join('') + '</select>' +
+    '<label class="lbl">ひとこと（なくてもよい）</label><input class="in" id="im-memo" style="width:100%" placeholder="例：〇〇町 冬期講習のチラシ 300枚">' +
+    '<div class="msg" style="margin-top:6px">地図の黒い点線が、これから入れるルートです。GPX ファイルそのものは残しません。</div>' +
+    '<div class="mb"><button class="btn sub" data-no>やめる</button><button class="btn" data-ok' + (ok.length ? '' : ' disabled') + '>登録する</button></div>');
+  const close = () => { bg.remove(); MAP.removeLayer(prev); };
+  bg.querySelector('[data-no]').onclick = close;
+  bg.querySelector('[data-ok]').onclick = async () => {
+    const kind = $('#im-kind').value, memo = ($('#im-memo').value || '').trim();
+    const rows = [];
+    items.forEach((g, i) => {
+      if (g.error) return;
+      const d = (bg.querySelector('[data-date="' + i + '"]') || {}).value || g.date;
+      let st = g.started_at, en = g.ended_at;
+      if (!st || jstDate(st) !== d) { st = d + 'T00:00:00+09:00'; if (!g.started_at) en = null; else { st = d + 'T' + hm(g.started_at) + ':00+09:00'; en = g.ended_at ? d + 'T' + hm(g.ended_at) + ':00+09:00' : null; } }
+      rows.push({ staff_id: ME.row.id, kind: kind, memo: memo || null, title: g.name || null, started_at: st, ended_at: en, distance_m: g.distance_m, point_count: g.point_count, points: g.points });
+    });
+    const btn = bg.querySelector('[data-ok]'); btn.disabled = true; btn.textContent = '登録中…';
+    try { await rest('POST', 'staff_routes', rows, { Prefer: 'return=minimal' }); close(); load(); }
+    catch (e) { btn.disabled = false; btn.textContent = '登録する'; alert(errText(e)); }
+  };
+}
+
+boot();
+</script>
+</body>
+</html>
