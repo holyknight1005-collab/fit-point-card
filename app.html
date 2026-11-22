@@ -15582,7 +15582,9 @@ function ttsParseCell(raw) {
   if (cm) { cycMonth = parseInt(cm[1], 10); cycNo = ttsCircNo(cm[2]); t = t.slice(0, cm.index).trim(); }
   else { const cn = t.match(/([①-⑳])\s*$/); if (cn) { cycNo = ttsCircNo(cn[1]); t = t.slice(0, cn.index).trim(); } }
   t = t.replace(/[(]\s*$/, '').trim();
-  return { name: t, keep: keep, cycMonth: cycMonth, cycNo: cycNo, start: start, end: end };
+  let makeup = false;
+  if (/\s*補習$/.test(t)) { makeup = true; t = t.replace(/\s*補習$/, '').trim(); }   // 「J北1年数学 補習」
+  return { name: t, keep: keep, cycMonth: cycMonth, cycNo: cycNo, start: start, end: end, makeup: makeup };
 }
 // タブ全体 → { year, month, from, to, items:[{date, period, room, raw, teacher, ...ttsParseCell}] }
 function ttsParseTab(values) {
@@ -15704,6 +15706,7 @@ async function ttsRun() {
 async function ttsCompare() {
   const P = tts.parsed;
   const mgr = isManagerStaff();
+  try { await tpLoadMasters(); } catch (e) {}   // テスト対策の学校の一覧
   // 授業（名前を結びつけるために、時間割だけの講座も含めて全部）
   const all = await sbGet('class_master', 'is_active=eq.true&select=id,name,category,teacher_staff_id,default_room,slot_rooms&order=name') || [];
   const my = await getMyClassIdSet();
@@ -15723,42 +15726,57 @@ async function ttsCompare() {
   tts.scopeSet = scope;
   // 名前の覚え（tt_name_map）
   let map = [];
-  try { map = await sbGet('tt_name_map', 'select=gname,class_master_id,ignore') || []; tts.mapOk = true; } catch (e) { tts.mapOk = false; }
+  try { map = await sbGet('tt_name_map', 'select=id,gname,class_master_id,ignore,created_by&order=gname') || []; tts.mapOk = true; } catch (e) { tts.mapOk = false; }
   tts.mapRows = map;
-  const mapBy = {}; map.forEach(r => { mapBy[r.gname] = r; });
-  Object.assign(mapBy, tts.localMap || {});
+  // 1つの名前に授業を2つ以上（「文系・理系合同」など）
+  const mapBy = {};
+  map.concat(Object.values(tts.localMap || {}).flat()).forEach(r => { const m = (mapBy[r.gname] = mapBy[r.gname] || { ignore: false, ids: [] }); if (r.ignore) m.ignore = true; else if (r.class_master_id && m.ids.indexOf(String(r.class_master_id)) < 0) m.ids.push(String(r.class_master_id)); });
   // 授業名 → id（正規化した名前）
   const nameIdx = {}; all.forEach(c => { const k = ttsNorm(c.name); (nameIdx[k] = nameIdx[k] || []).push(String(c.id)); });
   const nameKeys = Object.keys(nameIdx).sort((a, b) => b.length - a.length);
   const resolve = (it) => {
     const k1 = ttsNorm(it.keep), k2 = ttsNorm(it.name);
-    if (mapBy[k1]) return mapBy[k1].ignore ? { ignore: true } : { id: String(mapBy[k1].class_master_id), how: 'map' };
-    if (mapBy[k2]) return mapBy[k2].ignore ? { ignore: true } : { id: String(mapBy[k2].class_master_id), how: 'map' };
-    if (nameIdx[k1] && nameIdx[k1].length === 1) return { id: nameIdx[k1][0], how: 'name', keepCyc: true };
-    if (nameIdx[k2] && nameIdx[k2].length === 1) return { id: nameIdx[k2][0], how: 'name' };
-    // 「J北2年数学（文系・理系合同）」のように、授業名のうしろに（〜）がついているとき
-    const pk = nameKeys.find(n => n.length >= 3 && k2.startsWith(n) && /^[(（]/.test(k2.slice(n.length)));
-    if (pk && nameIdx[pk].length === 1) return { id: nameIdx[pk][0], how: 'guess' };
+    for (const k of [k1, k2]) { const m = mapBy[k]; if (m) { if (m.ignore) return { ignore: true }; if (m.ids.length) return { ids: m.ids, how: 'map' }; } }
+    if (nameIdx[k1] && nameIdx[k1].length === 1) return { ids: [nameIdx[k1][0]], how: 'name', keepCyc: true };
+    if (nameIdx[k2] && nameIdx[k2].length === 1) return { ids: [nameIdx[k2][0]], how: 'name' };
     return null;
   };
+  // 名前が似ている授業（結びつかない名前の候補に出すだけ。自動では結びつけない）
+  const suggest = (k2) => { const pk = nameKeys.find(n => n.length >= 3 && k2.startsWith(n)); return pk ? nameIdx[pk].slice() : []; };
+  // テスト対策（アプリの events scope=testprep）と照らす：「北2年物理」＝ 学校の短い名前＋学年＋教科
+  let tps = [];
+  try { tps = await sbGet('events', 'scope=eq.testprep&event_date=gte.' + P.from + '&event_date=lte.' + P.to + '&select=event_date,target_schools,target_grades,tp_subject,tp_division,created_by') || []; } catch (e) {}
+  const tpKeys = {};
+  const tpKeyOf = (div, sc, g, sub) => { const a = ttsNorm(tpShortClass(div || '高校部', sc, g, sub)); return [a, a.replace(/^愛大/, '')]; };
+  tps.forEach(e => tpKeyOf(e.tp_division, e.target_schools, e.target_grades, e.tp_subject).forEach(k => { tpKeys[e.event_date + '|' + k] = true; }));
+  const tpNames = {};
+  (tpSchools ? Object.keys(tpSchools) : ['高校部']).forEach(div => ((tpSchools && tpSchools[div]) || []).forEach(sc => ['1', '2', '3'].forEach(g => TP_SUBJECTS.forEach(sub => tpKeyOf(div, sc, g, sub).forEach(k => { tpNames[k] = true; })))));
+  const tpOnly = [];
   const gItems = [], unmatched = {};
   P.items.forEach(it => {
     const r = resolve(it);
     if (r && r.ignore) return;
     if (!r) {
+      // テスト対策の名前なら：アプリにあれば何もしない／なければ「テスト対策（Google だけ）」
+      const nk = ttsNorm(it.name);
+      if (tpNames[nk] || tpKeys[it.date + '|' + nk]) {
+        const fam0 = String(currentStaff.name || '').split(/[\s　]+/)[0];
+        if (!tpKeys[it.date + '|' + nk] && ((mgr && tts.scope !== 'mine') || (fam0 && it.teacher.indexOf(fam0) >= 0))) tpOnly.push(it);
+        return;
+      }
       const k = ttsNorm(it.name) || ttsNorm(it.keep);
       // スタッフは、先生の行に自分の名前があるものだけ（責任者は全部）
       const fam = String(currentStaff.name || '').split(/[\s　]+/)[0];
       if (!(mgr && tts.scope !== 'mine') && fam && it.teacher.indexOf(fam) < 0) return;
-      (unmatched[k] = unmatched[k] || { key: k, name: it.name || it.keep, teacher: it.teacher, n: 0, dates: [] });
+      (unmatched[k] = unmatched[k] || { key: k, name: it.name || it.keep, teacher: it.teacher, n: 0, dates: [], sug: suggest(ttsNorm(it.name)) });
       unmatched[k].n++; if (unmatched[k].dates.length < 4) unmatched[k].dates.push(it.date.slice(5).replace('-', '/') + ' ' + it.period + '限');
       return;
     }
     if (r.keepCyc) { it.cycMonth = null; it.cycNo = null; }   // 名前に①がある授業（回番号ではない）
-    if (!scope.has(r.id)) return;
-    gItems.push(Object.assign({}, it, { cid: r.id, how: r.how }));
+    r.ids.forEach(id => { if (scope.has(id)) gItems.push(Object.assign({}, it, { cid: id, how: r.how })); });
   });
   tts.unmatched = Object.values(unmatched).sort((a, b) => b.n - a.n);
+  tts.tpOnly = tpOnly;
   // アプリの授業日（その半月・くらべる授業）
   const sess = [];
   for (let i = 0; i < scopeIds.length; i += 80) {
@@ -15784,13 +15802,14 @@ async function ttsCompare() {
     const gs = (G[k] || []).slice().sort((a, b) => a.period - b.period), as = (A[k] || []).slice().sort((a, b) => (a.period || 0) - (b.period || 0));
     const cid = k.split('|')[0], d = k.split('|')[1];
     const pairs = [];
-    const gl = gs.filter(g => { const i = as.findIndex(s => s.period === g.period); if (i >= 0) { pairs.push([g, as[i]]); as.splice(i, 1); return false; } return true; });
+    const gl = gs.filter(g => { let i = as.findIndex(s => s.period === g.period && !!s.is_makeup === !!g.makeup); if (i < 0) i = as.findIndex(s => s.period === g.period); if (i >= 0) { pairs.push([g, as[i]]); as.splice(i, 1); return false; } return true; });
+    gl.sort((a, b) => (b.makeup ? 1 : 0) - (a.makeup ? 1 : 0)); as.sort((a, b) => (b.is_makeup ? 1 : 0) - (a.is_makeup ? 1 : 0));
     while (gl.length && as.length) pairs.push([gl.shift(), as.shift()]);
     pairs.forEach(([g, s]) => {
       const ch = [];
       if (s.period !== g.period) ch.push({ k: 'period', t: (s.period != null ? s.period + '限' : '時限なし') + ' → ' + g.period + '限' });
       if (g.start && String(s.start_time || '').slice(0, 5) !== g.start) ch.push({ k: 'time', t: (s.start_time ? String(s.start_time).slice(0, 5) + '〜' + String(s.end_time || '').slice(0, 5) : '時刻なし') + ' → ' + g.start + '〜' + g.end });
-      if (g.cycNo != null && !s.is_makeup) {
+      if (g.cycNo != null && !s.is_makeup && !g.makeup) {
         const gm = g.cycMonth, am = s.cycle_month;
         if (s.cycle_no !== g.cycNo || (gm != null && am !== gm)) ch.push({ k: 'cycle', t: (s.cycle_no != null ? ttsCycText(am, s.cycle_no) : '回なし') + ' → ' + ttsCycText(gm != null ? gm : am, g.cycNo) });
       }
@@ -15840,8 +15859,8 @@ function ttsRender() {
       '<input type="checkbox" ' + (x.on ? 'checked ' : '') + (x.locked || x.applied ? 'disabled ' : '') + 'onchange="tts.diffs[' + i + '].on=this.checked" style="margin-top:3px;width:16px;height:16px">' +
       '<div style="flex:1">' + inner + (x.applied ? ' <b style="color:#1E8E3E">✓ 反映しました</b>' : '') + (x.err ? '<div style="color:#C0392B;font-size:12px">' + faiEsc(x.err) + '</div>' : '') + '</div></label>';
     const sect = (title, color, list, f) => list.length ? '<div style="' + card + ';border-left:5px solid ' + color + '"><b>' + title + '（' + list.length + '）</b>' + list.map(x => row(x, tts.diffs.indexOf(x), f(x))).join('') + '</div>' : '';
-    h += sect('🟢 Google だけにある → アプリに足す', '#1E8E3E', adds, x => '<b>' + faiEsc(ttsCname(x.cid)) + '</b> ' + ttsMd(x.date) + ' ' + x.g.period + '限' + (x.g.start ? ' ' + x.g.start + '〜' + x.g.end : '') + (x.g.cycNo != null ? '　回：' + ttsCycText(x.g.cycMonth, x.g.cycNo) : '') +
-      '<div style="font-size:11px;color:var(--muted)">Google：' + faiEsc(x.g.raw) + (x.g.teacher ? '（' + faiEsc(x.g.teacher) + '）' : '') + '・' + faiEsc(dttRoomLabel(x.g.room)) + (x.g.how === 'guess' ? '　<span style="color:#B26A00">名前から推測</span>' : '') + '</div>');
+    h += sect('🟢 Google だけにある → アプリに足す', '#1E8E3E', adds, x => '<b>' + faiEsc(ttsCname(x.cid)) + '</b> ' + ttsMd(x.date) + ' ' + x.g.period + '限' + (x.g.start ? ' ' + x.g.start + '〜' + x.g.end : '') + (x.g.makeup ? '・補習' : x.g.cycNo != null ? '　回：' + ttsCycText(x.g.cycMonth, x.g.cycNo) : '') +
+      '<div style="font-size:11px;color:var(--muted)">Google：' + faiEsc(x.g.raw) + (x.g.teacher ? '（' + faiEsc(x.g.teacher) + '）' : '') + '・' + faiEsc(dttRoomLabel(x.g.room)) + '</div>');
     h += sect('🔴 アプリだけにある → アプリから消す', '#C0392B', rems, x => '<b>' + faiEsc(ttsCname(x.cid)) + '</b>' + (x.s.school ? '（' + faiEsc(x.s.school) + '）' : '') + ' ' + ttsMd(x.date) + ' ' + (x.s.period != null ? x.s.period + '限' : String(x.s.start_time || '').slice(0, 5)) + (x.s.cycle_no != null && !x.s.is_makeup ? '　回：' + ttsCycText(x.s.cycle_month, x.s.cycle_no) : '') + (x.s.is_makeup ? '・補習' : '') +
       (x.locked ? '<div style="font-size:11px;color:#C0392B">出欠が入っているので消せません。Google に入れ忘れていないか見てください</div>' : '<div style="font-size:11px;color:var(--muted)">Google に入れ忘れたときは、チェックを入れずに Google を直してください</div>'));
     h += sect('🟡 ちがうところ → アプリを Google に合わせる', '#E0A800', chs, x => '<b>' + faiEsc(ttsCname(x.cid)) + '</b>' + (x.s.school ? '（' + faiEsc(x.s.school) + '）' : '') + ' ' + ttsMd(x.date) + '<div style="font-size:12px">' + x.ch.map(c => ({ period: '時限', time: '時刻', cycle: '回番号', room: '教室' })[c.k] + '：' + faiEsc(c.t)).join('　') + '</div>' +
@@ -15849,27 +15868,43 @@ function ttsRender() {
     if (tts.diffs.some(x => !x.applied)) h += '<div style="position:sticky;bottom:0;background:var(--bg);padding:10px 0"><button onclick="ttsApply()" style="' + FAI_BTN + ';width:100%;padding:12px">✅ チェックしたものを反映（アプリを直す）</button></div>';
   }
   if (tts.unmatched.length) {
-    const opts = (sel) => '<option value="">（授業を選ぶ）</option><option value="__ignore__">アプリにない講座（くらべない）</option>' + Object.values(tts.byId || {}).filter(c => (c.category || 'normal') !== 'timetable_only' && (mgr || (tts.my && tts.my.has(String(c.id))))).sort((a, b) => a.name.localeCompare(b.name, 'ja')).map(c => '<option value="' + c.id + '">' + faiEsc(c.name) + '</option>').join('');
-    h += '<div style="' + card + ';border-left:5px solid #7F8C8D"><b>❓ アプリの授業と結びつかない名前（' + tts.unmatched.length + '）</b><div style="font-size:11px;color:var(--muted)">' + (mgr && tts.scope !== 'mine' ? '' : '先生の行に自分の名前があるものだけ出しています。') + 'どの授業か選ぶと、次からも覚えます。アプリにない講座（kubs など）は「アプリにない講座」を選んでください。' + (tts.mapOk === false ? '<br><span style="color:#C0392B">覚えておく表（tt_name_map）がまだないので、この画面を閉じるまでだけ覚えます（SQL tt1 が先）</span>' : '') + '</div>' +
+    const opts = (sug) => '<option value="__ignore__">アプリにない講座（くらべない）</option>' + Object.values(tts.byId || {}).filter(c => (c.category || 'normal') !== 'timetable_only' && (mgr || (tts.my && tts.my.has(String(c.id))))).sort((a, b) => a.name.localeCompare(b.name, 'ja')).sort((a, b) => (sug.indexOf(String(b.id)) >= 0 ? 1 : 0) - (sug.indexOf(String(a.id)) >= 0 ? 1 : 0)).map(c => '<option value="' + c.id + '">' + (sug.indexOf(String(c.id)) >= 0 ? '★ ' : '') + faiEsc(c.name) + '</option>').join('');
+    h += '<div style="' + card + ';border-left:5px solid #7F8C8D"><b>❓ アプリの授業と結びつかない名前（' + tts.unmatched.length + '）</b><div style="font-size:11px;color:var(--muted)">' + (mgr && tts.scope !== 'mine' ? '' : '先生の行に自分の名前があるものだけ出しています。') + 'どの授業か選ぶと、次からも覚えます（★は名前が似ている授業）。「文系・理系合同」のように2つ以上の授業のときは、⌘（Ctrl）を押しながら選んでください。アプリにない講座（kubs など）は「アプリにない講座」を選んでください。' + (tts.mapOk === false ? '<br><span style="color:#C0392B">覚えておく表（tt_name_map）がまだないので、この画面を閉じるまでだけ覚えます（SQL tt1 が先）</span>' : '') + '</div>' +
       tts.unmatched.map((u, i) => '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--border);font-size:13px"><div style="flex:1;min-width:180px"><b>' + faiEsc(u.name) + '</b> <span style="font-size:11px;color:var(--muted)">' + faiEsc(u.teacher || '') + '・' + u.n + 'コマ（' + faiEsc(u.dates.join('、')) + (u.n > u.dates.length ? '…' : '') + '）</span></div>' +
-        '<select id="tts-um-' + i + '" style="' + FAI_IN + ';max-width:220px">' + opts() + '</select><button onclick="ttsSaveMap(' + i + ')" style="' + FAI_BTN2 + '">覚える</button></div>').join('') + '</div>';
+        '<select id="tts-um-' + i + '" multiple size="3" style="' + FAI_IN + ';max-width:240px">' + opts(u.sug || []) + '</select><button onclick="ttsSaveMap(' + i + ')" style="' + FAI_BTN2 + '">覚える</button></div>').join('') + '</div>';
+  }
+  if (tts.tpOnly && tts.tpOnly.length) {
+    h += '<div style="' + card + ';border-left:5px solid ' + TP_COLOR + '"><b>📝 テスト対策（Google だけにある・' + tts.tpOnly.length + '）</b><div style="font-size:11px;color:var(--muted)">アプリのテスト対策にまだないものです。登録するときは「🤖 これ登録して」の④からどうぞ（ここでは足しません）。</div>' +
+      tts.tpOnly.map(it => '<div style="padding:5px 0;border-top:1px solid var(--border);font-size:13px">' + faiEsc(it.name) + '　' + ttsMd(it.date) + ' ' + it.period + '限' + (it.start ? ' ' + it.start + '〜' + it.end : '') + ' <span style="font-size:11px;color:var(--muted)">' + faiEsc(it.teacher || '') + '</span></div>').join('') + '</div>';
+  }
+  if (tts.mapRows && tts.mapRows.length) {
+    const mine = tts.mapRows.filter(r => mgr || String(r.created_by) === String(currentStaff.id));
+    if (mine.length) h += '<details style="' + card + '"><summary style="cursor:pointer;font-size:13px;font-weight:700">🧠 覚えた名前（' + mine.length + '）</summary><div style="font-size:11px;color:var(--muted);margin:4px 0">まちがえて覚えたときは「消す」。' + (mgr ? '責任者は全部、' : '') + '自分が覚えさせたものを消せます。</div>' +
+      mine.map(r => '<div style="display:flex;gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--border);font-size:12px"><span style="flex:1">' + faiEsc(r.gname) + ' → ' + (r.ignore ? 'アプリにない講座' : faiEsc(ttsCname(r.class_master_id))) + '</span><button onclick="ttsDelMap(\'' + r.id + '\')" style="' + FAI_BTN2 + ';padding:3px 8px">消す</button></div>').join('') + '</details>';
   }
   body.innerHTML = h;
 }
 
 // 名前を覚える → もう一度くらべる
 async function ttsSaveMap(i) {
-  const u = tts.unmatched[i]; const sel = document.getElementById('tts-um-' + i); if (!u || !sel || !sel.value) { showToast('授業を選んでください', 'error'); return; }
-  const ignore = sel.value === '__ignore__';
-  const row = { gname: u.key, class_master_id: ignore ? null : sel.value, ignore: ignore, created_by: currentStaff.id };
+  const u = tts.unmatched[i]; const sel = document.getElementById('tts-um-' + i);
+  const vals = sel ? [...sel.selectedOptions].map(o => o.value) : [];
+  if (!u || !vals.length) { showToast('授業を選んでください', 'error'); return; }
+  const ignore = vals.indexOf('__ignore__') >= 0;
+  const rows = ignore ? [{ gname: u.key, class_master_id: null, ignore: true, created_by: currentStaff.id }] : vals.map(v => ({ gname: u.key, class_master_id: v, ignore: false, created_by: currentStaff.id }));
   try {
-    await sbDelete('tt_name_map', 'gname=eq.' + encodeURIComponent(u.key)).catch(() => {});
-    await sbPost('tt_name_map', row);
-    showToast('「' + u.name + '」を覚えました', 'success');
+    for (const r of rows) await sbPost('tt_name_map', r);
+    showToast('「' + u.name + '」を覚えました' + (rows.length > 1 ? '（' + rows.length + 'つの授業）' : ''), 'success');
   } catch (e) {
-    tts.localMap = tts.localMap || {}; tts.localMap[u.key] = row;
-    showToast('この画面を閉じるまでだけ覚えます（SQL tt1 が先）', 'info');
+    const msg = String(e.message || e);
+    if (/23505|duplicate/.test(msg)) showToast('1つの名前に2つ以上の授業を覚えるには SQL tt2 が先です（1つ目だけ覚えました）', 'error');
+    else { tts.localMap = tts.localMap || {}; tts.localMap[u.key] = rows; showToast('この画面を閉じるまでだけ覚えます（SQL tt1 が先）', 'info'); }
   }
+  await ttsRun();
+}
+async function ttsDelMap(id) {
+  if (!confirm('この覚えを消しますか？')) return;
+  try { await sbDelete('tt_name_map', 'id=eq.' + id); showToast('消しました', 'success'); } catch (e) { showToast('消せませんでした', 'error'); }
   await ttsRun();
 }
 
@@ -15892,7 +15927,7 @@ async function ttsApply() {
         const tt = periodTimeOnDate(g.date, String(g.period));
         const st = g.start || (tt ? tt[0] : null), et = g.end || (tt ? tt[1] : null);
         let cyc = null;
-        if (g.cycNo != null) {
+        if (g.cycNo != null && !g.makeup) {
           let isN = true; try { isN = await isNormalClass(x.cid); } catch (e) {}
           if (g.cycMonth != null) cyc = { year: ttsCycYear(g.date, g.cycMonth), month: g.cycMonth, no: g.cycNo };
           else if (!isN) cyc = { year: +g.date.slice(0, 4), month: null, no: g.cycNo };
@@ -15902,8 +15937,9 @@ async function ttsApply() {
             if (before[0] && before[0].cycle_month != null) cyc = { year: before[0].cycle_year, month: before[0].cycle_month, no: g.cycNo };
           }
         }
+        if (g.makeup) cyc = null;
         const rows = await sbPostReturn('class_sessions', { class_master_id: x.cid, session_date: g.date, period: g.period, start_time: st, end_time: et,
-          cycle_year: cyc ? cyc.year : null, cycle_month: cyc ? cyc.month : null, cycle_no: cyc ? cyc.no : null, is_makeup: false, school: null, room: g.room && DTT_ROOMS.some(r => r.key === g.room) ? g.room : null });
+          cycle_year: cyc ? cyc.year : null, cycle_month: cyc ? cyc.month : null, cycle_no: cyc ? cyc.no : null, is_makeup: !!g.makeup, school: null, room: g.room && DTT_ROOMS.some(r => r.key === g.room) ? g.room : null });
         (rows || []).forEach(r => targets.push({ t: 'class_sessions', id: r.id }));
         done.push('足す：' + ttsCname(x.cid) + ' ' + ttsMd(g.date) + ' ' + g.period + '限');
       } else if (x.type === 'remove') {
