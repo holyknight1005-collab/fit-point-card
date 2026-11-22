@@ -254,13 +254,14 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 // ・消せるのは自分のルート（責任者は全部）。GPX ファイルそのものは残さない（道すじの点だけ・1本 8000 点くらいまで・1m より小さいずれだけ間引く）
 // ・地図は国土地理院の地図（淡色地図）＋ Leaflet
 // ============================================================
-const RT_VERSION = '20261123rt5';   // rt5：全員の道すじをいつも1枚の地図に（はじめの期間は「ぜんぶ」・人でしぼって消すのをやめ、人を押すとその人を目立たせてほかは薄く）・人ごとに見分けやすい色（入った順に色を割りあて）・線に白いふち・地図の左下に人の色の見本／rt4：取り込んだあと、その日が見える期間に切りかえて地図をそのルートへ寄せる（前は「今月」のままで、9月の GPX が見えず、何も起きていないように見えた）・同じルートをもう一度入れようとしたら知らせて入れない／rt3：配った人の名前（walker_name。はじめは取り込んだ人・大学生など アプリにいない人の名前にも変えられる・あとから「名前を変える」）。人ごとの色・合計・しぼり込みは配った人で（SQL rt2）／rt2：配った範囲（太い帯）と道すじの切りかえ・ポスティングの町の印（済＝緑／まだ＝灰色）・エリアの一覧／地図は 淡色・標準・航空写真 を切りかえ
+const RT_VERSION = '20261123rt6';   // rt6：ポスティングの「回」（表 posting_rounds・スタッフ全員が作れる・例：超感覚本チラシ）。ルートはどの回かと配った枚数を持つ。回を選んで見る・前回を灰色で重ねる・町は今回／前回・人ごとの枚数の合計・ルートを「直す」（配った人・枚数・回）（SQL rt3）／rt5：全員の道すじをいつも1枚の地図に（はじめの期間は「ぜんぶ」・人でしぼって消すのをやめ、人を押すとその人を目立たせてほかは薄く）・人ごとに見分けやすい色（入った順に色を割りあて）・線に白いふち・地図の左下に人の色の見本／rt4：取り込んだあと、その日が見える期間に切りかえて地図をそのルートへ寄せる（前は「今月」のままで、9月の GPX が見えず、何も起きていないように見えた）・同じルートをもう一度入れようとしたら知らせて入れない／rt3：配った人の名前（walker_name。はじめは取り込んだ人・大学生など アプリにいない人の名前にも変えられる・あとから「名前を変える」）。人ごとの色・合計・しぼり込みは配った人で（SQL rt2）／rt2：配った範囲（太い帯）と道すじの切りかえ・ポスティングの町の印（済＝緑／まだ＝灰色）・エリアの一覧／地図は 淡色・標準・航空写真 を切りかえ
 const RT_KINDS = ['ポスティング', 'その他'];
 const RT_MAXPTS = 8000;
 const RT_COLORS = ['#E74C3C', '#2980B9', '#27AE60', '#8E44AD', '#E67E22', '#16A085', '#C0392B', '#2C3E50', '#D35400', '#7D3C98', '#1ABC9C', '#B7950B', '#5D6D7E', '#A93226', '#1F618D'];
 const HDR = { 'apikey': FIT_ANON, 'Authorization': 'Bearer ' + FIT_ANON, 'Content-Type': 'application/json' };
 let ME = null, IS_MGR = false, STAFF = {}, ROUTES = [], MAP = null, LAYER = null, LINES = {}, SEL = null;
-const F = { period: 'all', staff: '', kind: '', from: '', to: '' };   // staff＝目立たせる人（ほかの人も消さない）
+const F = { period: 'all', staff: '', kind: '', from: '', to: '', round: '', prev: true };   // round＝見る回（'' は まだ決めていない＝一番新しい回／'all'＝ぜんぶ）・prev＝前回を重ねる
+let ROUNDS = [], PREV_ROUTES = [], PREV_LAYER = null;   // staff＝目立たせる人（ほかの人も消さない）
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -370,10 +371,10 @@ async function geocodeTowns() {
   drawTowns();
 }
 // 町ごとに、表示中のルートが中心から r m 以内を通ったか
-function townStatus(list) {
+function townStatus(list, prevList) {
   const st = {};
   RT_TOWNS.forEach(t => {
-    const c = GEO[t.q]; st[t.n] = { pos: c || null, hits: [] };
+    const c = GEO[t.q]; st[t.n] = { pos: c || null, hits: [], prev: false };
     if (!c) return;
     const dLat = t.r / 110540, dLng = t.r / (111320 * Math.cos(c[0] * Math.PI / 180));
     list.forEach(r => {
@@ -382,31 +383,37 @@ function townStatus(list) {
       for (const sg of segs) { for (const q of sg) { if (Math.abs(q[0] - c[0]) <= dLat && Math.abs(q[1] - c[1]) <= dLng && rtDist(q, c) <= t.r) { hit = true; break; } } if (hit) break; }
       if (hit) st[t.n].hits.push(r);
     });
+    (prevList || []).some(r => {
+      const segs = Array.isArray(r.points) ? r.points : [];
+      for (const sg of segs) for (const q of sg) if (Math.abs(q[0] - c[0]) <= dLat && Math.abs(q[1] - c[1]) <= dLng && rtDist(q, c) <= t.r) { st[t.n].prev = true; return true; }
+      return false;
+    });
   });
   return st;
 }
 function drawTowns() {
   if (!MAP) return;
   if (TOWN_LAYER) TOWN_LAYER.clearLayers(); else TOWN_LAYER = L.layerGroup().addTo(MAP);
-  const st = townStatus(shown());
+  const usePrev = F.prev && PREV_ROUTES.length && prevRound();
+  const st = townStatus(shown(), usePrev ? PREV_ROUTES : []);
   RT_TOWNS.forEach(t => {
     const x = st[t.n]; if (!x.pos) return;
     const done = x.hits.length > 0;
     const last = done ? x.hits.slice().sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || '')))[0] : null;
-    const m = L.circleMarker(x.pos, { radius: 7, color: '#fff', weight: 2, fillColor: done ? '#27AE60' : '#95A5A6', fillOpacity: 0.95 });
+    const m = L.circleMarker(x.pos, { radius: 7, color: !done && x.prev ? '#E67E22' : '#fff', weight: !done && x.prev ? 3 : 2, fillColor: done ? '#27AE60' : '#95A5A6', fillOpacity: 0.95 });
     m.bindTooltip(esc(t.n), { permanent: true, direction: 'right', offset: [8, 0], className: 'tlabel' + (done ? ' done' : '') });
     m.bindPopup('<b>' + esc(t.n) + '</b>（' + esc(t.area) + '）' + (t.note ? '<br><span style="color:#888">' + esc(t.note) + '</span>' : '') + '<br>' +
-      (done ? '最後に通った日：' + esc(md(last.started_at || last.created_at)) + '（' + esc(whoOf(last)) + '）<br>この期間に ' + x.hits.length + '本' : 'この期間はまだ通っていません'));
+      (done ? '最後に通った日：' + esc(md(last.started_at || last.created_at)) + '（' + esc(whoOf(last)) + '）<br>この回に ' + x.hits.length + '本' : 'この回はまだ通っていません') + (usePrev ? '<br>前回（' + esc(prevRound().name) + '）：' + (x.prev ? '通った' : '通っていない') : ''));
     m.addTo(TOWN_LAYER);
   });
   // エリアの一覧
   const box = $('#areas'); if (!box) return;
   const nAll = RT_TOWNS.length, nDone = RT_TOWNS.filter(t => st[t.n].hits.length).length, nNoPos = RT_TOWNS.filter(t => !st[t.n].pos).length;
-  box.innerHTML = '<div class="msg" style="margin-bottom:6px">この期間に通った町：<b>' + nDone + '</b> / ' + nAll + '（町の中心から500m以内を通ったら「済」。おおよその目安です）' + (GEO_BUSY ? '　位置を調べています…' : nNoPos ? '　位置が分からない町：' + nNoPos : '') + '</div>' +
+  box.innerHTML = '<div class="msg" style="margin-bottom:6px">この回に通った町：<b>' + nDone + '</b> / ' + nAll + '（町の中心から500m以内を通ったら「済」。おおよその目安です）' + (usePrev ? '<br>オレンジのふち＝前回（' + esc(prevRound().name) + '）は通ったのに、今回まだの町' : '') + (GEO_BUSY ? '　位置を調べています…' : nNoPos ? '　位置が分からない町：' + nNoPos : '') + '</div>' +
     RT_AREAS.map(([area, list]) => {
       const d = list.filter(t => st[t.n].hits.length).length;
       return '<div style="margin:8px 0 2px;font-weight:800;font-size:13.5px">' + esc(area) + '　<span class="msg">' + d + ' / ' + list.length + '</span></div><div class="sum">' +
-        list.map(t => { const x = st[t.n], ok = x.hits.length > 0; return '<span class="chip" data-town="' + esc(t.n) + '" style="' + (ok ? 'border-color:#27AE60;background:#E9F7EF' : '') + (x.pos ? '' : ';opacity:.5') + '">' + (ok ? '✅' : '⬜') + ' ' + esc(t.n) + '</span>'; }).join('') + '</div>';
+        list.map(t => { const x = st[t.n], ok = x.hits.length > 0; return '<span class="chip" data-town="' + esc(t.n) + '" style="' + (ok ? 'border-color:#27AE60;background:#E9F7EF' : !ok && x.prev ? 'border-color:#E67E22' : '') + (x.pos ? '' : ';opacity:.5') + '">' + (ok ? '✅' : '⬜') + ' ' + esc(t.n) + (usePrev ? '<span style="font-size:10.5px;color:' + (x.prev ? '#E67E22' : '#aaa') + '">前回' + (x.prev ? '✓' : '－') + '</span>' : '') + '</span>'; }).join('') + '</div>';
     }).join('');
   box.querySelectorAll('[data-town]').forEach(c => c.onclick = () => {
     const t = RT_TOWNS.find(x => x.n === c.dataset.town); const pos = t && GEO[t.q];
@@ -460,6 +467,11 @@ async function start() {
   try { if (!IS_MGR) { const p = await rest('GET', 'staff_permissions?staff_id=eq.' + encodeURIComponent(ME.row.staff_id) + '&select=is_manager'); IS_MGR = !!(p && p[0] && p[0].is_manager); } } catch (e) {}
   try { (await rest('GET', 'staff?select=id,name,staff_id,is_active&order=staff_id') || []).forEach((s, i) => { STAFF[s.id] = { name: s.name, sid: s.staff_id, active: s.is_active !== false }; }); } catch (e) {}
   $('#main').innerHTML =
+    '<div class="filters" style="background:var(--orange-l);border-radius:12px;padding:8px 10px">' +
+      '<b style="font-size:13px">回</b><select class="in" id="f-round" style="min-width:180px"></select>' +
+      '<label style="font-size:13px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="f-prev" checked>前回を灰色で重ねる</label>' +
+      '<button class="btn sub small" id="round-new">＋ 新しい回</button><button class="btn sub small" id="round-edit">回を直す</button>' +
+    '</div>' +
     '<div class="filters">' +
       '<select class="in" id="f-period"><option value="all">ぜんぶ</option><option value="month">今月</option><option value="last">先月</option><option value="3m">この3か月</option><option value="range">日にちを選ぶ</option></select>' +
       '<span id="f-range" style="display:none"><input type="date" class="in" id="f-from"> 〜 <input type="date" class="in" id="f-to"></span>' +
@@ -478,6 +490,10 @@ async function start() {
   $('#f-to').onchange = (e) => { F.to = e.target.value; load(); };
   $('#f-staff').onchange = (e) => { F.staff = e.target.value; SEL = null; draw(); };
   $('#f-kind').onchange = (e) => { F.kind = e.target.value; draw(); };
+  $('#f-round').onchange = (e) => { F.round = e.target.value; SEL = null; load(); };
+  $('#f-prev').onchange = (e) => { F.prev = e.target.checked; drawPrev(); drawTowns(); };
+  $('#round-new').onclick = () => editRound(null);
+  $('#round-edit').onclick = () => { const r = curRound(); if (!r) { alert('直したい回を選んでください'); return; } editRound(r); };
   $('#gpx-in').onchange = (e) => { const fs = [...(e.target.files || [])]; e.target.value = ''; if (fs.length) importFiles(fs); };
   MAP = L.map('map', { zoomControl: true }).setView([33.8392, 132.7657], 13);   // 松山
   // 地図の種類（国土地理院・無料・キーなし）：淡色（道が見やすい）／標準／航空写真。右上で切りかえ
@@ -508,14 +524,67 @@ function range() {
   if (F.period === 'range') return [F.from || null, F.to ? new Date(Date.parse(F.to + 'T00:00:00+09:00') + 86400000).toISOString().slice(0, 10) : null];
   return [null, null];
 }
+// ---------- 回 ----------
+async function loadRounds() {
+  try { ROUNDS = await rest('GET', 'posting_rounds?select=*&order=start_date.desc.nullslast,created_at.desc') || []; }
+  catch (e) { ROUNDS = []; if (/posting_rounds/.test(String(e.message))) { const b = $('#f-round'); if (b) b.outerHTML = '<span class="msg err">回の表がまだありません（SQL rt3）</span>'; } }
+  if (!F.round || (F.round !== 'all' && F.round !== 'none' && !ROUNDS.some(r => r.id === F.round))) F.round = ROUNDS[0] ? ROUNDS[0].id : 'all';
+  const sel = $('#f-round'); if (!sel) return;
+  sel.innerHTML = ROUNDS.map((r, i) => '<option value="' + r.id + '"' + (r.id === F.round ? ' selected' : '') + '>' + (i === 0 ? '今回：' : '') + esc(r.name) + (r.start_date ? '（' + esc(md(r.start_date + 'T12:00:00+09:00')) + '〜）' : '') + '</option>').join('') +
+    '<option value="all"' + (F.round === 'all' ? ' selected' : '') + '>ぜんぶの回</option><option value="none"' + (F.round === 'none' ? ' selected' : '') + '>回を決めていないルート</option>';
+}
+function curRound() { return ROUNDS.find(r => r.id === F.round) || null; }
+function prevRound() { const i = ROUNDS.findIndex(r => r.id === F.round); return i >= 0 ? ROUNDS[i + 1] || null : null; }
+function roundName(id) { const r = ROUNDS.find(x => x.id === id); return r ? r.name : ''; }
+function editRound(r) {
+  const bg = modal('<h3>' + (r ? '回を直す' : '新しい回') + '</h3>' +
+    '<label class="lbl">回の名前</label><input class="in" id="rd-name" style="width:100%" value="' + esc(r ? r.name : '') + '" placeholder="例：超感覚本チラシ・2027 春期講習チラシ">' +
+    '<label class="lbl">はじまりの日</label><input type="date" class="in" id="rd-start" value="' + esc(r ? (r.start_date || '') : today()) + '">' +
+    '<label class="lbl">終わりの日（なくてもよい）</label><input type="date" class="in" id="rd-end" value="' + esc(r ? (r.end_date || '') : '') + '">' +
+    '<label class="lbl">配る枚数の目標（なくてもよい）</label><input type="number" min="0" class="in" id="rd-goal" value="' + esc(r && r.goal_sheets != null ? r.goal_sheets : '') + '" placeholder="例：5000">' +
+    '<label class="lbl">メモ（なくてもよい）</label><input class="in" id="rd-memo" style="width:100%" value="' + esc(r ? (r.memo || '') : '') + '" placeholder="例：チラシの種類・配る地域">' +
+    '<div class="mb"><button class="btn sub" data-no>やめる</button><button class="btn" data-ok>' + (r ? '直す' : '作る') + '</button></div>');
+  bg.querySelector('[data-no]').onclick = () => bg.remove();
+  bg.querySelector('[data-ok]').onclick = async () => {
+    const name = ($('#rd-name').value || '').trim(); if (!name) { alert('回の名前を入れてください'); return; }
+    const goal = ($('#rd-goal').value || '').trim();
+    const body = { name: name, start_date: $('#rd-start').value || null, end_date: $('#rd-end').value || null, memo: ($('#rd-memo').value || '').trim() || null, goal_sheets: goal === '' ? null : Math.max(0, parseInt(goal, 10) || 0) };
+    try {
+      if (r) await rest('PATCH', 'posting_rounds?id=eq.' + r.id, body, { Prefer: 'return=minimal' });
+      else { body.created_by = ME.row.id; const rows = await rest('POST', 'posting_rounds', body, { Prefer: 'return=representation' }); if (rows && rows[0]) F.round = rows[0].id; }
+      bg.remove(); await loadRounds(); load();
+    } catch (e) { alert(errText(e)); }
+  };
+}
+async function loadPrev() {
+  PREV_ROUTES = [];
+  const pr = prevRound(); if (!pr) return;
+  try { PREV_ROUTES = await rest('GET', 'staff_routes?select=id,walker_name,staff_id,started_at,distance_m,points&round_id=eq.' + pr.id) || []; } catch (e) { PREV_ROUTES = []; }
+}
+function drawPrev() {
+  if (!MAP) return;
+  if (PREV_LAYER) PREV_LAYER.clearLayers(); else PREV_LAYER = L.layerGroup().addTo(MAP);
+  if (!F.prev) return;
+  PREV_ROUTES.forEach(r => { const segs = Array.isArray(r.points) ? r.points : []; L.polyline(segs, { color: '#7F8C8D', weight: VIEW === 'band' ? bandPx() : 5, opacity: VIEW === 'band' ? 0.18 : 0.45, dashArray: VIEW === 'band' ? null : '2 6', lineCap: 'round', interactive: false }).addTo(PREV_LAYER); });
+  try { PREV_LAYER.eachLayer(l => l.bringToBack()); } catch (e) {}
+}
+
 async function load() {
   const [a, b] = range();
-  let q = 'staff_routes?select=id,staff_id,walker_name,kind,memo,title,started_at,ended_at,distance_m,point_count,points,created_at&order=started_at.desc.nullslast';
+  if (!ROUNDS.length && !F._roundsTried) { F._roundsTried = true; await loadRounds(); }
+  let q = 'staff_routes?select=id,staff_id,walker_name,kind,memo,title,started_at,ended_at,distance_m,point_count,points,created_at,round_id,sheets&order=started_at.desc.nullslast';
+  if (F.round && F.round !== 'all' && F.round !== 'none') q += '&round_id=eq.' + F.round;
+  if (F.round === 'none') q += '&round_id=is.null';
   if (a) q += '&started_at=gte.' + a + 'T00:00:00%2B09:00';
   if (b) q += '&started_at=lt.' + b + 'T00:00:00%2B09:00';
   $('#list').innerHTML = '<div class="msg">読み込み中…</div>';
   try { ROUTES = await rest('GET', q) || []; }
-  catch (e) { $('#list').innerHTML = '<div class="msg err">' + esc(errText(e)) + '</div>'; ROUTES = []; }
+  catch (e) {
+    // 列（round_id・sheets）がまだないとき（SQL rt3 の前）は、前の形で読む
+    if (/round_id|sheets/.test(String(e.message))) { try { ROUTES = await rest('GET', q.replace(',round_id,sheets', '').replace(/&round_id=[^&]*/, '')) || []; $('#list').innerHTML = ''; } catch (e2) { ROUTES = []; } }
+    else { $('#list').innerHTML = '<div class="msg err">' + esc(errText(e)) + '</div>'; ROUTES = []; }
+  }
+  await loadPrev();
   const ids = [...new Set(ROUTES.map(whoOf))].sort((x, y) => x.localeCompare(y, 'ja'));
   const sel = $('#f-staff'), cur = F.staff;
   sel.innerHTML = '<option value="">全員を同じように</option>' + ids.map(id => '<option value="' + esc(id) + '"' + (id === cur ? ' selected' : '') + '>' + esc(id) + ' を目立たせる</option>').join('');
@@ -524,6 +593,7 @@ async function load() {
   COLOR_MAP = {}; order.forEach(n => { if (!(n in COLOR_MAP)) COLOR_MAP[n] = RT_COLORS[Object.keys(COLOR_MAP).length % RT_COLORS.length]; });
   if (cur && ids.indexOf(cur) < 0) F.staff = '';
   draw(true);
+  drawPrev();
 }
 // 配った人：walker_name（なければ取り込んだスタッフの名前）。色は名前から決める（同じ人はいつも同じ色）
 function whoOf(r) { return String((r && r.walker_name) || ((STAFF[r && r.staff_id] || {}).name) || '（不明）').trim(); }
@@ -560,17 +630,18 @@ function draw(fit) {
   drawLegend(list);
   // 人ごとの合計
   const by = {};
-  list.forEach(r => { const k = whoOf(r); by[k] = by[k] || { n: 0, m: 0 }; by[k].n++; by[k].m += r.distance_m || 0; });
-  const tot = list.reduce((a, r) => a + (r.distance_m || 0), 0);
-  $('#sum').innerHTML = Object.keys(by).length ? Object.keys(by).sort((a, b) => by[b].m - by[a].m).map(k => '<span class="chip' + (F.staff === k ? ' on' : '') + '" data-st="' + esc(k) + '"><span class="dot" style="background:' + colorOf(k) + '"></span>' + esc(k) + '　' + by[k].n + '本・' + km(by[k].m) + '</span>').join('') + '<span class="msg" style="align-self:center">合計 ' + list.length + '本・' + km(tot) + '</span>' : '<span class="msg">この期間のルートはありません</span>';
+  list.forEach(r => { const k = whoOf(r); by[k] = by[k] || { n: 0, m: 0, sh: 0 }; by[k].n++; by[k].m += r.distance_m || 0; by[k].sh += r.sheets || 0; });
+  const tot = list.reduce((a, r) => a + (r.distance_m || 0), 0), totSh = list.reduce((a, r) => a + (r.sheets || 0), 0);
+  const cr = curRound();
+  $('#sum').innerHTML = Object.keys(by).length ? Object.keys(by).sort((a, b) => by[b].m - by[a].m).map(k => '<span class="chip' + (F.staff === k ? ' on' : '') + '" data-st="' + esc(k) + '"><span class="dot" style="background:' + colorOf(k) + '"></span>' + esc(k) + '　' + by[k].n + '本・' + km(by[k].m) + (by[k].sh ? '・' + by[k].sh.toLocaleString() + '枚' : '') + '</span>').join('') + '<span class="msg" style="align-self:center">合計 ' + list.length + '本・' + km(tot) + '・' + totSh.toLocaleString() + '枚' + (cr && cr.goal_sheets ? '（目標 ' + Number(cr.goal_sheets).toLocaleString() + '枚の ' + Math.round(totSh * 100 / cr.goal_sheets) + '%）' : '') + '</span>' : '<span class="msg">この期間のルートはありません</span>';
   document.querySelectorAll('[data-st]').forEach(c => c.onclick = () => { F.staff = F.staff === c.dataset.st ? '' : c.dataset.st; $('#f-staff').value = F.staff; SEL = null; draw(); });
   // 一覧
   $('#list').innerHTML = list.length ? list.map(r => {
     const mine = r.staff_id === ME.row.id;
     const up = (STAFF[r.staff_id] || {}).name || '';
     return '<div class="row' + (SEL === r.id ? ' on' : '') + '" data-id="' + r.id + '"><span class="dot" style="background:' + colorOf(whoOf(r)) + '"></span><div class="rmain"><div class="rt">' + esc(md(r.started_at || r.created_at)) + ' ' + esc(hm(r.started_at)) + (r.ended_at ? '〜' + esc(hm(r.ended_at)) : '') + '　' + esc(whoOf(r)) + '</div>' +
-      '<div class="rm">' + esc(r.kind || '') + '・' + km(r.distance_m) + (r.memo ? '・' + esc(r.memo) : '') + (up && up !== whoOf(r) ? '・取り込み：' + esc(up) : '') + '</div></div>' +
-      (mine || IS_MGR ? '<button class="btn sub small" data-ren="' + r.id + '">名前を変える</button><button class="btn danger small" data-del="' + r.id + '">消す</button>' : '') + '</div>';
+      '<div class="rm">' + esc(r.kind || '') + '・' + km(r.distance_m) + (r.sheets ? '・<b>' + Number(r.sheets).toLocaleString() + '枚</b>' : '・<span style="color:#C0392B">枚数なし</span>') + (F.round === 'all' && r.round_id ? '・' + esc(roundName(r.round_id)) : '') + (r.memo ? '・' + esc(r.memo) : '') + (up && up !== whoOf(r) ? '・取り込み：' + esc(up) : '') + '</div></div>' +
+      (mine || IS_MGR ? '<button class="btn sub small" data-ren="' + r.id + '">直す</button><button class="btn danger small" data-del="' + r.id + '">消す</button>' : '') + '</div>';
   }).join('') : '<div class="msg">この期間のルートはありません。「＋ GPX を取り込む」から入れてください。</div>';
   document.querySelectorAll('.row[data-id]').forEach(el => el.onclick = (e) => { if (e.target.closest('[data-del],[data-ren]')) return; SEL = el.dataset.id; highlight(true); });
   document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => delRoute(b.dataset.del));
@@ -609,16 +680,22 @@ function drawLegend(list) {
 function nameInput(id, val) {
   return '<input class="in" id="' + id + '" list="' + id + '-l" value="' + esc(val || '') + '" style="width:100%" placeholder="例：松山 太郎（大学生）"><datalist id="' + id + '-l">' + walkerNames().map(n => '<option value="' + esc(n) + '">').join('') + '</datalist>';
 }
+function roundSelect(id, val) {
+  return '<select class="in" id="' + id + '" style="width:100%">' + ROUNDS.map(r => '<option value="' + r.id + '"' + (r.id === val ? ' selected' : '') + '>' + esc(r.name) + '</option>').join('') + '<option value=""' + (!val ? ' selected' : '') + '>（回を決めない）</option></select>';
+}
 function renameRoute(id) {
   const r = ROUTES.find(x => x.id === id); if (!r) return;
-  const bg = modal('<h3>配った人の名前を変える</h3><div class="msg">' + esc(md(r.started_at || r.created_at)) + '　' + km(r.distance_m) + '</div><label class="lbl">配った人</label>' + nameInput('rn-name', whoOf(r)) +
+  const bg = modal('<h3>ルートを直す</h3><div class="msg">' + esc(md(r.started_at || r.created_at)) + '　' + km(r.distance_m) + '</div><label class="lbl">配った人</label>' + nameInput('rn-name', whoOf(r)) +
     '<div class="msg" style="margin-top:4px">大学生など、アプリに入っていない人の名前も入れられます。同じ人は同じ書き方にすると、合計がまとまります。</div>' +
-    '<div class="mb"><button class="btn sub" data-no>やめる</button><button class="btn" data-ok>変える</button></div>');
+    '<label class="lbl">配った枚数</label><input type="number" min="0" class="in" id="rn-sheets" value="' + esc(r.sheets != null ? r.sheets : '') + '">' +
+    '<label class="lbl">回</label>' + roundSelect('rn-round', r.round_id || '') +
+    '<div class="mb"><button class="btn sub" data-no>やめる</button><button class="btn" data-ok>直す</button></div>');
   bg.querySelector('[data-no]').onclick = () => bg.remove();
   bg.querySelector('[data-ok]').onclick = async () => {
     const v = ($('#rn-name').value || '').trim(); if (!v) { alert('名前を入れてください'); return; }
+    const shv = ($('#rn-sheets').value || '').trim();
     try {
-      const rows = await rest('PATCH', 'staff_routes?id=eq.' + encodeURIComponent(id), { walker_name: v }, { Prefer: 'return=representation' });
+      const rows = await rest('PATCH', 'staff_routes?id=eq.' + encodeURIComponent(id), { walker_name: v, sheets: shv === '' ? null : Math.max(0, parseInt(shv, 10) || 0), round_id: $('#rn-round').value || null }, { Prefer: 'return=representation' });
       if (!rows || !rows.length) throw new Error('変えられませんでした（自分が取り込んだルートだけ変えられます）');
       bg.remove(); load();
     } catch (e) { alert(/walker_name/.test(String(e.message)) ? '「配った人」の列がまだありません。SQL rt2 を流してください。' : errText(e)); }
@@ -639,10 +716,12 @@ async function importFiles(files) {
   const bg = modal('<h3>GPX を取り込む（' + ok.length + '本）</h3>' +
     items.map((g, i) => g.error ? '<div class="frow err">✕ ' + esc(g.file) + '：' + esc(g.error) + '</div>' :
       '<div class="frow"><b>' + esc(g.file) + '</b>　' + km(g.distance_m) + '・' + g.point_count + '点' + (g.raw_count > g.point_count ? '（' + g.raw_count + '点から間引き）' : '') +
-      '<br>日にち <input type="date" class="in" data-date="' + i + '" value="' + g.date + '">' + (g.started_at ? '　' + hm(g.started_at) + (g.ended_at ? '〜' + hm(g.ended_at) : '') : '　<span class="msg">（時刻なし）</span>') + '</div>').join('') +
+      '<br>日にち <input type="date" class="in" data-date="' + i + '" value="' + g.date + '">' + (g.started_at ? '　' + hm(g.started_at) + (g.ended_at ? '〜' + hm(g.ended_at) : '') : '　<span class="msg">（時刻なし）</span>') +
+      '<br>配った枚数 <input type="number" min="0" class="in" data-sheets="' + i + '" style="width:110px" placeholder="例：300"> 枚</div>').join('') +
+    '<label class="lbl">回</label>' + roundSelect('im-round', F.round && F.round !== 'all' && F.round !== 'none' ? F.round : (ROUNDS[0] ? ROUNDS[0].id : '')) +
     '<label class="lbl">配った人（はじめは自分。大学生などに変えられます）</label>' + nameInput('im-who', ME.row.name || '') +
     '<label class="lbl">種類</label><select class="in" id="im-kind">' + RT_KINDS.map(k => '<option>' + k + '</option>').join('') + '</select>' +
-    '<label class="lbl">ひとこと（なくてもよい）</label><input class="in" id="im-memo" style="width:100%" placeholder="例：〇〇町 冬期講習のチラシ 300枚">' +
+    '<label class="lbl">ひとこと（なくてもよい）</label><input class="in" id="im-memo" style="width:100%" placeholder="例：〇〇町の団地まわり">' +
     '<div class="msg" style="margin-top:6px">地図の黒い点線が、これから入れるルートです。GPX ファイルそのものは残しません。</div>' +
     '<div class="mb"><button class="btn sub" data-no>やめる</button><button class="btn" data-ok' + (ok.length ? '' : ' disabled') + '>登録する</button></div>');
   const close = () => { bg.remove(); MAP.removeLayer(prev); };
@@ -655,7 +734,8 @@ async function importFiles(files) {
       const d = (bg.querySelector('[data-date="' + i + '"]') || {}).value || g.date;
       let st = g.started_at, en = g.ended_at;
       if (!st || jstDate(st) !== d) { st = d + 'T00:00:00+09:00'; if (!g.started_at) en = null; else { st = d + 'T' + hm(g.started_at) + ':00+09:00'; en = g.ended_at ? d + 'T' + hm(g.ended_at) + ':00+09:00' : null; } }
-      rows.push({ staff_id: ME.row.id, walker_name: who, kind: kind, memo: memo || null, title: g.name || null, started_at: st, ended_at: en, distance_m: g.distance_m, point_count: g.point_count, points: g.points });
+      const shv = ((bg.querySelector('[data-sheets="' + i + '"]') || {}).value || '').trim();
+      rows.push({ staff_id: ME.row.id, walker_name: who, round_id: ($('#im-round') || {}).value || null, sheets: shv === '' ? null : Math.max(0, parseInt(shv, 10) || 0), kind: kind, memo: memo || null, title: g.name || null, started_at: st, ended_at: en, distance_m: g.distance_m, point_count: g.point_count, points: g.points });
     });
     const btn = bg.querySelector('[data-ok]'); btn.disabled = true; btn.textContent = '登録中…';
     try {
@@ -666,6 +746,10 @@ async function importFiles(files) {
         try { const hit = await rest('GET', q); if (hit && hit.length) dup.push(r); } catch (e) {}
       }
       const put = rows.filter(r => dup.indexOf(r) < 0);
+      const noSheets = put.filter(r => r.sheets == null).length;
+      if (noSheets && !confirm(noSheets + '本、配った枚数が入っていません。このまま登録しますか？（あとで「直す」から入れられます）')) { btn.disabled = false; btn.textContent = '登録する'; return; }
+      const rid = put.length ? put[0].round_id : null;
+      if (rid && F.round !== 'all' && F.round !== rid) { F.round = rid; const fr = $('#f-round'); if (fr) fr.value = rid; }
       if (put.length) await rest('POST', 'staff_routes', put, { Prefer: 'return=minimal' });
       close();
       // 入れた日が見える期間にして、そのルートへ寄せる
