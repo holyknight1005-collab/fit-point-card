@@ -60,6 +60,9 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .blank .ul{display:inline-block;border-bottom:1px solid #111;height:1.1em;vertical-align:-.15em}
 .blank .ini{font-weight:600}
 .answ{color:var(--ans);font-weight:600}
+.bank{margin:4px 0 10px;border:1px solid #999;border-radius:4px;padding:6px 10px;font-size:13px;line-height:1.9;font-family:var(--text)}
+.bank b{font-family:var(--ui);font-size:12px;margin-right:8px}
+.bank span{display:inline-block;margin-right:16px;white-space:nowrap}
 .anskey{margin-top:12px;border-top:1px dashed #999;padding-top:8px}
 .anskey h3{font-size:12.5px;margin:0 0 6px;font-family:var(--ui)}
 .agrid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px 14px;font-size:13px}
@@ -92,11 +95,11 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 
     <div class="card">
       <h2>1. 本文</h2>
-      <label for="title">タイトル<input type="text" id="title" value="Lesson 3 本文穴埋めテスト"></label>
-      <label for="sub">サブタイトル<input type="text" id="sub" value="The Rise of the Smart Age　Part 1"></label>
+      <label for="title">タイトル<input type="text" id="title" value="本文穴埋めテスト" placeholder="例：Lesson 3 本文穴埋めテスト"></label>
+      <label for="sub">サブタイトル<input type="text" id="sub" value="" placeholder="例：The Rise of the Smart Age　Part 1"></label>
       <label for="src">本文（段落は空行で区切る）<textarea id="src" spellcheck="false"></textarea></label>
       <div class="row"><button class="primary" id="build">プリントに反映</button><button id="clearsrc">本文を消す</button></div>
-      <p class="hint">反映すると、それまでの選択はリセットされます。</p>
+      <p class="hint">反映すると、それまでの選択はリセットされます。<br>本文・選んだ空所・リストは、この端末のこのブラウザにだけ保存されます（ほかのパソコンには出ません）。</p>
     </div>
 
     <div class="card">
@@ -111,10 +114,10 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
       </div>
       <p class="stat" id="stat">空所 0 個</p>
       <details>
-        <summary style="cursor:pointer;font-size:13px">重要語句リストを編集</summary>
+        <summary style="cursor:pointer;font-size:13px">重要語句リストを編集（自分の教材の語句を入れる）</summary>
         <p class="hint">1行に1つ。<code>|</code> で活用形を並べる、<code>[ ]</code> の語は空所にしない、<code>*</code> は間に入る語（5語まで・空所にしない）。</p>
         <textarea id="keys" spellcheck="false"></textarea>
-        <div class="row"><button id="resetKeys">Lesson 3 の初期リストに戻す</button></div>
+        <div class="row"><button id="sampleKeys">見本のリスト（Lesson 3）を入れる</button><button id="clearKeys">リストを空にする</button></div>
       </details>
     </div>
 
@@ -123,6 +126,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
       <label class="chk" for="optNum"><input type="checkbox" id="optNum" checked> 空所に番号を付ける</label>
       <label class="chk" for="optIni"><input type="checkbox" id="optIni"> 頭文字をヒントに出す</label>
       <label class="chk" for="optMerge"><input type="checkbox" id="optMerge"> 連続した語を1つの（　）にまとめる</label>
+      <label class="chk" for="optBank"><input type="checkbox" id="optBank"> 語群（答えを並べかえた選択肢）を付ける</label>
       <label class="chk" for="optLen"><input type="checkbox" id="optLen"> 空所の長さを答えの語数に合わせる</label>
       <label class="chk" for="optKey"><input type="checkbox" id="optKey" checked> 下に解答欄を付ける</label>
       <label class="chk" for="optName"><input type="checkbox" id="optName" checked> 名前・得点欄を付ける</label>
@@ -281,6 +285,24 @@ function groups(){
   return out;
 }
 
+/* 語群：答えを並べかえる（同じ答えなら毎回同じ並び＝プレビューと印刷で変わらない） */
+function bankHTML(gs){
+  // 文の頭の語は小文字にして出す（大文字だと文の頭とわかってしまう。I・固有名詞らしいもの〔2文字目も大文字〕はそのまま）
+  const words = gs.map(g => {
+    const toks = paras[g.pi], i0 = g.idx[0];
+    let w = g.idx.map(i => toks[i].core).join(" ");
+    let k = i0 - 1; while(k >= 0 && !toks[k].word) k--;
+    const head = k < 0 || /[.!?]["'”’)]*$/.test(toks[k].core + toks[k].post) || /^["“(]/.test(toks[i0].pre);
+    if(head && /^[A-Z][a-z]/.test(w) && !/^I\b/.test(w)) w = w[0].toLowerCase() + w.slice(1);
+    return w;
+  });
+  let h = 0; words.join("|").split("").forEach(c => { h = (h * 31 + c.charCodeAt(0)) >>> 0; });
+  const rnd = () => { h = (h * 1103515245 + 12345) >>> 0; return h / 4294967296; };
+  const a = words.slice();
+  for(let i = a.length - 1; i > 0; i--){ const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  if(a.length > 1 && a.every((w, i) => w === words[i])) a.push(a.shift());
+  return `<div class="bank"><b>語群</b>${a.map(w => `<span>${esc(w)}</span>`).join("")}</div>`;
+}
 function esc(s){ return s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
 function headHTML(isAns){
@@ -296,7 +318,10 @@ function sheetHTML(isAns, interactive){
   gs.forEach(g => { byStart.set(g.pi+":"+g.idx[0], g); g.idx.forEach(i => inGroup.add(g.pi+":"+i)); });
   const num = $("optNum").checked, ini = $("optIni").checked, byLen = $("optLen").checked;
   let html = headHTML(isAns);
-  html += `<p class="sh-inst">次の英文の（　）に入る適切な語を書きなさい。${ini ? "（　）内の文字で始まる語を入れること。" : ""}</p><div class="passage">`;
+  const bank = $("optBank").checked && gs.length;
+  html += `<p class="sh-inst">次の英文の（　）に入る適切な語を${bank ? "、下の語群から選んで" : ""}書きなさい。${ini ? "（　）内の文字で始まる語を入れること。" : ""}${bank ? "語群の語は1回ずつ使うこと。" : ""}</p>`;
+  if(bank && !isAns) html += bankHTML(gs);
+  html += `<div class="passage">`;
   paras.forEach((toks, pi) => {
     const parts = [];
     for(let ti = 0; ti < toks.length; ti++){
@@ -359,7 +384,7 @@ function save(){
   store("src", $("src").value); store("keys", $("keys").value);
   store("title", $("title").value); store("sub", $("sub").value);
   store("sel", paras.map(t => t.map(x => x.sel)));
-  ["optNum","optIni","optMerge","optLen","optKey","optName","printAns"].forEach(id => store(id, $(id).checked));
+  ["optNum","optIni","optMerge","optBank","optLen","optKey","optName","printAns"].forEach(id => store(id, $(id).checked));
   store("pts", $("pts").value);
 }
 
@@ -370,25 +395,27 @@ $("clearsrc").onclick = () => { $("src").value = ""; $("src").focus(); };
 $("autoKey").onclick = autoKey;
 $("rand").onclick = randomPick;
 $("clearSel").onclick = () => { paras.forEach(t => t.forEach(x => x.sel = 0)); render(); };
-$("resetKeys").onclick = () => { $("keys").value = DEFAULT_KEYS; save(); };
+$("sampleKeys").onclick = () => { if($("keys").value.trim() && !confirm("今のリストを見本（Lesson 3）に入れかえます。よいですか？")) return; $("keys").value = DEFAULT_KEYS; save(); };
+$("clearKeys").onclick = () => { if($("keys").value.trim() && !confirm("リストを空にします。よいですか？")) return; $("keys").value = ""; save(); };
+$("autoKey").addEventListener("click", () => { if(!$("keys").value.trim()) alert("重要語句リストが空です。「重要語句リストを編集」に語句を入れてください（見本のリストもあります）。"); }, true);
 $("vQ").onclick = () => setView("Q");
 $("vA").onclick = () => setView("A");
 $("print").onclick = () => { const v = view; view = "Q"; render(); window.print(); view = v; render(); };
-["optNum","optIni","optMerge","optLen","optKey","optName","printAns","pts","title","sub"].forEach(id => $(id).addEventListener("input", render));
+["optNum","optIni","optMerge","optBank","optLen","optKey","optName","printAns","pts","title","sub"].forEach(id => $(id).addEventListener("input", render));
 $("keys").addEventListener("input", save);
 
 /* init */
 $("src").value = load("src", SAMPLE);
-$("keys").value = load("keys", DEFAULT_KEYS);
+$("keys").value = load("keys", "");
 $("title").value = load("title", $("title").value);
 $("sub").value = load("sub", $("sub").value);
-["optNum","optIni","optMerge","optLen","optKey","optName","printAns"].forEach(id => $(id).checked = load(id, $(id).checked));
+["optNum","optIni","optMerge","optBank","optLen","optKey","optName","printAns"].forEach(id => $(id).checked = load(id, $(id).checked));
 $("pts").value = load("pts", $("pts").value);
 paras = tokenize($("src").value);
 const savedSel = load("sel", null);
 if(savedSel && savedSel.length === paras.length && savedSel.every((s,i) => s.length === paras[i].length)){
   savedSel.forEach((s,i) => s.forEach((v,j) => { paras[i][j].sel = +v || 0; gidSeq = Math.max(gidSeq, (+v||0)+1); }));
-} else if($("src").value === SAMPLE){ autoKey(); }
+} else if($("src").value === SAMPLE){ const k = $("keys").value; $("keys").value = DEFAULT_KEYS; autoKey(); $("keys").value = k; save(); }
 render();
 </script>
 </body>
