@@ -284,7 +284,7 @@ setInterval(() => { if (fitSession) fitRefresh(false); }, 60000);
 //        スタッフ「家庭の登録」（保護者と子どもを1回で登録 → ログイン情報をメール）・責任者「PE スタッフ」（だれが何をできるか）
 // ・表：kids_children・pe_places・pe_slots・pe_requests・pe_staff（01_メモ/20261113_kids1.sql）。小学生は students には入れない
 // ============================================================
-const KD_VERSION = '20261122kd10';   // kd10：日程変更の画面の文言を保護者用の使い方（校正 No.44・No.39）に合わせた「日程変更の申請です。新しい日程が確定するまでは、元の予約がそのまま維持されます。」
+const KD_VERSION = '20261127kd11';   // kd11：①保護者の希望から、いくつでも確定できる（チェックした希望ごとに場所・種類）②スタッフがレッスンを直接登録（「＋ レッスンを登録」）③場所に「その他」（スタッフだけ・場所の名前を必ず書く・保護者には「その他（○○）」と出る）・家庭の登録のメールの表示に「届かないときは迷惑メールも」（SQL kids9）／kd10：日程変更の画面の文言を保護者用の使い方（校正 No.44・No.39）に合わせた「日程変更の申請です。新しい日程が確定するまでは、元の予約がそのまま維持されます。」
 //   // kd9：レッスンの種類はスタッフが確定のときに選ぶ（保護者は種類を選ばない・確定まで「未定」）／保護者に「次回やってほしいこと」の欄（公式LINE ですり合わせ）。SQL kids8 が先
 //   // kd8：希望の日時で選べる時間を広げた（土日・祝日・長い休み〔7/20〜8/31・12/25〜1/10・3/20〜4/10〕10:00〜18:00／ふだんの平日 13:00〜18:00。SQL kids7 が先）
 //   // kd7：PE スタッフ（上場・郡）の確認メモで保護者の画面の言い方を直した（「📅 カレンダー」・「🔔 LINE通知設定」「💬 公式LINEへ」を横並び・備考欄・「fit kids からお知らせ」）／希望の日時の締め切りを3日前に（枠からえらぶのと同じ。SQL kids6）
@@ -662,7 +662,7 @@ async function loadParent() {
   const [kids, places, slots, reqs] = await Promise.all([
     api('kids_children?parent_id=eq.' + encodeURIComponent(ME.row.id) + '&is_active=eq.true&select=id,name,grade,school&order=created_at'),
     api('pe_places?select=id,name,meet_at,parent_note,kinds'),
-    api('pe_slots?slot_date=gte.' + month0 + '&select=id,slot_date,start_time,place_id,capacity,status&order=slot_date,start_time'),
+    api('pe_slots?slot_date=gte.' + month0 + '&select=id,slot_date,start_time,place_id,place_note,capacity,status&order=slot_date,start_time'),
     api('pe_requests?parent_id=eq.' + encodeURIComponent(ME.row.id) + '&select=*&order=created_at.desc&limit=200')
   ]);
   P = { kids: kids || [], places: {}, slots: {}, reqs: reqs || [] };
@@ -713,7 +713,7 @@ function addMonth(d) {
   const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
   return new Date(Date.UTC(y, m, Math.min(day, last))).toISOString().slice(0, 10);
 }
-function slotText(id) { const s = P.slots[id]; if (!s) return '（前の日程）'; const p = P.places[s.place_id] || {}; return dateLabel(s.slot_date) + ' ' + timeLabel(s.start_time) + '　' + (p.name || ''); }
+function slotText(id) { const s = P.slots[id]; if (!s) return '（前の日程）'; const p = P.places[s.place_id] || {}; return dateLabel(s.slot_date) + ' ' + timeLabel(s.start_time) + '　' + (p.name || '') + (s.place_note ? '（' + s.place_note + '）' : ''); }
 // その子の、その月の何回目か（確定している日程を、日にちの順に数える）
 function lessonNo(req) {
   const s = P.slots[req.confirmed_slot_id]; if (!s) return '';
@@ -736,7 +736,7 @@ async function viewParent() {
     const s = P.slots[r.confirmed_slot_id], p = P.places[s.place_id] || {}, can = beforeDeadline(s.slot_date), chg = pend.some(x => x.change_of === r.id);
     return '<div class="lesson"><div class="lesson-d">' + dateLabel(s.slot_date) + '<span>' + timeLabel(s.start_time) + '</span></div>' +
       '<div class="row" style="margin:6px 0"><b>' + esc(kidName(r.child_id)) + '</b>' + kindChip(r.kind) + '<span class="chip blue">' + lessonNo(r) + '</span></div>' +
-      '<div>📍 <b>' + esc(p.name || '') + '</b></div>' + (p.meet_at ? '<div class="muted">集合：' + esc(p.meet_at) + '</div>' : '') + (p.parent_note ? '<div class="muted">' + esc(p.parent_note) + '</div>' : '') +
+      '<div>📍 <b>' + esc(p.name || '') + (s.place_note ? '（' + esc(s.place_note) + '）' : '') + '</b></div>' + (p.meet_at ? '<div class="muted">集合：' + esc(p.meet_at) + '</div>' : '') + (p.parent_note ? '<div class="muted">' + esc(p.parent_note) + '</div>' : '') +
       (r.reply ? '<div class="msg info" style="display:block">スタッフより：' + esc(r.reply) + '</div>' : '') +
       (chg ? '<div class="msg info" style="display:block">日程の変更を申請しています（スタッフの返事を待っています）</div>' : '') +
       (can ? '<div class="row" style="margin-top:10px">' + (chg ? '' : '<button class="btn ghost sm" data-pact="change" data-rid="' + esc(r.id) + '">日程変更</button>') + '<button class="btn ghost sm" data-pact="cancel" data-rid="' + esc(r.id) + '">キャンセル</button></div>'
@@ -1077,7 +1077,7 @@ function showIssued(parent, j, send, isNew) {
     '<div class="lbl">ログインするページ</div><div class="mail">' + esc(KD_URL) + '</div>' +
     '<div class="lbl">ログインID</div><div class="mail" style="font-size:15px;color:var(--ink);font-weight:700">' + esc(parent.login_id || '') + '</div>' +
     '<div class="lbl">パスワード</div><div class="pw">' + esc(j.password || '') + '</div>' +
-    '<div class="msg ' + (j.mailed ? 'good' : (send ? 'bad' : 'info')) + '" style="display:block">' + (j.mailed ? '📧 保護者のメールにも送りました' : (send ? '⚠ メールは送れませんでした。この画面のパスワードを、直接お伝えください' : 'メールは送っていません。この画面のパスワードを、直接お伝えください')) + '</div>' +
+    '<div class="msg ' + (j.mailed ? 'good' : (send ? 'bad' : 'info')) + '" style="display:block">' + (j.mailed ? '📧 保護者のメールにも送りました。届かないときは、迷惑メールのフォルダも見てもらってください' : (send ? '⚠ メールは送れませんでした。この画面のパスワードを、直接お伝えください' : 'メールは送っていません。この画面のパスワードを、直接お伝えください')) + '</div>' +
     '<div class="muted" style="margin-top:8px">このパスワードは、この画面をとじると二度と見られません。</div>' +
     '<button class="btn wide" style="margin-top:14px" onclick="closeOv()">とじる</button>');
 }
@@ -1105,7 +1105,7 @@ function slotUse(id) {
 }
 const sSlot = id => SLOTS.find(s => s.id === id);
 const sPlace = id => PLACES.find(p => p.id === id) || {};
-function sSlotText(id) { const s = sSlot(id); if (!s) return '（過ぎた枠・なくなった枠）'; return dateLabel(s.slot_date) + ' ' + timeLabel(s.start_time) + '　' + (sPlace(s.place_id).name || ''); }
+function sSlotText(id) { const s = sSlot(id); if (!s) return '（過ぎた枠・なくなった枠）'; return dateLabel(s.slot_date) + ' ' + timeLabel(s.start_time) + '　' + (sPlace(s.place_id).name || '') + (s.place_note ? '（' + s.place_note + '）' : ''); }
 function sKid(r) { const k = SKIDS[r.child_id] || {}; return esc(k.name || '（名前なし）') + (k.grade ? ' <span class="chip">' + esc(k.grade) + '</span>' : ''); }
 async function paneSlot() {
   const pane = $('#pane');
@@ -1117,7 +1117,7 @@ async function paneSlot() {
       (old ? '<div class="muted">今の日程：' + esc(sSlotText(old.confirmed_slot_id)) + '（確定すると、こちらは自動で取り消されます）</div>' : '') +
       (r.hope ? '<div class="msg info" style="display:block">次回やってほしいこと：' + esc(r.hope) + '</div>' : '') +
       (r.message ? '<div class="msg info" style="display:block">備考：' + esc(r.message) + '</div>' : '') +
-      ((r.wishes && r.wishes.length) ? '<div class="muted" style="margin-top:6px">保護者が出した希望の日時です。押すと、場所をえらんで確定できます。</div>' + r.wishes.map((w, i) =>
+      ((r.wishes && r.wishes.length) ? '<div class="muted" style="margin-top:6px">保護者が出した希望の日時です。押すと、確定する希望（いくつでも）と場所をえらべます。</div>' + r.wishes.map((w, i) =>
         '<button class="pick slot" data-ract="wish" data-rid="' + esc(r.id) + '" data-no="' + (i + 1) + '"' + (w.d < todayJST() ? ' disabled' : '') + '><span class="rank">第' + (i + 1) + '希望</span><span style="flex:1;min-width:0;text-align:left"><b>' + esc(wishText(w)) + '</b><br><span class="muted">' + (w.d < todayJST() ? '過ぎた日です' : '場所をえらんで確定') + '</span></span></button>').join('') : '') +
       [r.slot1_id, r.slot2_id, r.slot3_id].map((id, i) => {
         if (!id) return '';
@@ -1134,7 +1134,7 @@ async function paneSlot() {
       const p = sPlace(sl.place_id), u = slotUse(sl.id), stop = sl.status !== 'open';
       const who = REQS.filter(r => r.status === 'confirmed' && r.confirmed_slot_id === sl.id).map(r =>
         '<div class="row" style="width:100%;padding-left:8px"><span>👤 <b>' + sKid(r) + '</b>　' + esc(r.kind) + '</span><span class="sp"></span><button class="btn ghost sm" data-ract="move" data-rid="' + esc(r.id) + '">動かす・中止</button></div>').join('');
-      return '<div class="kid' + (stop ? ' off' : '') + '"><span class="kid-n">' + timeLabel(sl.start_time) + '</span><span>' + esc(p.name || '（場所なし）') + '</span>' +
+      return '<div class="kid' + (stop ? ' off' : '') + '"><span class="kid-n">' + timeLabel(sl.start_time) + '</span><span>' + esc(p.name || '（場所なし）') + (sl.place_note ? '（' + esc(sl.place_note) + '）' : '') + '</span>' +
         (p.kinds || []).map(k => '<span class="chip">' + esc(k) + '</span>').join('') +
         '<span class="muted">確定 ' + u.conf + '/' + sl.capacity + '人' + (u.pend ? '・申請中 ' + u.pend + '件' : '') + (stop ? '・止めています' : '') + '</span><span class="sp"></span>' +
         '<button class="btn ghost sm" data-sact="' + (stop ? 'open' : 'stop') + '" data-sid="' + esc(sl.id) + '">' + (stop ? 'また出す' : '止める') + '</button>' +
@@ -1144,9 +1144,10 @@ async function paneSlot() {
   pane.innerHTML =
     (note ? '<div class="msg info" style="display:block;margin-top:0;margin-bottom:12px">' + esc(note) + '</div>' : '') +
     '<h2 class="sec" style="margin-top:0">📨 申請（確認中 ' + pend.length + '件）</h2>' + (pendHtml || '<div class="card center muted">確認中の申請はありません。</div>') +
-    '<div class="card" style="margin-top:18px"><div class="row"><div style="flex:1;min-width:150px"><h2 style="margin:0">🗓 レッスンの枠</h2><div class="muted">今日からの枠 ' + SLOTS.length + 'こ（保護者に出ている枠 ' + open + 'こ）・1枠60分</div></div><button class="btn ghost sm" id="sl-places">📍 場所のリスト</button><button class="btn sun" id="sl-new">＋ 枠を登録</button></div></div>' +
+    '<div class="card" style="margin-top:18px"><div class="row"><div style="flex:1;min-width:150px"><h2 style="margin:0">🗓 レッスンの枠</h2><div class="muted">今日からの枠 ' + SLOTS.length + 'こ（保護者に出ている枠 ' + open + 'こ）・1枠60分</div></div><button class="btn ghost sm" id="sl-places">📍 場所のリスト</button><button class="btn sun" id="sl-new">＋ 枠を登録</button><button class="btn" id="sl-add">＋ レッスンを登録</button></div></div>' +
     (dayHtml || '<div class="card center muted">今日からの枠は、まだありません。「＋ 枠を登録」から入れてください。</div>');
   $('#sl-new').onclick = () => openSlotForm();
+  $('#sl-add').onclick = () => openLessonAdd();
   $('#sl-places').onclick = () => openPlaces();
   pane.querySelectorAll('[data-sact]').forEach(b => b.onclick = () => slotAct(b.dataset.sact, b.dataset.sid, b));
   pane.querySelectorAll('[data-ract]').forEach(b => b.onclick = () => reqAct(b.dataset.ract, b.dataset.rid, b.dataset.sid, b.dataset.no));
@@ -1176,18 +1177,51 @@ function reqAct(act, rid, sid, no) {
     openOv('<div class="modal-h"><b>今回はむずかしい、と返しますか？</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' + who + '<div class="muted" style="margin-top:6px">保護者の画面に「今回は日程が合いませんでした」と出ます。ほかの日をすすめるときは、ひとことに書いてください。</div>' + reply + foot('返す'));
     return run(rep => rpc('pe_decide', { p_id: rid, p_slot: null, p_reply: rep }));
   }
-  if (act === 'wish') {
-    const w = (r.wishes || [])[Number(no) - 1]; if (!w) return;
+  if (act === 'wish') {   // kd11：希望の日時から、いくつでも確定（チェックした希望ごとに場所・種類。確定しなかった希望は終わり）
+    const ws = r.wishes || []; if (!ws.length) return;
     const places = PLACES.filter(p => p.is_active);
     if (!places.length) return alertBox('場所のリストに、使える場所がありません');
-    const same = SLOTS.filter(s => s.slot_date === w.d && s.status !== 'cancelled');
-    openOv('<div class="modal-h"><b>場所をえらんで確定します</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' + who +
-      '<div class="pw" style="font-size:18px;letter-spacing:0;margin-top:8px">' + esc(wishText(w)) + '</div>' +
-      '<label class="lbl" for="rq-place">場所</label><select class="in" id="rq-place">' + places.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('') + '</select>' +
-      '<div class="muted" style="margin-top:6px">この日時・場所の枠がなければ作ります（定員2人。あと1人分は、ほかの家庭にも出ます）。あれば、そこに入れます。</div>' +
-      (same.length ? '<div class="msg info" style="display:block">この日の、ほかの枠：' + same.map(s => '<br>' + esc(timeLabel(s.start_time) + '　' + (sPlace(s.place_id).name || '') + '（確定 ' + slotUse(s.id).conf + '/' + s.capacity + '人）')).join('') + '</div>' : '') +
-      kindSel + reply + foot('確定する'));
-    return run(rep => rpc('pe_decide_wish', { p_id: rid, p_no: Number(no), p_place: $('#rq-place').value, p_reply: rep, p_kind: kindVal() }));
+    const rows = ws.map((w, i) => {
+      const past = w.d < todayJST(), on = !past && String(i + 1) === String(no);
+      const same = SLOTS.filter(s => s.slot_date === w.d && s.status !== 'cancelled');
+      return '<div class="fam" style="margin-top:8px"><label class="row" style="gap:8px;cursor:pointer"><input type="checkbox" class="wq-on" data-no="' + (i + 1) + '"' + (on ? ' checked' : '') + (past ? ' disabled' : '') + ' style="width:20px;height:20px"><b>第' + (i + 1) + '希望　' + esc(wishText(w)) + '</b>' + (past ? '<span class="muted">（過ぎています）</span>' : '') + '</label>' +
+        '<div class="wq-box" data-no="' + (i + 1) + '" style="' + (on ? '' : 'display:none') + '">' +
+        '<label class="lbl">場所</label><select class="in wq-place" data-no="' + (i + 1) + '">' + places.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('') + '</select>' +
+        '<input class="in wq-note" data-no="' + (i + 1) + '" maxlength="100" placeholder="「その他」のときは場所を書いてください（例：○○公園）" style="display:none;margin-top:6px">' +
+        '<label class="lbl">レッスンの種類</label><select class="in wq-kind" data-no="' + (i + 1) + '"><option value="">えらぶ</option>' + KD_KINDS.map(k => '<option value="' + esc(k) + '"' + (k === k0 ? ' selected' : '') + '>' + KD_KIND_ICON[k] + ' ' + esc(k) + '</option>').join('') + '</select>' +
+        (same.length ? '<div class="muted" style="margin-top:4px">この日の、ほかの枠：' + same.map(s => esc(timeLabel(s.start_time) + ' ' + (sPlace(s.place_id).name || '') + (s.place_note ? '（' + s.place_note + '）' : '') + '（' + slotUse(s.id).conf + '/' + s.capacity + '人）')).join('、') + '</div>' : '') +
+        '</div></div>';
+    }).join('');
+    openOv('<div class="modal-h"><b>希望から確定します</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' + who +
+      '<div class="muted" style="margin-top:6px">確定する希望にチェックを入れてください（いくつでも）。チェックしなかった希望は、確定すると終わりになります。その日時・場所の枠がなければ作ります。</div>' +
+      rows + (r.hope ? '<div class="msg info" style="display:block">保護者の「次回やってほしいこと」：' + esc(r.hope) + '</div>' : '') + reply + foot('確定する'));
+    const sync = () => {
+      document.querySelectorAll('.wq-on').forEach(c => { const b = document.querySelector('.wq-box[data-no="' + c.dataset.no + '"]'); if (b) b.style.display = c.checked ? '' : 'none'; });
+      document.querySelectorAll('.wq-place').forEach(sel => { const n = document.querySelector('.wq-note[data-no="' + sel.dataset.no + '"]'); const other = (sPlace(sel.value).name || '') === 'その他'; if (n) n.style.display = other ? '' : 'none'; });
+    };
+    document.querySelectorAll('.wq-on, .wq-place').forEach(el => el.onchange = sync); sync();
+    $('#rq-go').onclick = async () => {
+      const b = $('#rq-go');
+      const items = [];
+      try {
+        document.querySelectorAll('.wq-on:checked').forEach(c => {
+          const n = c.dataset.no, place = document.querySelector('.wq-place[data-no="' + n + '"]').value, kind = document.querySelector('.wq-kind[data-no="' + n + '"]').value;
+          const note = (document.querySelector('.wq-note[data-no="' + n + '"]').value || '').trim();
+          if (!kind) throw new Error('第' + n + '希望のレッスンの種類をえらんでください');
+          if ((sPlace(place).name || '') === 'その他' && !note) throw new Error('第' + n + '希望：「その他」のときは、場所を書いてください');
+          items.push({ no: Number(n), place: place, kind: kind, note: note || null });
+        });
+        if (!items.length) throw new Error('確定する希望にチェックを入れてください');
+      } catch (e) { return showMsg('rq-msg', e.message); }
+      busy(b, true);
+      let res;
+      try { res = await rpc('pe_decide_wishes', { p_id: rid, p_items: items, p_reply: ($('#rq-reply') || {}).value || null }); }
+      catch (e) { busy(b, false); return showMsg('rq-msg', e.message); }
+      const ids = (res && res.ids) || [rid];
+      if (LINE.ready) { busy(b, false); busy(b, true, 'お知らせを送っています…'); let last = null; for (const id of ids) last = await lineNotify(id, 'decided'); LINE_NOTE = lineNoteText(last); }
+      closeOv(); await paneSlot();
+    };
+    return;
   }
   if (act === 'move') {
     const cur = r.confirmed_slot_id;
@@ -1220,8 +1254,48 @@ async function slotAct(act, sid, btn) {
   catch (e) { busy(btn, false); alertBox('変えられませんでした：' + e.message); }
 }
 function alertBox(text) { openOv('<div class="center"><div class="big">⚠️</div><div>' + esc(text) + '</div><button class="btn wide" style="margin-top:14px" onclick="closeOv()">とじる</button></div>'); }
+// kd11：スタッフがレッスンを直接登録する（申請なしで確定。保護者の画面・カレンダーに出る。LINE をつないでいる保護者にはお知らせ）
+async function openLessonAdd() {
+  const places = PLACES.filter(p => p.is_active);
+  if (!places.length) return alertBox('先に「📍 場所のリスト」で、場所を入れてください');
+  let kids = [], pars = {};
+  try {
+    kids = await api('kids_children?is_active=eq.true&select=id,name,grade,parent_id&order=kana,name') || [];
+    const pids = [...new Set(kids.map(k => k.parent_id))];
+    if (pids.length) (await api('parent_accounts?id=in.(' + pids.join(',') + ')&select=id,name') || []).forEach(p => { pars[p.id] = p; });
+  } catch (e) { return alertBox('お子さまの一覧を読めませんでした：' + e.message); }
+  if (!kids.length) return alertBox('お子さまがまだ登録されていません。先に「家庭の登録」から入れてください');
+  const t0 = todayJST();
+  let tm = ''; for (let h = 9; h <= 19; h++) ['00', '30'].forEach(m => { const v = String(h).padStart(2, '0') + ':' + m; tm += '<option value="' + v + '"' + (v === '16:00' ? ' selected' : '') + '>' + h + ':' + m + '</option>'; });
+  openOv('<div class="modal-h"><b>＋ レッスンを登録</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' +
+    '<div class="muted">申請がなくても、確定のレッスンとして入れます。保護者の画面とカレンダーに出ます。</div>' +
+    '<label class="lbl" for="la-kid">お子さま</label><select class="in" id="la-kid"><option value="">えらぶ</option>' + kids.map(k => '<option value="' + esc(k.id) + '">' + esc(k.name) + (k.grade ? '（' + esc(k.grade) + '）' : '') + (pars[k.parent_id] ? '　' + esc(pars[k.parent_id].name) + ' さま' : '') + '</option>').join('') + '</select>' +
+    '<label class="lbl" for="la-date">日にち</label><input class="in" id="la-date" type="date" min="' + t0 + '" value="' + t0 + '">' +
+    '<label class="lbl" for="la-time">開始の時刻（60分）</label><select class="in" id="la-time">' + tm + '</select>' +
+    '<label class="lbl" for="la-place">場所</label><select class="in" id="la-place">' + places.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('') + '</select>' +
+    '<input class="in" id="la-note" maxlength="100" placeholder="「その他」のときは場所を書いてください（例：○○公園）" style="display:none;margin-top:6px">' +
+    '<label class="lbl" for="la-kind">レッスンの種類</label><select class="in" id="la-kind"><option value="">えらぶ</option>' + KD_KINDS.map(k => '<option value="' + esc(k) + '">' + KD_KIND_ICON[k] + ' ' + esc(k) + '</option>').join('') + '</select>' +
+    '<label class="lbl" for="la-msg">備考（保護者の画面にも出ます・なくてもよい）</label><textarea class="in" id="la-msg" rows="2" maxlength="300"></textarea>' +
+    '<div class="msg bad" id="la-err" style="display:none"></div><div class="row" style="margin-top:14px"><button class="btn ghost" onclick="closeOv()">やめる</button><button class="btn" id="la-go">登録する</button></div>');
+  const sync = () => { $('#la-note').style.display = (sPlace($('#la-place').value).name || '') === 'その他' ? '' : 'none'; };
+  $('#la-place').onchange = sync; sync();
+  $('#la-go').onclick = async () => {
+    const kid = $('#la-kid').value, d = $('#la-date').value, t = $('#la-time').value, place = $('#la-place').value, kind = $('#la-kind').value;
+    const note = ($('#la-note').value || '').trim(), msg = ($('#la-msg').value || '').trim();
+    if (!kid) return showMsg('la-err', 'お子さまをえらんでください');
+    if (!d) return showMsg('la-err', '日にちを入れてください');
+    if (!kind) return showMsg('la-err', 'レッスンの種類をえらんでください');
+    if ((sPlace(place).name || '') === 'その他' && !note) return showMsg('la-err', '「その他」のときは、場所を書いてください');
+    const b = $('#la-go'); busy(b, true);
+    let res;
+    try { res = await rpc('pe_staff_add', { p_child: kid, p_date: d, p_time: t, p_place: place, p_kind: kind, p_place_note: note || null, p_message: msg || null }); }
+    catch (e) { busy(b, false); return showMsg('la-err', e.message); }
+    if (LINE.ready && res && res.id) { busy(b, false); busy(b, true, 'お知らせを送っています…'); LINE_NOTE = lineNoteText(await lineNotify(res.id, 'decided')); }
+    closeOv(); await paneSlot();
+  };
+}
 function openSlotForm() {
-  const act = PLACES.filter(p => p.is_active);
+  const act = PLACES.filter(p => p.is_active && p.name !== 'その他');   // kd11：その他は枠にしない（確定・レッスンの登録のときに場所の名前を書いて使う）
   if (!act.length) return alertBox('先に「📍 場所のリスト」で、場所を入れてください');
   const t0 = todayJST();
   openOv('<div class="modal-h"><b>＋ 枠を登録</b><button class="x" onclick="closeOv()" aria-label="とじる">×</button></div>' +
