@@ -778,10 +778,12 @@ function setGrade(g,how){
 document.addEventListener('click',function(e){
   var t=e.target;
   var gb=t.closest&&t.closest('.gbtn'); if(gb){ setGrade(gb.getAttribute('data-g'),'click'); return; }
-  var pb=t.closest&&t.closest('[data-pick]'); if(pb){ var id=pb.getAttribute('data-pick'), on=!PICK[id]; setPick(id,on); if(window.wSend){ var cd=pb.closest('.card'); wSend('pick',(on?'＋':'－')+(cd?cd.getAttribute('data-name'):'')+(pb.closest('.picks')?'｜'+pb.textContent.replace(/^✓/,'').trim():'')); } return; }
+  var pb=t.closest&&t.closest('[data-pick]'); if(pb){ var id=pb.getAttribute('data-pick'), on=!PICK[id]; setPick(id,on); if(window.wSend){ var pt=pb.closest('.part'); wSend('pick',(on?'＋':'－')+gl()+'｜'+cardLabel(pb)+(pb.closest('.picks')?'｜'+pb.textContent.replace(/^✓/,'').trim():(pt?'｜'+pt.querySelector('.pt').childNodes[pt.querySelector('.tag')?1:0].textContent:''))); } return; }
   var ub=t.closest&&t.closest('[data-unpick]'); if(ub){ setPick(ub.getAttribute('data-unpick'),false); return; }
   var sl=t.closest&&t.closest('#sel'); if(sl){ var o=!$('#sellist').classList.contains('on'); $('#sellist').classList.toggle('on',o); sl.setAttribute('aria-expanded',o); $('#selOpen').textContent=o?'▼ 閉じる':'▲ 見る'; return; }
-  var ny=t.closest&&t.closest('[data-nayami]'); if(ny&&window.wSend)wSend('nayami',ny.getAttribute('data-nayami'));
+  var ny=t.closest&&t.closest('[data-nayami]'); if(ny&&window.wSend){ var tg=document.querySelector(ny.getAttribute('href')); wSend('nayami',gl()+'｜'+(tg?(tg.classList.contains('card')?cardLabel(tg):secOf(tg)):'')+'｜'+ny.getAttribute('data-nayami')); }
+  var tc=t.closest&&t.closest('#toc a'); if(tc&&window.wSend)wSend('toc',gl()+'｜'+tc.textContent.replace(/[\u200B▼\s]/g,''));
+  var kl=t.closest&&t.closest('.ktable a'); if(kl&&window.wSend){ var tg2=document.querySelector(kl.getAttribute('href')); wSend('list',gl()+'｜'+(tg2?cardLabel(tg2):kl.textContent)); }
 },true);
 document.addEventListener('toggle',function(e){ var d=e.target; if(d.open&&d.getAttribute&&d.getAttribute('data-c')&&window.wSend)wSend(d.classList.contains('more')?'course':'fold',d.getAttribute('data-c')); },true);
 $('#copybtn').addEventListener('click',function(){
@@ -792,13 +794,25 @@ $('#copybtn').addEventListener('click',function(){
 });
 $('#sel').addEventListener('keydown',function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); this.click(); } });
 
-var secIO=null;
+var secIO=null, dwIO=null, DW={}, DWvis={};
+/* 11/28 Junki：どの教科・どの欄に注目が集まっているか → 欄の名前をそろえて記録する */
+var SECNAME={nayami:'悩みから探す',list:'講座一覧','s-en':'英語','s-ma':'数学','s-ja':'国語','s-sc':'理科','s-so':'社会',price:'料金・申込',camp:'キャンペーン',apply:'お問い合わせ'};
+function gl(){ return G===3?'3年':(G?G+'年':'学年なし'); }
+function secOf(el){ var x=el&&el.closest?el.closest('section,#camp'):null; while(x&&!SECNAME[x.id]){ x=x.parentElement?x.parentElement.closest('section'):null; } return x?SECNAME[x.id]:''; }
+function cardLabel(el){ var cd=el.closest?el.closest('.card'):null; return cd?secOf(cd)+'｜'+cd.getAttribute('data-name'):''; }
+function flushDw(){ if(!window.wSend)return; for(var k in DW){ if(DW[k]>=2)wSend('dwell',k,DW[k]); } DW={}; }
+setInterval(function(){ if(document.visibilityState!=='visible')return; for(var k in DWvis){ if(DWvis[k])DW[k]=(DW[k]||0)+1; } },1000);
+document.addEventListener('visibilitychange',function(){ if(document.visibilityState==='hidden')flushDw(); });
+window.addEventListener('pagehide',flushDw);
 function observeSecs(){
   if(!('IntersectionObserver' in window)||!window.wSend)return;
-  if(secIO)secIO.disconnect(); var seen=window.__wSeen=window.__wSeen||{};
-  secIO=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ var l=(G===3?'3年':G+'年')+'｜'+e.target.getAttribute('data-w'); if(!seen[l]){seen[l]=1;wSend('sec',l);} secIO.unobserve(e.target); } }); },{threshold:.3});
-  [].forEach.call(document.querySelectorAll('.card'),function(c){ var cio=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ var l=(G===3?'3年':G+'年')+'｜'+c.getAttribute('data-name'); if(!seen['c'+l]){seen['c'+l]=1;wSend('course',l);} cio.disconnect(); } }); },{threshold:.6}); cio.observe(c); });
-  [].forEach.call(document.querySelectorAll('#main section, #apply'),function(s){ var h=s.querySelector('h2,.band'); s.setAttribute('data-w',(h?h.textContent:s.id).replace(/\s+/g,'').slice(0,12)); secIO.observe(s); });
+  flushDw(); DWvis={};
+  if(secIO)secIO.disconnect(); if(dwIO)dwIO.disconnect(); var seen=window.__wSeen=window.__wSeen||{};
+  secIO=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ var l=gl()+'｜'+e.target.getAttribute('data-w'); if(!seen[l]){seen[l]=1;wSend('sec',l);} secIO.unobserve(e.target); } }); },{threshold:.3});
+  dwIO=new IntersectionObserver(function(es){ es.forEach(function(e){ var l=gl()+'｜'+e.target.getAttribute('data-w'); DWvis[l]=e.isIntersecting&&(e.intersectionRatio>=.3||e.intersectionRect.height>=window.innerHeight*.4); }); },{threshold:[0,.1,.2,.3,.5,.75,1]});
+  /* 講座カードは、1.5秒以上画面に出ていたら「見た」（飛ばして通りすぎたものは数えない） */
+  [].forEach.call(document.querySelectorAll('.card'),function(c){ var tm=null; var cio=new IntersectionObserver(function(es){ es.forEach(function(e){ if(e.isIntersecting){ if(!tm)tm=setTimeout(function(){ var l=gl()+'｜'+cardLabel(c); if(!seen['c'+l]){seen['c'+l]=1;wSend('course',l);} cio.disconnect(); },1500); } else if(tm){ clearTimeout(tm); tm=null; } }); },{threshold:.5}); cio.observe(c); });
+  [].forEach.call(document.querySelectorAll('#main section, #camp, #apply'),function(s){ var nm=SECNAME[s.id]; if(!nm)return; s.setAttribute('data-w',nm); secIO.observe(s); if(s.id!=='camp')dwIO.observe(s); });
 }
 
 /* アクセス記録：teiki_events（関数 teiki_log）に送る。page=winter-2026-koukou。
