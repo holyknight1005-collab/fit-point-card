@@ -357,6 +357,27 @@ function render() {
   const bt = [...groupBy(R.filter(x => EVNAME[x.ev]), x => EVNAME[x.ev] + '｜' + (x.ev === 'link' ? x.label : (x.label || '')))].map(([k, v]) => [k, v.length, uniq(v)]).sort((a, b) => b[2] - a[2]);
   h += box('押されたボタン', 'ボタンの名前｜ページのどこにあったボタンか（トップ・日程・最後 など）', bt.length ? table(['ボタン', '押した回数', '人数'], bt, 2, Math.max(1, ...bt.map(r => r[2]))) : '<p class="msg">まだ押されていません</p>');
 
+  // 冬期講習（winter2026_koukou.html）：来た経路・広告ごとに、どこまで動いたか（11/28 インスタ広告用）
+  const WR = R.filter(x => x.page === 'winter-2026-koukou');
+  if (WR.length) {
+    const keyOf = x => (SRCNAME[x.src] || x.src || '（不明）') + (x.cmp ? '｜' + ({ koukousei: '高校生', hogosha: '保護者' }[x.cmp] || x.cmp) : '');
+    const bySid = new Map(); WR.forEach(x => { if (!bySid.has(x.sid)) bySid.set(x.sid, x); });   // 開いた回の経路は、その回の最初の記録で決める
+    const keyBySid = new Map([...bySid].map(([k, v]) => [k, keyOf(v)]));
+    const grp = groupBy(WR, x => keyBySid.get(x.sid) || keyOf(x));
+    const act = (arr, f) => uniq(arr.filter(f));
+    const wrows = [...grp].map(([k, v]) => {
+      const p = uniq(v.filter(x => x.ev === 'view'));
+      const g = act(v, x => x.ev === 'grade' && !/^入り口/.test(x.label || ''));
+      const pk = act(v, x => x.ev === 'pick' && /^＋/.test(x.label || ''));
+      const fm = act(v, x => x.ev === 'form'), cs = act(v, x => x.ev === 'consult'), tl = act(v, x => x.ev === 'tel');
+      const any = act(v, x => ['form', 'consult', 'tel'].includes(x.ev));
+      return [k, p, g, pk, fm, cs, tl, pct(any, p)];
+    }).sort((a, b) => b[1] - a[1]);
+    h += box('冬期講習：来た経路・広告ごと', '人数＝端末の数。「問い合わせ等」はお問い合わせ・LINE相談・電話のどれかを押した人の割合。広告は ?utm_source=ad&utm_campaign=koukousei（高校生）／hogosha（保護者）', table(['経路｜広告', '見た人', '学年を選んだ', '講座にチェック', 'お問い合わせ', 'LINEで相談', '電話', '問い合わせ等'], wrows, 1, Math.max(1, ...wrows.map(r => r[1]))), true);
+    const gr = [...groupBy(WR.filter(x => x.ev === 'grade' && !/^入り口/.test(x.label || '')), x => x.label)].map(([k, v]) => [k, uniq(v)]).sort((a, b) => b[1] - a[1]);
+    if (gr.length) h += box('冬期講習：選ばれた学年', '「あなたは何年生？」で押した学年（人数）', table(['学年', '人数'], gr, 1, Math.max(1, ...gr.map(r => r[1]))));
+  }
+
   // 冬期講習（winter2026_koukou.html）：押した悩み・開いた講座・チェックした講座
   [['nayami', '押した悩み（冬期講習）', '「悩みから探す」で押した悩み'], ['course', '画面に出た講座（冬期講習）', '講座カードが画面に出た（見た）数'], ['pick', 'チェックした講座（冬期講習）', '＋＝チェックした／－＝外した'], ['fold', '開いた欄（冬期講習）', '料金・日程・キャンペーンなど、たたんである欄']].forEach(([ev, ttl, note]) => {
     const t = [...groupBy(R.filter(x => x.ev === ev), x => x.label || '（不明）')].map(([k, v]) => [k, v.length, uniq(v)]).sort((a, b) => b[2] - a[2]);
